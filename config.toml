@@ -1,0 +1,44 @@
+# CLIPPER configuration — safe to commit (no secrets)
+# API keys must be set via environment variables, never here.
+#
+# Override any value with env vars prefixed CLIPPER_:
+#   CLIPPER_LLM_DEFAULT_PROVIDER=openai
+#   CLIPPER_WHISPER_MODEL_SIZE=large-v3
+
+[llm]
+default_provider = "groq"
+groq_model       = "llama-3.1-8b-instant"
+openai_model     = "gpt-4o-mini"
+ollama_model     = "llama3:70b"
+ollama_base_url  = "http://localhost:11434"
+max_clips        = 3
+max_retries      = 2
+
+
+[whisper]
+# Directory containing ggml-*.bin model files
+# Download: curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin -o models/ggml-medium.bin
+model_dir  = "models"
+model_size = "large-v3"   # tiny | base | small | medium | large-v3
+language   = "id"       # set to "" for auto-detect
+n_threads  = 4
+gpu_device = 0          # CUDA device index (0 = first GPU)
+
+[ffmpeg]
+# null = ffmpeg-sidecar auto-downloads and manages FFmpeg
+# Set to an absolute path to use a specific FFmpeg binary
+ffmpeg_path   = ""
+nvenc         = true    # Use NVENC GPU encoder (requires NVIDIA GPU)
+cq_value      = 23      # Constant Quality: 0-51, lower = better (default 23)
+preset        = "p4"    # NVENC preset: p1 (fastest) … p7 (slowest)
+audio_bitrate = "192k"
+
+[output]
+default_dir    = "./output"
+default_layout = "vertical"  # vertical | horizontal | square
+
+[ingest]
+ytdlp_path = "yt-dlp"
+# Download best video + best audio and merge. --merge-output-format mp4 in code forces MP4 output.
+# This is permissive: works for YouTube AV1, VP9, H.264, and all other platforms.
+format     = "bestvideo+bestaudio/best"

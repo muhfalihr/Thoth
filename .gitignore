@@ -1,0 +1,7 @@
+/target
+output/
+models/
+.env
+*.mp4
+*.wav
+*.ass

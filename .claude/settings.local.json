@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mfr\\\\Documents\\\\MyTools\\\\CLIPPER\\\\models\")",
+      "Bash(Out-Null)",
+      "PowerShell(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mfr\\\\Documents\\\\MyTools\\\\CLIPPER\\\\models\")",
+      "WebFetch(domain:docs.rs)"
+    ]
+  }
+}

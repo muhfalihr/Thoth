@@ -1,0 +1,50 @@
+[package]
+name        = "clipper"
+version     = "0.1.0"
+edition     = "2024"
+description = "GPU-accelerated viral video clipping and editing from YouTube URLs"
+
+[[bin]]
+name = "clipper"
+path = "src/main.rs"
+
+[features]
+# Local Whisper via whisper.cpp bindings.
+# Requires: LLVM/Clang (for bindgen) + CUDA Toolkit 12.x (for GPU).
+#   Install LLVM: winget install LLVM.LLVM
+#   Install CUDA: https://developer.nvidia.com/cuda-downloads
+# Build with: cargo build --release --features local-whisper,cuda
+local-whisper = ["dep:whisper-rs"]
+cuda          = ["local-whisper", "whisper-rs/cuda"]
+
+[dependencies]
+tokio              = { version = "1",    features = ["full"] }
+tokio-util         = "0.7"
+reqwest            = { version = "0.12", features = ["json", "multipart", "stream"] }
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = "1"
+clap               = { version = "4",    features = ["derive"] }
+anyhow             = "1"
+dotenvy            = "0.15"
+futures-util       = "0.3"
+thiserror          = "2"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3",  features = ["env-filter", "fmt"] }
+indicatif          = "0.17"
+config             = "0.14"
+ffmpeg-sidecar     = "2"
+uuid               = { version = "1",    features = ["v4"] }
+which              = "7"
+zip                = "2"
+walkdir            = "2"
+chrono             = { version = "0.4",  features = ["serde"] }
+hound              = "3"
+async-trait        = "0.1"
+
+# Optional: local GPU-accelerated Whisper via whisper.cpp
+whisper-rs = { version = "0.16", optional = true }
+
+[profile.release]
+opt-level = 3
+lto       = "thin"
+strip     = true
