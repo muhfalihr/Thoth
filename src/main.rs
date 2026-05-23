@@ -1,11 +1,18 @@
 #![allow(dead_code, unused_imports)]
 
+/*
+ * CLIPPER - AI-Powered Short-Form Video Strategist
+ * Copyright (c) 2026 CLIPPER. All Rights Reserved.
+ * This software is PROPRIETARY. Unauthorized use is strictly prohibited.
+ */
+
 mod analyze;
 mod cli;
 mod config;
 mod edit;
 mod ingest;
 mod pipeline;
+mod rag;
 mod transcribe;
 mod util;
 
@@ -13,14 +20,73 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use cli::{Cli, Commands};
+use cli::{Cli, ClipStyleArg, Commands};
 use config::AppConfig;
+use edit::ffmpeg::ClipStyle;
 use edit::layout::OutputLayout;
 use pipeline::PipelineRunner;
 use pipeline::job::JobContext;
+
+/// Convert CLI enum → internal ClipStyle enum.
+fn clip_style_from_arg(a: &ClipStyleArg) -> ClipStyle {
+    match a {
+        ClipStyleArg::Fade   => ClipStyle::Fade,
+        ClipStyleArg::Flash  => ClipStyle::Flash,
+        ClipStyleArg::Zoom   => ClipStyle::Zoom,
+        ClipStyleArg::Smooth => ClipStyle::Smooth,
+        ClipStyleArg::None   => ClipStyle::None,
+    }
+}
 use futures_util::stream::StreamExt;
 use std::io::Write;
 use std::path::PathBuf;
+
+/// Build an `AudioOptions` struct from raw CLI argument values.
+#[allow(clippy::too_many_arguments)]
+fn build_audio_opts(
+    sfx_intro:             Option<PathBuf>,
+    bgm:                   Option<PathBuf>,
+    bgm_volume:            f32,
+    clip_style:            edit::ClipStyle,
+    headline_dur:          f64,
+    font_dir:              &PathBuf,
+    font_bold:             &str,
+    font_regular:          &str,
+    social_icon_path:      Option<PathBuf>,
+    social_icon_size:      u32,
+    social_icon_min_size:  u32,
+    social_icon_max_size:  u32,
+) -> edit::AudioOptions {
+    let font = edit::FontConfig {
+        fonts_dir:    font_dir.clone(),
+        bold_font:    font_bold.to_owned(),
+        regular_font: font_regular.to_owned(),
+        family_name:  // derive from font name: "Poppins-Bold.ttf" → "Poppins"
+            font_bold
+                .split('-')
+                .next()
+                .unwrap_or("Poppins")
+                .to_owned(),
+    };
+
+    let social_icon = social_icon_path.map(|path| edit::SocialIcon {
+        path,
+        size: social_icon_size,
+    });
+
+    edit::AudioOptions {
+        sfx_intro,
+        bgm,
+        bgm_volume,
+        clip_style,
+        headline_dur,
+        font,
+        social_icon,
+        social_icon_min_size,
+        social_icon_max_size,
+        ..Default::default()
+    }
+}
 
 async fn download_ffmpeg_with_progress() -> Result<()> {
     let url = ffmpeg_sidecar::download::ffmpeg_download_url()?;
@@ -233,7 +299,13 @@ async fn main() -> Result<()> {
             let job = JobContext::new(job_id, output_dir).context("failed to create job directories")?;
             let svc = analyze::AnalyzeService::new(&config, &job);
             let result = svc
-                .run(&args.transcript_path, &args.provider.to_string(), args.max_clips)
+                .run(
+                    &args.transcript_path,
+                    &args.provider.to_string(),
+                    args.max_clips,
+                    &args.keywords,
+                    args.video_path.as_deref(),  // enables visual analysis when [vision] enabled
+                )
                 .await?;
             println!("Analysis complete.");
             println!("  Moments : {}", result.moment_count);
@@ -253,6 +325,23 @@ async fn main() -> Result<()> {
                     &args.moments_path,
                     &args.transcript_path,
                     &layout,
+                    &build_audio_opts(
+                        args.sfx_intro.clone(),
+                        args.bgm.clone(),
+                        args.bgm_volume,
+                        clip_style_from_arg(&args.clip_style),
+                        args.headline_dur,
+                        &args.font_dir,
+                        &args.font_bold,
+                        &args.font_regular,
+                        args.social_icon.clone(),
+                        args.social_icon_size,
+                        args.social_icon_min_size,
+                        args.social_icon_max_size,
+                    ),
+                    &args.source_channel,
+                    &args.social,
+                    &args.style_profile,
                 )
                 .await?;
             println!("Edit complete. {} clip(s) rendered:", result.output_clips.len());
@@ -267,6 +356,10 @@ async fn main() -> Result<()> {
                 config.whisper.language = lang;
             }
 
+            if !args.keywords.is_empty() {
+                println!("  Focus keywords: {}", args.keywords.join(", "));
+            }
+
             let runner = PipelineRunner::new(&config);
             let clips = runner
                 .run(
@@ -276,13 +369,245 @@ async fn main() -> Result<()> {
                     &args.model,
                     args.max_clips,
                     &args.layout,
+                    &args.keywords,
+                    &build_audio_opts(
+                        args.sfx_intro.clone(),
+                        args.bgm.clone(),
+                        args.bgm_volume,
+                        clip_style_from_arg(&args.clip_style),
+                        args.headline_dur,
+                        &args.font_dir,
+                        &args.font_bold,
+                        &args.font_regular,
+                        args.social_icon.clone(),
+                        args.social_icon_size,
+                        args.social_icon_min_size,
+                        args.social_icon_max_size,
+                    ),
+                    &args.social,
                     args.resume.as_deref(),
+                    &args.style_profile,
                 )
                 .await?;
             println!("\nPipeline complete. {} clip(s):", clips.len());
             for p in &clips {
                 println!("  {}", p.display());
             }
+        }
+
+        Commands::TrendAnalyze(args) => {
+            use analyze::trend_analyzer::{profile_to_toml, TrendAnalyzeService};
+
+            let svc = TrendAnalyzeService::new(&config);
+            let profile = svc.run(
+                &args.url,
+                args.sample,
+                &args.provider.to_string(),
+                &args.output_dir,
+            ).await?;
+
+            // Save profile as TOML snippet
+            let toml_snippet = profile_to_toml(&args.output_profile, &profile);
+            let profile_file = args.output_dir.join(format!("{}.toml", args.output_profile));
+            tokio::fs::write(&profile_file, &toml_snippet).await
+                .context("failed to write profile file")?;
+
+            println!("\nTrend analysis complete!");
+            println!("  Profile name : {}", args.output_profile);
+            println!("  Description  : {}", profile.description);
+            println!("  subtitle_style: {}", profile.subtitle_style);
+            println!("  clip_style    : {}", profile.clip_style);
+            println!("  sfx_vibe      : {}", profile.sfx_vibe);
+            println!("  bgm_vibe      : {}", profile.bgm_vibe);
+            println!("  overlay_style : {}", profile.overlay_style);
+            println!("\nProfile saved to: {}", profile_file.display());
+            println!("\nAdd to your config.toml:");
+            print!("{toml_snippet}");
+            println!("\nThen use with: --style-profile {}", args.output_profile);
+        }
+
+        Commands::Vocab(args) => {
+            use cli::VocabCommand;
+            use rag::vocab::{seed_defaults, seed_from_url, seed_kamus_alay, seed_openslr_stopwords, VocabCache};
+
+            // Build DB pool if configured
+            let pool = if config.vector_db.enabled && !config.vector_db.supabase_url.is_empty() {
+                match sqlx::PgPool::connect(&config.vector_db.supabase_url).await {
+                    Ok(p) => { println!("✓ Connected to Supabase"); Some(p) }
+                    Err(e) => { eprintln!("✗ Cannot connect to Supabase: {e}"); None }
+                }
+            } else {
+                eprintln!("⚠  vector_db.enabled = false or CLIPPER_SUPABASE_URL not set");
+                None
+            };
+
+            match args.command {
+                VocabCommand::Seed { source, url, category, subcategory, language,
+                                     column, skip_header, label_filter } => {
+                    let pool = pool.context("Supabase connection required for seed")?;
+
+                    // ── URL mode: download from any URL ──────────────────────
+                    if let Some(ref u) = url {
+                        let cat = category.as_deref().unwrap_or_else(|| {
+                            eprintln!("⚠  --category is required when using --url");
+                            "tone_funny"
+                        });
+                        println!("⬇  Downloading from: {u}");
+                        println!("   category={cat}, language={language}, column={column}");
+                        if let Some(ref f) = label_filter {
+                            println!("   label_filter={f}");
+                        }
+                        let n = seed_from_url(
+                            &pool, u, cat,
+                            subcategory.as_deref(),
+                            &language, column, skip_header,
+                            label_filter.as_deref(),
+                        ).await?;
+                        println!("✓ Seeded {n} words from URL → category={cat}");
+                        return Ok(());
+                    }
+
+                    // ── Named dataset mode ───────────────────────────────────
+                    match source.as_str() {
+                        "defaults" | "default" => {
+                            let n = seed_defaults(&pool).await?;
+                            println!("✓ Seeded {n} default words to Supabase");
+                        }
+                        "kamus-alay" => {
+                            let n = seed_kamus_alay(&pool, &language).await?;
+                            println!("✓ Seeded {n} kamus-alay words (language={language})");
+                        }
+                        "openslr-stopwords" => {
+                            let n = seed_openslr_stopwords(&pool, &language).await?;
+                            println!("✓ Seeded {n} OpenSLR stop words (language={language})");
+                        }
+                        other => {
+                            eprintln!("Unknown source '{other}'.");
+                            eprintln!("Available: defaults, kamus-alay, openslr-stopwords");
+                            eprintln!("Or use: --url https://... --category tone_funny");
+                        }
+                    }
+                }
+                VocabCommand::Add { category, word, subcategory, language, notes } => {
+                    let pool = pool.context("Supabase connection required")?;
+                    VocabCache::add_word(&pool, &category, subcategory.as_deref(), &word, &language, "manual", notes.as_deref()).await?;
+                    println!("✓ Added '{word}' to category '{category}'");
+                }
+                VocabCommand::List { category } => {
+                    let pool = pool.context("Supabase connection required")?;
+                    let words = VocabCache::list_category(&pool, &category).await?;
+                    if words.is_empty() {
+                        println!("(empty — run 'clipper vocab seed' first)");
+                    } else {
+                        println!("Category: {category} ({} words)", words.len());
+                        for (word, sub, lang, weight) in &words {
+                            let sub_str = sub.as_deref().map(|s| format!("[{s}]")).unwrap_or_default();
+                            println!("  {word}{sub_str} ({lang}, weight={weight:.1})");
+                        }
+                    }
+                }
+                VocabCommand::Review => {
+                    let pool = pool.context("Supabase connection required")?;
+                    let candidates = VocabCache::pending_candidates(&pool).await?;
+                    if candidates.is_empty() {
+                        println!("No pending word candidates to review.");
+                        return Ok(());
+                    }
+                    println!("Unreviewed word candidates ({}):", candidates.len());
+                    for (word, cat, occ, ctx) in &candidates {
+                        let cat_str = cat.as_deref().unwrap_or("?");
+                        let ctx_str = ctx.as_deref().unwrap_or("").chars().take(60).collect::<String>();
+                        println!("\n  '{}' (appeared {}×, suggested: {})", word, occ, cat_str);
+                        if !ctx_str.is_empty() { println!("  context: \"{}...\"", ctx_str); }
+                        print!("  [a]pprove / [r]eject / [s]kip: ");
+                        use std::io::{Write, BufRead};
+                        std::io::stdout().flush()?;
+                        let mut input = String::new();
+                        std::io::stdin().lock().read_line(&mut input)?;
+                        match input.trim() {
+                            "a" | "approve" => {
+                                VocabCache::approve_candidate(&pool, word, cat_str, "id").await?;
+                                println!("  ✓ Approved → {cat_str}");
+                            }
+                            "r" | "reject" => {
+                                VocabCache::reject_candidate(&pool, word).await?;
+                                println!("  ✗ Rejected");
+                            }
+                            _ => println!("  → Skipped"),
+                        }
+                    }
+                }
+                VocabCommand::Stats => {
+                    let pool = pool.context("Supabase connection required")?;
+                    let cache = VocabCache::load(Some(&pool), config.vector_db.vocab_cache_ttl_secs).await;
+                    println!("Vocabulary Cache Statistics:");
+                    println!("  Source:       {}", if cache.from_db { "Supabase ✓" } else { "Hardcoded defaults ⚠" });
+                    println!("  tone_funny:   {} words", cache.tone_funny.len());
+                    println!("  tone_serious: {} words", cache.tone_serious.len());
+                    println!("  intro:        {} phrases", cache.intro.len());
+                    println!("  name_titles:  {} patterns", cache.name_titles.len());
+                    println!("  stop_words:   {} (id) + {} (en)", cache.stop_words_id.len(), cache.stop_words_en.len());
+                    println!("  energy_high:  {} words", cache.energy_high.len());
+                    println!("  energy_low:   {} words", cache.energy_low.len());
+                    println!("  vibes:        {} categories", cache.vibes.len());
+                    for (vibe, words) in &cache.vibes {
+                        println!("    {vibe}: {} keywords", words.len());
+                    }
+                }
+                VocabCommand::Refresh => {
+                    println!("Cache will refresh automatically on next pipeline run.");
+                    println!("(TTL: {}s = {:.1} minutes)", config.vector_db.vocab_cache_ttl_secs, config.vector_db.vocab_cache_ttl_secs as f64 / 60.0);
+                }
+            }
+        }
+
+        Commands::Thumbnail(args) => {
+            let job = JobContext::new(args.job_id.clone(), args.output_dir.clone())
+                .context("failed to access job directory")?;
+            
+            let moments_path = job.moments_path();
+            if !moments_path.exists() {
+                anyhow::bail!("Moments file not found: {}", moments_path.display());
+            }
+
+            let moments_raw = tokio::fs::read_to_string(&moments_path).await?;
+            let moments: crate::analyze::schema::ViralMomentList = serde_json::from_str(&moments_raw)
+                .context("failed to parse moments.json")?;
+
+            println!("Generating thumbnails for {} clips in job '{}'...", moments.moments.len(), args.job_id);
+
+            let mut count = 0;
+            for (i, moment) in moments.moments.iter().enumerate() {
+                let slug = crate::util::fs::slugify(&moment.title);
+                let out_path = job.clip_path(i, &slug);
+                if !out_path.exists() {
+                    println!("  ⚠ clip missing, skipping: {}", out_path.display());
+                    continue;
+                }
+
+                let thumb_path = out_path.with_extension("jpg");
+                let duration = moment.duration();
+                
+                let optimal_time = if moment.overlay_at_sec > 0.0 {
+                    moment.overlay_at_sec + 0.5
+                } else if moment.sfx_at_sec > 0.0 {
+                    moment.sfx_at_sec
+                } else {
+                    duration / 2.0
+                };
+                
+                let thumb_time = optimal_time.clamp(0.0, duration.max(0.1));
+                
+                println!("  Generating thumbnail for clip {} at {:.1}s...", i + 1, thumb_time);
+                
+                if let Err(e) = edit::ffmpeg::generate_thumbnail(&out_path, &thumb_path, thumb_time) {
+                    eprintln!("  ✗ failed: {}", e);
+                } else {
+                    println!("  ✓ saved: {}", thumb_path.display());
+                    count += 1;
+                }
+            }
+            println!("Done. Generated {} thumbnails.", count);
         }
     }
 

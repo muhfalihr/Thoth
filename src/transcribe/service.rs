@@ -50,19 +50,33 @@ impl<'a> TranscribeService<'a> {
     ) -> Result<TranscribeResult, TranscribeError> {
         let t0 = Instant::now();
 
-        // Step 1: Extract 16kHz mono WAV
-        let wav_path = self.job.source_dir().join("audio.wav");
-        self.extract_audio(video_path, &wav_path).await?;
-
-        // Log audio file size so user knows what's being uploaded / processed
-        let wav_mb = std::fs::metadata(&wav_path)
-            .map(|m| m.len() as f64 / 1_048_576.0)
-            .unwrap_or(0.0);
-        info!("audio extracted: {wav_mb:.1} MB ({wav_path:?})");
-
-        // Step 2: Transcribe (Groq API or local Whisper)
+        // ── Step 1: Try YouTube transcript first (instant, no API cost) ──────
+        //
+        // yt-dlp downloads subtitle files during ingest if available.
+        // json3 has word-level timestamps; vtt has at least segment-level.
+        // We prefer this over Whisper when available.
         let t_infer = Instant::now();
-        let transcript = self.transcribe(&wav_path, model_size).await?;
+        let (transcript, model_used) = if let Some(yt) = self.try_youtube_transcript().await {
+            let infer_secs = t_infer.elapsed().as_secs_f64();
+            info!(
+                "YouTube transcript loaded in {:.1}s — {} segments",
+                infer_secs,
+                yt.segments.len()
+            );
+            (yt, "youtube".to_owned())
+        } else {
+            // ── Step 2: Extract audio + run Whisper ─────────────────────────
+            let wav_path = self.job.source_dir().join("audio.wav");
+            self.extract_audio(video_path, &wav_path).await?;
+
+            let wav_mb = std::fs::metadata(&wav_path)
+                .map(|m| m.len() as f64 / 1_048_576.0)
+                .unwrap_or(0.0);
+            info!("audio extracted: {wav_mb:.1} MB ({wav_path:?})");
+
+            let transcript = self.transcribe(&wav_path, model_size).await?;
+            (transcript, model_size.to_owned())
+        };
         let infer_secs = t_infer.elapsed().as_secs_f64();
 
         // Step 3: Save transcript JSON
@@ -90,7 +104,7 @@ impl<'a> TranscribeService<'a> {
             transcript_path,
             word_count,
             duration_secs: transcript.duration_ms as f64 / 1000.0,
-            model_used: model_size.to_owned(),
+            model_used,
             completed_at: Utc::now(),
         })
     }
@@ -429,6 +443,68 @@ impl<'a> TranscribeService<'a> {
         Ok(transcript)
     }
 
+    // ── YouTube transcript ────────────────────────────────────────────────────
+
+    /// Look for a yt-dlp downloaded subtitle file in the source directory and
+    /// parse it into our `Transcript` format.
+    ///
+    /// Search order: `.json3` (word-level timestamps) → `.vtt` (segment-level).
+    /// Returns `None` if no subtitle file exists or parsing fails.
+    async fn try_youtube_transcript(&self) -> Option<Transcript> {
+        let dir = self.job.source_dir();
+        if !dir.exists() { return None; }
+
+        let mut json3: Option<std::path::PathBuf> = None;
+        let mut vtt:   Option<std::path::PathBuf> = None;
+
+        let mut entries = tokio::fs::read_dir(&dir).await.ok()?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let p = entry.path();
+            match p.extension().and_then(|e| e.to_str()) {
+                Some("json3") => { json3 = Some(p); }
+                Some("vtt")   => { if vtt.is_none() { vtt = Some(p); } }
+                _ => {}
+            }
+        }
+
+        let subtitle_path = match json3.or(vtt) {
+            Some(p) => p,
+            None => {
+                // No subtitle file in source dir — Whisper will be used
+                debug!("no YouTube subtitle file found in source dir");
+                return None;
+            }
+        };
+        let raw = tokio::fs::read_to_string(&subtitle_path).await.ok()?;
+
+        let ext = subtitle_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let transcript = match ext {
+            "json3" => parse_youtube_json3(&raw),
+            "vtt"   => parse_youtube_vtt(&raw),
+            _       => return None,
+        };
+
+        match transcript {
+            Ok(t) if !t.segments.is_empty() => {
+                info!(
+                    "YouTube transcript: {} ({} segments, {:.1} min)",
+                    subtitle_path.file_name().unwrap_or_default().to_string_lossy(),
+                    t.segments.len(),
+                    t.duration_ms as f64 / 60_000.0
+                );
+                Some(t)
+            }
+            Ok(_) => {
+                info!("YouTube transcript file exists but has no segments — falling back to Whisper");
+                None
+            }
+            Err(e) => {
+                info!("YouTube transcript parse failed ({e}) — falling back to Whisper");
+                None
+            }
+        }
+    }
+
     async fn extract_audio(
         &self,
         video_path: &Path,
@@ -476,6 +552,248 @@ impl<'a> TranscribeService<'a> {
 
 /// Calculate audio duration from a PCM s16le 16 kHz mono WAV file size.
 /// Formula: (file_bytes - 44_byte_header) / (16000 samples/sec × 2 bytes/sample)
+// ── YouTube subtitle parsers ──────────────────────────────────────────────────
+
+/// Parse a YouTube JSON3 subtitle file into `Transcript`.
+///
+/// JSON3 format (from yt-dlp `--sub-format json3`) looks like:
+/// ```json
+/// { "events": [
+///     { "tStartMs": 1000, "dDurationMs": 3000,
+///       "segs": [ {"utf8": "Hello ", "tOffsetMs": 0},
+///                 {"utf8": "world",  "tOffsetMs": 800} ] },
+///     ...
+/// ] }
+/// ```
+/// Each `seg` is a word with a time offset from the event start.
+fn parse_youtube_json3(json: &str) -> Result<Transcript, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::transcribe::model::{WhisperSegment, WordTimestamp};
+
+    let data: serde_json::Value = serde_json::from_str(json)?;
+    let events = data["events"].as_array().ok_or("no events array")?;
+
+    let mut segments: Vec<WhisperSegment> = Vec::new();
+
+    for event in events {
+        let t_start_ms = event["tStartMs"].as_i64().unwrap_or(0);
+        let d_ms       = event["dDurationMs"].as_i64().unwrap_or(0);
+        let t_end_ms   = t_start_ms + d_ms;
+
+        let segs = match event["segs"].as_array() {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+
+        // Collect full segment text
+        let text: String = segs.iter()
+            .filter_map(|s| s["utf8"].as_str())
+            .collect();
+        let text = text.trim().to_owned();
+        if text.is_empty() { continue; }
+
+        // Build per-word timestamps
+        let mut words: Vec<WordTimestamp> = Vec::new();
+        for (i, seg) in segs.iter().enumerate() {
+            let word = seg["utf8"].as_str().unwrap_or("").trim().to_owned();
+            if word.is_empty() || word == "\n" { continue; }
+
+            let offset_ms  = seg["tOffsetMs"].as_i64().unwrap_or(0);
+            let word_start = t_start_ms + offset_ms;
+
+            // End = next seg's start offset, or event end if last
+            let word_end = if i + 1 < segs.len() {
+                let next_off = segs[i + 1]["tOffsetMs"].as_i64().unwrap_or(d_ms);
+                t_start_ms + next_off
+            } else {
+                t_end_ms
+            };
+
+            words.push(WordTimestamp {
+                word,
+                start_ms: word_start,
+                end_ms: word_end,
+                probability: 1.0,
+            });
+        }
+
+        segments.push(WhisperSegment { text, start_ms: t_start_ms, end_ms: t_end_ms, words });
+    }
+
+    // Apply BPE merge (YouTube also sometimes splits words at token boundaries)
+    let mut transcript = Transcript { segments, duration_ms: 0 };
+    transcript.fix_subwords();
+    transcript.duration_ms = transcript.segments.last().map(|s| s.end_ms).unwrap_or(0);
+    Ok(transcript)
+}
+
+/// Parse a WebVTT subtitle file into `Transcript`.
+///
+/// VTT may or may not have word-level `<c>` timing tags.
+/// If word tags are present we extract per-word timestamps; otherwise we
+/// treat the whole cue as a single segment with no word-level data.
+fn parse_youtube_vtt(vtt: &str) -> Result<Transcript, Box<dyn std::error::Error + Send + Sync>> {
+    use crate::transcribe::model::{WhisperSegment, WordTimestamp};
+
+    let mut segments: Vec<WhisperSegment> = Vec::new();
+
+    // Split into cues (separated by blank lines after the header)
+    let mut iter = vtt.lines().peekable();
+    // Skip WEBVTT header
+    while let Some(line) = iter.next() {
+        if line.starts_with("WEBVTT") { break; }
+    }
+
+    let mut cue_buf: Vec<String> = Vec::new();
+
+    let flush_cue = |buf: &mut Vec<String>, segs: &mut Vec<WhisperSegment>| {
+        if buf.is_empty() { return; }
+        // Find timestamp line: "HH:MM:SS.mmm --> HH:MM:SS.mmm"
+        let ts_line = buf.iter().find(|l| l.contains("-->"));
+        if let Some(ts) = ts_line {
+            let parts: Vec<&str> = ts.splitn(2, "-->").collect();
+            if parts.len() == 2 {
+                let start_ms = parse_vtt_ts(parts[0].trim());
+                let end_ms   = parse_vtt_ts(parts[1].trim().split_whitespace().next().unwrap_or(""));
+                // Text lines (after the timestamp)
+                let text_lines: Vec<&str> = buf.iter()
+                    .skip_while(|l| !l.contains("-->"))
+                    .skip(1)
+                    .map(|l| l.as_str())
+                    .collect();
+                let raw_text = text_lines.join(" ");
+                let text = strip_vtt_tags(&raw_text).trim().to_owned();
+                if !text.is_empty() {
+                    // Try to extract word-level <c> timing tags
+                    let words = extract_vtt_words(&raw_text, start_ms, end_ms);
+                    segs.push(WhisperSegment { text, start_ms, end_ms, words });
+                }
+            }
+        }
+        buf.clear();
+    };
+
+    for line in iter {
+        if line.trim().is_empty() {
+            flush_cue(&mut cue_buf, &mut segments);
+        } else {
+            cue_buf.push(line.to_owned());
+        }
+    }
+    flush_cue(&mut cue_buf, &mut segments);
+
+    let mut transcript = Transcript { segments, duration_ms: 0 };
+    transcript.fix_subwords();
+    transcript.duration_ms = transcript.segments.last().map(|s| s.end_ms).unwrap_or(0);
+    Ok(transcript)
+}
+
+fn parse_vtt_ts(s: &str) -> i64 {
+    // Accepts HH:MM:SS.mmm or MM:SS.mmm
+    let parts: Vec<&str> = s.split(':').collect();
+    let (h, m, rest) = match parts.as_slice() {
+        [h, m, r] => (h.parse::<i64>().unwrap_or(0), m.parse::<i64>().unwrap_or(0), *r),
+        [m, r]    => (0, m.parse::<i64>().unwrap_or(0), *r),
+        _         => return 0,
+    };
+    let sec_parts: Vec<&str> = rest.split('.').collect();
+    let secs = sec_parts[0].parse::<i64>().unwrap_or(0);
+    let ms   = sec_parts.get(1)
+        .and_then(|p| p.get(..3))
+        .and_then(|p| p.parse::<i64>().ok())
+        .unwrap_or(0);
+    ((h * 3600 + m * 60 + secs) * 1000) + ms
+}
+
+fn strip_vtt_tags(s: &str) -> String {
+    // Remove <...> tags: <c>, <00:00:00.000>, </c>, <lang>, etc.
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => { in_tag = true; }
+            '>' => { in_tag = false; out.push(' '); }
+            c if !in_tag => { out.push(c); }
+            _ => {}
+        }
+    }
+    // Collapse extra spaces
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Extract word-level timestamps from VTT `<c>` timing-tag format:
+/// `<00:00:01.000><c> word</c><00:00:01.800><c> next</c>`
+fn extract_vtt_words(raw: &str, seg_start: i64, seg_end: i64) -> Vec<crate::transcribe::model::WordTimestamp> {
+    use crate::transcribe::model::WordTimestamp;
+
+    let mut words = Vec::new();
+    // Split on timing tags (look for <HH:MM:SS.mmm> pattern)
+    let re_ts = regex_lite(raw);
+    if re_ts.is_empty() {
+        // No timing tags — treat the whole line as one segment
+        let text = strip_vtt_tags(raw);
+        for word in text.split_whitespace() {
+            if !word.is_empty() {
+                words.push(WordTimestamp {
+                    word: word.to_owned(),
+                    start_ms: seg_start,
+                    end_ms: seg_end,
+                    probability: 1.0,
+                });
+            }
+        }
+        return words;
+    }
+
+    // Walk through alternating (timestamp, text) pairs
+    let mut current_ts = seg_start;
+    for (ts_ms, text) in re_ts {
+        for word in strip_vtt_tags(&text).split_whitespace() {
+            if !word.is_empty() {
+                words.push(WordTimestamp {
+                    word: word.to_owned(),
+                    start_ms: current_ts,
+                    end_ms: ts_ms,
+                    probability: 1.0,
+                });
+            }
+        }
+        current_ts = ts_ms;
+    }
+    words
+}
+
+/// Minimal regex-free VTT timing tag extractor.
+/// Returns Vec<(timestamp_ms, text_that_follows)>.
+fn regex_lite(input: &str) -> Vec<(i64, String)> {
+    let mut result: Vec<(i64, String)> = Vec::new();
+    let mut remaining = input;
+
+    loop {
+        // Find next timing tag <HH:MM:SS.mmm> or <MM:SS.mmm>
+        let start = match remaining.find('<') {
+            Some(i) => i,
+            None => break,
+        };
+        let end = match remaining[start..].find('>') {
+            Some(i) => start + i + 1,
+            None => break,
+        };
+        let tag_content = &remaining[start + 1..end - 1];
+
+        // Check if it looks like a timestamp (contains : and .)
+        if tag_content.contains(':') && tag_content.contains('.') {
+            let ts_ms = parse_vtt_ts(tag_content);
+            // Text between this timestamp and the next <
+            let after = &remaining[end..];
+            let text_end = after.find('<').unwrap_or(after.len());
+            let text = after[..text_end].to_owned();
+            result.push((ts_ms, text));
+        }
+        remaining = &remaining[end..];
+    }
+    result
+}
+
 fn wav_duration_secs(wav_path: &Path) -> f64 {
     let bytes = std::fs::metadata(wav_path)
         .map(|m| m.len())

@@ -2,43 +2,276 @@
 # API keys must be set via environment variables, never here.
 #
 # Override any value with env vars prefixed CLIPPER_:
-#   CLIPPER_LLM_DEFAULT_PROVIDER=openai
+#   CLIPPER_LLM_DEFAULT_PROVIDER=novita
 #   CLIPPER_WHISPER_MODEL_SIZE=large-v3
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM — Text analysis provider
+# ─────────────────────────────────────────────────────────────────────────────
+# Pilih provider aktif dengan: default_provider = "<name>"
+# Tersedia: groq | openai | claude | gemini | novita | vllm | ollama
+# ─────────────────────────────────────────────────────────────────────────────
 [llm]
-default_provider = "groq"
-groq_model       = "llama-3.1-8b-instant"
-openai_model     = "gpt-4o-mini"
-ollama_model     = "llama3:70b"
-ollama_base_url  = "http://localhost:11434"
-max_clips        = 3
-max_retries      = 2
+default_provider = "novita"
 
+# ── Groq ──────────────────────────────────────────────────────────────────────
+# Cloud inference, ultra-fast, free tier tersedia.
+# Key: https://console.groq.com  →  CLIPPER_GROQ_API_KEY
+groq_model = "llama-3.3-70b-versatile"
+# groq_model = "openai/gpt-oss-120b"    # ~8K TPM on free tier
+# groq_model = "llama-3.1-8b-instant"   # tercepat, kualitas rendah
 
+# ── OpenAI ────────────────────────────────────────────────────────────────────
+# Key: https://platform.openai.com/api-keys  →  CLIPPER_OPENAI_API_KEY
+openai_model = "gpt-4o-mini"
+# openai_model = "gpt-4o"
+
+# ── Claude (Anthropic) ────────────────────────────────────────────────────────
+# Key: https://console.anthropic.com  →  CLIPPER_CLAUDE_API_KEY
+claude_model = "claude-sonnet-4-5"
+# claude_model = "claude-opus-4-5"
+# claude_model = "claude-haiku-3-5"
+
+# ── Gemini (Google) ───────────────────────────────────────────────────────────
+# Key: https://aistudio.google.com/apikey  →  CLIPPER_GEMINI_API_KEY
+gemini_model = "gemini-2.0-flash"
+# gemini_model = "gemini-2.5-pro"
+# gemini_model = "gemini-1.5-flash"
+
+# ── Novita AI (cloud, OpenAI-compatible) ──────────────────────────────────────
+# Cloud inference dengan ratusan model open-source.
+# Key: https://novita.ai  →  CLIPPER_NOVITA_API_KEY
+novita_base_url = "https://api.novita.ai/openai"
+novita_model    = "qwen/qwen-2.5-72b-instruct"
+# novita_model  = "deepseek/deepseek-v3-0324"
+# novita_model  = "qwen/qwen3-235b-a22b"
+# novita_model  = "meta-llama/llama-3.3-70b-instruct"
+
+# ── vLLM (self-hosted, OpenAI-compatible) ─────────────────────────────────────
+# Server lokal atau private. Tidak perlu API key jika server tanpa auth.
+# Start: python -m vllm.entrypoints.openai.api_server --model <model>
+# Key (opsional): CLIPPER_VLLM_API_KEY
+vllm_base_url = "http://localhost:8000"
+vllm_model    = "Qwen/Qwen2.5-72B-Instruct"
+
+# ── Ollama (local, no API key) ────────────────────────────────────────────────
+# Install: https://ollama.com  |  ollama pull llama3:70b
+ollama_base_url = "http://localhost:11434"
+ollama_model    = "llama3:70b"
+
+# ── Pipeline limits ───────────────────────────────────────────────────────────
+max_clips          = 3
+max_retries        = 2
+# Minimum video timestamp (seconds) before which no clip can start.
+# 0 = auto-detect intro end  |  misal: 90 = skip 90 detik pertama
+min_clip_start_sec = 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHISPER — Speech-to-text transcription
+# ─────────────────────────────────────────────────────────────────────────────
 [whisper]
-# Directory containing ggml-*.bin model files
+# Directory berisi file ggml-*.bin
 # Download: curl -L https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin -o models/ggml-medium.bin
 model_dir  = "models"
 model_size = "large-v3"   # tiny | base | small | medium | large-v3
-language   = "id"       # set to "" for auto-detect
+language   = "id"         # "" = auto-detect
 n_threads  = 4
-gpu_device = 0          # CUDA device index (0 = first GPU)
+gpu_device = 0            # CUDA device index (0 = GPU pertama)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FFMPEG — Video encoding
+# ─────────────────────────────────────────────────────────────────────────────
 [ffmpeg]
-# null = ffmpeg-sidecar auto-downloads and manages FFmpeg
-# Set to an absolute path to use a specific FFmpeg binary
+# Kosong = ffmpeg-sidecar auto-download FFmpeg (recommended)
+# Isi path absolut untuk pakai binary sendiri: "C:/tools/ffmpeg.exe"
 ffmpeg_path   = ""
-nvenc         = true    # Use NVENC GPU encoder (requires NVIDIA GPU)
-cq_value      = 23      # Constant Quality: 0-51, lower = better (default 23)
-preset        = "p4"    # NVENC preset: p1 (fastest) … p7 (slowest)
+nvenc         = true    # GPU encoding NVENC (butuh NVIDIA GPU)
+cq_value      = 23      # Constant Quality: 0-51, kecil = lebih bagus
+preset        = "p4"    # NVENC preset: p1 (tercepat) … p7 (terlambat)
 audio_bitrate = "192k"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# OUTPUT
+# ─────────────────────────────────────────────────────────────────────────────
 [output]
 default_dir    = "./output"
-default_layout = "vertical"  # vertical | horizontal | square
+default_layout = "vertical"   # vertical | horizontal | square
 
+# ─────────────────────────────────────────────────────────────────────────────
+# VISION — Visual frame analysis (opt-in)
+# ─────────────────────────────────────────────────────────────────────────────
+# Ketika enabled, setiap momen kandidat dianalisis secara visual oleh LLM.
+# Skor visual (humor, visual_impact, novelty, engagement) digabung dengan
+# text-rank untuk memilih clip terbaik.
+#
+# Provider: openai | claude | gemini | novita | vllm
+# ─────────────────────────────────────────────────────────────────────────────
+[vision]
+enabled           = true       # aktifkan analisis visual frame
+provider          = "novita"   # openai | claude | gemini | novita | vllm
+frames_per_moment = 3          # frame per kandidat (2-5 recommended)
+frame_width       = 384        # lebar frame dalam px (kecil = lebih sedikit token)
+score_weight      = 0.35       # 0.0 = text-only, 1.0 = vision-only
+
+# ── Novita AI (vision scoring) ────────────────────────────────────────────────
+# Dipakai saat provider = "novita". URL/model warisan dari [llm] jika dikosongkan.
+novita_base_url = "https://api.novita.ai/openai"
+novita_model    = "qwen/qwen3-vl-8b-instruct"
+# novita_model  = "qwen/qwen2.5-vl-72b-instruct"   # lebih besar, lebih akurat
+
+# ── vLLM (vision scoring, self-hosted) ───────────────────────────────────────
+# Dipakai saat provider = "vllm". Bisa beda server dari [llm].
+vllm_base_url = "http://localhost:8001"
+vllm_model    = "Qwen/Qwen2.5-VL-7B-Instruct"
+
+# ── Full-video describe (audio-visual enrichment) ─────────────────────────────
+# Ketika describe_video = true, seluruh video di-sample setiap describe_interval
+# detik. Setiap frame dideskripsikan secara teks, lalu dinjeksikan ke transcript
+# sebelum analisis LLM utama — LLM "melihat" apa yang terjadi di setiap timestamp.
+describe_video    = true
+describe_interval = 15.0   # 1 frame per N detik
+describe_batch    = 5      # frame per API call
+
+# Override model untuk describe (opsional — gunakan model lebih kecil/cepat)
+# Kosong = pakai novita_model / vllm_model di atas.
+describe_vllm_base_url = ""
+describe_vllm_model    = ""
+
+# ── Scene boundary detection ──────────────────────────────────────────────────
+# FFmpeg pass ekstra untuk deteksi visual cut → frame diambil tepat di scene boundary.
+scene_detection = true
+scene_threshold = 0.3     # 0.0 = sangat sensitif, 1.0 = hard cut only
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VECTOR DB + RAG — Long-term viral moment memory (Supabase pgvector)
+# ─────────────────────────────────────────────────────────────────────────────
+# Momen yang dianalisis disimpan ke Supabase PostgreSQL. Sebelum analisis
+# berikutnya, momen serupa di-retrieve dan diinjeksikan sebagai referensi LLM.
+#
+# Requires: CLIPPER_SUPABASE_URL env var
+# Setup:    Jalankan SQL di BLUEPRINT.md untuk buat tabel + index.
+# ─────────────────────────────────────────────────────────────────────────────
+[vector_db]
+enabled              = true
+retrieval_count      = 3      # past moments yang di-retrieve per analisis
+similarity_threshold = 0.65   # cosine similarity cutoff (0=semua, 1=identik)
+
+# ── Embedding provider ────────────────────────────────────────────────────────
+# Provider: gemini | novita | openai | vllm
+#
+# gemini  — Gemini text-embedding-004, 768 dims, gratis
+#            Requires: CLIPPER_GEMINI_API_KEY
+#
+# novita  — Qwen3-Embedding-8B via Novita AI, 4096 dims
+#            Requires: CLIPPER_NOVITA_API_KEY (atau CLIPPER_EMBED_API_KEY)
+#            URL/model dari novita_base_url/novita_model di [llm] (bisa di-override)
+#
+# openai  — OpenAI text-embedding-3-small/large, 1536/3072 dims
+#            Requires: CLIPPER_OPENAI_API_KEY (atau CLIPPER_EMBED_API_KEY)
+#
+# vllm    — model embedding self-hosted (OpenAI-compatible)
+#            Requires: CLIPPER_VLLM_API_KEY (opsional)
+#
+# PENTING: Dimensi kolom `embedding` di Supabase harus sesuai model.
+#   Gemini  → vector(768)   |   Novita/Qwen3 → vector(4096)
+#   OpenAI-small → vector(1536)   |   OpenAI-large → vector(3072)
+embed_provider = "novita"
+embed_base_url = ""                          # kosong = pakai novita_base_url dari [llm]
+embed_model    = "qwen/qwen3-embedding-8b"   # kosong = default per provider
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STYLE PROFILES — Named editing style presets
+# ─────────────────────────────────────────────────────────────────────────────
+# --style-profile <name> untuk apply preset ke semua clip dalam satu run.
+# "auto" = LLM pilih sendiri per clip (default, paling adaptif).
+# Run `clipper trend-analyze` untuk auto-generate profile dari video trending.
+# ─────────────────────────────────────────────────────────────────────────────
+[styles]
+default_profile = "auto"
+
+[styles.profiles.tiktok_id_2025]
+description    = "TikTok Indonesia 2025: high energy, CapCut bold subtitles, flash cuts"
+subtitle_style = "capcut_bold"
+clip_style     = "flash"
+sfx_vibe       = "impact"
+bgm_vibe       = "upbeat"
+overlay_style  = "sticker"
+
+[styles.profiles.yt_edu]
+description    = "YouTube Shorts educational: clean, minimal, professional"
+subtitle_style = "minimal_white"
+clip_style     = "fade"
+sfx_vibe       = "ding"
+bgm_vibe       = "lofi"
+overlay_style  = "pip"
+
+[styles.profiles.drama]
+description    = "Drama/controversy: word-pop subtitles, flash cuts, cinematic BGM"
+subtitle_style = "word_pop"
+clip_style     = "flash"
+sfx_vibe       = "impact"
+bgm_vibe       = "cinematic"
+overlay_style  = "fullscreen"
+
+[styles.profiles.inspirational]
+description    = "Inspirational: smooth transitions, clean subtitles, inspirational BGM"
+subtitle_style = "minimal_white"
+clip_style     = "smooth"
+sfx_vibe       = "whoosh"
+bgm_vibe       = "inspirational"
+overlay_style  = "pip"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INGEST — Video download
+# ─────────────────────────────────────────────────────────────────────────────
 [ingest]
 ytdlp_path = "yt-dlp"
-# Download best video + best audio and merge. --merge-output-format mp4 in code forces MP4 output.
-# This is permissive: works for YouTube AV1, VP9, H.264, and all other platforms.
-format     = "bestvideo+bestaudio/best"
+format     = "bestvideo+bestaudio/best"   # works for YouTube, TikTok, dll.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OVERLAY — TikTok/YouTube Shorts meme insert (opt-in)
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM generate search query + timing per clip. Edit stage download clip pendek
+# via yt-dlp dan insert sebagai full-frame cut-away. Tidak butuh API key.
+# ─────────────────────────────────────────────────────────────────────────────
+[overlay]
+enabled             = true
+ytdlp_path          = "yt-dlp"         # kosong = inherit dari ingest.ytdlp_path
+cache_dir           = "overlay_cache"  # clip di-cache berdasarkan query hash
+max_duration        = 8.0              # max detik yang di-download per overlay
+fallback_to_youtube = true             # fallback ke YouTube Shorts jika TikTok gagal
+max_variants        = 3               # N variant per query, rotate by clip index
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ASSETS — SFX & BGM auto-selection
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM pilih "vibe" label per clip. Tabel ini map vibe → filename.
+# File yang tidak ada di-skip tanpa error.
+#
+# SFX vibes:  impact | whoosh | ding | comedy | none
+# BGM vibes:  lofi | upbeat | cinematic | inspirational | none
+#
+# Override global per-run:
+#   --sfx ./sfx/custom.mp3   (override LLM choice untuk semua clip)
+#   --bgm ./bgm/custom.mp3   (override LLM choice untuk semua clip)
+# ─────────────────────────────────────────────────────────────────────────────
+[assets]
+sfx_dir   = "sfx"
+bgm_dir   = "bgm"
+# Beat sync: SFX snap ke downbeat BGM + duck BGM saat ada suara.
+# BPM dibaca dari metadata audio; fallback: lofi=85, upbeat=128, cinematic=100, inspirational=110
+beat_sync = true
+
+[assets.sfx]
+impact  = "impact-hit.mp3"
+whoosh  = "whoosh-swipe.mp3"
+ding    = "notification.mp3"
+comedy  = "vine-boom.mp3"
+none    = ""
+
+[assets.bgm]
+lofi          = "lofi-chill.mp3"
+upbeat        = "upbeat-pop.mp3"
+cinematic     = "epic-cinematic.mp3"
+inspirational = "inspiring-piano.mp3"
+none          = ""

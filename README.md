@@ -1,199 +1,115 @@
-# CLIPPER
+# CLIPPER - AI-Powered Short-Form Video Strategist
 
-GPU-accelerated viral video clipping and editing automation. Takes a YouTube URL and produces polished short-form clips (9:16 vertical, 16:9, or 1:1) with word-level karaoke subtitles, driven by an LLM that identifies the best moments.
+CLIPPER is a Rust-based CLI tool that automates the creation of short-form videos (TikTok, Reels, Shorts) from long-form content. It uses advanced AI to analyze viral potential, create powerful hooks, and perform automated video editing using FFmpeg.
 
+## ✨ Key Features
+
+- **AI Viral Analysis:** Uses LLMs to detect the most viral-worthy moments.
+- **Hook & Headline Generator:** Automatically creates a 3-second opening hook and a "news-ticker" style headline.
+- **Smart Overlay Content:** Automatically searches and downloads memes/B-roll from TikTok/YouTube.
+- **Advanced Subtitles:** Supports various subtitle styles (Karaoke, CapCut Bold, Word Pop) with beat-aligned animations.
+- **RAG (Retrieval-Augmented Generation):** Learns from past clip performance using Supabase.
+- **YouTube Integration:** Supports automatic downloading and usage of native YouTube transcripts.
+
+---
+
+## 💻 CLI Commands
+
+### 1. `run` (Main Pipeline)
+Processes a video from start to finish.
+```bash
+clipper run <URL_OR_PATH> [OPTIONS]
 ```
-[YouTube URL]
-     │
-     ▼
-1. INGEST      → yt-dlp              → Local .mp4
-     │
-     ▼
-2. TRANSCRIBE  → Groq Whisper API    → transcript.json (word-level timestamps)
-               → (or local whisper.cpp with CUDA)
-     │
-     ▼
-3. ANALYZE     → Groq / OpenAI / Ollama LLM  → moments.json
-     │
-     ▼
-4. EDIT        → FFmpeg + NVENC      → clip_000_*.mp4, clip_001_*.mp4 …
-     │
-     ▼
-[Short Video Output (.mp4) with burned subtitles]
+- `<URL_OR_PATH>`: YouTube URL or local video file path.
+- `--max-clips <N>`: Maximum viral moments to extract (default: 3).
+- `--provider <NAME>`: LLM provider: `claude`, `gemini`, `openai`, `groq`, `ollama`, `vllm`.
+- `--layout <TYPE>`: Video layout: `portrait` (9:16), `square` (1:1), `landscape` (16:9).
+- `--focus <KEYWORDS>`: Comma-separated keywords to prioritize during analysis.
+- `--resume <JOB_ID>`: Resume a failed or partial job.
+
+### 2. `vocab` (Knowledge Management)
+Manage the vocabulary and keywords used for analysis.
+```bash
+clipper vocab <SUBCOMMAND>
+```
+- `seed defaults`: Populate the database with default viral keywords.
+- `list <CATEGORY>`: List words in a category (e.g., `tone_funny`, `energy_high`).
+- `add <CATEGORY> <WORD>`: Manually add a new word to the cache.
+- `review`: Interactive review of auto-suggested candidate words.
+- `stats`: Show database connection status and word counts.
+
+### 3. `thumbnail`
+Regenerate thumbnails for an existing job.
+```bash
+clipper thumbnail --job-id <ID>
 ```
 
 ---
 
-## Prerequisites
+## ⚙️ Configuration (`config.toml`)
 
-### Required
+The `config.toml` file controls the default behavior of the pipeline.
 
-| Tool | Install |
-|------|---------|
-| **Rust** 1.85+ | `winget install Rustlang.Rustup` |
-| **yt-dlp** | `winget install yt-dlp.yt-dlp` |
-| **API Keys** | Groq, OpenAI, Gemini, or Claude |
+```toml
+[analyze]
+provider = "claude"        # Default LLM provider
+max_clips = 3              # Default number of clips
+vision_enabled = true      # Enable frame analysis for better context
 
-FFmpeg is managed automatically by `ffmpeg-sidecar` — no manual install needed.
+[edit]
+font_dir = "fonts"         # Path to TTF/OTF files
+headline_dur = 4.0         # How many seconds to show the headline
+bgm_volume = 0.12          # Background music volume (0.0 to 1.0)
 
-### Optional (for local GPU transcription)
+[overlay]
+enabled = true             # Enable TikTok/YouTube meme inserts
+max_duration = 8.0         # Max length of an overlay clip
+max_variants = 3           # How many different clips to try per query
+fallback_to_youtube = true # Use YouTube Shorts if TikTok fails
 
-| Tool | Notes |
-|------|-------|
-| **CUDA Toolkit 12.x** | [developer.nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads) |
-| **LLVM / Clang** | `winget install LLVM.LLVM` — required for `whisper-rs` bindgen |
-| **Whisper ggml model** | Download instructions below |
-
----
-
-## Quick Start
-
-### 1. Configure API keys
-
-```powershell
-# Copy the example and fill in your keys
-Copy-Item .env.example .env
-# Edit .env and set CLIPPER_GROQ_API_KEY
-```
-
-Or set directly in your shell:
-
-```powershell
-$env:CLIPPER_GROQ_API_KEY = "your_key_here"
-```
-
-### 2. Build
-
-```powershell
-# Standard build (Groq API for transcription — no CUDA required)
-cargo build --release
-
-# GPU build (local Whisper with CUDA — requires LLVM + CUDA Toolkit)
-cargo build --release --features cuda
-```
-
-### 3. Run the full pipeline
-
-```powershell
-.\target\release\clipper.exe run "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+[vector_db]
+enabled = true             # Enable RAG (Retrieval-Augmented Generation)
+min_similarity = 0.75      # Threshold for matching past successful clips
 ```
 
 ---
 
-## Usage
+## 🔐 Environment Variables (`.env`)
 
-### Full pipeline
+Used for API keys and database credentials.
 
-```
-clipper run <URL> [OPTIONS]
-
-Options:
-  -o, --output-dir <DIR>      Output directory [default: ./output]
-      --provider <name>       groq | openai | ollama [default: groq]
-      --model <SIZE>          Whisper model size [default: medium]
-      --max-clips <N>         Number of clips to produce [default: 3]
-      --layout <LAYOUT>       vertical | horizontal | square [default: vertical]
-      --resume <JOB_ID>       Resume a previously interrupted job
-```
-
-### Individual stages
-
-```powershell
-# Stage 1: Download
-clipper ingest "https://youtu.be/..." --output-dir ./output
-
-# Stage 2: Transcribe (uses Groq API by default)
-clipper transcribe ./output/.clipper/<job_id>/source/video.mp4
-
-# Stage 3: Find viral moments
-clipper analyze ./output/.clipper/<job_id>/transcribe/transcript.json --max-clips 3
-
-# Stage 4: Render clips
-clipper edit ./source.mp4 ./moments.json ./transcript.json --layout vertical
-```
-
-### Resume an interrupted pipeline
-
-If the pipeline fails mid-way (e.g. network error during analysis), resume from where it stopped:
-
-```powershell
-clipper run "https://youtu.be/..." --resume 550e8400-e29b-41d4-a716-446655440000
-```
+| Variable | Description |
+| :--- | :--- |
+| `CLIPPER_CLAUDE_API_KEY` | Anthropic API Key |
+| `CLIPPER_GEMINI_API_KEY` | Google AI Studio API Key |
+| `CLIPPER_OPENAI_API_KEY` | OpenAI API Key |
+| `CLIPPER_GROQ_API_KEY` | Groq API Key (Fastest for Whisper/Llama) |
+| `CLIPPER_SUPABASE_URL` | PostgreSQL connection string for RAG |
+| `CLIPPER_EMBED_API_KEY` | (Optional) API key for embeddings if different from LLM |
+| `FFMPEG_PATH` | (Optional) Custom path to FFmpeg binary |
 
 ---
 
-## Output Structure
+## 🗄 RAG Database Schema
 
-```
-output/
-└── .clipper/
-    └── <job_id>/
-        ├── state.json                   # Pipeline state (enables resume)
-        ├── source/
-        │   ├── <video_id>.mp4           # Downloaded video
-        │   └── audio.wav                # 16kHz mono for transcription
-        ├── transcribe/
-        │   └── transcript.json          # Word-level timestamps
-        ├── analyze/
-        │   └── moments.json             # Viral moment list from LLM
-        └── clips/
-            ├── clip_000_<title>.ass     # ASS subtitle file
-            └── clip_000_<title>.mp4     # Final rendered clip
+If you enable RAG, run this in your Supabase SQL Editor:
+```sql
+ALTER TABLE viral_moments 
+ADD COLUMN headline TEXT,
+ADD COLUMN clip_style TEXT,
+ADD COLUMN sfx_vibe TEXT,
+ADD COLUMN bgm_vibe TEXT,
+ADD COLUMN subtitle_style TEXT,
+ADD COLUMN overlay_style TEXT,
+ADD COLUMN overlay_position TEXT,
+ADD COLUMN sfx_at_sec DOUBLE PRECISION;
 ```
 
 ---
+## 📄 License & Copyright
 
-## Local Whisper Setup (optional, GPU-accelerated)
+Copyright (c) 2026 CLIPPER. **All Rights Reserved.**
 
-If you want faster, offline transcription without API costs:
+This software is **Proprietary**. Unauthorized copying, modification, or distribution of this software via any medium is strictly prohibited. For licensing inquiries, please contact the owner.
 
-### 1. Install prerequisites
-
-```powershell
-# Install LLVM (required for bindgen)
-winget install LLVM.LLVM
-
-# Install CUDA Toolkit 12.x from:
-# https://developer.nvidia.com/cuda-downloads
-```
-
-### 2. Automatic Model Download
-
-Clipper will automatically download the required Whisper model (from HuggingFace) on its first run if it's missing from the `models/` directory.
-
-### 3. Build with CUDA
-
-```powershell
-.\build_cuda.bat
-```
-
----
-
-## Configuration
-
-Edit `config.toml` to adjust defaults. Never put API keys there — use environment variables:
-
-```
-CLIPPER_GROQ_API_KEY=...
-CLIPPER_OPENAI_API_KEY=...
-RUST_LOG=clipper=debug    # verbose logging
-```
-
----
-
-## Subtitle Style
-
-Clips include word-level karaoke subtitles:
-- **White bold** text for the sentence
-- **Yellow highlighted** text for the currently spoken word
-- Bottom-center alignment, Arial 52pt with black outline
-- Burned in via FFmpeg ASS filter
-
----
-
-## GPU Encoding
-
-Video is encoded with `h264_nvenc` (NVIDIA GPU encoder) by default:
-- Much faster than CPU `libx264`
-- Comparable quality at the same bitrate
-- Set `nvenc = false` in `config.toml` to fall back to CPU encoding
+Built with ❤️ for content creators.

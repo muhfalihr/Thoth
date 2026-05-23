@@ -12,7 +12,7 @@ use crate::analyze::AnalyzeService;
 use crate::cli::{LlmProviderName, OutputLayout as CliLayout, WhisperModelSize};
 use crate::config::AppConfig;
 use crate::edit::layout::OutputLayout;
-use crate::edit::EditService;
+use crate::edit::{AudioOptions, EditService};
 use crate::ingest::IngestService;
 use crate::transcribe::TranscribeService;
 use crate::util::fs::ensure_dir;
@@ -37,7 +37,11 @@ impl<'a> PipelineRunner<'a> {
         model: &WhisperModelSize,
         max_clips: usize,
         layout: &CliLayout,
-        resume_id: Option<&str>,
+        focus_keywords: &[String],
+        audio_opts: &AudioOptions,
+        social_name:        &str,
+        resume_id:          Option<&str>,
+        style_profile_name: &str,
     ) -> Result<Vec<std::path::PathBuf>> {
         ensure_dir(output_dir)?;
 
@@ -69,14 +73,16 @@ impl<'a> PipelineRunner<'a> {
         }
 
         // Clone fields out of ingest result before further borrows
-        let video_path = state.stages.ingest.as_ref().unwrap().video_path.clone();
-        let video_title = state.stages.ingest.as_ref().unwrap().title.clone();
-        let video_duration = state.stages.ingest.as_ref().unwrap().duration_secs;
+        let ingest = state.stages.ingest.as_ref().unwrap();
+        let video_path    = ingest.video_path.clone();
+        let video_title   = ingest.title.clone();
+        let video_channel = ingest.channel.clone();
+        let video_duration = ingest.duration_secs;
 
         // ── Stage 2: Transcribe ──────────────────────────────────────────
         if state.stages.transcribe.is_none() {
             stage_header(2, 4, "Transcribe  (Groq Whisper API)");
-            info!("  Video : \"{}\"  ({:.0}s)", video_title, video_duration);
+            info!("  Video   : \"{}\"  ({:.0}s)", video_title, video_duration);
             let svc = TranscribeService::new(self.config, &job);
             let result = svc.run(&video_path, &model.to_string()).await?;
             state.stages.transcribe = Some(result);
@@ -90,7 +96,13 @@ impl<'a> PipelineRunner<'a> {
             stage_header(3, 4, &format!("Analyze  ({} LLM)", provider));
             let svc = AnalyzeService::new(self.config, &job);
             let result = svc
-                .run(&job.transcript_path(), &provider.to_string(), max_clips)
+                .run(
+                    &job.transcript_path(),
+                    &provider.to_string(),
+                    max_clips,
+                    focus_keywords,
+                    Some(&video_path),   // enables visual frame analysis
+                )
                 .await?;
             state.stages.analyze = Some(result);
             state.save(&job.state_path())?;
@@ -103,12 +115,17 @@ impl<'a> PipelineRunner<'a> {
             stage_header(4, 4, &format!("Edit  (FFmpeg {layout} clips)"));
             let svc = EditService::new(self.config, &job);
             let out_layout = OutputLayout::from(layout);
+
             let result = svc
                 .run(
                     &video_path,
                     &job.moments_path(),
                     &job.transcript_path(),
                     &out_layout,
+                    audio_opts,
+                    &video_channel,
+                    social_name,
+                    style_profile_name,
                 )
                 .await?;
             state.stages.edit = Some(result);

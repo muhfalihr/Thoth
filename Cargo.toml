@@ -40,6 +40,10 @@ walkdir            = "2"
 chrono             = { version = "0.4",  features = ["serde"] }
 hound              = "3"
 async-trait        = "0.1"
+base64             = "0.22"
+md5                = "0.7"
+sqlx               = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
+pgvector           = { version = "0.4", features = ["sqlx"] }
 
 # Optional: local GPU-accelerated Whisper via whisper.cpp
 whisper-rs = { version = "0.16", optional = true }

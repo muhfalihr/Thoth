@@ -1,3 +1,4 @@
+pub mod beat_detect;
 pub mod fs;
-pub mod progress;
 pub mod ffmpeg;
+pub mod progress;

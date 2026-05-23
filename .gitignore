@@ -5,3 +5,5 @@ models/
 *.mp4
 *.wav
 *.ass
+*.exe
+test/
