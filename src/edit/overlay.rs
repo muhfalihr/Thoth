@@ -115,9 +115,16 @@ pub struct OverlaySpec {
 
 /// Download (or serve from cache) a short overlay clip matching `query`.
 ///
+/// Download strategy (tried in order):
+///   1. **Stealth scraper** (when `cfg.scraper_enabled`): fetches TikTok / YouTube
+///      search pages with Chrome-fingerprint headers, extracts direct video URLs
+///      pre-ranked by view count, passes them straight to yt-dlp — 3–5× faster
+///      than a blind yt-dlp search and picks the most-viral matching clip.
+///   2. **yt-dlp TikTok search** (fallback): existing `ytsearch`/TikTok URL approach.
+///   3. **yt-dlp YouTube Shorts** (final fallback, when `cfg.fallback_to_youtube`).
+///
 /// Downloads up to `cfg.max_variants` different clips per query and selects
-/// one based on `variant_index % max_variants` — guaranteeing variety across
-/// clips even when the same query is reused.
+/// one based on `variant_index % max_variants`.
 ///
 /// Cache layout: `{cache_dir}/{md5(query)}_{0,1,2}.mp4`
 ///
@@ -143,7 +150,30 @@ pub async fn fetch_overlay_clip(
 
     let max_variants = cfg.max_variants.max(1) as usize;
 
-    // ── Ensure all variants are downloaded ───────────────────────────────────
+    // ── Stage 1: stealth scraper — resolve ranked direct URLs ─────────────────
+    // The scraper fetches TikTok / YouTube search pages with Chrome-matched TLS
+    // and headers, parses embedded JSON for video IDs, and returns direct URLs
+    // sorted by view count.  yt-dlp then downloads a specific URL instead of
+    // running a search query — much faster and higher quality.
+    let scraped: Vec<String> = if cfg.scraper_enabled {
+        let results = crate::scraper::resolve_overlay_urls(
+            query,
+            max_variants,
+            (cfg.max_duration * 1.5) as u32,
+        ).await;
+        if !results.is_empty() {
+            info!(
+                "overlay: scraper resolved {} URL(s) for '{query}' (top: {} views)",
+                results.len(),
+                results.first().map(|r| r.view_count).unwrap_or(0)
+            );
+        }
+        results.into_iter().map(|r| r.url).collect()
+    } else {
+        Vec::new()
+    };
+
+    // ── Stage 2: download each variant (scraped URL → yt-dlp search fallback) ─
     let mut downloaded_count = 0usize;
     for idx in 0..max_variants {
         let dest = cache_path_variant(&cfg.cache_dir, query, idx);
@@ -154,25 +184,39 @@ pub async fn fetch_overlay_clip(
 
         // Only download if we haven't already hit a failure for this query
         if downloaded_count == 0 && idx > 0 {
-            // Previous variant failed to download — no point trying more
             break;
         }
 
         info!("overlay: downloading variant {}/{} for query '{query}'…", idx + 1, max_variants);
         let tmp_prefix = dest.with_extension(format!("tmp{idx}"));
 
-        let tiktok_url = format!(
-            "https://www.tiktok.com/search?q={}&type=video",
-            urlencoded(query)
-        );
+        // ── 2a. Scraped direct URL (fastest, view-count ranked) ───────────────
+        let downloaded = if let Some(direct_url) = scraped.get(idx) {
+            info!("overlay: direct URL download ({direct_url})");
+            download_clip_direct(
+                ytdlp_path, direct_url, &tmp_prefix,
+                cfg.max_duration, ffmpeg_dir, idx,
+            ).await
+        } else {
+            false
+        };
 
-        // Download with a playlist playlist offset so each variant gets a different result
-        let ok = download_clip_variant(
-            ytdlp_path, &tiktok_url, &tmp_prefix,
-            cfg.max_duration, ffmpeg_dir, "TikTok", idx,
-        ).await;
+        // ── 2b. yt-dlp TikTok search fallback ────────────────────────────────
+        let downloaded = if !downloaded {
+            let tiktok_url = format!(
+                "https://www.tiktok.com/search?q={}&type=video",
+                urlencoded(query)
+            );
+            download_clip_variant(
+                ytdlp_path, &tiktok_url, &tmp_prefix,
+                cfg.max_duration, ffmpeg_dir, "TikTok", idx,
+            ).await
+        } else {
+            downloaded
+        };
 
-        if !ok && cfg.fallback_to_youtube {
+        // ── 2c. yt-dlp YouTube Shorts final fallback ──────────────────────────
+        if !downloaded && cfg.fallback_to_youtube {
             info!("overlay: TikTok failed, trying YouTube Shorts (variant {idx})…");
             download_clip_variant(
                 ytdlp_path,
@@ -184,11 +228,10 @@ pub async fn fetch_overlay_clip(
         if let Some(raw) = find_downloaded(&tmp_prefix) {
             if trim_clip(&raw, &dest, cfg.max_duration, ffmpeg_dir).await.is_ok() {
                 let _ = tokio::fs::remove_file(&raw).await;
-                downloaded_count += 1;
             } else {
                 let _ = tokio::fs::rename(&raw, &dest).await;
-                downloaded_count += 1;
             }
+            downloaded_count += 1;
         }
     }
 
@@ -429,8 +472,56 @@ fn urlencoded(s: &str) -> String {
         .collect()
 }
 
-/// Download a single overlay clip, using `variant_idx` as a playlist offset
-/// so successive calls with idx=0,1,2 get different results from the same search.
+/// Download a clip from a DIRECT URL (resolved by the stealth scraper).
+///
+/// Unlike `download_clip_variant` which runs a search query inside yt-dlp,
+/// this function passes a specific video URL so yt-dlp downloads immediately
+/// without an extra search round-trip.
+async fn download_clip_direct(
+    ytdlp:       &str,
+    url:         &str,
+    out_prefix:  &Path,
+    max_dur:     f64,
+    ffmpeg_dir:  &str,
+    variant_idx: usize,
+) -> bool {
+    let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
+
+    let (bin, args) = crate::ingest::YtDlpArgs::new(ytdlp)
+        .quiet()
+        .no_playlist()
+        .format("mp4/bestvideo[height<=1920]+bestaudio/best")
+        .merge_mp4()
+        .max_duration(((max_dur * 1.5) as u64).min(300))
+        // SKILL.md §1A — lighter retry count for overlay (non-critical path)
+        .resilience(3, 3, 1, 20)
+        // SKILL.md §1B — YouTube client fallback for YouTube URLs
+        .youtube_client_fallback(url)
+        // SKILL.md §2A — filename safety on Windows
+        .windows_safe()
+        .ffmpeg_dir(ffmpeg_dir)
+        .output(&template)
+        .url(url)
+        .build();
+
+    debug!("overlay: yt-dlp direct[v{variant_idx}] {url}");
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        tokio::process::Command::new(&bin)
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(),
+    ).await;
+
+    matches!(result, Ok(Ok(s)) if s.success())
+}
+
+/// Download a single overlay clip via yt-dlp search query.
+///
+/// Uses `max_downloads(1)` so yt-dlp picks the first result matching the
+/// duration filter — successive variants rotate at the call site.
 async fn download_clip_variant(
     ytdlp:       &str,
     url:         &str,
@@ -442,29 +533,31 @@ async fn download_clip_variant(
 ) -> bool {
     let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
 
-    let mut args = vec![
-        // We allow playlist/search results so yt-dlp can find the first clip that matches 
-        // the duration filter if the first few are too long.
-        "--max-downloads".to_owned(), "1".to_owned(),
-        "--quiet".to_owned(),
-        "--format".to_owned(), "mp4/bestvideo[height<=1920]+bestaudio/best".to_owned(),
+    let (bin, args) = crate::ingest::YtDlpArgs::new(ytdlp)
+        // Allow search results; max_downloads(1) picks first matching clip
+        .max_downloads(1)
+        .quiet()
+        .format("mp4/bestvideo[height<=1920]+bestaudio/best")
+        .merge_mp4()
         // Allow videos up to 1.5× max_duration (safety margin) but cap at 300s
-        "--match-filter".to_owned(), format!("duration <= {}", ((max_dur * 1.5) as u64).min(300)),
-        "--output".to_owned(), template,
-        "--retries".to_owned(), "2".to_owned(),
-        "--js-runtimes".to_owned(), "deno".to_owned(),
-    ];
-    if !ffmpeg_dir.is_empty() {
-        args.push("--ffmpeg-location".to_owned());
-        args.push(ffmpeg_dir.to_owned());
-    }
-    args.push(url.to_owned());
+        .max_duration(((max_dur * 1.5) as u64).min(300))
+        // SKILL.md §1A — lighter retry count for overlay (non-critical path)
+        .resilience(3, 3, 1, 20)
+        // SKILL.md §1B — YouTube client fallback for YouTube URLs
+        .youtube_client_fallback(url)
+        // SKILL.md §2A — filename safety on Windows
+        .windows_safe()
+        .js_runtimes()
+        .ffmpeg_dir(ffmpeg_dir)
+        .output(&template)
+        .url(url)
+        .build();
 
     debug!("overlay: yt-dlp {label}[v{variant_idx}] args: {:?}", args);
 
     let result = tokio::time::timeout(
         Duration::from_secs(60),
-        tokio::process::Command::new(ytdlp)
+        tokio::process::Command::new(&bin)
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

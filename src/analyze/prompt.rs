@@ -106,6 +106,30 @@ Every great short-form clip has this structure:
 Clips that end mid-thought are ABANDONED. Clips that end with a bang get REPLAYED.
 Select moments where the natural conversation arc completes within the clip.
 
+COMPLETENESS CHECK — before setting end_sec, verify all 4:
+  □ The speaker has stated their CONCLUSION, not just the premise
+  □ The last transcript line at end_sec ends the sentence (not trailing with a conjunction)
+  □ A viewer who stops at end_sec received the COMPLETE point — nothing feels cut off
+  □ The clip works standalone — someone who never saw the full video will understand it
+
+INTRO FILTER — reject any moment where start_sec is in the video's opening segment:
+  • Host introducing themselves, the show, or a guest
+  • Greeting the audience ("Halo semua", "Assalamualaikum", "Welcome back")
+  • "Saya undang…" / "Kita sambut…" / "Tepuk tangan untuk…" / "Hadir bersama kita…"
+  • Audience/panelist naming roll-call, show format explanation
+  • Opening small talk before the substantive topic is reached
+  The first real viral moment is ALWAYS after these formalities are done.
+  ⚠️  LIVE RECORDINGS: the actual event may start mid-video (e.g. t=400s).
+  If the transcript shows "Selamat malam mahasiswa", "Tepuk tangan buat [Name]",
+  "[musik]", or a guest roll-call ("Ada X... Ada Y... Ada Z...") at any timestamp —
+  SKIP THAT SEGMENT. It is ceremony content, not substance.
+
+INTERVIEW / PANEL RULE — in a host-guest format, always clip the ANSWER, not the question:
+  • If the host asks "Apa pandangan Anda tentang X?" → the clip must include the GUEST'S
+    answer, not just the question. A clip that ends at the question mark delivers nothing.
+  • set start_sec to where the guest BEGINS their answer, set end_sec where they FINISH it.
+  • Exception: a rhetorical question the speaker immediately answers themselves is fine.
+
 ═══════════════════════════════════════════════════════════════
 RULE 3 — VIRAL TYPES (8 universal mechanisms)
 ═══════════════════════════════════════════════════════════════
@@ -148,7 +172,9 @@ Keep the title under 60 characters. Punchy. Specific. Creates a gap the viewer m
 RULE 4b — HEADLINE FIELD (on-screen visual overlay text)
 ═══════════════════════════════════════════════════════════════
 The `headline` is burned onto the video as a news-ticker lower-third, shown in ALL CAPS
-for the first 4 seconds. Max 44 characters (wraps into 2 lines of ~22 chars).
+for the first 4 seconds. HARD LIMIT: 44 chars (2 lines of ~22 chars).
+⚠️  If you exceed 44 chars, the server TRUNCATES mid-sentence and words are LOST.
+Count before writing. 44 = roughly 4–6 short words.
 
 THE GOLDEN RULE: Write what a sharp editor would PULL FROM the transcript — not what an
 AI would generate. The best headline is the speaker's own most powerful line, condensed.
@@ -159,6 +185,22 @@ HOW TO WRITE IT — 3 steps:
   2. Condense it to its core — strip filler words, keep the emotional punch.
   3. Keep the speaker's natural register (gue/lo? pak/bu? English? mixed? match it).
 
+QUOTE FIRST — scan the transcript before paraphrasing:
+  If the speaker's own words are already punchy → copy them VERBATIM (only strip fillers).
+  The speaker's raw words are ALWAYS more credible than a paraphrase.
+
+  Transcript: "Investor akan berkata 'selamat tinggal, dasar jalang!'"
+  ✗ WRONG: "INVESTOR TOLAK INVESTASI KARENA RISIKO" ← describes the situation (22 words down to a label)
+  ✓ RIGHT: "SELAMAT TINGGAL, DASAR JALANG!"         ← what the speaker literally shouted (32 chars) ✓
+
+  Transcript: "Anda tidak bisa memastikan 100% bahwa perusahaan itu untung"
+  ✗ WRONG: "TIDAK BISA MEMASTIKAN KEUNTUNGAN 100%"  ← paraphrase, sounds formal, loses voice
+  ✓ RIGHT: "NGGAK BISA 100% YAKIN"                  ← condensed, speaker's register (21 chars) ✓
+
+  ⚠️ NEVER sanitize informal or harsh language.
+  "dasar jalang", "goblok", "gila sih", "anjir", "banget", "brengsek" — KEEP THEM.
+  These words are WHY the audience shares the clip. Cleaning them up kills the authenticity.
+
 WHAT MAKES IT FEEL HUMAN (do these):
   ✓ Specific details from the content: "RUGI 2 MILYAR DI USIA 27" not "RUGI BESAR"
   ✓ The speaker's own vocabulary — if they say "goblok" or "gila sih", you can use it
@@ -168,6 +210,8 @@ WHAT MAKES IT FEEL HUMAN (do these):
   ✓ Contrast or flip: "KERJA KERAS BUKAN JAWABANNYA"
 
 WHAT MAKES IT FEEL AI-GENERATED (never do these):
+  ✗ Describing what happened instead of quoting the speaker:
+      transcript: "selamat tinggal, dasar jalang!" → you wrote: "INVESTOR MENOLAK RISIKO"
   ✗ Generic shock phrases: "FAKTA MENGEJUTKAN", "RAHASIA TERUNGKAP", "YANG MEREKA SEMBUNYIKAN"
   ✗ Template fills: "INILAH [NOUN] YANG [VERB]", "TERNYATA SELAMA INI KITA [VERB]"
   ✗ Over-broad claims: "INI MENGUBAH SEGALANYA", "HIDUP TIDAK AKAN SAMA LAGI"
@@ -187,6 +231,9 @@ GOOD vs BAD (same clip, different write):
 
   ✗ AI:     "INILAH CARA MERAIH KEBEBASAN FINANSIAL" ← motivational poster
   ✓ Human:  "RESIGN TANPA TABUNGAN, BEGINI RASANYA"  ← concrete, human experience
+
+  ✗ AI:     "INVESTOR TOLAK INVESTASI KARENA RISIKO" ← describes the scene, not the quote
+  ✓ Human:  "SELAMAT TINGGAL, DASAR JALANG!"         ← speaker's literal words, unfiltered ✓
 
 ═══════════════════════════════════════════════════════════════
 RULE 5 — PRODUCTION STYLE (clip_style, sfx_vibe, bgm_vibe)
@@ -263,82 +310,124 @@ A 4-line structure that works for ALL content types:
   Line 4 — HASHTAGS:        3–5 relevant tags. Mix broad (#motivation) + niche (#bisniskuliner).
 
 ═══════════════════════════════════════════════════════════════
-RULE 7 — OVERLAY STYLE & QUERY (overlay_style, overlay_query, overlay_at_sec, overlay_duration)
+RULE 7 — OVERLAY: B-ROLL, DATA VISUAL, OR RELEVANT FOOTAGE
 ═══════════════════════════════════════════════════════════════
-Each clip can have a short TikTok/viral video inserted as an overlay that emotionally
-amplifies the peak moment. Main audio continues throughout.
+Each clip can have a short PHOTO or VIDEO overlay (3–8 seconds) that VISUALLY PROVES
+or ILLUSTRATES what the speaker is saying at that exact moment.
 
-OVERLAY STYLES — pick the right one:
+GOAL: "Visual Evidence" — show the audience EXACTLY what is being talked about.
+The overlay must be searchable on TikTok / YouTube Shorts. Think news footage,
+data charts, on-location B-roll, or an expert specifically discussing THIS topic.
 
-  "sticker"    → A reaction face or meme character with GREENSCREEN background.
-                 System automatically keys out the green and places it as a sticker
-                 in the bottom-right corner. This is the #1 trending TikTok style.
-                 Use for: reaction faces, meme stickers, greenscreen templates
-                 Query examples: "shocked face greenscreen", "blinking surprised greenscreen",
-                                 "mind blown reaction greenscreen", "pointing sticker greenscreen"
+── ABSOLUTE RULE — NEVER USE GENERIC REACTIONS ─────────────────────────────────
 
-  "pip"        → A talking-head reaction WITHOUT greenscreen — shown as a small box
-                 in the corner (picture-in-picture / duet style).
-                 Use for: real reaction videos, person watching and reacting
-                 Query examples: "shocked reaction face", "person watching viral video",
-                                 "reaction video laughing"
+  ❌ BANNED QUERIES (NEVER use these or anything like them):
+     "shocked reaction face", "mind blown viral", "funny fail reaction"
+     "omg reaction", "kaget parah", "terkejut meme", "wow unbelievable"
+     Any query that describes an EMOTION or EXPRESSION instead of the TOPIC.
 
-  "fullscreen" → Full-frame cut-away — overlay covers entire screen for 3-4 seconds.
-                 Use for: B-roll footage, proof/data clips, dramatic visuals
-                 Query examples: "viral protest indonesia", "chart money going down",
-                                 "mind blown explosion"
+  These are content-free — they tell the viewer nothing about what was just said.
+  A clip about rupiah weakness does NOT need a shock-face. It needs a rupiah chart.
 
-  "auto"       → System auto-detects based on pixel analysis. Use when uncertain.
+── WHAT TO SEARCH FOR ───────────────────────────────────────────────────────────
 
-overlay_query (3-5 words — START with the main subject from the transcript):
-  ❌ WRONG: "shocked reaction viral" — too generic, matches ANY topic
-  ✅ RIGHT: "prabowo joget lucu" — person + funny context = specific and relevant
-  ✅ RIGHT: "dokter tirta marah viral" — person + reaction = specific
-  ✅ RIGHT: "crypto crash shocked reaction" — topic + reaction = specific
+  The overlay_query describes the SUBJECT MATTER, not a reaction to it.
 
-  RULE: Lead with the MAIN SUBJECT (person name or specific topic) from the clip.
-  The system will extract context keywords after LLM runs — but you should still
-  include the subject when you know it from the transcript.
+  Topic formula: [main subject] + [specific qualifier] + [content type if helpful]
 
-  Formula: [subject/person/topic] + [reaction emotion] + [style qualifier]
+  Speaker says...                         → overlay_query
+  ─────────────────────────────────────────────────────────
+  "rupiah melemah 20% terhadap dolar"     → "kurs rupiah dolar turun grafik 2024"
+  "IHSG anjlok kemarin"                   → "ihsg saham indonesia anjlok chart"
+  "inflasi naik 8 persen"                 → "inflasi harga pangan naik data chart"
+  "banjir melanda jakarta"                → "banjir jakarta aerial footage 2024"
+  "pabrik kena PHK massal"               → "pabrik buruh PHK massal berita"
+  "bitcoin naik 60 ribu dolar"           → "bitcoin price chart all time high"
+  "elon musk akuisisi twitter"           → "elon musk twitter acquisition press"
+  "vaksin covid efek samping"            → "vaksin covid berita efek samping"
+  "startup unicorn indonesia tutup"      → "startup indonesia bangkrut berita"
+  ─────────────────────────────────────────────────────────
+  For PHOTOS: append "foto" or "photo" to get image-style content.
+    → "rupiah dollar chart foto 2024"     ← gets a chart screenshot / infographic
+    → "demo buruh jakarta foto"           ← gets news photo from the protest
 
-  Public figure + funny context    → "[name] joget ketawa lucu viral"
-  Public figure + serious context  → "[name] pidato serius viral"  → also set overlay_style="sticker"
-  Topic + shock/revelation         → "[topic] shocked mind blown viral"
-  No clear subject (fallback):
-    emotional_trigger=humor        → "funny laugh reaction meme"
-    emotional_trigger=surprise     → "shocked face reaction viral"
-    emotional_trigger=fear         → "worried stressed reaction"
-    emotional_trigger=inspiration  → "success achievement celebration"
-    emotional_trigger=curiosity    → "explaining secret viral fact"
-    viral_type=controversy         → "controversial debate reaction shocked"
-    viral_type=educational_shock   → "mind blown reaction fact"
-    energy=high                    → add "viral 2025" to boost relevance
+── OVERLAY STYLE ────────────────────────────────────────────────────────────────
 
-overlay_position — WHERE in the frame to place the sticker/pip:
-  "bottom_right"   → default, most common TikTok position (avoids text/subtitle area)
-  "bottom_left"    → use when main subject is on the RIGHT side of frame
-  "top_right"      → use when lower frame is busy or subject looks upward
-  "top_left"       → use when subject looks right or content is at the bottom
-  "bottom_center"  → use for symmetrical framing or centered subjects
-  Rule: place overlay where it doesn't cover the main subject's face.
+  "fullscreen" → Full-frame cut-away. PRIMARY choice.
+                 Use when: the overlay IS the topic (a chart, footage, a location, data visual).
+                 Covers the full screen — best for: news clip, data chart, location B-roll.
 
-  Set overlay_query = "" (empty string) if no overlay suits this clip
-  (e.g., serious interview where a cut-away would feel jarring or disrespectful).
+  "pip"        → Small box in corner.
+                 Use when: an expert or known figure is SPECIFICALLY discussing this topic.
+                 NOT for generic reactions. Example: economist discussing THIS exact data.
 
-overlay_at_sec (float, seconds from clip start, NOT from video start):
-  The PEAK of the clip — the moment where the overlay has maximum impact.
-  → Shocking stat stated → right at that line
-  → Punchline landed → right as comedian delivers it
-  → Emotional confession → at the most vulnerable line
-  Default 5.0 if uncertain.
+  "sticker"    → Transparent greenscreen overlay.
+                 Use when: a specific logo, symbol, or icon is mentioned and has a greenscreen version.
+                 Example: "dollar sign animation greenscreen", "rupiah logo greenscreen"
+
+  "auto"       → Let the system detect via pixel analysis. Use when uncertain.
+
+── WHEN ↳ Visual: ANNOTATIONS ARE PRESENT — USE THEM FIRST ──────────────────────
+
+The transcript may contain ↳ Visual: lines produced by the vision system. These describe
+EXACTLY WHAT THE CAMERA WAS SHOWING at each timestamp. They are your HIGHEST-PRIORITY
+signal for choosing overlay_query and overlay_style — more precise than spoken words alone.
+
+HOW TO USE ↳ Visual: (3-step process):
+
+  Step 1 — Locate the ↳ Visual: line CLOSEST to your chosen overlay_at_sec.
+            overlay_at_sec is seconds from clip START, so the video timestamp ≈ start_sec + overlay_at_sec.
+            Scan the transcript for a ↳ Visual: line near that video timestamp.
+
+  Step 2 — Build overlay_query from BOTH the visual description AND the spoken topic:
+
+            SPOKEN: "inflasi naik 30 persen bulan ini"
+            ↳ Visual: [128s] presenter shows red bar chart, food price index up 30% on screen
+            → overlay_query: "red bar chart food price inflation percent"    ← DESCRIBES THE VISUAL
+
+            SPOKEN: "healing ke bali lagi viral di sosmed"
+            ↳ Visual: [205s] aerial drone view of rice terraces in Ubud at golden hour
+            → overlay_query: "ubud bali rice terrace aerial drone sunset"     ← MATCHES THE SCENE
+
+            SPOKEN: "saham IHSG anjlok kemarin sore"
+            ↳ Visual: [312s] trading floor, brokers at terminals, screens showing red graphs
+            → overlay_query: "stock market trading floor red charts brokers"  ← MATCHES THE EVENT
+
+            SPOKEN: "rupiah melemah 20 persen terhadap dolar"
+            ↳ Visual: [63s] presenter facing camera, plain white background
+            → overlay_query: "kurs rupiah dolar melemah chart 2024"           ← TOPIC-BASED
+              (presenter visual = no scene to match; build query from the spoken fact)
+
+  Step 3 — Choose overlay_style by reading WHAT the ↳ Visual: describes:
+            • "presenter" / "talking to camera" / "facing camera" / "host speaking"
+              (and no noteworthy scene behind them)                      → "pip"  (or "fullscreen" if topic-relevant)
+            • "chart" / "graph" / "data" / "screen shows" / "visualization"
+              / "percentage" / "statistics"                              → "fullscreen"
+            • "outdoor" / "aerial" / "drone" / "crowd" / "street" / "footage of [place]"
+              / "stadium" / "factory" / "event"                         → "fullscreen"
+            • Specific iconic object / logo / symbol mentioned on screen → "sticker"
+            • No ↳ Visual: annotation nearby → use "fullscreen" with topic-based query
+
+  RULE: When a ↳ Visual: line is present near overlay_at_sec, it OVERRIDES guesses from
+  spoken text alone. A clip about rupiah weakening needs "kurs rupiah dolar chart turun"
+  not just "pelemahan rupiah" — the query must lead to FINDABLE content.
+
+── WHEN NO ↳ Visual: ANNOTATION — DEFAULT QUERY STRATEGY ───────────────────────
+
+  Same formula: describe the TOPIC with specific nouns, not an emotion.
+  Always use "fullscreen" as default style unless it's clearly an expert talking.
+
+  WHEN TO SET overlay_query = "":
+  • The speaker is telling a personal story with no documentable subject.
+  • The moment is purely motivational with no concrete reference point.
+  • NO relevant footage, chart, or image could realistically exist for this topic.
+  Only set to "" if truly no relevant visual evidence exists. Most factual or news topics CAN find relevant footage.
+
+overlay_at_sec (float, seconds from clip start):
+  The exact moment the key fact or subject is mentioned. Sync the overlay to the word.
 
 overlay_duration (float):
-  How long the cut-away lasts.
-  3–5s   = quick reaction or meme sticker (default for most content)
-  10–30s = extended B-roll or highlight clip
-  60–120s = full segment replacement (when overlay.max_duration allows)
-  Default 4.0. Never exceed the overlay.max_duration setting in config.
+  Default 4.0. Use 5–8 for footage scenes that need time to register.
 
 ═══════════════════════════════════════════════════════════════
 CLIP SELECTION CRITERIA — WHAT TO PICK
@@ -359,6 +448,35 @@ STRONGLY AVOID:
   ✗ Overly niche moments only 1% of viewers relate to
   ✗ Clips that require prior context to make sense
   ✗ Moments where the speaker is rambling without a clear message
+
+  ── INTRO / CEREMONY CONTENT (never viral — skip these entirely) ────────
+  ✗ Host greeting or opening monologue — any segment before substantive discussion
+  ✗ Guest introduction or welcome: "Saya undang…", "Kita sambut…", "Mohon sambut…",
+    "Tepuk tangan untuk…", "Tepuk tangan buat…", "Hadir bersama kita…", "Bergabung bersama…"
+  ✗ Opening small talk: "Apa kabar Pak/Bu?", "Gimana kabar di [kota]?",
+    "Terima kasih sudah hadir", "Senang bisa ada di sini"
+  ✗ Audience or panelist introductions — naming who is in the room
+  ✗ Channel CTAs in the opening: subscribe, like, notifikasi, aktifkan bell
+  ✗ "Coming up in this episode" teasers — rapid highlights of what will be discussed
+  ✗ MID-VIDEO ceremony: live events start late → "Selamat malam mahasiswa", tepuk tangan
+    for a specific person, guest roll-call listing 3+ names, "[musik]" interlude.
+    These appear ANYWHERE in the transcript, not only at t=0. Skip them all.
+
+  ── INTERVIEW / PANEL — ANSWER, NOT QUESTION ──────────────────────────────
+  ✗ A clip that consists primarily of the HOST's question (e.g. "Apa pandangan Anda
+    tentang X setelah Y tahun?") without the GUEST'S substantive answer.
+    → Move start_sec forward to where the guest begins answering.
+    → A question clip delivers ZERO message to the viewer.
+
+  ── INCOMPLETE ENDINGS (leave the viewer hanging — never viral) ───────────
+  ✗ end_sec falls mid-sentence — the speaker is still talking at end_sec
+  ✗ The last word at end_sec is a connector/conjunction:
+    "yang", "dan", "atau", "tapi", "karena", "sehingga", "maka", "kalau",
+    "untuk", "dengan", "dari", "ke", "pada", "dalam", "itu", "ini"
+    → If the best moment ends at a connector, EXTEND end_sec until the speaker
+      finishes the complete thought (even if that means +5–10 seconds)
+  ✗ Speaker still in setup at end_sec — has not yet stated their conclusion
+  ✗ Clip ends on a list item mid-enumeration ("yang pertama… yang kedua…" but kedua is cut)
 
 ═══════════════════════════════════════════════════════════════
 CONTENT QUALITY SCORE — ASK THIS BEFORE PICKING
@@ -384,13 +502,26 @@ Hard constraints:
   - Return exactly {max_clips} moments
   - start_sec MUST be AFTER the "━━━ CONTENT STARTS HERE ━━━" marker if present in the transcript
     (everything before it is the video intro/teaser — never valid for a viral clip)
+  - If no marker is present, skip the first 10–15% of the video (intro zone) unless the video
+    is under 3 minutes and substantive content starts at t=0
+  - start_sec MUST be BEFORE the "━━━ OUTRO STARTS HERE ━━━" marker if present in the transcript
+    (everything at or after it is the outro: subscribe CTAs, farewells, end-cards — never valid for a viral clip)
+  - If no outro marker is present, avoid the last 10–15% of the video (outro zone) unless you
+    are certain substantive content continues to the very end
   - start_sec and end_sec must be within the transcript duration
   - Each clip: minimum 30 seconds, maximum 90 seconds
   - Clips must NOT overlap
   - Always start at a natural sentence boundary
+  - end_sec MUST land at a COMPLETE sentence boundary — never mid-sentence or mid-clause
+    Before finalising end_sec: read the transcript text at that timestamp. If the last word
+    is a conjunction or connector ("yang", "dan", "tapi", "karena", "sehingga", "maka",
+    "untuk", "dengan", "itu", "ini", "kalau", "ke", "dari"), extend end_sec forward until
+    the speaker completes the thought (look up to +10 seconds if needed)
+  - The clip must be SELF-CONTAINED: a viewer with zero prior context must fully understand it
+  - NEVER clip the host/guest introduction, opening small talk, or channel CTAs
   - Order by viral potential: highest first
   - title: ≤60 chars, uses RULE 4 formula
-  - headline: ≤44 chars, uses RULE 4b formula, news-ticker style, pulled from speaker's words at start_sec..end_sec
+  - headline: ≤44 chars HARD LIMIT (server truncates if exceeded — words lost), uses RULE 4b, news-ticker style, prefer verbatim speaker quote
   - hook: VERBATIM first 5-8 words at start_sec — copy from transcript, do not paraphrase
   - viral_type: educational_shock | transformation | controversy | actionable | relatable | blueprint | inspiration | storytelling
   - content_category: tech | business | health | finance | lifestyle | relationship | education | entertainment | motivation | other
@@ -406,7 +537,7 @@ Hard constraints:
   - overlay_position: bottom_right | bottom_left | top_right | top_left | bottom_center  (see RULE 7)
   - overlay_query: 3-5 word search query, or "" for no overlay  (see RULE 7)
   - overlay_at_sec: float seconds from clip start (default 5.0)
-  - overlay_duration: float seconds (3-5 for quick reaction, up to max_duration config, default 4.0)"#
+  - overlay_duration: float seconds (default 4.0; use 5-8 for footage/charts that need time to register)"#
     )
 }
 
@@ -454,6 +585,15 @@ Rules:
 - Prefer: specific numbers/results, insight shifts, emotional moments, actionable tips
 - Avoid: mid-sentence starts, unresolved thoughts, filler exchanges
 - Order by viral potential (highest first)
+- COMPLETENESS: end_sec MUST land at a complete sentence — never at a connector word
+  (yang, dan, tapi, karena, sehingga, maka, untuk, dengan, itu, ini, kalau, ke, dari)
+  If the best moment ends at a connector, extend end_sec until the thought is finished
+- INTRO SKIP: never clip host greeting, guest introduction ("saya undang", "kita sambut",
+  "tepuk tangan untuk", "hadir bersama"), channel CTAs, or opening small talk
+  The video's first ~10% is almost always intro — start clips only after substantive content
+- OUTRO SKIP: if the transcript contains "━━━ OUTRO STARTS HERE ━━━", DO NOT pick any moment
+  at or after that marker — that section is the outro (subscribe/like CTAs, farewells, end-cards).
+  If no marker: avoid the last ~10% of the video; only clip there if real content clearly continues
 
 HEADLINE field (burned onto video as ALL CAPS news-ticker, max 44 chars):
 - PULL from the transcript — condense the speaker's most impactful line
@@ -462,12 +602,22 @@ HEADLINE field (burned onto video as ALL CAPS news-ticker, max 44 chars):
 - AVOID generic AI phrases: "FAKTA MENGEJUTKAN", "RAHASIA TERUNGKAP", "INILAH YANG…"
 - Test: "Would a real person say this?" — if it sounds like a clickbait ad, rewrite it
 
-OVERLAY fields (optional TikTok meme-insert cut-away):
-- overlay_query: 3-5 word search query for a reaction/meme clip that amplifies the moment
-  Examples: "shocked reaction face", "mind blown viral", "funny fail reaction"
-  Set to "" if no cut-away fits (serious/emotional moments)
-- overlay_at_sec: seconds from clip start where overlay appears (peak moment)
-- overlay_duration: seconds to show (3-5, default 4.0)
+OVERLAY fields (optional B-roll or data-visual cut-away — photo or video):
+- overlay_query: 3-5 words describing the ACTUAL TOPIC — NOT a reaction or emotion.
+  The query finds news footage, data charts, location footage, or expert discussion of THIS topic.
+  ❌ NEVER: "shocked reaction face", "mind blown viral", "funny fail"  ← generic, banned
+  ✅ ALWAYS: describe the SUBJECT MATTER.
+  Formula: [topic noun] + [qualifier] + [content hint]
+  Examples:
+    "kurs rupiah dolar turun chart"   ← currency weakness
+    "ihsg saham anjlok indonesia"     ← stock market drop
+    "inflasi harga pangan data 2024"  ← food price inflation
+    "banjir jakarta aerial 2024"      ← Jakarta flooding footage
+    "bitcoin price chart rising"      ← crypto price data
+    "startup indonesia bangkrut berita" ← startup bankruptcy news
+  Set to "" ONLY if no relevant footage/photo could exist for this topic.
+- overlay_at_sec: seconds from clip start where overlay appears (the spoken fact/peak moment)
+- overlay_duration: seconds to show (default 4.0, up to 8.0 for footage that needs time)
 
 PRODUCTION fields (pick from the fixed options below):
 - clip_style: fade | flash | zoom | smooth | none
@@ -495,12 +645,13 @@ Required schema:
 Hard constraints:
   - Exactly {max_clips} moments
   - start_sec MUST be AFTER "━━━ CONTENT STARTS HERE ━━━" marker (if present) — that marker = intro end
+  - start_sec MUST be BEFORE "━━━ OUTRO STARTS HERE ━━━" marker (if present) — that marker = outro start
   - Each clip: 30–120 seconds
   - All 17 fields required per moment:
     title, headline, start_sec, end_sec, reason, hook, caption,
     viral_type, content_category, target_audience, emotional_trigger, energy,
     clip_style, sfx_vibe, bgm_vibe, overlay_query, overlay_at_sec, overlay_duration
-  - headline: ≤44 chars, ALL CAPS friendly, pulled from the speaker's own words — no generic AI phrases
+  - headline: ≤44 chars HARD LIMIT — prefer verbatim speaker quote; no generic AI phrases; informal language OK
   - viral_type: educational_shock | transformation | controversy | actionable | relatable | blueprint | inspiration | storytelling
   - content_category: tech | business | health | finance | lifestyle | relationship | education | entertainment | motivation | other
   - emotional_trigger: curiosity | surprise | validation | inspiration | fear | humor | empathy | admiration

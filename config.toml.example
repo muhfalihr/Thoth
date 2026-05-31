@@ -65,6 +65,9 @@ max_retries        = 2
 # Minimum video timestamp (seconds) before which no clip can start.
 # 0 = auto-detect intro end  |  misal: 90 = skip 90 detik pertama
 min_clip_start_sec = 0
+# Maximum video timestamp (seconds) after which no clip can START.
+# 0 = auto-detect outro start  |  misal: 3540 = skip 60 detik terakhir di video 1 jam
+max_clip_end_sec = 0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WHISPER — Speech-to-text transcription

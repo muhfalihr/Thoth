@@ -10,9 +10,11 @@ mod analyze;
 mod cli;
 mod config;
 mod edit;
+mod gpu;
 mod ingest;
 mod pipeline;
 mod rag;
+mod scraper;
 mod transcribe;
 mod util;
 
@@ -305,6 +307,8 @@ async fn main() -> Result<()> {
                     args.max_clips,
                     &args.keywords,
                     args.video_path.as_deref(),  // enables visual analysis when [vision] enabled
+                    &args.title,
+                    &args.channel,
                 )
                 .await?;
             println!("Analysis complete.");

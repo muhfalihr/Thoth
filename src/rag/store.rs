@@ -72,7 +72,7 @@ impl RagStore {
 
         for (moment, emb) in moments.iter().zip(embeddings.iter()) {
             if emb.is_empty() {
-                warn!("rag: skipping '{}' — embedding kosong", moment.title);
+                warn!("rag: skipping '{}' — empty embedding", moment.title);
                 continue;
             }
 

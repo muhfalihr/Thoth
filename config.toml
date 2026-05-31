@@ -65,6 +65,9 @@ max_retries        = 2
 # Minimum video timestamp (seconds) before which no clip can start.
 # 0 = auto-detect intro end  |  misal: 90 = skip 90 detik pertama
 min_clip_start_sec = 0
+# Maximum video timestamp (seconds) after which no clip can START.
+# 0 = auto-detect outro start  |  misal: 3540 = skip 60 detik terakhir di video 1 jam
+max_clip_end_sec = 0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WHISPER — Speech-to-text transcription
@@ -196,6 +199,8 @@ clip_style     = "flash"
 sfx_vibe       = "impact"
 bgm_vibe       = "upbeat"
 overlay_style  = "sticker"
+color_mood     = "vibrant"
+gpu_transition = "blink"
 
 [styles.profiles.yt_edu]
 description    = "YouTube Shorts educational: clean, minimal, professional"
@@ -204,6 +209,8 @@ clip_style     = "fade"
 sfx_vibe       = "ding"
 bgm_vibe       = "lofi"
 overlay_style  = "pip"
+color_mood     = "bright"
+gpu_transition = "dissolve"
 
 [styles.profiles.drama]
 description    = "Drama/controversy: word-pop subtitles, flash cuts, cinematic BGM"
@@ -212,6 +219,8 @@ clip_style     = "flash"
 sfx_vibe       = "impact"
 bgm_vibe       = "cinematic"
 overlay_style  = "fullscreen"
+color_mood     = "cinematic"
+gpu_transition = "fade_grays"
 
 [styles.profiles.inspirational]
 description    = "Inspirational: smooth transitions, clean subtitles, inspirational BGM"
@@ -220,6 +229,28 @@ clip_style     = "smooth"
 sfx_vibe       = "whoosh"
 bgm_vibe       = "inspirational"
 overlay_style  = "pip"
+color_mood     = "warm"
+gpu_transition = "smooth_left"
+
+[styles.profiles.cinematic_film]
+description    = "Sinematik: teal-orange grade, vignette, wipe transitions"
+subtitle_style = "minimal_white"
+clip_style     = "smooth"
+sfx_vibe       = "whoosh"
+bgm_vibe       = "cinematic"
+overlay_style  = "pip"
+color_mood     = "teal_orange"
+gpu_transition = "wipe_left"
+
+[styles.profiles.night_drama]
+description    = "Konten malam/gelap: dark grade, circle transitions, impact sfx"
+subtitle_style = "capcut_bold"
+clip_style     = "fade"
+sfx_vibe       = "impact"
+bgm_vibe       = "cinematic"
+overlay_style  = "fullscreen"
+color_mood     = "night"
+gpu_transition = "circle_open"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INGEST — Video download
@@ -227,6 +258,26 @@ overlay_style  = "pip"
 [ingest]
 ytdlp_path = "yt-dlp"
 format     = "bestvideo+bestaudio/best"   # works for YouTube, TikTok, dll.
+
+# ── Resilience (SKILL.md §1A) ─────────────────────────────────────────────────
+# retries / fragment_retries: jumlah retry HTTP request & per-fragment HLS/DASH.
+# retry_sleep: jeda antar retry dalam detik (mencegah 429 rate-limit).
+# socket_timeout: batas waktu koneksi/DNS dalam detik.
+retries          = 30   # default: 30
+fragment_retries = 30   # default: 30
+retry_sleep      = 2    # default: 2
+socket_timeout   = 30   # default: 30
+
+# ── Cookie authentication (SKILL.md §3A) ──────────────────────────────────────
+# Diperlukan untuk video age-gated atau private.  Prioritas: cookie_file > cookie_browser.
+#
+# cookie_browser: nama browser untuk ekstraksi live cookies.
+#   Nilai: firefox | chrome | edge | brave | vivaldi | opera
+#   Catatan: Firefox lebih aman di Windows — Chromium DB bisa terkunci saat browser berjalan.
+# cookie_file: path ke file Netscape cookies.txt.
+#   Ekspor dengan ekstensi "Get cookies.txt LOCALLY" (lokal only — hindari versi cloud-sync).
+cookie_browser = "firefox"   # "" = disabled
+cookie_file    = "C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\vidbee\\firefox-cookies\\cookies.txt"   # "" = disabled
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OVERLAY — TikTok/YouTube Shorts meme insert (opt-in)
@@ -240,7 +291,10 @@ ytdlp_path          = "yt-dlp"         # kosong = inherit dari ingest.ytdlp_path
 cache_dir           = "overlay_cache"  # clip di-cache berdasarkan query hash
 max_duration        = 8.0              # max detik yang di-download per overlay
 fallback_to_youtube = true             # fallback ke YouTube Shorts jika TikTok gagal
-max_variants        = 3               # N variant per query, rotate by clip index
+max_variants        = 3                # N variant per query, rotate by clip index
+scraper_enabled     = true             # stealth scraper resolves direct URLs sebelum yt-dlp
+                                       # hasil di-rank by view count → yt-dlp download langsung
+                                       # 3-5× lebih cepat, fallback otomatis ke yt-dlp search
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ASSETS — SFX & BGM auto-selection
@@ -275,3 +329,49 @@ upbeat        = "upbeat-pop.mp3"
 cinematic     = "epic-cinematic.mp3"
 inspirational = "inspiring-piano.mp3"
 none          = ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU — Accelerated video processing (CapCut-style pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
+# Pipeline: FFmpeg decode → wgpu GPU shaders → FFmpeg encode
+# Requires: NVIDIA/AMD GPU dengan Vulkan atau DirectX 12 support.
+# Jika GPU tidak tersedia, pipeline otomatis fallback ke FFmpeg-only.
+#
+# Fitur color grading (dari reverse engineering CapCut shaders):
+#   - HSL per-channel (Red/Orange/Yellow/Green/Cyan/Blue/Purple/Magenta)
+#   - Log Color Wheels (Shadow/Midtone/Highlight/Offset)
+#   - Bezier Curves (Luma/R/G/B)
+#   - Sharpen (unsharp mask 3×3 Laplacian)
+#   - Vignette
+#   - 3D LUT (.cube file)
+#   - Temperature/Tint, Brightness/Contrast, Saturation, Whites/Blacks
+#
+# Transition effects (GPU-native, 21 jenis):
+#   fade | blink | dissolve | wipe_left | wipe_right | wipe_up | wipe_down
+#   slide_left | slide_right | zoom_in | circle_open | circle_close
+#   pixelize | radial | hblur | fade_grays | diag_tl
+#   cover_left | reveal_left | squeeze_h | smooth_left
+# ─────────────────────────────────────────────────────────────────────────────
+[gpu]
+# Aktifkan GPU pipeline (default: false — safe fallback ke FFmpeg-only)
+enabled             = false
+
+# Apply color grading ke setiap clip secara independen
+color_grading       = true
+
+# Gunakan GPU-native transitions antar clip (lebih halus dari xfade)
+# Memerlukan frame-by-frame decode/encode — lebih lambat tapi kualitas lebih baik
+gpu_transitions     = false
+
+# Jika true: concat semua clips menjadi satu video final dengan GPU transitions
+# Jika false: setiap clip tetap file terpisah (default TikTok/Reels workflow)
+concat_output       = false
+
+# Color mood default yang diaplikasikan ke semua clips jika ViralMoment.color_mood kosong.
+# Options: cinematic | warm | cool | vibrant | faded | night | bright | teal_orange
+# Kosong = tidak ada color grading default
+default_color_mood  = ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STYLE PROFILES — GPU fields tambahan
+# ─────────────────────────────────────────────────────────────────────────────

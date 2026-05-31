@@ -15,11 +15,14 @@ use crate::transcribe::model::Transcript;
 use crate::util::fs::slugify;
 use crate::util::progress::{stage_done, step_bar, sub_spinner};
 
+use super::color::ColorGrading;
 use super::error::EditError;
 use super::ffmpeg::{encode_clip_direct, generate_thumbnail, AudioOptions, ClipStyle, HeadlineOverlay};
 use super::layout::OutputLayout;
 use super::overlay::{detect_overlay_style, fetch_overlay_clip};
 use super::subtitle::{generate_ass, SubtitleStyle};
+use super::transition::Transition;
+use crate::gpu::processor::{ClipJob, GpuProcessor};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipOutput {
@@ -512,6 +515,132 @@ impl<'a> EditService<'a> {
             output_clips.len(),
             t0.elapsed().as_secs_f64()
         ));
+
+        // ── GPU post-processing (color grading + GPU transitions) ─────────────
+        //
+        // Runs AFTER all FFmpeg clips are encoded.
+        // Two modes based on config:
+        //   1. gpu.color_grading=true, gpu.concat_output=false
+        //      → Apply color grading to each clip independently (in-place)
+        //   2. gpu.concat_output=true
+        //      → Concat all clips into one final video with GPU transitions
+        let gpu_cfg = &self.config.gpu;
+        if gpu_cfg.enabled && (!output_clips.is_empty()) {
+            let gpu_sp = sub_spinner(&mp, "Initializing GPU pipeline…");
+            match GpuProcessor::new().await {
+                Err(e) => {
+                    warn!("GPU init failed (falling back to FFmpeg-only): {e}");
+                    gpu_sp.finish_with_message("  ✗ GPU unavailable — FFmpeg-only output");
+                }
+                Ok(gpu) => {
+                    gpu_sp.finish_with_message("  ✓ GPU ready");
+
+                    if gpu_cfg.concat_output && output_clips.len() > 1 {
+                        // ── Mode 2: concat all clips into one video ───────────
+                        let sp = sub_spinner(&mp, &format!(
+                            "GPU concat {} clips with transitions…", output_clips.len()
+                        ));
+
+                        let jobs: Vec<ClipJob> = output_clips.iter().enumerate()
+                            .map(|(i, clip)| {
+                                // Resolve color mood for this clip
+                                let mood = if !gpu_cfg.default_color_mood.is_empty() {
+                                    gpu_cfg.default_color_mood.clone()
+                                } else {
+                                    moments.moments.get(i)
+                                        .map(|m| m.color_mood.clone())
+                                        .unwrap_or_default()
+                                };
+                                let color = ColorGrading::from_mood(&mood).to_gpu_params();
+
+                                // Resolve GPU transition for this clip
+                                let tr_name = moments.moments.get(i)
+                                    .map(|m| {
+                                        let profile_tr = if !style_profile_name.is_empty()
+                                            && style_profile_name != "auto"
+                                        {
+                                            self.config.styles.profiles
+                                                .get(style_profile_name)
+                                                .map(|p| p.gpu_transition.as_str())
+                                                .unwrap_or("")
+                                        } else { "" };
+                                        if !profile_tr.is_empty() { profile_tr.to_owned() }
+                                        else if !m.gpu_transition.is_empty() { m.gpu_transition.clone() }
+                                        else { m.clip_style.clone() }
+                                    })
+                                    .unwrap_or_default();
+                                let transition = Transition::from_name(&tr_name);
+
+                                ClipJob::new(&clip.path, 0.0, clip.duration_secs)
+                                    .with_color(color)
+                                    .with_transition(transition)
+                            })
+                            .collect();
+
+                        let concat_path = output_clips[0].path
+                            .parent().unwrap_or(std::path::Path::new("."))
+                            .join("final_concat.mp4");
+
+                        match gpu.concat_gpu(&jobs, &concat_path, self.config.ffmpeg.nvenc).await {
+                            Ok(()) => {
+                                sp.finish_with_message(format!(
+                                    "  ✓ GPU concat → {}", concat_path.display()
+                                ));
+                                info!("GPU concat complete: {}", concat_path.display());
+                            }
+                            Err(e) => {
+                                warn!("GPU concat failed: {e}");
+                                sp.finish_with_message("  ✗ GPU concat failed");
+                            }
+                        }
+
+                    } else if gpu_cfg.color_grading {
+                        // ── Mode 1: apply color grading to each clip ──────────
+                        let sp_gpu = sub_spinner(&mp, &format!(
+                            "GPU color grading {} clips…", output_clips.len()
+                        ));
+
+                        let mut graded = 0usize;
+                        for (i, clip) in output_clips.iter_mut().enumerate() {
+                            let mood = if !gpu_cfg.default_color_mood.is_empty() {
+                                gpu_cfg.default_color_mood.clone()
+                            } else {
+                                moments.moments.get(i)
+                                    .map(|m| m.color_mood.clone())
+                                    .unwrap_or_default()
+                            };
+
+                            if mood.is_empty() { continue; }
+
+                            let grading = ColorGrading::from_mood(&mood);
+                            if grading.is_identity() { continue; }
+
+                            let gpu_out = clip.path.with_extension("gpu.mp4");
+                            match gpu.apply_color(
+                                &clip.path, &gpu_out,
+                                0.0, clip.duration_secs,
+                                &grading.to_gpu_params(),
+                                self.config.ffmpeg.nvenc,
+                            ).await {
+                                Ok(()) => {
+                                    // Replace original with GPU-graded version
+                                    if let Err(e) = std::fs::rename(&gpu_out, &clip.path) {
+                                        warn!("rename GPU output failed: {e}");
+                                    } else {
+                                        graded += 1;
+                                    }
+                                }
+                                Err(e) => warn!("GPU color grading clip {i}: {e}"),
+                            }
+                        }
+
+                        sp_gpu.finish_with_message(format!(
+                            "  ✓ GPU color graded {graded}/{} clips", output_clips.len()
+                        ));
+                    }
+                }
+            }
+        }
 
         info!("edit complete: {} clips", output_clips.len());
         stage_done("Edit", t0.elapsed());

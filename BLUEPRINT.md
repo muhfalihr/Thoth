@@ -21,12 +21,12 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
 | Combined audio-visual prompt | ✅ 85% | Full-video frame descriptions diinjeksikan ke transcript (opt-in via `vision.describe_video`) |
 | Production metadata (sfx/bgm/style) | ✅ 85% | LLM pilih per clip, auto-discovery katalog |
 | Trend awareness (real-time) | ✅ 70% | Google Trends + keyword scoring |
-| **Style Profiles system** | ❌ 0% | Named presets untuk gaya editing trending — belum diimplementasi |
-| **CapCut-style subtitle animation** | ❌ 0% | Animasi kata bold/berwarna seperti CapCut — belum diimplementasi |
-| **Reference video style analyzer** | ❌ 0% | Analisis video TikTok trending untuk ekstrak gaya editing — belum diimplementasi |
-| **Trend-aware editing engine** | ❌ 0% | Full adaptive system berdasarkan tren terkini — belum diimplementasi |
-| RAG / knowledge base viral patterns | ✅ 90% | Supabase pgvector + Gemini embeddings — store & retrieve moments, inject examples into prompt |
-| Beat-sync audio-visual | ❌ 0% | SFX hardcoded di t=0 |
+| **Style Profiles system** | ✅ 100% | `StyleProfile` struct + `StylesConfig` di config.rs; 4 default profiles di config.toml; apply di edit/service.rs |
+| **CapCut-style subtitle animation** | ✅ 100% | `SubtitleStyle` enum (Karaoke/CapcutBold/WordPop/MinimalWhite) di subtitle.rs; LLM pilih per clip via `subtitle_style` field |
+| **Reference video style analyzer** | ✅ 100% | `TrendAnalyzeService` di trend_analyzer.rs; download video → extract frames → vision LLM → synthesize profile → save TOML |
+| **Trend-aware editing engine** | ❌ 0% | Full adaptive auto-learning dari TikTok Creative Center + YouTube Trending — belum diimplementasi (Priority 6) |
+| RAG / knowledge base viral patterns | ✅ 95% | Supabase pgvector + embedding; store & retrieve moments; inject examples ke prompt; video_title/channel kini diteruskan ke storage |
+| Beat-sync audio-visual | ✅ 100% | `beat_detect.rs` BPM dari metadata; SFX snap ke downbeat; BGM ducking; ClipStyle duration = beat subdivision |
 | Scene boundary detection | ✅ 100% | `detect_scene_boundaries()` via FFmpeg select filter, opt-in via `vision.scene_detection` |
 
 ---
@@ -119,9 +119,9 @@ Konteks tren untuk membandingkan dengan pola editing yang sedang viral.
 | **Real-time Google Trends** | ✅ Implemented | `trending.rs` — fetch trending topics regional (ID) + keyword interest scores | `src/analyze/trending.rs` |
 | **Keyword-aware moment selection** | ✅ Implemented | Transkrip diformat dengan marker `[🎯 keyword]` untuk moments yang relevan dengan trending keywords | `src/analyze/service.rs` |
 | **User-defined focus keywords** | ✅ Implemented | `--keywords` CLI arg, dikombinasikan dengan auto-extracted + trending keywords | `src/cli.rs` |
-| **Vector Database** | ❌ Not implemented | Tidak ada penyimpanan persisten hasil analisis video viral masa lalu | — |
-| **RAG similarity matching** | ❌ Not implemented | Tidak ada perbandingan "clip ini 80% mirip template trending X" | — |
-| **Editing style fingerprinting** | ❌ Not implemented | Tidak ada ekstraksi "gaya editing" dari video viral untuk dijadikan referensi | — |
+| **Vector Database** | ✅ Implemented | `rag/store.rs` — `RagStore` store/retrieve via sqlx + Supabase pgvector; embedding via `rag/embed.rs` (Gemini/Novita/OpenAI/vLLM); video_title & channel disimpan sebagai metadata | `src/rag/store.rs`, `src/rag/embed.rs` |
+| **RAG similarity matching** | ✅ Implemented | `build_rag_context()` di analyze/service.rs — embed transcript → cosine similarity search → top-N similar moments diinjeksikan ke system prompt sebagai contoh | `src/analyze/service.rs` |
+| **Editing style fingerprinting** | ✅ Implemented | `TrendAnalyzeService` — download trending videos → extract frames → vision LLM → `StyleProfile` JSON; simpan ke `style_profiles/` folder via `clipper trend-analyze` | `src/analyze/trend_analyzer.rs` |
 
 ---
 
@@ -392,8 +392,38 @@ output/.clipper/{job_id}/
 
 ---
 
-*Last updated: 2026-05-21*
-*Ditambahkan: Trend-Aware Editing Architecture (Priority 3–6) — Style Profiles, CapCut subtitle, Reference Video Analyzer, Full Adaptive Learning*
-*Next priority: Style Profiles system + CapCut-style subtitle animation*
-*Priority 1 (Combined audio-visual prompt) selesai diimplementasikan.*
-*Gap berikutnya: Scene boundary detection (Priority 2) dan Beat-sync SFX/BGM (Priority 3)*
+*Last updated: 2026-05-27 (4)*
+*Status diperbarui: Style Profiles, CapCut subtitle, Reference Video Analyzer, Beat-sync, RAG — semua selesai.*
+*Diperbaiki (2026-05-25):*
+  - *vocab.rs: tambah "tepuk tangan" standalone ke intro keywords → talk show applause ceremony kini terdeteksi*
+  - *service.rs: `snap_end_to_sentence_boundary()` di-upgrade pakai inter-segment silence gaps (≥300ms) sebagai primary boundary signal; connector-word scan jadi fallback*
+  - *service.rs: `has_ceremony_transcript()` + filter baru — drop mid-video ceremony segments (live event roll-call, tepuk tangan buat [name], audience greeting) yang lolos dari timestamp-based intro filter*
+  - *prompt.rs: tambah LIVE RECORDING ceremony warning; tambah INTERVIEW PANEL RULE — pilih JAWABAN bukan PERTANYAAN*
+*Diperbaiki (2026-05-26) — Long-Video Temporal Coverage Fix:*
+  - *service.rs: `select_temporally_diverse()` — gantikan pure quality-sort+truncate dengan 2-phase bucket selection: Phase 1 pilih satu clip terbaik dari setiap N time bucket (N=max_clips), Phase 2 isi slot kosong dengan kandidat terbaik dari bucket manapun → **coverage naik dari 9% → ~60-70% video, dead zone 24-menit di akhir video tereliminasi***
+  - *service.rs: adaptive `chunk_size_secs` — video >45 min pakai 6-menit chunks (12 chunks) vs sebelumnya 3-menit (29 chunks); konteks LLM per chunk lebih besar, API calls lebih sedikit*
+  - *service.rs: adaptive `clips_per_chunk` — >10 chunks = 2 clips/chunk; 6-10 chunks = 3; <6 = max_clips/2. Mencegah flooding kandidat dari early chunks*
+  - *service.rs: `clips_overlap_significant()` — gantikan dedup `|start_diff|<10 AND |end_diff|<10` dengan overlap ratio >35%; catches kasus clip_000(357-398s) + clip_001(378-414s) yang share 20s konten tapi lolos check lama*
+  - *service.rs: `snap_start_past_fillers()` — advance start_sec melewati run "Ya. Ya. Ya. Oke." di awal clip; waktu clip dishift forward, end_sec dikompensasi*
+  - *vocab.rs: tambah "kami/kita membuat episode", "saat podcast ini", dll ke intro keywords → clip_007-like content (episode setup at t=78s) kini terfilter*
+*Diperbaiki (2026-05-27) — FFmpeg Drawtext Headline % Rendering Fix (final):*
+  - *ffmpeg.rs: `build_headline_filter()` — tambah `:expansion=none` ke setiap `drawtext=` call (social, hl1, hl2, source credit). Root cause: FFmpeg drawtext 2-phase parsing — Phase 1 option parser, Phase 2 text expander. `%` dalam teks (mis. "90% KASUS KORUPSI") masuk Phase 2 sebagai format specifier `%{...}`. Behavior versi-dependent: sebagian FFmpeg versi treat `%%` → `%` (benar), sebagian lain treat `%` + karakter non-`{` → invalid specifier → **seluruh drawtext element di-skip secara silent** → line 1 invisible sementara line 2 (tanpa `%`) tampil normal. Fix sebelumnya (`%%`) tidak cukup karena version-dependent. Fix final: `expansion=none` menonaktifkan Phase 2 sepenuhnya — `%` selalu literal, zero version sensitivity. Sekaligus: hapus `'%' => "%%"` dari `esc()` karena tidak diperlukan lagi.*
+*Diperbaiki (2026-05-27) — Headline Quality & Truncation Fix:*
+  - *ffmpeg.rs: `wrap_headline()` — `max_chars` 22 → 24 untuk vertical video. Root cause: max_chars=22 menyebabkan last-word drop pada headline valid ≤44 chars (contoh: "INVESTOR TOLAK INVESTASI KARENA RISIKO" 38 chars → line2 "INVESTASI KARENA"=16, +"RISIKO"=23 > 22 → "RISIKO" hilang). Dengan 24: "KARENA RISIKO"=13 ≤ 24 ✓*
+  - *service.rs: tambah `sanitize_headline()` dipanggil dari `validate_and_clamp()` — enforce 44-char hard limit dengan word-boundary truncation + warn log; strip surrounding quotes dari LLM output*
+  - *prompt.rs: upgrade RULE 4b — tambah "QUOTE FIRST" section dengan contoh konkret (transcript "selamat tinggal, dasar jalang!" → headline bukan "INVESTOR TOLAK INVESTASI KARENA RISIKO"); tambah ⚠️ informal language preservation; tambah pair example ke-4 (verbatim quote vs deskripsi); update char limit wording menjadi "HARD LIMIT: 44 chars — server TRUNCATES if exceeded — words LOST"*
+*Ditambahkan (2026-05-27) — Outro Detection Feature:*
+  - *vocab.rs: tambah `pub outro: Vec<String>` ke `VocabCache`; `defaults()` kini berisi ~40 keyword outro Indonesia+Inggris (subscribe, jangan lupa, like, terima kasih sudah, sampai jumpa, sampai ketemu, see you next, that's all, see you, bye, wassalamualaikum, dll.); load_from_db() support kategori "outro"*
+  - *config.rs: tambah `pub max_clip_end_sec: f64` ke `LlmConfig` (simetris dengan `min_clip_start_sec`); `.set_default("llm.max_clip_end_sec", 0.0)` di builder*
+  - *config.toml + config.toml.example: tambah komentar + key `max_clip_end_sec = 0` di blok `[llm]`*
+  - *service.rs: tambah 4 fungsi: `detect_outro_start()` (2 sinyal: speech-end-gap ≥8s + first keyword dalam scan window 15%/180s), `detect_speech_end_gap_outro()`, `detect_keyword_outro()`, `inject_outro_marker()`*
+  - *service.rs: wiring di `run()` — outro detection setelah intro detection; `inject_outro_marker()` ke compact_lines; `retain()` filter drop momen ≥ outro_start_sec; empty-result guard dengan warn*
+  - *service.rs: `analyze_in_chunks()` — signature diperluas +`outro_start_sec: f64`; chunk loop pakai `effective_end = if outro_start_sec > 0.0 { outro_start_sec } else { total_duration }`; `select_temporally_diverse()` dipanggil dengan `effective_end` bukan `total_duration` (bucket boundaries relatif ke konten aktual bukan full video)*
+  - *prompt.rs: 3 lokasi diupdate: `build_base_system_prompt()` Hard constraints +2 baris OUTRO marker; `chunk_system_prompt()` +blok OUTRO SKIP; `retry_system_prompt()` +1 baris marker constraint*
+*Diperbaiki (2026-05-27) — Outro Detection: Double-Fix (Binary + Logic):*
+  - *Root cause run sebelumnya: binary stale (code tidak compile sebelum sesi ini karena `analyze_in_chunks` signature mismatch) → outro detection tidak berjalan sama sekali*
+  - *Logic bug: `detect_keyword_outro` menemukan outro di t=1973s ("terima kasih sudah menonton") tapi LLM memilih clip start di t=1961s (12s sebelum boundary) karena host membuka outro dengan "oke terima kasih kalau kalian punya pendapat..." yang bukan keyword*
+  - *Fix 1 — vocab.rs: tambah keyword CTA dual-use ke `outro` defaults: "komen di bawah", "komentar di bawah", "silakan komen", "silakan komentar", "tulis di kolom komentar", "di kolom komentar", "bagikan pengalaman", "ceritakan di kolom". Aman di last-15% scan window. Deteksi kini fire di t=~1961s (segment "oke terima kasih kalau kalian punya pendapat... silakan komen di bawah")*
+  - *Fix 2 — service.rs: upgrade outro `retain()` filter dengan overlap check — juga drop clip di mana >25% durasi clip jatuh di zona outro. Ini safety net untuk kasus keyword detection terlambat beberapa detik. Failing case: start=1961, end=1981, outro=1973 → overlap=8s/20s=39%>25% → DROPPED*
+  - *Fix 3 — vocab.rs: `seed_defaults()` tidak menyeed category "outro" ke Supabase — diperbaiki*
+*Satu-satunya gap nyata yang tersisa: Priority 6 — Full Adaptive Trend Learning (auto-pull TikTok Creative Center + YouTube Trending, auto-update style_profiles otomatis).*

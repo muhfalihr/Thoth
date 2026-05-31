@@ -21,6 +21,7 @@ use super::schema::{ViralMoment, ViralMomentList};
 use super::vision::{
     build_enriched_transcript, cleanup_frames, describe_video_frames,
     detect_scene_boundaries, extract_frames, parse_compact_timestamp, VisualAnalyzer,
+    VideoDescription,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +55,8 @@ impl<'a> AnalyzeService<'a> {
         max_clips:       usize,
         user_keywords:   &[String],
         video_path:      Option<&Path>,
+        video_title:     &str,
+        video_channel:   &str,
     ) -> Result<AnalyzeResult, AnalyzeError> {
         let t0 = Instant::now();
         let provider = self.build_provider(provider_name)?;
@@ -177,6 +180,12 @@ impl<'a> AnalyzeService<'a> {
         // When vision.describe_video = true: sample entire video, generate text
         // descriptions for each frame, then inject them into the transcript so
         // the LLM sees both WHAT WAS SAID and WHAT WAS VISIBLE at each timestamp.
+        //
+        // vis_descriptions is also kept for post-LLM overlay query enrichment:
+        // enrich_moments_from_transcript() uses it to find the nearest frame
+        // description at each moment's overlay_at_sec and extract visual keywords.
+        let mut vis_descriptions: Vec<VideoDescription> = Vec::new();
+
         let compact_lines = if vision_active
             && self.config.vision.describe_video
             && video_path.is_some()
@@ -220,6 +229,7 @@ impl<'a> AnalyzeService<'a> {
                 {
                     info!("  🎬 Sample: {}", sample.trim());
                 }
+                vis_descriptions = descriptions;
                 enriched
             }
         } else {
@@ -236,6 +246,20 @@ impl<'a> AnalyzeService<'a> {
                 intro_end_sec
             );
             inject_intro_marker(&compact_lines, intro_end_sec)
+        } else {
+            compact_lines
+        };
+
+        // ── Outro detection ───────────────────────────────────────────────────
+        // Detect where the video outro begins (subscribe CTAs, farewells, end-cards).
+        // Inject a marker so the LLM avoids picking moments from that section.
+        let outro_start_sec = detect_outro_start(&transcript, self.config.llm.max_clip_end_sec);
+        let compact_lines = if outro_start_sec > 0.0 {
+            info!(
+                "  🎬 Outro detected: skipping from {:.0}s to end ({:.0}s) — injecting boundary marker",
+                outro_start_sec, duration_secs
+            );
+            inject_outro_marker(&compact_lines, outro_start_sec)
         } else {
             compact_lines
         };
@@ -263,7 +287,7 @@ impl<'a> AnalyzeService<'a> {
             } else {
                 info!("transcript is large — using chunked analysis");
             }
-            self.analyze_in_chunks(&*provider, &transcript, candidate_count, &trend_ctx, &focus_keywords)
+            self.analyze_in_chunks(&*provider, &transcript, candidate_count, &trend_ctx, &focus_keywords, outro_start_sec)
                 .await?
         } else {
             // Single pass — build system prompt with RAG + trends injected
@@ -335,11 +359,115 @@ impl<'a> AnalyzeService<'a> {
             return Err(AnalyzeError::NoMomentsFound);
         }
 
+        // ── Drop moments that start in or significantly overlap the outro ────────
+        // Safety net: even when the LLM saw the outro marker in single-pass mode,
+        // it may still pick a moment that starts in the outro (the marker is a hint,
+        // not a hard constraint the model always respects).  In chunked mode the
+        // chunk loop is capped at outro_start_sec, but guard here too.
+        //
+        // Two drop conditions:
+        //   1. start_sec >= outro_start_sec  — clip starts inside the outro zone
+        //   2. >25% of the clip falls in the outro zone
+        //      (handles the case where keyword detection fires slightly AFTER the true
+        //       outro start, so the clip begins just before the boundary but is mostly outro)
+        if outro_start_sec > 0.0 {
+            let before = moments.moments.len();
+            moments.moments.retain(|m| {
+                // Condition 1: starts in outro
+                if m.start_sec >= outro_start_sec {
+                    info!(
+                        "  ⚠️  Dropped outro moment at {:.1}s (outro starts at {:.1}s): \"{}\"",
+                        m.start_sec, outro_start_sec, m.title
+                    );
+                    return false;
+                }
+                // Condition 2: starts before outro but crosses significantly into it
+                let clip_dur = (m.end_sec - m.start_sec).max(1.0);
+                let overlap  = (m.end_sec - outro_start_sec).max(0.0);
+                let pct      = overlap / clip_dur;
+                if pct > 0.25 {
+                    info!(
+                        "  ⚠️  Dropped outro-overlap moment ({:.0}% in outro zone, \
+                         {:.1}s past t={:.1}s): \"{}\"",
+                        pct * 100.0, overlap, outro_start_sec, m.title
+                    );
+                    return false;
+                }
+                true
+            });
+            let dropped = before - moments.moments.len();
+            if dropped > 0 {
+                info!("  🎬 Dropped {} outro moment(s), {} remain", dropped, moments.moments.len());
+            }
+        }
+
+        if moments.moments.is_empty() {
+            tracing::warn!(
+                "All moments fell within the outro section (from {:.0}s). \
+                 Consider setting max_clip_end_sec manually in config.toml if auto-detection \
+                 is too aggressive.",
+                outro_start_sec
+            );
+            return Err(AnalyzeError::NoMomentsFound);
+        }
+
+        // ── Drop mid-video ceremony segments (content-based) ────────────────
+        // Live recordings often have guest roll-calls, applause ceremonies, and
+        // MC greetings mid-video (e.g. actual event starts at t=449s). These
+        // pass the timestamp-based intro filter but contain zero substantive content.
+        let before_ceremony = moments.moments.len();
+        moments.moments.retain(|m| {
+            if has_ceremony_transcript(&m.transcript_segment) {
+                info!(
+                    "  🎭 Dropped ceremony segment at {:.1}s: \"{}\"",
+                    m.start_sec, m.title
+                );
+                false
+            } else {
+                true
+            }
+        });
+        let ceremony_dropped = before_ceremony - moments.moments.len();
+        if ceremony_dropped > 0 {
+            info!(
+                "  🎭 Dropped {} ceremony moment(s), {} remain",
+                ceremony_dropped,
+                moments.moments.len()
+            );
+        }
+
+        // ── Snap clip starts forward past filler runs ────────────────────────
+        // LLMs sometimes set start_sec on a run of filler words / back-channel
+        // acknowledgements ("Ya. Ya. Ya.") before the real content begins.
+        // Advance start_sec to the first substantive sentence.
+        snap_start_past_fillers(&mut moments.moments, &transcript);
+
+        // ── Snap clip ends to sentence boundaries ────────────────────────────
+        // LLMs sometimes pick end_sec mid-sentence. Extend each clip forward
+        // to the nearest clean transcript segment boundary.
+        snap_end_to_sentence_boundary(&mut moments.moments, &transcript);
+
         // ── Post-parse enrichment ─────────────────────────────────────────────
         // Cross-check hook/headline against actual transcript text.
         // If the LLM hallucinated the hook (different content from what's spoken
         // at start_sec), replace it with the verbatim first words from the transcript.
-        enrich_moments_from_transcript(&mut moments.moments, &transcript);
+        // vis_descriptions: frame-level captions from the vision system (may be empty
+        // when vision is disabled). Used to enrich overlay_query with visual keywords.
+
+        // Snapshot LLM-generated queries before enrichment (for debug log)
+        let pre_enrich_queries: Vec<String> = moments.moments.iter()
+            .map(|m| m.overlay_query.clone())
+            .collect();
+
+        enrich_moments_from_transcript(&mut moments.moments, &transcript, &vis_descriptions);
+
+        // Write overlay query debug log — helps diagnose irrelevant overlay results
+        write_overlay_debug_log(
+            &self.job.analyze_dir().join("overlay_queries.log"),
+            &moments.moments,
+            &pre_enrich_queries,
+            &vis_descriptions,
+        ).await;
 
         // ── Stage 2: visual re-ranking (optional) ────────────────────────────
         let mut final_moments: Vec<ViralMoment> = moments.moments;
@@ -389,6 +517,9 @@ impl<'a> AnalyzeService<'a> {
             self.config.vector_db.clone(),
             crate::rag::embed::EmbedConfig::from_app_config(self.config),
             self.job.job_id.clone(),
+            video_title.to_owned(),
+            video_channel.to_owned(),
+            self.config.whisper.language.clone(),
         );
 
         let moments_path = self.job.moments_path();
@@ -417,18 +548,48 @@ impl<'a> AnalyzeService<'a> {
         max_clips: usize,
         trend_ctx: &str,
         focus_keywords: &[String],
+        outro_start_sec: f64,  // 0.0 = no outro; >0 = stop chunks at this timestamp
     ) -> Result<ViralMomentList, AnalyzeError> {
-        // Initial chunk size — will auto-shrink if 413 (payload too large) occurs
-        let mut chunk_size_secs = 180.0_f64; // 3 minutes (conservative start)
         let overlap_secs = 30.0;
         let total_duration = transcript.duration_ms as f64 / 1000.0;
-        let clips_per_chunk = (max_clips / 2).max(2);
+        let duration_mins = total_duration / 60.0;
+
+        // Effective end: cap at outro boundary so we never produce chunks inside the outro.
+        // When outro_start_sec == 0.0 the full video is processed as before.
+        let effective_end = if outro_start_sec > 0.0 { outro_start_sec } else { total_duration };
+
+        // Adaptive chunk size — longer videos need bigger windows so the LLM sees
+        // enough context per chunk and can rank relative quality within each window.
+        // Larger chunks also cut total API calls (cost + rate-limit pressure).
+        //   < 20 min → 3 min chunks  (~6 chunks)
+        //   20-45 min → 4.5 min chunks (~8-10 chunks)
+        //   > 45 min → 6 min chunks  (~12 chunks for a 72-min video vs 29 before)
+        let mut chunk_size_secs = if duration_mins > 45.0 {
+            360.0_f64   // 6 min — long form
+        } else if duration_mins > 20.0 {
+            270.0_f64   // 4.5 min — medium form
+        } else {
+            180.0_f64   // 3 min — short form
+        };
+
+        // clips_per_chunk scales inversely with chunk count to avoid flooding the
+        // candidate pool with early-video content.
+        //   Many chunks (>10)  → 2 clips/chunk: balanced pool, temporal diversity relies on bucketing
+        //   Few chunks (≤5)    → up to max_clips/2: normal behaviour
+        let n_estimated_chunks = ((effective_end - overlap_secs) / (chunk_size_secs - overlap_secs)).ceil() as usize;
+        let clips_per_chunk = if n_estimated_chunks > 10 {
+            2_usize
+        } else if n_estimated_chunks > 5 {
+            3_usize
+        } else {
+            (max_clips / 2).max(2)
+        };
 
         let mut all_moments: Vec<ViralMoment> = Vec::new();
         let mut start = 0.0_f64;
 
-        while start < total_duration {
-            let end = (start + chunk_size_secs).min(total_duration);
+        while start < effective_end {
+            let end = (start + chunk_size_secs).min(effective_end);
 
             // Build compact transcript with keyword relevance markers
             let raw_window = self.get_transcript_window(transcript, start, end);
@@ -492,8 +653,8 @@ impl<'a> AnalyzeService<'a> {
                                 "Chunk too large (413), reducing chunk size to {:.0}s and retrying…",
                                 chunk_size_secs
                             );
-                            // Restart this window with the smaller chunk
-                            let end2 = (start + chunk_size_secs).min(total_duration);
+                            // Restart this window with the smaller chunk (respect effective_end)
+                            let end2 = (start + chunk_size_secs).min(effective_end);
                             let raw2 = self.get_transcript_window(transcript, start, end2);
                             let chunk2 = build_scored_transcript(&raw2, focus_keywords);
                             let max_chars = (transcript_budget as f64 * 3.5) as usize;
@@ -544,46 +705,46 @@ impl<'a> AnalyzeService<'a> {
             // Small delay between chunks to be polite to rate limits
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-            if end >= total_duration {
+            if end >= effective_end {
                 break;
             }
             start = (end - overlap_secs).max(start + 1.0); // advance, never go backward
         }
 
-        // De-duplicate moments that are very close (overlap)
+        // De-duplicate moments that share significant time overlap.
+        // Old approach (|start_diff|<10 AND |end_diff|<10) missed cases like
+        // clip_000 (357-398s) and clip_001 (378-414s) — start_diff=21 > 10 but
+        // they share 20s of content. New approach: use overlap ratio instead.
         all_moments.sort_by(|a, b| a.start_sec.partial_cmp(&b.start_sec).unwrap());
         let mut unique_moments: Vec<ViralMoment> = Vec::new();
         for m in all_moments {
             let is_duplicate = unique_moments.iter().any(|existing| {
-                (m.start_sec - existing.start_sec).abs() < 10.0 && 
-                (m.end_sec - existing.end_sec).abs() < 10.0
+                clips_overlap_significant(
+                    m.start_sec, m.end_sec,
+                    existing.start_sec, existing.end_sec,
+                )
             });
             if !is_duplicate {
                 unique_moments.push(m);
             }
         }
 
-        // Final sort: keyword relevance > energy level
-        // Moments whose title/hook/reason contain focus keywords rank higher
-        unique_moments.sort_by(|a, b| {
-            let kw_score = |m: &ViralMoment, kws: &[String]| -> i32 {
-                if kws.is_empty() { return 0; }
-                let haystack = format!("{} {} {}", m.title, m.hook, m.reason).to_lowercase();
-                kws.iter().filter(|k| haystack.contains(k.to_lowercase().as_str())).count() as i32
-            };
-            let energy_score = |m: &ViralMoment| -> i32 {
-                match m.energy.to_lowercase().as_str() { "high" => 3, "medium" => 2, _ => 1 }
-            };
-            // Combined score: keyword match worth 5 points each, energy worth 1-3
-            let score_b = kw_score(b, focus_keywords) * 5 + energy_score(b);
-            let score_a = kw_score(a, focus_keywords) * 5 + energy_score(a);
-            score_b.cmp(&score_a)
-        });
+        // ── Temporal-diversity selection ──────────────────────────────────────
+        // Pure quality-sort + truncate causes temporal clustering: for a 72-min
+        // video the top-10 by keyword score all come from the first 10-15 min
+        // because setup/broad-claim content scores higher on keyword frequency
+        // than analytical conclusions later in the video.
+        //
+        // Fix: divide the video into `max_clips` equal-duration buckets and pick
+        // the best-scoring moment from each bucket, then fill remaining slots
+        // with the next-best from any bucket.  Guarantees full-video coverage.
+        //
+        // Use effective_end (capped at outro_start_sec) so bucket boundaries are
+        // computed relative to the actual content portion of the video, not the
+        // full total_duration which includes the outro.
+        let selected = select_temporally_diverse(unique_moments, max_clips, effective_end, focus_keywords);
 
-        // Limit to requested max_clips
-        unique_moments.truncate(max_clips);
-
-        Ok(ViralMomentList { moments: unique_moments })
+        Ok(ViralMomentList { moments: selected })
     }
 
     fn get_transcript_window(&self, transcript: &Transcript, start_sec: f64, end_sec: f64) -> String {
@@ -896,8 +1057,9 @@ impl<'a> AnalyzeService<'a> {
 ///   2. `transcript_segment` was empty — filled with actual spoken text in the window
 ///   3. Headline mismatch logged as debug warning (not auto-replaced — it's creative text)
 fn enrich_moments_from_transcript(
-    moments:    &mut Vec<ViralMoment>,
-    transcript: &Transcript,
+    moments:      &mut Vec<ViralMoment>,
+    transcript:   &Transcript,
+    descriptions: &[VideoDescription],
 ) {
     for m in moments.iter_mut() {
         // ── 1. Populate transcript_segment with actual spoken text ────────────
@@ -945,86 +1107,85 @@ fn enrich_moments_from_transcript(
         }
 
         // ── 4. Context-aware overlay query refinement ─────────────────────────
-        // Extract spoken text AT the overlay peak moment, detect tone, and refine
-        // the LLM-generated generic query with subject-specific keywords.
-        // Example: "funny laugh reaction" → "funny laugh prabowo joget lucu"
+        // Combines THREE sources (priority order):
+        //   1. Visual keywords — extracted from the frame description closest to
+        //      overlay_at_sec. Most specific: describes what's literally on screen.
+        //   2. Spoken subject keywords — proper nouns from the transcript window.
+        //   3. LLM-generated query — kept as the trailing context.
+        //
+        // When vision is disabled, sources 2+3 still improve query specificity.
+        // Overlay style is preserved as-is: the LLM's explicit choice is correct,
+        // and detect_overlay_style() in overlay.rs handles "auto" via pixel analysis.
         if !m.overlay_query.is_empty() && m.overlay_at_sec >= 0.0 {
             let peak_t      = m.start_sec + m.overlay_at_sec;
             let window_text = transcript.segment_text_in_window(peak_t, peak_t + 3.5);
 
             if !window_text.is_empty() {
                 m.overlay_context_text = window_text.clone();
+            }
 
-                let subjects = extract_subject_keywords(&window_text);
-                let tone     = detect_spoken_tone(&window_text);
+            // Source 1: visual keywords from nearest frame description
+            let visual_note = find_nearest_description(descriptions, peak_t)
+                .map(|d| d.text.as_str())
+                .unwrap_or("");
+            let visual_kws = extract_visual_keywords(visual_note);
 
-                if !subjects.is_empty() {
-                    // Build refined query: subject keywords + original reaction type
-                    let refined = match tone {
-                        OverlayTone::Funny   =>
-                            format!("{} {} lucu viral", subjects.join(" "), m.overlay_query),
-                        OverlayTone::Serious =>
-                            format!("{} {}", subjects.join(" "), m.overlay_query),
-                        OverlayTone::Neutral =>
-                            format!("{} {}", m.overlay_query, subjects.join(" ")),
-                    };
+            // Source 2: spoken subject keywords (proper nouns / entities)
+            let spoken_kws = if window_text.is_empty() {
+                Vec::new()
+            } else {
+                extract_subject_keywords(&window_text)
+            };
 
-                    // Cap at 60 chars so yt-dlp search isn't too long
-                    let refined: String = refined.chars().take(60).collect();
+            let llm_query_is_meme = is_meme_query(&m.overlay_query);
 
-                    // Auto-adjust overlay style based on tone (if LLM left it as "auto")
-                    if m.overlay_style.is_empty() || m.overlay_style == "auto" {
-                        m.overlay_style = match tone {
-                            OverlayTone::Funny   => "pip".to_owned(),
-                            OverlayTone::Serious => "sticker".to_owned(),
-                            OverlayTone::Neutral => "auto".to_owned(),
-                        };
+            if llm_query_is_meme {
+                tracing::warn!(
+                    "  🎬 Overlay: LLM returned generic meme query \"{}\" — replacing with context keywords",
+                    m.overlay_query
+                );
+            }
+
+            // Build refined query when we have context OR when LLM used a meme query.
+            // When LLM used a meme query, we DISCARD it entirely and use only visual+spoken keywords.
+            // When LLM used a topic-relevant query, we PREPEND visual+spoken then APPEND LLM words.
+            if !visual_kws.is_empty() || !spoken_kws.is_empty() || llm_query_is_meme {
+                let mut parts: Vec<String> = Vec::new();
+                for kw in visual_kws.iter().chain(spoken_kws.iter()) {
+                    if !parts.iter().any(|p: &String| p.to_lowercase().contains(&kw.to_lowercase())) {
+                        parts.push(kw.clone());
                     }
+                }
+                if !llm_query_is_meme {
+                    // Topic-relevant LLM query: append its words not already covered
+                    for word in m.overlay_query.split_whitespace() {
+                        let w = word.to_lowercase();
+                        if w.len() >= 4 && !parts.iter().any(|p| p.to_lowercase().contains(&w)) {
+                            parts.push(w);
+                        }
+                    }
+                }
+                // Meme query: LLM words are fully discarded; only visual+spoken context survives.
 
-                    tracing::info!(
-                        "  🎬 Overlay refined (tone={:?}): \"{}\" → \"{}\"  context=\"{}…\"",
-                        tone, m.overlay_query, refined,
-                        window_text.chars().take(55).collect::<String>()
-                    );
-                    m.overlay_query = refined;
+                if !parts.is_empty() {
+                    let refined: String = parts.join(" ").chars().take(60).collect();
+
+                    if refined != m.overlay_query {
+                        tracing::info!(
+                            "  🎬 Overlay refined: \"{}\" → \"{}\"  visual=\"{}\"  spoken=\"{}\"",
+                            m.overlay_query,
+                            refined,
+                            visual_note.chars().take(50).collect::<String>(),
+                            window_text.chars().take(50).collect::<String>(),
+                        );
+                        m.overlay_query = refined;
+                    }
                 }
             }
         }
     }
 }
 
-/// Tone of spoken text — used to determine overlay style and query flavour.
-#[derive(Debug, Clone, PartialEq)]
-enum OverlayTone { Funny, Serious, Neutral }
-
-/// Detect whether spoken text has a funny, serious, or neutral tone.
-/// Uses vocabulary from VocabCache (Supabase) or hardcoded defaults as fallback.
-fn detect_spoken_tone(text: &str) -> OverlayTone {
-    detect_spoken_tone_with_vocab(text, None)
-}
-
-fn detect_spoken_tone_with_vocab(text: &str, vocab: Option<&crate::rag::VocabCache>) -> OverlayTone {
-    let t = text.to_lowercase();
-
-    // Use Supabase vocab if available, else hardcoded defaults
-    let defaults = crate::rag::VocabCache::defaults(3600);
-    let funny_list  = vocab.map(|v| v.tone_funny.as_slice()).unwrap_or(defaults.tone_funny.as_slice());
-    let serious_list = vocab.map(|v| v.tone_serious.as_slice()).unwrap_or(defaults.tone_serious.as_slice());
-
-    let funny_score: usize  = funny_list.iter().filter(|w| t.contains(w.as_str())).count();
-    let serious_score: usize = serious_list.iter().filter(|w| t.contains(w.as_str())).count();
-    // Exclamation/question marks as humor signals
-    let excl = text.chars().filter(|&c| c == '!' || c == '?').count();
-    let funny_score = funny_score + (excl / 2);
-
-    if funny_score > serious_score && funny_score >= 1 {
-        OverlayTone::Funny
-    } else if serious_score > funny_score && serious_score >= 1 {
-        OverlayTone::Serious
-    } else {
-        OverlayTone::Neutral
-    }
-}
 
 /// Extract subject keywords (proper names, entities) from Indonesian spoken text.
 /// Finds proper nouns and title+name patterns like "Pak Jokowi", "Dr Tirta".
@@ -1070,6 +1231,191 @@ fn extract_subject_keywords(text: &str) -> Vec<String> {
     keywords.dedup();
     keywords.truncate(2);  // max 2 keywords → keep query focused
     keywords
+}
+
+/// Write a human-readable overlay query debug log to `path`.
+///
+/// Records every moment's overlay intent — LLM-generated query, post-enrichment
+/// query, style, timing, spoken context, and nearest visual frame description.
+/// Use this file to diagnose irrelevant or stale cached overlay clips.
+async fn write_overlay_debug_log(
+    path:         &Path,
+    moments:      &[crate::analyze::schema::ViralMoment],
+    pre_queries:  &[String],
+    descriptions: &[VideoDescription],
+) {
+    use std::fmt::Write as _;
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    let mut log = String::with_capacity(2048);
+
+    let _ = writeln!(log, "OVERLAY QUERY DEBUG LOG");
+    let _ = writeln!(log, "Generated : {now}");
+    let _ = writeln!(log, "Moments   : {}", moments.len());
+    let _ = writeln!(log, "{}", "═".repeat(64));
+
+    let has_overlays = moments.iter().any(|m| !m.overlay_query.is_empty());
+    if !has_overlays {
+        let _ = writeln!(log, "\n(no overlay queries generated for any moment)");
+    }
+
+    for (i, m) in moments.iter().enumerate() {
+        let orig = pre_queries.get(i).map(|s| s.as_str()).unwrap_or("");
+        let peak_t = m.start_sec + m.overlay_at_sec;
+        let visual = find_nearest_description(descriptions, peak_t)
+            .map(|d| d.text.clone())
+            .unwrap_or_default();
+
+        let _ = writeln!(log);
+        let _ = writeln!(log, "[{}/{}] \"{}\"", i + 1, moments.len(), m.title);
+        let _ = writeln!(log, "  clip range     : {:.1}s – {:.1}s  ({:.0}s)", m.start_sec, m.end_sec, m.duration());
+
+        if m.overlay_query.is_empty() {
+            let _ = writeln!(log, "  overlay_query  : (none — no overlay for this clip)");
+        } else {
+            let _ = writeln!(log, "  overlay at     : clip+{:.1}s  (abs {:.1}s)  show {:.1}s",
+                m.overlay_at_sec, peak_t, m.overlay_duration);
+            let _ = writeln!(log, "  LLM query      : \"{}\"", orig);
+            if m.overlay_query != orig {
+                let _ = writeln!(log, "  refined query  : \"{}\"  ← visual+spoken enrichment", m.overlay_query);
+            } else {
+                let _ = writeln!(log, "  refined query  : (unchanged)");
+            }
+            let _ = writeln!(log, "  overlay_style  : \"{}\"  position: \"{}\"",
+                m.overlay_style, m.overlay_position);
+            if !m.overlay_context_text.is_empty() {
+                let ctx = m.overlay_context_text.chars().take(100).collect::<String>();
+                let _ = writeln!(log, "  spoken context : \"{}{}\"",
+                    ctx, if m.overlay_context_text.len() > 100 { "…" } else { "" });
+            }
+            if !visual.is_empty() {
+                let vis = visual.chars().take(120).collect::<String>();
+                let _ = writeln!(log, "  visual@peak    : \"{}{}\"",
+                    vis, if visual.len() > 120 { "…" } else { "" });
+            } else {
+                let _ = writeln!(log, "  visual@peak    : (no frame description near {:.1}s)", peak_t);
+            }
+
+            // Cache key — same hash used by overlay.rs to determine cache filename
+            let hash = format!("{:x}", md5::compute(m.overlay_query.to_lowercase().trim().as_bytes()));
+            let _ = writeln!(log, "  cache key      : {hash}_*.mp4");
+        }
+        let _ = writeln!(log, "  {}", "─".repeat(60));
+    }
+
+    let _ = writeln!(log);
+    let _ = writeln!(log,
+        "NOTE: If cached overlays look wrong, delete the matching overlay_cache/<hash>_*.mp4 \
+         file and re-run. Query changes only take effect when the cache file is absent."
+    );
+
+    match tokio::fs::write(path, &log).await {
+        Ok(_)  => info!("  📝 Overlay debug log: {}", path.display()),
+        Err(e) => warn!("overlay debug log write failed: {e}"),
+    }
+}
+
+/// Return the `VideoDescription` whose timestamp is closest to `target_sec`,
+/// within a ±10-second window. Returns `None` when descriptions is empty or
+/// nothing falls within the window.
+fn find_nearest_description(descriptions: &[VideoDescription], target_sec: f64) -> Option<&VideoDescription> {
+    descriptions.iter()
+        .filter(|d| (d.timestamp_sec - target_sec).abs() <= 10.0)
+        .min_by(|a, b| {
+            let da = (a.timestamp_sec - target_sec).abs();
+            let db = (b.timestamp_sec - target_sec).abs();
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+/// Detect whether an overlay query is a generic meme/reaction phrase with no topic value.
+///
+/// Called by `enrich_moments_from_transcript` to identify cases where the LLM ignored
+/// the RULE 7 ban and returned a reaction phrase instead of a topic-relevant query.
+/// When true, the entire LLM query is discarded and replaced with context keywords.
+fn is_meme_query(query: &str) -> bool {
+    const MEME_SIGNALS: &[&str] = &[
+        // English generic reaction
+        "reaction face", "shocked face", "shocked reaction", "mind blown",
+        "funny fail", "fail reaction", "omg reaction", "wow reaction",
+        "amazing reaction", "unbelievable reaction", "viral reaction",
+        "laugh reaction", "crying reaction", "surprise reaction",
+        // Standalone meme-only words that appear without any topic context
+        "reaction tiktok", "reaction viral", "meme reaction", "meme face",
+        // Indonesian generic reaction
+        "kaget parah", "terkejut banget", "reaksi kaget", "ekspresi kaget",
+        "meme lucu", "reaksi viral", "momen lucu", "lucu parah",
+        // Generic non-topic words (only flag when the ENTIRE query is these words)
+    ];
+
+    let q = query.trim().to_lowercase();
+    if q.is_empty() { return false; }
+
+    // Signal 1: query contains a known multi-word meme phrase
+    if MEME_SIGNALS.iter().any(|sig| q.contains(sig)) {
+        return true;
+    }
+
+    // Signal 2: ALL words in the query are generic emotion/reaction words with no topic noun.
+    // This catches things like "shocked face viral" or "kaget terkejut parah".
+    const GENERIC_WORDS: &[&str] = &[
+        "shocked", "reaction", "face", "mind", "blown", "funny", "fail",
+        "omg", "wtf", "lol", "wow", "viral", "amazing", "unbelievable",
+        "kaget", "terkejut", "lucu", "parah", "banget", "ekspresi", "reaksi",
+        "ngakak", "haha", "hehe", "seru", "keren", "gila", "aduh",
+    ];
+    let words: Vec<&str> = q.split_whitespace().collect();
+    if !words.is_empty() && words.iter().all(|w| GENERIC_WORDS.contains(w)) {
+        return true;
+    }
+
+    false
+}
+
+/// Extract searchable visual keywords from a vision-model frame description.
+///
+/// Talking-head descriptions ("presenter talking to camera") contain no useful
+/// scene content for an overlay query, so they return an empty list — the spoken
+/// transcript subjects are sufficient in that case.  For everything else (charts,
+/// outdoor scenes, events, objects) the function picks the most content-bearing
+/// words (≥5 chars, not generic visual stop-words) to include in the search query.
+fn extract_visual_keywords(note: &str) -> Vec<String> {
+    if note.is_empty() { return Vec::new(); }
+
+    const STOP: &[&str] = &[
+        // Visual/camera jargon — useless for search
+        "video", "screen", "frame", "image", "camera", "shot", "scene",
+        "showing", "visible", "appears", "display", "close-up",
+        "background", "foreground", "lighting", "light",
+        // People descriptors — too generic
+        "person", "people", "woman", "man", "human", "figure",
+        "speaking", "talking", "looking", "facing", "wearing", "holding",
+        // Common filler adjectives
+        "various", "several", "multiple", "large", "small", "clear",
+    ];
+
+    let lower = note.to_lowercase();
+
+    // Talking-head heuristic: presenter/host talking straight to camera with
+    // no notable background scene → visual adds nothing over spoken keywords.
+    let is_talking_head =
+        (lower.contains("presenter") || lower.contains("host") || lower.contains("speaker"))
+        && (lower.contains("to camera") || lower.contains("facing camera")
+            || lower.contains("plain background") || lower.contains("white background")
+            || lower.contains("simple background"))
+        && !lower.contains("chart") && !lower.contains("graph")
+        && !lower.contains("aerial") && !lower.contains("drone")
+        && !lower.contains("crowd") && !lower.contains("outdoor")
+        && !lower.contains("footage");
+
+    if is_talking_head { return Vec::new(); }
+
+    // Extract content-bearing words: ≥5 chars, not in STOP list
+    note.split_whitespace()
+        .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
+        .filter(|w| w.len() >= 5 && !STOP.contains(&w.as_str()))
+        .take(3)
+        .collect()
 }
 
 /// Fraction of words in `needle` that appear in `haystack` (case-insensitive).
@@ -1293,6 +1639,422 @@ fn inject_intro_marker(compact: &str, intro_end_sec: f64) -> String {
     result
 }
 
+// ── Ceremony content detection ───────────────────────────────────────────
+
+/// Returns `true` if the transcript segment text is a ceremony / event-opening segment
+/// rather than substantive content — even when it appears mid-video.
+///
+/// Live recordings (YouTube, talk shows) often contain a second "intro" segment well
+/// past the video's actual start: the MC's audience greeting when the live event begins,
+/// a guest roll-call, or an applause ceremony for a new panelist. These pass the
+/// timestamp-based `intro_end_sec` filter but contain zero viral value.
+///
+/// Triggers (any one is sufficient):
+///   • Applause ceremony: "tepuk tangan buat/untuk/dulu" or ≥ 2 occurrences of "tepuk tangan"
+///   • Event MC greeting: "selamat malam/pagi/sore mahasiswa/teman-teman/para hadirin"
+///   • Show announcement: "episode khusus", "gost to campus", similar program tags
+///   • Guest roll-call: ≥ 3 occurrences of "ada" within a short segment (listing guests)
+fn has_ceremony_transcript(text: &str) -> bool {
+    let t = text.to_lowercase();
+
+    // ── Applause ceremony ────────────────────────────────────────────────────
+    // "tepuk tangan buat/untuk" = welcoming a specific person with applause
+    // "tepuk tangan dulu"       = "give applause first" (MC instruction)
+    if t.contains("tepuk tangan buat")
+        || t.contains("tepuk tangan untuk")
+        || t.contains("tepuk tangan dulu")
+    {
+        return true;
+    }
+    // Two or more "tepuk tangan" in one segment = applause ceremony (not a metaphor)
+    if t.matches("tepuk tangan").count() >= 2 {
+        return true;
+    }
+
+    // ── Event MC audience greeting ───────────────────────────────────────────
+    for phrase in &[
+        "selamat malam mahasiswa",
+        "selamat malam teman-teman",
+        "selamat malam para hadirin",
+        "selamat pagi teman-teman",
+        "selamat sore teman-teman",
+        "selamat malam semua",
+    ] {
+        if t.contains(phrase) {
+            return true;
+        }
+    }
+
+    // ── Show episode/program announcement ───────────────────────────────────
+    for phrase in &["episode khusus", "gost to campus", "go to campus"] {
+        if t.contains(phrase) {
+            return true;
+        }
+    }
+
+    // ── Guest roll-call: 3+ "ada [Name]" in one short segment ───────────────
+    // e.g. "Ada Pak Arijito... ada Tio... ada Rocky Gerung... ada Isla Bahrawi"
+    // Counting raw "ada " occurrences in transcript_segment ≥ 4 is a strong roll-call signal.
+    // (Normal conversation rarely uses "ada" 4+ times in a 30s stretch)
+    if t.matches(" ada ").count() >= 4 {
+        return true;
+    }
+
+    false
+}
+
+// ── Outro detection ───────────────────────────────────────────────────────────
+
+/// Detect where the video outro begins — subscribe CTAs, farewells, end-cards, music bed.
+///
+/// Combines TWO independent signals, then returns the EARLIEST that falls inside
+/// the scan window (the first hint of outro is the safe boundary).
+///
+///   Signal 1 — `detect_speech_end_gap_outro`:
+///     If the last Whisper segment ends ≥ 8 s before the video's total duration,
+///     there is a silent / music-bed section at the end (end-card, credits).
+///
+///   Signal 2 — `detect_keyword_outro`:
+///     First occurrence of a farewell / subscribe-CTA / next-video keyword
+///     within the scan window at the tail of the video.
+///
+/// Scan window: last 15% of the video, capped at 180 s — symmetric with intro's
+/// first 15% / 120 s window, but slightly wider because outros can include a
+/// sponsor segment before the farewell.
+///
+/// Returns 0.0 if no outro is detected (callers treat 0.0 as "no outro").
+fn detect_outro_start(transcript: &Transcript, max_clip_end_sec_override: f64) -> f64 {
+    // Manual override wins — user set it explicitly in config.toml
+    if max_clip_end_sec_override > 0.0 { return max_clip_end_sec_override; }
+
+    let total_dur = transcript.duration_ms as f64 / 1000.0;
+
+    // Very short videos (< 2 min) are unlikely to have a meaningful outro section
+    if total_dur < 120.0 { return 0.0; }
+
+    // Scan window: last 15%, max 3 minutes
+    let scan_window = (total_dur * 0.15).min(180.0);
+    let scan_from   = total_dur - scan_window;
+
+    let speech_end = detect_speech_end_gap_outro(transcript, total_dur);
+    let kw_start   = detect_keyword_outro(transcript, scan_from);
+
+    // Collect valid signals: must be inside the scan window and before total_dur
+    let candidates: Vec<f64> = [speech_end, kw_start]
+        .iter()
+        .filter(|&&t| t >= scan_from && t < total_dur)
+        .copied()
+        .collect();
+
+    let outro_start = candidates.iter().cloned().fold(f64::NAN, f64::min);
+
+    tracing::debug!(
+        "outro detection: speech_end={:.1}s  keyword={:.1}s  scan_from={:.1}s  → {}",
+        speech_end, kw_start, scan_from,
+        if outro_start.is_nan() { "none".to_string() } else { format!("{:.1}s", outro_start) }
+    );
+
+    if outro_start.is_nan() { 0.0 } else { outro_start }
+}
+
+/// Signal 1 — Detect a music/silent section at the tail of the video.
+///
+/// When a video ends with background music, an end-card jingle, or credits,
+/// Whisper produces no transcript segments for that period. If the last speech
+/// segment ends significantly before the video's total duration there is an
+/// audio-only / silent outro section.
+fn detect_speech_end_gap_outro(transcript: &Transcript, total_dur: f64) -> f64 {
+    // 8 s is conservative: short music stings are ≤4 s; real end-cards are ≥8 s.
+    const MIN_GAP_SEC: f64 = 8.0;
+
+    if let Some(last) = transcript.segments.last() {
+        let last_end_sec = last.end_ms as f64 / 1000.0;
+        if total_dur - last_end_sec >= MIN_GAP_SEC {
+            return last_end_sec;
+        }
+    }
+    0.0
+}
+
+/// Signal 2 — Find the first outro keyword in the tail scan window.
+///
+/// Scans from `scan_from` to the end of the transcript looking for known
+/// farewell / CTA / next-video keywords.  Returns the start timestamp of the
+/// FIRST segment containing such a keyword (= where the outro begins).
+///
+/// "First in scan window" is the correct semantics: the moment the host pivots
+/// to closing remarks is where substantive content ends.
+fn detect_keyword_outro(transcript: &Transcript, scan_from: f64) -> f64 {
+    let defaults = crate::rag::VocabCache::defaults(3600);
+    let outro_keywords = &defaults.outro;
+    let mut first_match = 0.0_f64;
+
+    for seg in &transcript.segments {
+        let seg_start = seg.start_ms as f64 / 1000.0;
+        if seg_start < scan_from { continue; }
+
+        let text_lower = seg.text.to_lowercase();
+        if outro_keywords.iter().any(|kw| text_lower.contains(kw.as_str())) {
+            // Return the very first hit — that is where the outro section begins
+            if first_match <= 0.0 {
+                first_match = seg_start;
+                // Do not break — keep scanning; the debug log in detect_outro_start
+                // already shows the value, but we don't need later ones here.
+                break;
+            }
+        }
+    }
+
+    first_match
+}
+
+/// Inject a visible boundary marker into the compact transcript at `outro_start_sec`.
+///
+/// The marker tells the LLM exactly where the outro begins so it avoids picking
+/// moments at or after that point.  Symmetric to `inject_intro_marker()`.
+fn inject_outro_marker(compact: &str, outro_start_sec: f64) -> String {
+    let marker = format!(
+        "━━━ OUTRO STARTS HERE (t={:.0}s) — DO NOT pick moments at or after this line ━━━",
+        outro_start_sec
+    );
+
+    let mut result   = String::with_capacity(compact.len() + marker.len() + 2);
+    let mut inserted = false;
+
+    for line in compact.lines() {
+        if !inserted {
+            if let Some(ts) = parse_compact_timestamp(line) {
+                if ts >= outro_start_sec {
+                    result.push_str(&marker);
+                    result.push('\n');
+                    inserted = true;
+                }
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    // If no timestamp ≥ outro_start_sec was found, append marker at the end
+    if !inserted {
+        result.push_str(&marker);
+        result.push('\n');
+    }
+
+    result
+}
+
+// ── Clip boundary helpers ─────────────────────────────────────────────────
+
+/// Advance start_sec forward past a run of pure filler/back-channel words.
+///
+/// When the LLM places start_sec at a point where the first words are repeated
+/// fillers or acknowledgement responses ("Ya. Ya. Ya. Oke. Iya." before the
+/// guest starts speaking), the clip opens with dead air / awkward agreement noise
+/// instead of the actual hook.
+///
+/// This function scans up to `MAX_SKIP_SEC` forward and advances start_sec to
+/// the first Whisper segment whose content is NOT exclusively filler words.
+/// The clip's total duration is preserved by also advancing end_sec by the same
+/// amount (capped at MAX_CLIP_SEC).
+fn snap_start_past_fillers(moments: &mut Vec<ViralMoment>, transcript: &Transcript) {
+    // Single-word / pure filler segments to skip at clip open.
+    // We only skip if ALL words in the segment are fillers — mixed segments are kept.
+    const FILLERS: &[&str] = &[
+        "ya", "iya", "oke", "ee", "em", "eh", "ah", "oh", "uh", "um", "e",
+        "mhm", "mm", "hmm", "hm", "yep", "yup", "ok", "yah",
+    ];
+    const MAX_SKIP_SEC: f64 = 6.0;   // never skip more than 6s at clip open
+    const MAX_CLIP_SEC: f64 = 90.0;
+
+    for m in moments.iter_mut() {
+        let orig_start = m.start_sec;
+        let scan_end   = (m.start_sec + MAX_SKIP_SEC).min(m.end_sec);
+
+        let start_ms = (m.start_sec * 1000.0) as i64;
+        let scan_end_ms = (scan_end * 1000.0) as i64;
+
+        // Walk segments from start_sec forward while they are all-filler
+        let mut new_start: Option<f64> = None;
+        for seg in &transcript.segments {
+            let seg_s = seg.start_ms as i64;
+            let seg_e = seg.end_ms   as i64;
+
+            if seg_e <= start_ms  { continue; }     // before clip start
+            if seg_s >= scan_end_ms { break; }       // past scan window
+
+            let words: Vec<String> = seg.text
+                .split_whitespace()
+                .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphabetic()).to_owned())
+                .filter(|w| !w.is_empty())
+                .collect();
+
+            if words.is_empty() { continue; }
+
+            let all_filler = words.iter().all(|w| FILLERS.contains(&w.as_str()));
+            if all_filler {
+                // Mark the end of this filler segment as a candidate new start
+                new_start = Some(seg.end_ms as f64 / 1000.0);
+            } else {
+                // First non-filler segment — stop scanning
+                break;
+            }
+        }
+
+        if let Some(ns) = new_start {
+            let advance = ns - orig_start;
+            if advance > 0.1 {
+                let total_sec = transcript.duration_ms as f64 / 1000.0;
+                m.start_sec = ns;
+                // Shift end_sec forward by the same amount, capped at 90s duration and video end
+                let new_end = (m.end_sec + advance)
+                    .min(m.start_sec + MAX_CLIP_SEC)
+                    .min(total_sec);
+                // Only extend end if it doesn't shrink the clip below 10s
+                if new_end - m.start_sec >= 10.0 {
+                    m.end_sec = new_end;
+                }
+                info!(
+                    "  ✂️  start advanced {:.2}s → {:.2}s (+{:.1}s filler skip): \"{}\"",
+                    orig_start, m.start_sec, advance, m.title
+                );
+            }
+        }
+    }
+}
+
+/// Extend end_sec forward to the nearest clean sentence boundary in the transcript.
+///
+/// Strategy (in priority order):
+///   1. Snap out of mid-segment interior → segment end.
+///   2. Look for an inter-segment silence gap ≥ SILENCE_MS within [end_sec, end_sec + MAX_EXTEND].
+///      Whisper's VAD inserts gaps at natural breath/pause points, making this the most
+///      reliable sentence-boundary signal for conversational speech.
+///   3. Fallback: if the last word is a known connector/filler, scan forward segment-by-segment
+///      for the first non-connector terminal.
+///
+/// Clips are never extended past 90 s total duration or the video end.
+fn snap_end_to_sentence_boundary(moments: &mut Vec<ViralMoment>, transcript: &Transcript) {
+    // Silence gap between consecutive Whisper segments that reliably marks a sentence boundary.
+    // 300 ms is the sweet spot for conversational Indonesian: natural breath pauses are ≥300 ms,
+    // while mid-sentence micro-pauses rarely exceed 200 ms.
+    const SILENCE_MS: i64 = 300;
+
+    // Fallback: words that signal the speaker has NOT finished their sentence.
+    const CONNECTORS: &[&str] = &[
+        // Indonesian subordinating conjunctions / prepositions / fillers
+        "yang", "dan", "atau", "tapi", "tetapi", "namun", "karena",
+        "sehingga", "maka", "kalau", "jika", "bila", "apabila", "ketika",
+        "untuk", "dengan", "dari", "ke", "pada", "dalam", "oleh",
+        "bahwa", "bahkan", "agar", "supaya", "setelah", "sebelum",
+        "walaupun", "meskipun", "saat", "sampai", "ini", "itu",
+        // Filler / mid-speech sounds Whisper transcribes as words
+        "ee", "em", "eh", "ah", "oh", "uh", "um", "e",
+        // English connectors
+        "and", "but", "or", "so", "because", "although", "while",
+        "when", "if", "unless", "until", "that", "which", "who", "as",
+    ];
+
+    const MAX_EXTEND_SEC: f64 = 15.0;
+    const MAX_CLIP_SEC:   f64 = 90.0;
+
+    // Build a sorted list of (gap_start_ms, gap_end_ms) from consecutive segment pairs.
+    // We compute this once outside the moment loop.
+    let gaps: Vec<(i64, i64)> = transcript.segments.windows(2)
+        .filter_map(|w| {
+            let gap = w[1].start_ms as i64 - w[0].end_ms as i64;
+            if gap >= SILENCE_MS {
+                Some((w[0].end_ms as i64, w[1].start_ms as i64))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for m in moments.iter_mut() {
+        let orig_end  = m.end_sec;
+        let end_ms    = (m.end_sec * 1000.0) as i64;
+        let total_sec = transcript.duration_ms as f64 / 1000.0;
+        let max_end   = (m.start_sec + MAX_CLIP_SEC).min(total_sec);
+
+        // ── Step 1: snap out of a segment interior ─────────────────────────
+        let mut snapped = false;
+        for seg in &transcript.segments {
+            let s = seg.start_ms as i64;
+            let e = seg.end_ms   as i64;
+            if s < end_ms && end_ms < e {
+                m.end_sec = (e as f64 / 1000.0).min(max_end);
+                snapped = true;
+                break;
+            }
+        }
+
+        // ── Step 2: find nearest silence gap after current end ─────────────
+        let look_from_ms  = (m.end_sec * 1000.0) as i64;
+        let look_until_ms = ((m.end_sec + MAX_EXTEND_SEC).min(max_end) * 1000.0) as i64;
+
+        let gap_hit = gaps.iter().find(|(gap_s, gap_e)| {
+            // Gap must start at or after current end (allow 100 ms overlap for rounding)
+            *gap_s >= look_from_ms - 100 && *gap_e <= look_until_ms
+        });
+
+        if let Some((gap_start_ms, _)) = gap_hit {
+            // Snap to the last segment that ends at or before this gap
+            let boundary_sec = *gap_start_ms as f64 / 1000.0;
+            if boundary_sec > m.end_sec + 0.05 {
+                m.end_sec = boundary_sec.min(max_end);
+            }
+        } else {
+            // ── Step 3: fallback — connector-word scan ─────────────────────
+            let cur_end_ms = (m.end_sec * 1000.0) as i64;
+            let last_word: Option<String> = transcript.segments.iter()
+                .filter(|s| s.end_ms as i64 <= cur_end_ms + 80)
+                .last()
+                .and_then(|s| s.text.split_whitespace().last()
+                    .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase()));
+
+            let is_open = last_word.as_deref().map_or(false, |w| {
+                CONNECTORS.contains(&w) || w.len() == 1
+            });
+
+            // Also snap if we just snapped into a segment and that segment itself ends on a connector
+            let is_open = is_open || (snapped && {
+                transcript.segments.iter()
+                    .filter(|s| s.end_ms as i64 <= cur_end_ms + 80)
+                    .last()
+                    .and_then(|s| s.text.split_whitespace().last()
+                        .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase()))
+                    .as_deref()
+                    .map_or(false, |w| CONNECTORS.contains(&w) || w.len() == 1)
+            });
+
+            if is_open {
+                let look_until = (m.end_sec + MAX_EXTEND_SEC).min(max_end);
+                for seg in &transcript.segments {
+                    let seg_start = seg.start_ms as f64 / 1000.0;
+                    let seg_end   = seg.end_ms   as f64 / 1000.0;
+                    if seg_start < m.end_sec - 0.05 { continue; }
+                    if seg_end   > look_until        { break; }
+                    let last = seg.text.split_whitespace().last()
+                        .map(|w| w.trim_matches(|c: char| !c.is_alphabetic()).to_lowercase())
+                        .unwrap_or_default();
+                    if !CONNECTORS.contains(&last.as_str()) && last.len() > 1 {
+                        m.end_sec = seg_end.min(max_end);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (m.end_sec - orig_end) > 0.05 {
+            info!(
+                "  ✂️  end_sec adjusted {:.2}s → {:.2}s (+{:.1}s): \"{}\"",
+                orig_end, m.end_sec, m.end_sec - orig_end, m.title
+            );
+        }
+    }
+}
+
 // ── RAG helpers ─────────────────────────────────────────────────────────
 
 /// Query Supabase untuk past moments yang mirip dan format sebagai prompt context block.
@@ -1312,7 +2074,7 @@ async fn build_rag_context(
     let embed_cfg = crate::rag::embed::EmbedConfig::from_app_config(config);
     if !embed_cfg.is_valid() {
         tracing::debug!(
-            "rag: embed provider '{}' tidak valid atau API key tidak di-set — skip retrieval",
+            "rag: embed provider '{}' invalid or API key not set — skip retrieval",
             embed_cfg.provider
         );
         return None;
@@ -1349,7 +2111,7 @@ async fn build_rag_context(
     ).await.ok()?;
 
     if similar.is_empty() {
-        tracing::debug!("rag: tidak ada past moments yang mirip");
+        tracing::debug!("rag: no similar past moments found");
         return None;
     }
 
@@ -1364,10 +2126,13 @@ async fn build_rag_context(
 
 /// Store finalized moments ke Supabase dalam background task (non-blocking).
 fn store_moments_to_rag(
-    moments:    Vec<crate::analyze::schema::ViralMoment>,
-    cfg:        crate::config::VectorDbConfig,
-    embed_cfg:  crate::rag::embed::EmbedConfig,
-    job_id:     String,
+    moments:       Vec<crate::analyze::schema::ViralMoment>,
+    cfg:           crate::config::VectorDbConfig,
+    embed_cfg:     crate::rag::embed::EmbedConfig,
+    job_id:        String,
+    video_title:   String,
+    video_channel: String,
+    language:      String,
 ) {
     if !cfg.enabled || cfg.supabase_url.is_empty() || !embed_cfg.is_valid() {
         return;
@@ -1390,8 +2155,8 @@ fn store_moments_to_rag(
         }
 
         tracing::info!(
-            "  🧠 RAG: menyimpan {} moments via provider '{}'",
-            moments.len(), embed_cfg.provider
+            "  🧠 RAG: storing {} moments — video=\"{}\" channel=\"{}\" via provider '{}'",
+            moments.len(), video_title, video_channel, embed_cfg.provider
         );
 
         // Connect dan store
@@ -1399,7 +2164,7 @@ fn store_moments_to_rag(
             Ok(store) => {
                 match store.store_moments(
                     &moments, &embeddings,
-                    &job_id, "", "", "id",
+                    &job_id, &video_title, &video_channel, &language,
                 ).await {
                     Ok(n)  => tracing::info!("  🧠 RAG: stored {n} moments to Supabase"),
                     Err(e) => tracing::warn!("rag: storage failed: {e}"),
@@ -1464,6 +2229,120 @@ If a [🎯] segment is part of a compelling moment, always include it.
     )
 }
 
+// ── Clip deduplication ────────────────────────────────────────────────────────
+
+/// Returns `true` when two clips share more than 35% of the shorter clip's duration.
+///
+/// Replaces the old `|start_diff|<10 AND |end_diff|<10` check which missed overlapping
+/// clips that differ by more than 10s in start_sec but share large amounts of content
+/// (e.g., clip A 357-398s and clip B 378-414s share 20s = 48% of the shorter clip).
+fn clips_overlap_significant(a_s: f64, a_e: f64, b_s: f64, b_e: f64) -> bool {
+    let overlap_start = a_s.max(b_s);
+    let overlap_end   = a_e.min(b_e);
+    if overlap_end <= overlap_start { return false; }
+
+    let overlap  = overlap_end - overlap_start;
+    let a_dur    = (a_e - a_s).max(0.001);
+    let b_dur    = (b_e - b_s).max(0.001);
+    let min_dur  = a_dur.min(b_dur);
+
+    // >35% of the shorter clip's duration is shared → treat as duplicate
+    overlap / min_dur > 0.35
+}
+
+// ── Temporal diversity selection ──────────────────────────────────────────────
+
+/// Select `max_clips` moments with guaranteed temporal coverage of the full video.
+///
+/// **Problem with pure quality sort**: after aggregating candidates from ~12+ chunks,
+/// keyword-frequency sorting picks early-video content disproportionately because:
+///   • Intro/setup segments establish the topic → highest keyword density
+///   • Later analysis/conclusion segments use the topic without repeating keywords
+///   Result: 90% of clips come from the first 30% of a 72-min video.
+///
+/// **Solution — two-phase bucketed selection**:
+///   Phase 1: Divide video into `max_clips` equal time buckets.
+///            From each bucket take the highest-scoring moment.
+///            This guarantees at least one clip from every 1/max_clips of the video.
+///
+///   Phase 2: Some buckets may be empty (no moments found by the LLM).
+///            Fill remaining slots with the next-best moments from any bucket,
+///            sorted by combined quality score (keyword + energy).
+///
+/// Returns moments sorted chronologically.
+fn select_temporally_diverse(
+    moments:        Vec<ViralMoment>,
+    max_clips:      usize,
+    total_duration: f64,
+    focus_keywords: &[String],
+) -> Vec<ViralMoment> {
+    if moments.is_empty() || max_clips == 0 { return moments; }
+
+    // Compute quality score for each moment.
+    // Keyword relevance (×5) + energy level (1-3).
+    let scores: Vec<i32> = moments.iter().map(|m| {
+        let kw: i32 = if focus_keywords.is_empty() { 0 } else {
+            let h = format!("{} {} {}", m.title, m.hook, m.reason).to_lowercase();
+            focus_keywords.iter()
+                .filter(|k| h.contains(k.to_lowercase().as_str()))
+                .count() as i32 * 5
+        };
+        let en: i32 = match m.energy.to_lowercase().as_str() {
+            "high" => 3, "medium" => 2, _ => 1,
+        };
+        kw + en
+    }).collect();
+
+    // Assign each moment to a time bucket
+    let bucket_size = total_duration / max_clips as f64;
+    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); max_clips];
+    for (i, m) in moments.iter().enumerate() {
+        let b = ((m.start_sec / bucket_size) as usize).min(max_clips - 1);
+        buckets[b].push(i);
+    }
+
+    let mut selected: std::collections::BTreeSet<usize> = Default::default();
+
+    // Phase 1: one best moment per non-empty bucket
+    for bucket in &buckets {
+        if selected.len() >= max_clips { break; }
+        if let Some(&best) = bucket.iter().max_by_key(|&&i| scores[i]) {
+            selected.insert(best);
+        }
+    }
+
+    // Phase 2: fill remaining slots by global quality score
+    if selected.len() < max_clips {
+        let mut remaining: Vec<usize> = (0..moments.len())
+            .filter(|i| !selected.contains(i))
+            .collect();
+        remaining.sort_by(|&a, &b| scores[b].cmp(&scores[a]));
+        for idx in remaining {
+            if selected.len() >= max_clips { break; }
+            selected.insert(idx);
+        }
+    }
+
+    // Collect and sort chronologically
+    let mut result: Vec<ViralMoment> = selected.into_iter()
+        .map(|i| moments[i].clone())
+        .collect();
+    result.sort_by(|a, b| a.start_sec.partial_cmp(&b.start_sec).unwrap_or(std::cmp::Ordering::Equal));
+
+    info!(
+        "  🗺  Temporal selection: {} candidates → {} clips spread across {:.0} min",
+        moments.capacity().max(result.len()),  // note: moments was consumed
+        result.len(),
+        total_duration / 60.0,
+    );
+    for (i, m) in result.iter().enumerate() {
+        let pct = m.start_sec / total_duration * 100.0;
+        info!("        [{}/{}] {:.0}s ({:.0}%) — \"{}\"", i + 1, result.len(), m.start_sec, pct, m.title);
+    }
+
+    result
+}
+
 fn trim_to_char_limit(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_owned();
@@ -1497,5 +2376,61 @@ fn validate_and_clamp(list: &mut ViralMomentList, duration_secs: f64) {
         if m.end_sec - m.start_sec > MAX_CLIP_SECS {
             m.end_sec = m.start_sec + MAX_CLIP_SECS;
         }
+
+        // ── Headline sanitization ─────────────────────────────────────────────
+        // Enforce the 44-char hard limit so `wrap_headline()` never silently
+        // drops words.  Also strips surrounding quotes that LLMs sometimes add.
+        m.headline = sanitize_headline(&m.headline);
+    }
+}
+
+/// Trim whitespace / surrounding quotes, then enforce the 44-char hard limit.
+///
+/// If the raw headline exceeds `HEADLINE_MAX_CHARS`, it is truncated at the last
+/// word boundary that still fits — no trailing "…" (all-caps headlines look
+/// cleaner without it; truncation ideally never happens if the prompt is obeyed).
+///
+/// The 44-char limit matches the `wrap_headline()` capacity in `ffmpeg.rs`
+/// (2 lines × ~22 chars).  If the limit here and there ever diverge, this
+/// function is the authoritative gate.
+fn sanitize_headline(raw: &str) -> String {
+    const HEADLINE_MAX_CHARS: usize = 44;
+
+    // Strip surrounding quotes and leading/trailing whitespace
+    let text = raw
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .trim();
+
+    if text.len() <= HEADLINE_MAX_CHARS {
+        return text.to_owned();
+    }
+
+    // Log and truncate at last word boundary that fits within the limit
+    tracing::warn!(
+        "headline exceeds {HEADLINE_MAX_CHARS} chars ({}), truncating: {:?}",
+        text.len(),
+        text
+    );
+
+    let mut out = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if out.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{out} {word}")
+        };
+        if candidate.len() <= HEADLINE_MAX_CHARS {
+            out = candidate;
+        } else {
+            break;
+        }
+    }
+
+    if out.is_empty() {
+        // Single token longer than 44 chars — hard-slice as last resort
+        text.chars().take(HEADLINE_MAX_CHARS).collect()
+    } else {
+        out
     }
 }

@@ -192,7 +192,7 @@ async fn embed_via_gemini(
     client:  &reqwest::Client,
 ) -> Option<Vec<f32>> {
     if api_key.is_empty() {
-        warn!("rag/embed[gemini]: CLIPPER_GEMINI_API_KEY tidak di-set");
+        warn!("rag/embed[gemini]: CLIPPER_GEMINI_API_KEY not set");
         return None;
     }
 
@@ -231,7 +231,7 @@ async fn embed_via_gemini(
         .collect();
 
     if vec.is_empty() {
-        warn!("rag/embed[gemini]: embedding kosong");
+        warn!("rag/embed[gemini]: empty embedding");
         return None;
     }
 
@@ -260,7 +260,7 @@ async fn embed_via_openai_compat(
 
     let resp = match req.send().await {
         Ok(r)  => r,
-        Err(e) => { warn!("rag/embed[openai-compat]: HTTP error ke {endpoint}: {e}"); return None; }
+        Err(e) => { warn!("rag/embed[openai-compat]: HTTP error to {endpoint}: {e}"); return None; }
     };
 
     if !resp.status().is_success() {
@@ -283,7 +283,7 @@ async fn embed_via_openai_compat(
         .collect();
 
     if vec.is_empty() {
-        warn!("rag/embed[openai-compat]: embedding kosong dari {endpoint}");
+        warn!("rag/embed[openai-compat]: empty embedding from {endpoint}");
         return None;
     }
 

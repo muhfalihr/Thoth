@@ -781,7 +781,13 @@ fn build_headline_filter(
     // pad_x: 40px left margin + 6px accent bar + 10px gap = 56px
     let pad_x:  u32      = 56;
     let pad_top: u32     = 22;
-    let max_chars: usize = if is_wide { 38 } else { 22 };
+    // max_chars: maximum characters per headline line before word-wrapping.
+    // Vertical 1080px panel, Poppins Bold 56px: empirical safe limit is ~24 chars
+    // (~816px at avg 34px/glyph + 56px left pad = 872px, well within the frame).
+    // 22 was too tight — it caused last-word truncation on common 36-42 char headlines
+    // like "INVESTOR TOLAK INVESTASI KARENA RISIKO" (line2 "INVESTASI KARENA"=16,
+    // "RISIKO"=6 → 23 > 22 → "RISIKO" silently dropped).
+    let max_chars: usize = if is_wide { 38 } else { 24 };
 
     let hl_upper = card.headline.to_uppercase();
     let hl_lines = wrap_headline(&hl_upper, max_chars);
@@ -801,13 +807,30 @@ fn build_headline_filter(
     let y_hl_2   = anim.y_expr(y_hl_2_base);
     let y_source = anim.y_expr(y_source_base);
 
+    // Escape special characters for FFmpeg drawtext `text='...'` option.
+    //
+    // FFmpeg drawtext parsing is two-phase:
+    //   Phase 1 (option parser, single-quoted): `\` is an escape prefix.
+    //     • `\:` → literal `:`  (prevents `:` from being misread as option separator)
+    //     • `\'` → but `'` terminates single-quoted strings — can't be escaped;
+    //              we remove single quotes entirely instead.
+    //
+    //   Phase 2 (text expander): `%{...}` is a runtime variable expansion.
+    //     • `%%` MAY expand to `%` in some FFmpeg versions, but behavior is
+    //       version-dependent: some versions treat the first `%` as the start of
+    //       an invalid format specifier and silently DROP the entire drawtext
+    //       element (headline line 1 becomes invisible).
+    //     • Solution: add `expansion=none` to every drawtext call so Phase 2 is
+    //       bypassed entirely. With expansion disabled, `%` is always a literal
+    //       character — no escaping needed and no version sensitivity.
     let esc = |s: &str| -> String {
         s.chars()
             .filter(|c| !c.is_control())
             .map(|c| match c {
-                '\'' => String::new(),
-                ':'  => "\\:".into(),
-                '%'  => "\\%".into(),
+                '\'' => String::new(),   // single quotes end the option — strip them
+                ':'  => "\\:".into(),    // Phase 1: escape `:` so it's not an option separator
+                // `%` needs no escaping — `expansion=none` on every drawtext call
+                // disables the text expander, so `%` is always treated literally.
                 c    => c.to_string(),
             })
             .collect()
@@ -835,23 +858,26 @@ fn build_headline_filter(
             parts.push(format!(
                 "drawtext={bold_ff}text='{social_text}':fontsize={sz_social}:\
                  fontcolor=#BBBBBB:alpha='{alpha_expr}':x={pad_x}:y='{y_social}':\
-                 enable='{enable}'"
+                 enable='{enable}':expansion=none"
             ));
         }
     }
 
     // ── Headline lines — bold, WHITE text on dark background ──────────────────
+    // `expansion=none` disables drawtext's `%{...}` text expander so that `%`
+    // in the headline (e.g. "90% ...") is always rendered as a literal percent
+    // sign, regardless of FFmpeg version.
     parts.push(format!(
         "drawtext={bold_ff}text='{hl1_text}':fontsize={sz_headline}:\
          fontcolor=#FFFFFF:alpha='{alpha_expr}':x={text_pad_x}:y='{y_hl_1}':\
-         enable='{enable}'"
+         enable='{enable}':expansion=none"
     ));
 
     if !hl2_text.is_empty() {
         parts.push(format!(
             "drawtext={bold_ff}text='{hl2_text}':fontsize={sz_headline}:\
              fontcolor=#FFFFFF:alpha='{alpha_expr}':x={text_pad_x}:y='{y_hl_2}':\
-             enable='{enable}'"
+             enable='{enable}':expansion=none"
         ));
     }
 
@@ -860,7 +886,7 @@ fn build_headline_filter(
         parts.push(format!(
             "drawtext={regular_ff}text='{source_text}':fontsize={sz_source}:\
              fontcolor=#888888:alpha='{alpha_expr}':x={pad_x}:y='{y_source}':\
-             enable='{enable}'"
+             enable='{enable}':expansion=none"
         ));
     }
 

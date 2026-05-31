@@ -341,6 +341,8 @@ fn parse_style_profile(raw: &str) -> Option<StyleProfile> {
         sfx_vibe:       get("sfx_vibe"),
         bgm_vibe:       get("bgm_vibe"),
         overlay_style:  get("overlay_style"),
+        color_mood:     get("color_mood"),
+        gpu_transition: get("gpu_transition"),
     })
 }
 
@@ -368,7 +370,8 @@ fn synthesize_profiles(votes: &[StyleProfile]) -> StyleProfile {
     );
 
     StyleProfile { description: desc, subtitle_style: subtitle, clip_style: clip,
-                   sfx_vibe: sfx, bgm_vibe: bgm, overlay_style: overlay }
+                   sfx_vibe: sfx, bgm_vibe: bgm, overlay_style: overlay,
+                   color_mood: String::new(), gpu_transition: String::new() }
 }
 
 // ── Profile serialization ─────────────────────────────────────────────────────

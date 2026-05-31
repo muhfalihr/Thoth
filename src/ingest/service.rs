@@ -115,10 +115,11 @@ impl<'a> IngestService<'a> {
         eprintln!("  ↓ Fetching metadata for: {url}");
         let pb = spinner("Waiting for yt-dlp…");
 
-        let ytdlp = &self.config.ingest.ytdlp_path;
-        let mut cmd = tokio::process::Command::new(ytdlp);
-        // Tell yt-dlp exactly where our FFmpeg binary is so it can merge
-        // video + audio streams (required for bestvideo+bestaudio format)
+        let ytdlp_bin = &self.config.ingest.ytdlp_path;
+        let ingest_cfg = &self.config.ingest;
+
+        // Tell yt-dlp exactly where our FFmpeg binary lives so it can merge
+        // video + audio streams (required for bestvideo+bestaudio format).
         let ffmpeg_bin = ffmpeg_sidecar::paths::ffmpeg_path();
         let ffmpeg_dir = ffmpeg_bin
             .parent()
@@ -131,73 +132,78 @@ impl<'a> IngestService<'a> {
         // Per yt-dlp issue #13831, YouTube specifically rate-limits (HTTP 429)
         // requests for auto-TRANSLATED subtitle variants (the ones matched by ".*").
         // Only request the base language codes + "-orig" variant (original auto-captions).
-        let sub_langs_owned = if self.config.whisper.language.is_empty()
+        let sub_langs = if self.config.whisper.language.is_empty()
             || self.config.whisper.language == "auto"
         {
-            // id-orig = original spoken language auto-caption (no 429)
-            // id      = base Indonesian auto-caption
-            // en,en-US = English (manual or original auto-caption)
             "id-orig,id,en,en-US".to_owned()
         } else {
             let lang = &self.config.whisper.language;
             format!("{lang}-orig,{lang},en,en-US")
         };
 
-        let mut yt_args = vec![
-            "--no-playlist",
-            "--write-info-json",
-            "--retries",
-            "5",
-            "--fragment-retries",
-            "5",
-            "--format",
-            &self.config.ingest.format,
-            "--merge-output-format",
-            "mp4",
-            // Subtitles — downloaded alongside the video in one session (avoids 429).
-            // --ignore-errors prevents subtitle 429 from aborting the whole download.
-            "--write-auto-subs",
-            "--write-subs",
-            "--sub-format",
-            "json3/vtt/best",
-            "--sub-langs",
-            &sub_langs_owned,
-            "--ignore-errors",     // subtitle 429 / not available → warn, never abort video
-            "--sleep-requests",    // pause between requests to reduce 429 risk
-            "2",
-            "--output",
-            &out_template,
-            "--newline",
-            "--js-runtimes",
-            "deno",
-        ];
+        // ── Resolve cookie source (priority: file > browser) ─────────────────
+        let cookie_source = if !ingest_cfg.cookie_file.is_empty() {
+            Some(super::ytdlp::CookieSource::File(
+                std::path::PathBuf::from(&ingest_cfg.cookie_file)
+            ))
+        } else if !ingest_cfg.cookie_browser.is_empty() {
+            Some(super::ytdlp::CookieSource::Browser(
+                ingest_cfg.cookie_browser.clone()
+            ))
+        } else {
+            None
+        };
 
-        // Only pass --ffmpeg-location if we actually found a binary
-        if !ffmpeg_dir.is_empty() {
-            yt_args.push("--ffmpeg-location");
-            yt_args.push(&ffmpeg_dir);
+        // ── Build yt-dlp args via the resilient builder (SKILL.md §1-3) ──────
+        let mut builder = super::ytdlp::YtDlpArgs::new(ytdlp_bin)
+            .no_playlist()
+            .write_info_json()
+            // SKILL.md §1A — aggressive retry / timeout
+            .resilience(
+                ingest_cfg.retries,
+                ingest_cfg.fragment_retries,
+                ingest_cfg.retry_sleep,
+                ingest_cfg.socket_timeout,
+            )
+            // SKILL.md §1B — YouTube player-client fallback (avoids 403 / PO tokens)
+            .youtube_client_fallback(url)
+            // SKILL.md §2A — filename safety (Windows reserved chars + MAX_PATH)
+            .windows_safe()
+            .format(&ingest_cfg.format)
+            .merge_mp4()
+            // Subtitles — --ignore-errors lets subtitle 429 be non-fatal
+            .with_subtitles(&sub_langs)
+            .ignore_errors()
+            .sleep_requests(2)
+            .output(&out_template)
+            .newline_progress()
+            .js_runtimes()
+            .ffmpeg_dir(&ffmpeg_dir);
+
+        // SKILL.md §3A — cookie authentication (for age-gated / private videos)
+        if let Some(ref src) = cookie_source {
+            builder = builder.with_cookie(src).await;
         }
-        yt_args.push(url);
 
-        cmd.args(&yt_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        let temp_cookie = builder.temp_cookie_path.clone();
 
-        debug!("spawning yt-dlp: {:?}", cmd);
-
-        let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                IngestError::YtDlpNotFound {
-                    path: ytdlp.clone(),
-                    source: e,
+        // SKILL.md §5 — KillOnDrop ensures yt-dlp is cleaned up on task cancellation
+        let mut child = builder
+            .url(url)
+            .spawn_with_streams()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    IngestError::YtDlpNotFound {
+                        path: ytdlp_bin.clone(),
+                        source: e,
+                    }
+                } else {
+                    IngestError::Io(e)
                 }
-            } else {
-                IngestError::Io(e)
-            }
-        })?;
+            })?;
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let stdout = child.0.stdout.take().unwrap();
+        let stderr = child.0.stderr.take().unwrap();
 
         let mut stdout_lines = BufReader::new(stdout).lines();
         let mut stderr_lines = BufReader::new(stderr).lines();
@@ -212,14 +218,24 @@ impl<'a> IngestService<'a> {
             buf
         });
 
-        // Track whether we have switched to the percent bar yet
+        // ── Real-time progress monitoring (SKILL.md §3C) ─────────────────────
+        // Parses yt-dlp stdout lines to drive terminal progress indicators.
+        // Detected stages (in order they typically appear):
+        //   [download] Destination: …     → switch to percent bar
+        //   [download]  23.4% of 45MB …   → update percent + speed/ETA
+        //   [download] Downloading item X of Y  → fragment/playlist progress
+        //   [hlsdownload] Downloading fragment X/Y  → HLS segment progress
+        //   [Merger]                       → switch to "Merging" spinner
+        //   [ExtractAudio]                 → switch to "Extracting audio" spinner
+        //   [Postprocess] / [ffmpeg]       → switch to "Post-processing" spinner
+        //   [info] / [youtube]             → informational status message
         let mut pct_bar: Option<indicatif::ProgressBar> = None;
         let mut current_file_desc = String::from("video");
 
         while let Ok(Some(line)) = stdout_lines.next_line().await {
             debug!("yt-dlp stdout: {line}");
 
-            // yt-dlp prints the destination file before downloading
+            // ── File destination → switch spinner to percent bar ──────────────
             if line.starts_with("[download] Destination:") {
                 let fname = line
                     .trim_start_matches("[download] Destination:")
@@ -232,7 +248,6 @@ impl<'a> IngestService<'a> {
                     .unwrap_or(&fname)
                     .to_owned();
 
-                // Swap spinner → percent bar on first file destination
                 if pct_bar.is_none() {
                     pb.finish_and_clear();
                     let bar = percent_bar(&format!("  Downloading {current_file_desc}"));
@@ -244,8 +259,8 @@ impl<'a> IngestService<'a> {
                 continue;
             }
 
+            // ── Percentage + speed/ETA ────────────────────────────────────────
             if let Some(pct) = parse_download_percent(&line) {
-                // Extract speed and ETA from the line for richer display
                 let extra = parse_speed_eta(&line).unwrap_or_default();
                 if let Some(ref bar) = pct_bar {
                     bar.set_position(pct as u64);
@@ -253,28 +268,54 @@ impl<'a> IngestService<'a> {
                 } else {
                     pb.set_message(format!("Downloading {pct:.0}%{extra}"));
                 }
-            } else if line.contains("[download] 100%") {
+                continue;
+            }
+
+            // ── 100% sentinel ─────────────────────────────────────────────────
+            if line.contains("[download] 100%") {
+                if let Some(ref bar) = pct_bar { bar.set_position(100); }
+                continue;
+            }
+
+            // ── Fragment / HLS segment progress (SKILL.md §3C) ───────────────
+            if let Some(frag_msg) = parse_fragment_progress(&line) {
                 if let Some(ref bar) = pct_bar {
-                    bar.set_position(100);
+                    bar.set_message(format!("  {frag_msg}"));
+                } else {
+                    pb.set_message(frag_msg);
                 }
-            } else if line.contains("[Merger]") {
-                if let Some(ref bar) = pct_bar {
-                    bar.finish_and_clear();
-                }
+                continue;
+            }
+
+            // ── Post-processing stages ────────────────────────────────────────
+            if line.contains("[Merger]") || line.contains("[MoveFiles]") {
+                if let Some(ref bar) = pct_bar { bar.finish_and_clear(); }
                 pb.reset();
                 pb.set_message("Merging video + audio streams…");
                 pb.enable_steady_tick(std::time::Duration::from_millis(80));
                 pct_bar = None;
-            } else if line.contains("[ExtractAudio]") {
-                if let Some(ref bar) = pct_bar {
-                    bar.finish_and_clear();
-                }
+                continue;
+            }
+            if line.contains("[ExtractAudio]") {
+                if let Some(ref bar) = pct_bar { bar.finish_and_clear(); }
                 pb.reset();
                 pb.set_message("Extracting audio…");
                 pb.enable_steady_tick(std::time::Duration::from_millis(80));
                 pct_bar = None;
-            } else if line.contains("[info]") || line.contains("[youtube]") {
-                // Strip brackets from yt-dlp status lines
+                continue;
+            }
+            // SKILL.md §4: "Watch for [Postprocess] in logs to indicate completion"
+            if line.contains("[Postprocess]") || line.contains("[ffmpeg]") || line.contains("[FixupM4a]") {
+                if let Some(ref bar) = pct_bar { bar.finish_and_clear(); }
+                pb.reset();
+                pb.set_message("Post-processing…");
+                pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                pct_bar = None;
+                continue;
+            }
+
+            // ── Informational status messages ─────────────────────────────────
+            if line.contains("[info]") || line.contains("[youtube]") || line.contains("[TikTok]") {
                 let msg = line
                     .trim_start_matches('[')
                     .splitn(2, ']')
@@ -282,19 +323,20 @@ impl<'a> IngestService<'a> {
                     .unwrap_or(&line)
                     .trim()
                     .to_owned();
-                pb.set_message(msg);
+                if !msg.is_empty() { pb.set_message(msg); }
             }
         }
 
         // Clean up whichever bar is still active
-        if let Some(bar) = pct_bar {
-            bar.finish_and_clear();
-        } else {
-            pb.finish_and_clear();
-        }
+        if let Some(bar) = pct_bar { bar.finish_and_clear(); } else { pb.finish_and_clear(); }
 
-        let status = child.wait().await.map_err(IngestError::Io)?;
+        let status = child.0.wait().await.map_err(IngestError::Io)?;
         let stderr_buf = stderr_handle.await.unwrap_or_default();
+
+        // SKILL.md §3A — clean up temp cookie DB copy after job completes
+        if let Some(ref tmp) = temp_cookie {
+            super::ytdlp::cleanup_temp_cookie(tmp).await;
+        }
 
         if !status.success() {
             let code = status.code().unwrap_or(-1);
@@ -314,6 +356,9 @@ impl<'a> IngestService<'a> {
                     stderr_buf.trim()
                 );
                 // Continue — video may still be on disk; find_or_merge_video() will confirm
+            } else if super::ytdlp::is_cookie_error(&stderr_buf) {
+                // SKILL.md §3A — HTTP 400 cookie error → actionable error message
+                return Err(IngestError::CookieExpired { stderr: stderr_buf });
             } else {
                 // Real failure: video itself could not be downloaded
                 warn!("yt-dlp stderr:\n{stderr_buf}");
@@ -410,32 +455,26 @@ impl<'a> IngestService<'a> {
         let ytdlp = &self.config.ingest.ytdlp_path;
         let pb = crate::util::progress::spinner("Checking YouTube subtitles…");
 
-        let mut args = vec![
-            "--no-playlist".to_owned(),
-            "--skip-download".to_owned(),      // don't re-download the video
-            "--write-auto-subs".to_owned(),
-            "--write-subs".to_owned(),
-            "--sub-format".to_owned(), "json3/vtt/best".to_owned(),
-            "--sub-langs".to_owned(), sub_langs,
-            "--ignore-errors".to_owned(),      // never abort on subtitle errors
-            // Retry flags — YouTube returns 429 when requests come too fast
-            "--retries".to_owned(), "3".to_owned(),
-            "--sleep-requests".to_owned(), "1".to_owned(),
-            "--no-warnings".to_owned(),
-            // deno JS runtime for full YouTube support
-            "--js-runtimes".to_owned(), "deno".to_owned(),
-            "--output".to_owned(), out_template,
-        ];
-        if !ffmpeg_dir.is_empty() {
-            args.push("--ffmpeg-location".to_owned());
-            args.push(ffmpeg_dir.to_owned());
-        }
-        args.push(url.to_owned());
+        // Build args via YtDlpArgs — subtitle-only pass (no video download)
+        let (bin, args) = super::ytdlp::YtDlpArgs::new(ytdlp)
+            .no_playlist()
+            .extra(&["--skip-download"])
+            .with_subtitles(&sub_langs)
+            .ignore_errors()
+            .no_warnings()
+            // Conservative retry — YouTube 429 is expected here; keep pressure low
+            .resilience(3, 3, 1, 20)
+            .sleep_requests(1)
+            .js_runtimes()
+            .ffmpeg_dir(ffmpeg_dir)
+            .output(&out_template)
+            .url(url)
+            .build();
 
         // Short delay before first attempt — reduces 429 after video download
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        let result = tokio::process::Command::new(ytdlp)
+        let result = tokio::process::Command::new(&bin)
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -452,7 +491,7 @@ impl<'a> IngestService<'a> {
                     debug!("YouTube subtitle 429 rate-limit — will retry after 5s");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     // Single retry
-                    let _ = tokio::process::Command::new(ytdlp)
+                    let _ = tokio::process::Command::new(&bin)
                         .args(&args)
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
@@ -834,6 +873,24 @@ fn parse_download_percent(line: &str) -> Option<f64> {
     }
     let pct_str = line.split_whitespace().find(|s| s.ends_with('%'))?;
     pct_str.trim_end_matches('%').parse().ok()
+}
+
+/// Parse fragment/HLS segment progress lines from yt-dlp.
+///
+/// Handles:
+///   "[download] Downloading item 3 of 10"
+///   "[hlsdownload] Downloading fragment 15/100"
+fn parse_fragment_progress(line: &str) -> Option<String> {
+    if line.contains("[download]") && line.contains("Downloading item") {
+        // "[download] Downloading item 3 of 10"
+        let tail = line.splitn(2, "Downloading item").nth(1)?.trim();
+        return Some(format!("Downloading segment {tail}"));
+    }
+    if line.contains("[hlsdownload]") && line.contains("Downloading fragment") {
+        let tail = line.splitn(2, "Downloading fragment").nth(1)?.trim();
+        return Some(format!("Downloading HLS fragment {tail}"));
+    }
+    None
 }
 
 /// Extract " @ 2.50MiB/s ETA 00:18" suffix for display.

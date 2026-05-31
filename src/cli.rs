@@ -107,6 +107,14 @@ pub struct AnalyzeArgs {
     /// (humor, impact, novelty, engagement) before selecting the final clips.
     #[arg(long)]
     pub video_path: Option<PathBuf>,
+
+    /// Video title (optional — stored as metadata in the RAG database).
+    #[arg(long, default_value = "")]
+    pub title: String,
+
+    /// Channel / creator name (optional — stored as metadata in the RAG database).
+    #[arg(long, default_value = "")]
+    pub channel: String,
 }
 
 #[derive(Parser, Debug)]

@@ -31,8 +31,10 @@ pub struct VocabCache {
     // Tone detection (for overlay query refinement)
     pub tone_funny:    Vec<String>,
     pub tone_serious:  Vec<String>,
-    // Intro section detection
+    // Intro section detection (first ~15% of video)
     pub intro:         Vec<String>,
+    // Outro section detection (last ~15% of video)
+    pub outro:         Vec<String>,
     // Indonesian title/honorific patterns ("pak ", "bu ", "dr ", ...)
     pub name_titles:   Vec<String>,
     // Stop words for keyword extraction
@@ -92,6 +94,7 @@ impl VocabCache {
         cache.tone_funny.clear();
         cache.tone_serious.clear();
         cache.intro.clear();
+        cache.outro.clear();
         cache.name_titles.clear();
         cache.stop_words_id.clear();
         cache.stop_words_en.clear();
@@ -104,6 +107,7 @@ impl VocabCache {
                 "tone_funny"   => cache.tone_funny.push(word),
                 "tone_serious" => cache.tone_serious.push(word),
                 "intro"        => cache.intro.push(word),
+                "outro"        => cache.outro.push(word),
                 "name_titles"  => cache.name_titles.push(word),
                 "stop_words"   => {
                     let lang = subcategory.as_deref().unwrap_or("id");
@@ -129,6 +133,7 @@ impl VocabCache {
         if cache.tone_funny.is_empty()    { cache.tone_funny    = d.tone_funny; }
         if cache.tone_serious.is_empty()  { cache.tone_serious  = d.tone_serious; }
         if cache.intro.is_empty()         { cache.intro         = d.intro; }
+        if cache.outro.is_empty()         { cache.outro         = d.outro; }
         if cache.name_titles.is_empty()   { cache.name_titles   = d.name_titles; }
         if cache.stop_words_id.is_empty() { cache.stop_words_id = d.stop_words_id; }
         if cache.stop_words_en.is_empty() { cache.stop_words_en = d.stop_words_en; }
@@ -276,6 +281,72 @@ impl VocabCache {
                 "welcome to","today we're going","today we will","in today's video",
                 "don't forget to","smash that","without further ado",
                 "let's get started","let's dive in",
+                // ── Talk-show / interview opening patterns ─────────────────────
+                "saya undang","kami undang","kita undang","saya persilakan","kami persilakan",
+                "kita sambut","mari sambut","mohon sambut","sambut bersama",
+                "tepuk tangan","tepuk tangan untuk","tepuk tangan buat",
+                "tuan rumah","hadir bersama kita","bergabung bersama kita",
+                "sudah hadir","ada bersama kita","bersama kita malam","bersama kita hari",
+                "izinkan saya memperkenalkan","izinkan kami memperkenalkan",
+                "perkenalkan kepada","kita perkenalkan",
+                "terima kasih sudah mau hadir","terima kasih sudah bergabung",
+                "terima kasih sudah hadir","terima kasih sudah datang",
+                "selamat datang di studio","selamat datang di acara","selamat datang di program",
+                "sebelum kita mulai","sebelum lebih lanjut","sebelum lebih jauh",
+                "gimana kabar","apa kabar pak","apa kabar bu","apa kabar bapak","bagaimana kabar",
+                "silakan duduk","oke teman-teman","nah teman-teman","baik teman-teman",
+                // ── Episode context-setting / "why we made this" intro ──────────
+                // These appear early in podcast/podcast-style videos explaining the episode premise.
+                // They are NOT substance — they're the host framing why they're discussing the topic.
+                "kami membuat episode","kita membuat episode","kami buat episode","kita buat episode",
+                "episode ini dibuat","video ini dibuat","episode ini membahas","video ini membahas",
+                "saat podcast ini","waktu podcast ini","ketika podcast ini",
+                "di podcast ini kita","di podcast ini kami",
+                "kita akan explore","kita akan kupas","kita akan bedah",
+                "hari ini kita explore","hari ini kita bedah","hari ini kita kupas",
+                "yang ingin kami bahas","yang ingin kita bahas","yang akan kami bahas",
+                "tujuan episode","tujuan video","topik hari ini","topik kali ini",
+            ].into_iter().map(String::from).collect(),
+            outro: vec![
+                // ── Indonesian farewells ────────────────────────────────────────────
+                "sampai jumpa","sampai ketemu lagi","sampai bertemu lagi",
+                "sampai bertemu kembali","sampai di video",
+                // ── Closing thank-yous (very specific — almost never mid-content) ──
+                "terima kasih sudah menonton","terima kasih sudah nonton",
+                "terima kasih telah menonton","terima kasih sudah menyimak",
+                "terima kasih sudah melihat","terima kasih sudah hadir",
+                "terima kasih sudah meluangkan","terima kasih buat kalian yang sudah",
+                "makasih udah nonton","makasih sudah nonton","makasih sudah menyimak",
+                // ── Comment/share CTAs (safe in last-15% scan window) ────────────────
+                // These dual-use CTA phrases also appear in intros, but finding them
+                // in the last 15% of a video is almost always an outro sign-off.
+                "komen di bawah","komentar di bawah","silakan komen",
+                "silakan komentar","tulis di kolom komentar","di kolom komentar",
+                "bagikan pengalaman","ceritakan di kolom",
+                // ── Subscribe/like CTAs (high-density = outro zone) ────────────────
+                "jangan lupa subscribe","jangan lupa like dan subscribe",
+                "yuk subscribe","yuk follow","hit subscribe",
+                "dukung channel ini","support channel ini","pantau terus channel",
+                // ── Next-video promos ──────────────────────────────────────────────
+                "nantikan video berikutnya","nantikan video selanjutnya",
+                "tunggu video berikutnya","tunggu video selanjutnya",
+                "see you di video berikutnya","see you di video selanjutnya",
+                "di video selanjutnya kita","di video berikutnya kita",
+                "video selanjutnya akan","video berikutnya akan",
+                // ── Closing phrases ────────────────────────────────────────────────
+                "itu saja dari kami","itu saja dari kita","itu saja dari saya",
+                "sekian dari kami","sekian dari kita","sekian dari saya",
+                "sampai sini dulu","segitu dulu ya","oke sekian","cukup sekian",
+                "akhir kata","sebelum kami menutup","sebelum kita tutup",
+                "demikianlah","demikian tadi","itulah tadi",
+                // ── Religious closing ──────────────────────────────────────────────
+                "wassalamualaikum warahmatullahi","wassalamualaikum wr wb","wassalam",
+                // ── English farewells ──────────────────────────────────────────────
+                "thanks for watching","thank you for watching","thanks for tuning in",
+                "see you next time","see you in the next video","see you in the next",
+                "that's all for today","that's all for now","that's it for today",
+                "until next time","until then","catch you later",
+                "bye bye","bye for now","goodbye everyone","peace out",
             ].into_iter().map(String::from).collect(),
             name_titles: vec![
                 "pak ","bu ","ibu ","kak ","bro ","mas ","mba ","om ",
@@ -671,6 +742,7 @@ pub async fn seed_defaults(pool: &PgPool) -> Result<usize> {
     count += insert_batch(pool, "tone_funny",   None,        "id", &defaults.tone_funny).await;
     count += insert_batch(pool, "tone_serious",  None,        "id", &defaults.tone_serious).await;
     count += insert_batch(pool, "intro",         None,        "id", &defaults.intro).await;
+    count += insert_batch(pool, "outro",         None,        "id", &defaults.outro).await;
     count += insert_batch(pool, "name_titles",   None,        "id", &defaults.name_titles).await;
     count += insert_batch(pool, "stop_words",    Some("id"),  "id", &defaults.stop_words_id.iter().cloned().collect::<Vec<_>>()).await;
     count += insert_batch(pool, "stop_words",    Some("en"),  "en", &defaults.stop_words_en.iter().cloned().collect::<Vec<_>>()).await;

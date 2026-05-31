@@ -151,6 +151,21 @@ pub struct ViralMoment {
     /// How many seconds to show the overlay (default 4.0, recommended 3–5).
     #[serde(default = "default_overlay_duration")]
     pub overlay_duration: f64,
+
+    // ── GPU Color Grading ─────────────────────────────────────────────────────
+
+    /// Color mood / look for this clip.
+    /// Resolved to a `ColorGrading` preset by `ColorGrading::from_mood()`.
+    /// Options: cinematic | warm | cool | vibrant | faded | night | bright | teal_orange
+    /// Empty string = use config `[gpu] default_color_mood` or no grading.
+    #[serde(default)]
+    pub color_mood: String,
+
+    /// GPU transition type going INTO this clip (from the previous clip).
+    /// Uses the same names as `Transition::from_name()`.
+    /// Empty string = use global clip_style setting.
+    #[serde(default)]
+    pub gpu_transition: String,
 }
 
 fn default_overlay_duration()  -> f64     { 4.0 }
@@ -194,7 +209,7 @@ pub const MOMENT_SCHEMA: &str = r#"{
       "bgm_vibe": "lofi | upbeat | cinematic | inspirational | none",
       "overlay_style":    "auto | sticker | pip | fullscreen  (see RULE 7)",
       "overlay_position": "bottom_right | bottom_left | top_right | top_left | bottom_center  (see RULE 7)",
-      "overlay_query":    "string (3-5 word TikTok search query; empty string = no overlay, see RULE 7)",
+      "overlay_query":    "string (3-5 word query for topic-relevant footage/photo/chart — NOT a meme or reaction; empty string = no overlay, see RULE 7)",
       "overlay_at_sec":   number (seconds from clip start where overlay appears),
       "overlay_duration": number (seconds to show overlay, default 4.0)
     }

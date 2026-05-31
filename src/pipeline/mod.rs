@@ -102,6 +102,8 @@ impl<'a> PipelineRunner<'a> {
                     max_clips,
                     focus_keywords,
                     Some(&video_path),   // enables visual frame analysis
+                    &video_title,
+                    &video_channel,
                 )
                 .await?;
             state.stages.analyze = Some(result);

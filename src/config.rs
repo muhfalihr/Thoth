@@ -10,6 +10,7 @@ pub struct AppConfig {
     pub llm:    LlmConfig,
     pub whisper: WhisperConfig,
     pub ffmpeg:  FfmpegConfig,
+    pub gpu:     GpuConfig,
     pub output:  OutputConfig,
     pub ingest:  IngestConfig,
     pub assets:  AssetsConfig,
@@ -17,6 +18,56 @@ pub struct AppConfig {
     pub overlay:   OverlayConfig,
     pub styles:    StylesConfig,
     pub vector_db: VectorDbConfig,
+}
+
+/// GPU-accelerated processing configuration.
+///
+/// ```toml
+/// [gpu]
+/// enabled          = true   # requires NVIDIA/AMD GPU with Vulkan/DX12 support
+/// color_grading    = true   # apply per-clip color grading on GPU
+/// gpu_transitions  = true   # use GPU-native transitions (vs FFmpeg xfade)
+/// concat_output    = false  # if true, concat all clips into one final video
+/// default_color_mood = "cinematic"  # preset applied to all clips (empty = none)
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct GpuConfig {
+    /// Enable GPU processing pipeline. Requires wgpu-compatible GPU.
+    /// When false, falls back to FFmpeg-only path.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Apply GPU color grading (ColorPipeline) to each clip.
+    #[serde(default = "default_true")]
+    pub color_grading: bool,
+
+    /// Use GPU-native transitions (TransitionPipeline) instead of FFmpeg xfade.
+    /// Produces higher-quality blends at the cost of frame-by-frame processing.
+    #[serde(default)]
+    pub gpu_transitions: bool,
+
+    /// If true, run `GpuProcessor::concat_gpu()` after all clips are rendered
+    /// to produce a single concatenated output video.
+    #[serde(default)]
+    pub concat_output: bool,
+
+    /// Default color mood applied to all clips when `ViralMoment.color_mood` is empty.
+    /// Options: cinematic | warm | cool | vibrant | faded | night | bright | teal_orange
+    /// Empty string = no default grading.
+    #[serde(default)]
+    pub default_color_mood: String,
+}
+
+impl Default for GpuConfig {
+    fn default() -> Self {
+        Self {
+            enabled:            false,
+            color_grading:      true,
+            gpu_transitions:    false,
+            concat_output:      false,
+            default_color_mood: String::new(),
+        }
+    }
 }
 
 // ── Style profiles ────────────────────────────────────────────────────────────
@@ -46,6 +97,16 @@ pub struct StyleProfile {
     /// Overlay style override: auto | sticker | pip | fullscreen
     #[serde(default)]
     pub overlay_style: String,
+
+    /// GPU color mood override: cinematic | warm | cool | vibrant | faded | ...
+    /// Empty = defer to LLM's `color_mood` suggestion.
+    #[serde(default)]
+    pub color_mood: String,
+
+    /// GPU transition type override for this profile.
+    /// Empty = use LLM's `gpu_transition` suggestion.
+    #[serde(default)]
+    pub gpu_transition: String,
 }
 
 /// Collection of named style profiles + the default to use when no `--style-profile` is given.
@@ -120,6 +181,11 @@ pub struct LlmConfig {
     /// 0.0 = auto-detect intro end from transcript patterns.
     /// >0.0 = manual hard cutoff (e.g. 60.0 skips first 60 s always).
     pub min_clip_start_sec: f64,
+
+    /// Maximum video timestamp (seconds) after which no clip can START.
+    /// 0.0 = auto-detect outro start from transcript patterns.
+    /// >0.0 = manual hard cutoff (e.g. 3540.0 = skip last 60 s for a 3600 s video).
+    pub max_clip_end_sec: f64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -150,7 +216,39 @@ pub struct OutputConfig {
 pub struct IngestConfig {
     pub ytdlp_path: String,
     pub format: String,
+
+    // ── SKILL.md §1A — Network resilience ────────────────────────────────────
+    /// Total HTTP request retries (default: 30 per VidBee blueprint).
+    #[serde(default = "default_ingest_retries")]
+    pub retries: u32,
+    /// Per-fragment retries for HLS/DASH streams (default: 30).
+    #[serde(default = "default_ingest_retries")]
+    pub fragment_retries: u32,
+    /// Seconds of backoff between retries to avoid hammering on transient errors (default: 2).
+    #[serde(default = "default_retry_sleep")]
+    pub retry_sleep: u32,
+    /// Socket connect/read timeout in seconds — prevents DNS/connection hangs (default: 30).
+    #[serde(default = "default_socket_timeout")]
+    pub socket_timeout: u32,
+
+    // ── SKILL.md §3A — Cookie authentication ─────────────────────────────────
+    /// Browser to auto-extract cookies from for age-gated / region-locked videos.
+    /// Supported: "firefox", "chrome", "edge", "brave", "chromium", "opera".
+    /// On Windows, prefer "firefox" — Chromium browsers encrypt their DB with the OS keyring
+    /// and lock it while running. Leave empty to disable (default).
+    #[serde(default)]
+    pub cookie_browser: String,
+    /// Path to a Netscape/Mozilla format cookie file exported with
+    /// "Get cookies.txt LOCALLY" (local-only extension — never cloud-synced).
+    /// Takes priority over cookie_browser when both are set.
+    /// Treat this file as a high-sensitivity secret — never commit it.
+    #[serde(default)]
+    pub cookie_file: String,
 }
+
+fn default_ingest_retries() -> u32  { 30 }
+fn default_retry_sleep()    -> u32  { 2  }
+fn default_socket_timeout() -> u32  { 30 }
 
 /// Asset folder configuration + vibe→file mappings.
 ///
@@ -204,6 +302,7 @@ pub struct AssetsConfig {
 fn default_sfx_dir() -> PathBuf { PathBuf::from("sfx") }
 fn default_bgm_dir() -> PathBuf { PathBuf::from("bgm") }
 fn default_embed_provider() -> String { "gemini".to_owned() }
+fn default_true() -> bool { true }
 
 // ── Vector DB / RAG config ────────────────────────────────────────────────────
 
@@ -296,6 +395,15 @@ pub struct OverlayConfig {
     /// Clips rotate by index so each clip in a run uses a different variant,
     /// even when the LLM generates the same overlay_query for multiple clips.
     pub max_variants: u32,
+    /// Enable the stealth HTTP scraper for URL resolution (default: true).
+    ///
+    /// When enabled, the scraper fetches direct video URLs from TikTok / YouTube
+    /// search pages using Chrome-fingerprint requests BEFORE yt-dlp runs.
+    /// yt-dlp then downloads the specific URL rather than searching — 3–5× faster
+    /// and results are pre-ranked by view count.
+    /// Falls back to yt-dlp search automatically if scraping fails.
+    #[serde(default = "default_true")]
+    pub scraper_enabled: bool,
 }
 
 // ── Vision config ─────────────────────────────────────────────────────────────
@@ -444,6 +552,7 @@ impl AppConfig {
             .set_default("llm.max_clips", 3)?
             .set_default("llm.max_retries", 2)?
             .set_default("llm.min_clip_start_sec", 0.0)?
+            .set_default("llm.max_clip_end_sec", 0.0)?
             .set_default("whisper.model_dir", "models")?
             .set_default("whisper.model_size", "medium")?
             .set_default("whisper.language", "en")?

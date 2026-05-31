@@ -1,9 +1,30 @@
+# ── Rust ────────────────────────────────────────────────────────────────────────
 /target
+
+# ── Build / runtime output ───────────────────────────────────────────────────────
 output/
 models/
+
+# ── Secrets & environment ────────────────────────────────────────────────────────
 .env
+*.env.local
+
+# ── Media / binary artifacts ────────────────────────────────────────────────────
 *.mp4
 *.wav
 *.ass
 *.exe
-test/
+*.cube
+
+# ── IDE / editor configs (local only) ───────────────────────────────────────────
+.claude/settings.local.json
+.gemini/
+
+# ── Graphify generated cache ─────────────────────────────────────────────────────
+graphify-out/
+
+# ── Test sub-projects ────────────────────────────────────────────────────────────
+test/*/target/
+
+# ── Sensitive data ───────────────────────────────────────────────────────────────
+vidbee/
