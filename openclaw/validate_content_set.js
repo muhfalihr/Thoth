@@ -1,4 +1,4 @@
-// validate_content_set.js — lint a content-set BEFORE `clipper run --content`.
+// validate_content_set.js — lint a content-set BEFORE `thoth run --content`.
 //
 // Catches the failure modes that produce 404 / off-topic / "video ngawur" hand-offs:
 //   - main.url missing or wrong URL shape per platform
@@ -8,7 +8,7 @@
 //
 //   node validate_content_set.js <content_set.json>
 //
-// Exit 0 = safe to hand off (errors=0). Exit 1 = has errors → fix before clipper run.
+// Exit 0 = safe to hand off (errors=0). Exit 1 = has errors → fix before thoth run.
 
 const fs = require('fs');
 const { lintContentSet } = require('./validate');
@@ -28,9 +28,9 @@ console.log('  Content-set lint:', file);
 console.log('='.repeat(60));
 if (info.length)     { console.log('\nℹ️  Info'); info.forEach(m => console.log('   - ' + m)); }
 if (warnings.length) { console.log('\n⚠️  Warning (boleh lanjut, tapi cek)'); warnings.forEach(m => console.log('   - ' + m)); }
-if (errors.length)   { console.log('\n❌ Error (WAJIB diperbaiki sebelum clipper run)'); errors.forEach(m => console.log('   - ' + m)); }
+if (errors.length)   { console.log('\n❌ Error (WAJIB diperbaiki sebelum thoth run)'); errors.forEach(m => console.log('   - ' + m)); }
 
 console.log('\n' + '-'.repeat(60));
 console.log(`Result: ${ok ? '✅ PASS' : '❌ FAIL'}  (errors=${errors.length}, warnings=${warnings.length})`);
-if (ok) console.log(`Aman: clipper run --content "${file}"`);
+if (ok) console.log(`Aman: thoth run --content "${file}"`);
 process.exit(ok ? 0 : 1);

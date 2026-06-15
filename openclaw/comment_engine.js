@@ -48,7 +48,7 @@ async function scrapeComments(opts) {
     scrollRounds = 4,
     buildMain,             // (url) => main object
     max = 12,
-    out = 'clipper_content_set.json',
+    out = 'thoth_content_set.json',
     pad = PAD,
     skipSticker = true,
     label = platform,
@@ -119,7 +119,7 @@ async function scrapeComments(opts) {
       // recycle off-screen nodes, so a `data-clip-idx` can end up on a node now rendering something
       // else (e.g. the post caption) → a crop of the WRONG content. Guard: require the comment's text
       // to appear in the element's current innerText; if not, skip the crop (keep the correct
-      // author/text → CLIPPER draws the synthetic card) instead of pasting a mismatched screenshot.
+      // author/text → Thoth draws the synthetic card) instead of pasting a mismatched screenshot.
       const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
       const want = norm(text).slice(0, 24);
       const contentMatches = r => want.length < 8 || norm(r && r.txt).includes(want);
@@ -141,7 +141,7 @@ async function scrapeComments(opts) {
 
       // Capture, retrying once on a blank result. A blank/uncomposited region compresses to a
       // tiny PNG; below MIN_CROP_BYTES we treat it as failed and leave image_path empty so
-      // CLIPPER falls back to its drawn card (never paste a blank crop).
+      // Thoth falls back to its drawn card (never paste a blank crop).
       const MIN_CROP_BYTES = 2048;
       let saved = false;
       for (let attempt = 0; attempt < 2 && !saved; attempt++) {
@@ -185,7 +185,7 @@ async function scrapeComments(opts) {
   console.log(`📄 ${OUT_JSON} (${results.length} komentar)  |  📁 crops: ${CROPS_DIR}`);
   console.log('\nValidate lalu run:');
   console.log(`  node validate_content_set.js "${OUT_JSON}"`);
-  console.log(`  clipper run --content "${OUT_JSON}"`);
+  console.log(`  thoth run --content "${OUT_JSON}"`);
 
   return { comments: results, outJson: OUT_JSON };
 }

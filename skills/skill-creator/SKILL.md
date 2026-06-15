@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: "Meta-skill: bikin skill baru sesuai pola ECC, untuk DUA sistem — Claude Code (CLIPPER, di CLIPPER\\skills\\) dan OpenClaw (Ella, di ~/.openclaw/workspace/skills/). PROACTIVELY activate saat user minta 'bikin skill', 'tambah kemampuan', atau menambah workflow berulang. Memuat template + checklist + perbedaan format kedua sistem."
+description: "Meta-skill: bikin skill baru sesuai pola ECC, untuk DUA sistem — Claude Code (Thoth, di Thoth\\skills\\) dan OpenClaw (Ella, di ~/.openclaw/workspace/skills/). PROACTIVELY activate saat user minta 'bikin skill', 'tambah kemampuan', atau menambah workflow berulang. Memuat template + checklist + perbedaan format kedua sistem."
 version: 1.0.0
 ---
 
@@ -18,9 +18,9 @@ ramping, detail panjang ke file pendamping.
 
 ## Dua target, dua format
 
-| Aspek | **CLIPPER (Claude Code)** | **Ella (OpenClaw)** |
+| Aspek | **Thoth (Claude Code)** | **Ella (OpenClaw)** |
 |---|---|---|
-| Lokasi | `CLIPPER\skills\<name>\SKILL.md` | `~/.openclaw/workspace/skills/<name>/SKILL.md` |
+| Lokasi | `Thoth\skills\<name>\SKILL.md` | `~/.openclaw/workspace/skills/<name>/SKILL.md` |
 | Frontmatter | `name`, `description` (pakai PROACTIVELY + trigger), `version` | `name`, `description`, `metadata.openclaw.requires {skills,tools,credentials}`, `tags` |
 | Tujuan | Bantu develop tool Rust | Automation sosial-media / tugas Ella |
 | Tools dirujuk | Read/Edit/Bash/build_cuda.bat | browser `muhfalihr-chrome`, web_search, `xpoz-social-search` |
@@ -38,12 +38,12 @@ ramping, detail panjang ke file pendamping.
 
 ## Steps (bikin skill baru)
 
-1. Tentukan target (CLIPPER atau Ella) → pilih lokasi & format frontmatter.
+1. Tentukan target (Thoth atau Ella) → pilih lokasi & format frontmatter.
 2. Tulis `description` dulu (trigger-rich) — ini menentukan kapan skill terpanggil.
 3. Isi 7 bagian anatomi. Detail panjang (referensi, script) → file terpisah di folder skill.
 4. Untuk Ella: deklarasikan `requires` (skills/tools/credentials) yang benar; jangan klaim tool
    yang `disabled` di config.
-5. Untuk CLIPPER: rujuk konvensi nyata (`clipper-pipeline`, `rust-gpu-ffmpeg`), aturan Windows path.
+5. Untuk Thoth: rujuk konvensi nyata (`thoth-pipeline`, `rust-gpu-ffmpeg`), aturan Windows path.
 6. Verifikasi: skill bisa ditemukan & dipahami tanpa konteks tambahan.
 
 ## Template (salin)
@@ -52,7 +52,7 @@ ramping, detail panjang ke file pendamping.
 ---
 name: <kebab-name>
 description: "<apa + kapan; daftar trigger konkret>"
-# CLIPPER: version: 1.0.0
+# Thoth: version: 1.0.0
 # Ella: metadata: { openclaw: { requires: { tools: [...], skills: [...] } } }, tags: [...]
 ---
 # <Judul>
@@ -67,7 +67,7 @@ description: "<apa + kapan; daftar trigger konkret>"
 
 - ❌ `description` vague ("helper umum") → auto-aktivasi gagal. Harus spesifik + trigger.
 - ❌ Skill Ella mengklaim tool yang belum aktif (cek `openclaw.json` dulu).
-- ❌ Menaruh skill di lokasi salah (CLIPPER root vs OpenClaw workspace — beda mesin baca).
+- ❌ Menaruh skill di lokasi salah (Thoth root vs OpenClaw workspace — beda mesin baca).
 - ❌ SKILL.md raksasa → pecah, pakai progressive disclosure.
 - ✅ Satu skill = satu tanggung jawab jelas.
 

@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_empty() {
-        let pool = load_pool(Path::new("C:/nonexistent/clipper/path/xyz"));
+        let pool = load_pool(Path::new("C:/nonexistent/thoth/path/xyz"));
         assert!(pool.is_empty());
     }
 

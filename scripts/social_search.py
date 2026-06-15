@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLIPPER multi-platform content search (Stage 0.5 / enrichment supplier).
+"""Thoth multi-platform content search (Stage 0.5 / enrichment supplier).
 
 Given one or more queries (usually derived from Twitter/X trends), searches
 across YouTube, TikTok, Twitter/X, Instagram, and News, and prints ONE JSON
@@ -59,7 +59,7 @@ def emit(results, error=None, code=0):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="CLIPPER multi-platform content search")
+    p = argparse.ArgumentParser(description="Thoth multi-platform content search")
     p.add_argument("--query", action="append", default=[], help="search query (repeatable)")
     p.add_argument("--platforms", default="youtube,instagram,twitter,news",
                    help="comma list: youtube,instagram,twitter,news[,tiktok]. "

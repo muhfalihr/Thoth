@@ -1,4 +1,4 @@
-// trace_source.js — resolve the ORIGINAL source of the MAIN video so CLIPPER doesn't double up a
+// trace_source.js — resolve the ORIGINAL source of the MAIN video so Thoth doesn't double up a
 // re-wrap's baked headline/watermark. Detection is LLM-driven (resolve_source.js) over THREE text
 // signals: main DESCRIPTION + CAPTION (oEmbed) + on-screen HEADLINE (read via vision from the cover).
 //
@@ -33,7 +33,7 @@ const FILE = args.find((a, i) => !a.startsWith('--') && !['--keywords', '--usern
 const KEYWORDS = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
 const FORCE_USER = getFlag('--username');
 const NO_DL = args.includes('--no-threads-dl') || args.includes('--no-dl'); // skip local mp4 backup (Threads/TikTok)
-const MODEL = getFlag('--model') || process.env.CLIPPER_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct';
+const MODEL = getFlag('--model') || process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct';
 if (!FILE) { console.log('Usage: node trace_source.js <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]'); process.exit(1); }
 if (!fs.existsSync(FILE)) { console.log('❌ File tak ada:', FILE); process.exit(1); }
 
@@ -146,7 +146,7 @@ async function findOriginalThreads(username, keywords = []) {
 // Find the ORIGINAL on Instagram by PROFILE: open instagram.com/<user>/reels/ → newest reel.
 // The creator's own reel is the authentic source (vs a curator repost with baked overlay). Reels grid
 // has no captions, so take the newest reel (creators like this post on-topic consistently). IG reels
-// are downloadable by CLIPPER via firefox cookies. Guarded: needs an instagram.com tab attached.
+// are downloadable by Thoth via firefox cookies. Guarded: needs an instagram.com tab attached.
 // Source-reel pick is VIEWS-dominated: a creator gets credited for the SPECIFIC clip that went viral,
 // so the reposted video is essentially always their most-viewed reel. (Its caption is often generic
 // motivational text — semantically indistinguishable from off-topic reels — so caption similarity is a
@@ -302,7 +302,7 @@ function isAggregatorHandle(h) { const n = normHandle(h); return !!n && AGG_MARK
 // news/curator account OR the very repost we're escaping (repostHandle). Lowest non-empty tier wins;
 // aggregators are demoted, never excluded, so we always return a downloadable clip. TikTok-first within
 // the chosen tier (honors the tt/ credit). {url,platform}|null.
-const STORY_FLOOR = parseFloat(process.env.CLIPPER_SOURCE_STORY_MIN || '0.33');
+const STORY_FLOOR = parseFloat(process.env.THOTH_SOURCE_STORY_MIN || '0.33');
 async function findStoryVideo(keywords, storyText, opts = {}) {
   const credited = normHandle(opts.credited || '');
   const repost = normHandle(opts.repostHandle || '');
@@ -359,7 +359,7 @@ async function setMainTo(set, orig, username) {
       if (d && d.url) {
         set.main.source_url = orig.url; set.main.url = d.url;
         if (!NO_DL) { const id = (orig.url.match(/video\/(\d+)/) || [])[1] || 'tt'; const out = outPath(`tiktok_${id}.mp4`); const local = await downloadTiktok(orig.url, out); if (local) set.main.source_local = local; }
-        console.log(`    🎬 TikTok → URL CDN (${d.via})${set.main.source_local ? ' + mp4 lokal' : ''}. ⚠️ CDN ephemeral → clipper SEGERA.`);
+        console.log(`    🎬 TikTok → URL CDN (${d.via})${set.main.source_local ? ' + mp4 lokal' : ''}. ⚠️ CDN ephemeral → thoth SEGERA.`);
       } else { console.log('    ⚠️ TikTok tak bisa resolve URL CDN (tikwm/CDP gagal) → yt-dlp kemungkinan gagal download.'); }
     } catch (e) {}
   }
@@ -434,7 +434,7 @@ async function setMainTo(set, orig, username) {
       delete set.main.rewrap; delete set.main.rewrap_source; delete set.main.rewrap_platform;
       let local = '';
       if (!NO_DL) { const code = (t.url.split('/post/')[1] || 'thr').replace(/[/?#].*$/, ''); const out = outPath(`threads_${code}.mp4`); if (downloadThreads(vurl, out)) { local = out; set.main.source_local = out; } }
-      console.log(`    ✅ GANTI main → video CDN Threads (dari ${t.url})${local ? '\n       💾 mp4 lokal: ' + local + ' (cadangan kalau fbcdn expire)' : ''}\n       ⚠️ URL fbcdn ephemeral → jalankan clipper SEGERA.`);
+      console.log(`    ✅ GANTI main → video CDN Threads (dari ${t.url})${local ? '\n       💾 mp4 lokal: ' + local + ' (cadangan kalau fbcdn expire)' : ''}\n       ⚠️ URL fbcdn ephemeral → jalankan thoth SEGERA.`);
     } else {
       set.main.rewrap = true; set.main.rewrap_source = username; set.main.rewrap_platform = 'threads';
       if (t) set.main.rewrap_url = t.url;
@@ -493,7 +493,7 @@ async function setMainTo(set, orig, username) {
       await setMainTo(set, orig, username);
       if (orig.lowConfidence) { set.main.source_low_confidence = true; console.log('       ⚠️ source_low_confidence=true (creator banyak klip mirip — verifikasi manual bila perlu).'); }
       console.log(`    ✅ GANTI main → ${orig.platform} ${orig.url}\n       (dari: ${oldUrl})`);
-      // Crop the creator's TikTok profile-card header → CLIPPER pastes it as the real
+      // Crop the creator's TikTok profile-card header → Thoth pastes it as the real
       // on-screen profile card (replacing the synthetic one).
       if (platHint === 'tiktok' && set.main.profile) {
         try {

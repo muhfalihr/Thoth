@@ -1,8 +1,8 @@
 //! Content data model + OpenClaw content-set loader.
 //!
-//! Content discovery (multi-platform search) is no longer done inside CLIPPER —
+//! Content discovery (multi-platform search) is no longer done inside Thoth —
 //! it is handled upstream by OpenClaw (the "Ella" agent), which curates the main
-//! clippable video plus a pool of relevant footage and hands them to CLIPPER via
+//! clippable video plus a pool of relevant footage and hands them to Thoth via
 //! `thoth run --content <set.json>`.
 //!
 //! This module keeps:
@@ -108,7 +108,7 @@ pub struct ProfileInfo {
     /// Follower/like blurb exactly as shown on the platform (e.g. "153K followers").
     #[serde(default)]
     pub followers: String,
-    /// Direct URL to the profile avatar image. CLIPPER downloads it locally and
+    /// Direct URL to the profile avatar image. Thoth downloads it locally and
     /// composites the real photo into the card. Empty = drawn initial tile.
     #[serde(default)]
     pub avatar_url: String,

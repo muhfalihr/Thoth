@@ -229,6 +229,18 @@ async fn main() -> Result<()> {
     // Load .env file if present
     dotenvy::dotenv().ok();
 
+    // Backward-compat for the CLIPPER → Thoth rename: mirror any legacy `CLIPPER_*`
+    // env var onto `THOTH_*` (so an existing .env keeps working unchanged). New keys
+    // use `THOTH_*`. Runs once at startup before any config/env reads or task spawns.
+    for (k, v) in std::env::vars().collect::<Vec<_>>() {
+        if let Some(rest) = k.strip_prefix("CLIPPER_") {
+            let nk = format!("THOTH_{rest}");
+            if std::env::var(&nk).is_err() {
+                unsafe { std::env::set_var(&nk, &v); }
+            }
+        }
+    }
+
     // Structured logging — level from RUST_LOG, default info
     fmt()
         .with_env_filter(
@@ -431,7 +443,7 @@ async fn main() -> Result<()> {
             }
 
             // ── Resolve the main video URL ────────────────────────────────────
-            // Content discovery is handled upstream by OpenClaw. CLIPPER accepts
+            // Content discovery is handled upstream by OpenClaw. Thoth accepts
             // either a direct --url (single-video default) or an OpenClaw content
             // set via --content (main video + footage pool). It does not search.
             let resolved_url: String = if let Some(ref u) = args.url {
@@ -677,7 +689,7 @@ async fn main() -> Result<()> {
                     Err(e) => { eprintln!("✗ Cannot connect to Supabase: {e}"); None }
                 }
             } else {
-                eprintln!("⚠  vector_db.enabled = false or CLIPPER_SUPABASE_URL not set");
+                eprintln!("⚠  vector_db.enabled = false or THOTH_SUPABASE_URL not set");
                 None
             };
 

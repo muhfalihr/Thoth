@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLIPPER TTS synthesis via Microsoft Edge TTS (Phase 4).
+"""Thoth TTS synthesis via Microsoft Edge TTS (Phase 4).
 
 Menggunakan `edge-tts` (Python package) untuk menghasilkan audio MP3 dari teks.
 Edge TTS gratis, tidak butuh API key, dan mendukung suara Indonesia yang natural.
@@ -46,7 +46,7 @@ def emit(success: bool, path=None, duration_secs=0.0, error="") -> None:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="CLIPPER Edge TTS synthesis")
+    p = argparse.ArgumentParser(description="Thoth Edge TTS synthesis")
     p.add_argument("--text",   required=True, help="text to synthesize")
     p.add_argument("--voice",  default="id-ID-ArdiNeural", help="Edge TTS voice name")
     p.add_argument("--output", required=True, help="output MP3 file path")

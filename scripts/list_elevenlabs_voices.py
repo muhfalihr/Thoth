@@ -4,7 +4,7 @@
 Usage:
     python scripts/list_elevenlabs_voices.py
 
-Requires: CLIPPER_ELEVENLABS_API_KEY in .env or environment.
+Requires: THOTH_ELEVENLABS_API_KEY in .env or environment.
 """
 
 import sys
@@ -21,9 +21,9 @@ if env_path.exists():
             k, _, v = line.partition("=")
             os.environ.setdefault(k.strip(), v.strip())
 
-api_key = os.environ.get("CLIPPER_ELEVENLABS_API_KEY", "")
+api_key = os.environ.get("THOTH_ELEVENLABS_API_KEY", "")
 if not api_key:
-    print("ERROR: CLIPPER_ELEVENLABS_API_KEY not set in .env")
+    print("ERROR: THOTH_ELEVENLABS_API_KEY not set in .env")
     sys.exit(1)
 
 try:

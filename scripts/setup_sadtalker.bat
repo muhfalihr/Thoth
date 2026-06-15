@@ -1,23 +1,23 @@
 @echo off
 REM ─────────────────────────────────────────────────────────────────────────────
-REM  CLIPPER SadTalker Setup — Local GPU Talking Avatar (Phase 6)
+REM  Thoth SadTalker Setup — Local GPU Talking Avatar (Phase 6)
 REM
 REM  Prasyarat:
 REM    - Anaconda / Miniconda terinstall
 REM    - NVIDIA GPU + CUDA tersedia (project sudah setup CUDA 13.2)
 REM    - Git terinstall
 REM
-REM  Jalankan sekali dari root folder CLIPPER:
+REM  Jalankan sekali dari root folder Thoth:
 REM    scripts\setup_sadtalker.bat
 REM ─────────────────────────────────────────────────────────────────────────────
 
 setlocal enabledelayedexpansion
 
 set SADTALKER_DIR=tools\SadTalker
-set CONDA_ENV=clipper-sadtalker
+set CONDA_ENV=thoth-sadtalker
 
 echo ============================================================
-echo  CLIPPER SadTalker Setup
+echo  Thoth SadTalker Setup
 echo ============================================================
 
 REM ── Step 1: Clone SadTalker ──────────────────────────────────────────────────
@@ -105,7 +105,7 @@ echo    [reaction.avatar]
 echo    mode           = "sad_talker"
 echo    image_path     = "assets/avatar.png"  ^<-- taruh foto wajah di sini
 echo    sadtalker_dir  = "tools/SadTalker"
-echo    sadtalker_env  = "clipper-sadtalker"
+echo    sadtalker_env  = "thoth-sadtalker"
 echo    sadtalker_size = 256   ^  256=cepat  512=kualitas tinggi
 echo ═══════════════════════════════════════════════════════════════
 endlocal

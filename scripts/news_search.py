@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLIPPER news search — Playwright backend (Stage 4).
+"""Thoth news search — Playwright backend (Stage 4).
 
 Searches the internet for one or more queries and prints a JSON envelope to
 stdout that the Rust `news` module consumes:
@@ -52,7 +52,7 @@ def emit(results, error=None, code=0):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="CLIPPER Playwright news search")
+    p = argparse.ArgumentParser(description="Thoth Playwright news search")
     p.add_argument("--query", action="append", default=[], help="search query (repeatable)")
     p.add_argument("--region", default="ID", help="country code, e.g. ID")
     p.add_argument("--lang", default="id", help="UI language code, e.g. id")

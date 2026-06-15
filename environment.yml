@@ -1,4 +1,4 @@
-name: clipper-news
+name: thoth-news
 channels:
   - conda-forge
   - defaults

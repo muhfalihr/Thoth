@@ -11,7 +11,7 @@ use super::error::NewsError;
 /// Build a `tokio::process::Command` that runs `python <script> [args...]`,
 /// routing through `conda run -n <env>` when `config.conda_env` is non-empty.
 ///
-/// Example (conda):  `conda run -n clipper-news python scripts/foo.py --arg val`
+/// Example (conda):  `conda run -n thoth-news python scripts/foo.py --arg val`
 /// Example (direct): `python scripts/foo.py --arg val`
 pub fn python_command(config: &NewsConfig, script: &Path) -> Result<tokio::process::Command, NewsError> {
     if !script.exists() {

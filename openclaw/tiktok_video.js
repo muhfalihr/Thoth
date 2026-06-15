@@ -1,7 +1,7 @@
-// tiktok_video.js — resolve a TikTok page URL to a DIRECT CDN mp4 URL that yt-dlp (CLIPPER) can
+// tiktok_video.js — resolve a TikTok page URL to a DIRECT CDN mp4 URL that yt-dlp (Thoth) can
 // download. yt-dlp's TikTok extractor is currently broken ("Unable to extract universal data for
 // rehydration") and TikTok pages 403 — but a direct tiktokcdn .mp4 URL downloads fine via yt-dlp's
-// generic extractor (verified with CLIPPER's exact --download-sections path).
+// generic extractor (verified with Thoth's exact --download-sections path).
 //
 // Strategy (user-chosen): tikwm.com API first (fast, no-login, no-watermark), fallback to CDP capture
 // from the already-authenticated relay browser. Mirrors the threads_video.js pattern.

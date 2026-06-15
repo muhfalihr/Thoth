@@ -9,14 +9,14 @@
 //           await footageObjects({ description, caption, headline })  → ["ojol","gojek","grab",...]
 //   CLI:    node footage_objects.js --headline "..." [--caption "..."] [--desc "..."]
 //
-// Uses Novita (.novita_key); model via env CLIPPER_LLM_MODEL (default qwen3-vl-235b — brand-expansion
+// Uses Novita (.novita_key); model via env THOTH_LLM_MODEL (default qwen3-vl-235b — brand-expansion
 // like "ojol"→gojek,grab needs a strong model; 8b under-performs).
 
 const fs = require('fs');
 const path = require('path');
 
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
-const MODEL = process.env.CLIPPER_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
+const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
 
 const PROMPT = ({ description, caption, headline }) => `Dari teks postingan di bawah, ekstrak OBJEK VISUAL / subjek KONKRET yang cocok dijadikan query
 pencarian FOOTAGE (b-roll) — yaitu BENDA / TEMPAT / BRAND / AKTIVITAS yang bisa DITAMPILKAN di video.

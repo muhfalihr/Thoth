@@ -1,9 +1,9 @@
-# CLIPPER configuration — safe to commit (no secrets)
+# Thoth configuration — safe to commit (no secrets)
 # API keys must be set via environment variables, never here.
 #
-# Override any value with env vars prefixed CLIPPER_:
-#   CLIPPER_LLM_DEFAULT_PROVIDER=novita
-#   CLIPPER_WHISPER_MODEL_SIZE=large-v3
+# Override any value with env vars prefixed THOTH_:
+#   THOTH_LLM_DEFAULT_PROVIDER=novita
+#   THOTH_WHISPER_MODEL_SIZE=large-v3
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM — Text analysis provider
@@ -16,31 +16,31 @@ default_provider = "novita"
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 # Cloud inference, ultra-fast, free tier tersedia.
-# Key: https://console.groq.com  →  CLIPPER_GROQ_API_KEY
+# Key: https://console.groq.com  →  THOTH_GROQ_API_KEY
 groq_model = "llama-3.3-70b-versatile"
 # groq_model = "openai/gpt-oss-120b"    # ~8K TPM on free tier
 # groq_model = "llama-3.1-8b-instant"   # tercepat, kualitas rendah
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
-# Key: https://platform.openai.com/api-keys  →  CLIPPER_OPENAI_API_KEY
+# Key: https://platform.openai.com/api-keys  →  THOTH_OPENAI_API_KEY
 openai_model = "gpt-4o-mini"
 # openai_model = "gpt-4o"
 
 # ── Claude (Anthropic) ────────────────────────────────────────────────────────
-# Key: https://console.anthropic.com  →  CLIPPER_CLAUDE_API_KEY
+# Key: https://console.anthropic.com  →  THOTH_CLAUDE_API_KEY
 claude_model = "claude-sonnet-4-5"
 # claude_model = "claude-opus-4-5"
 # claude_model = "claude-haiku-3-5"
 
 # ── Gemini (Google) ───────────────────────────────────────────────────────────
-# Key: https://aistudio.google.com/apikey  →  CLIPPER_GEMINI_API_KEY
+# Key: https://aistudio.google.com/apikey  →  THOTH_GEMINI_API_KEY
 gemini_model = "gemini-2.0-flash"
 # gemini_model = "gemini-2.5-pro"
 # gemini_model = "gemini-1.5-flash"
 
 # ── Novita AI (cloud, OpenAI-compatible) ──────────────────────────────────────
 # Cloud inference dengan ratusan model open-source.
-# Key: https://novita.ai  →  CLIPPER_NOVITA_API_KEY
+# Key: https://novita.ai  →  THOTH_NOVITA_API_KEY
 novita_base_url = "https://api.novita.ai/openai"
 novita_model    = "qwen/qwen-2.5-72b-instruct"   # ANALYZE: andal utk ekstraksi JSON terstruktur (deepseek-v4-flash balik kosong di analyze). Narasi pakai [narration] model.
 # novita_model  = "deepseek/deepseek-v3-0324"
@@ -50,7 +50,7 @@ novita_model    = "qwen/qwen-2.5-72b-instruct"   # ANALYZE: andal utk ekstraksi 
 # ── vLLM (self-hosted, OpenAI-compatible) ─────────────────────────────────────
 # Server lokal atau private. Tidak perlu API key jika server tanpa auth.
 # Start: python -m vllm.entrypoints.openai.api_server --model <model>
-# Key (opsional): CLIPPER_VLLM_API_KEY
+# Key (opsional): THOTH_VLLM_API_KEY
 vllm_base_url = "http://localhost:8000"
 vllm_model    = "Qwen/Qwen2.5-72B-Instruct"
 
@@ -151,7 +151,7 @@ scene_threshold = 0.3     # 0.0 = sangat sensitif, 1.0 = hard cut only
 # Momen yang dianalisis disimpan ke Supabase PostgreSQL. Sebelum analisis
 # berikutnya, momen serupa di-retrieve dan diinjeksikan sebagai referensi LLM.
 #
-# Requires: CLIPPER_SUPABASE_URL env var
+# Requires: THOTH_SUPABASE_URL env var
 # Setup:    Jalankan SQL di BLUEPRINT.md untuk buat tabel + index.
 # ─────────────────────────────────────────────────────────────────────────────
 [vector_db]
@@ -163,17 +163,17 @@ similarity_threshold = 0.65   # cosine similarity cutoff (0=semua, 1=identik)
 # Provider: gemini | novita | openai | vllm
 #
 # gemini  — Gemini text-embedding-004, 768 dims, gratis
-#            Requires: CLIPPER_GEMINI_API_KEY
+#            Requires: THOTH_GEMINI_API_KEY
 #
 # novita  — Qwen3-Embedding-8B via Novita AI, 4096 dims
-#            Requires: CLIPPER_NOVITA_API_KEY (atau CLIPPER_EMBED_API_KEY)
+#            Requires: THOTH_NOVITA_API_KEY (atau THOTH_EMBED_API_KEY)
 #            URL/model dari novita_base_url/novita_model di [llm] (bisa di-override)
 #
 # openai  — OpenAI text-embedding-3-small/large, 1536/3072 dims
-#            Requires: CLIPPER_OPENAI_API_KEY (atau CLIPPER_EMBED_API_KEY)
+#            Requires: THOTH_OPENAI_API_KEY (atau THOTH_EMBED_API_KEY)
 #
 # vllm    — model embedding self-hosted (OpenAI-compatible)
-#            Requires: CLIPPER_VLLM_API_KEY (opsional)
+#            Requires: THOTH_VLLM_API_KEY (opsional)
 #
 # PENTING: Dimensi kolom `embedding` di Supabase harus sesuai model.
 #   Gemini  → vector(768)   |   Novita/Qwen3 → vector(4096)
@@ -187,7 +187,7 @@ embed_model    = "qwen/qwen3-embedding-8b"   # kosong = default per provider
 # ─────────────────────────────────────────────────────────────────────────────
 # --style-profile <name> untuk apply preset ke semua clip dalam satu run.
 # "auto" = LLM pilih sendiri per clip (default, paling adaptif).
-# Run `clipper trend-analyze` untuk auto-generate profile dari video trending.
+# Run `thoth trend-analyze` untuk auto-generate profile dari video trending.
 # ─────────────────────────────────────────────────────────────────────────────
 [styles]
 default_profile = "auto"
@@ -383,7 +383,7 @@ max_per_clip = 3
 # ─────────────────────────────────────────────────────────────────────────────
 # TWITTER/X INTEGRATION — Trending topics → YouTube search → auto pipeline
 # ─────────────────────────────────────────────────────────────────────────────
-# Digunakan saat `clipper run` dipanggil tanpa URL atau --query:
+# Digunakan saat `thoth run` dipanggil tanpa URL atau --query:
 #   1. Ambil trending dari Twitter/X ExplorePage API
 #   2. Pakai trend teratas sebagai query YouTube (via yt-dlp)
 #   3. Ambil video terbaik → jalankan pipeline
@@ -401,7 +401,7 @@ bearer_token        = ""                    # kosong = pakai public bearer token
 # ─────────────────────────────────────────────────────────────────────────────
 # CONTENT SEARCH — Multi-platform (YouTube/TikTok/Twitter/Instagram/News)
 # ─────────────────────────────────────────────────────────────────────────────
-# Dipakai saat `clipper run --query` atau auto-trending. Mencari konten relevan
+# Dipakai saat `thoth run --query` atau auto-trending. Mencari konten relevan
 # LEBIH DARI satu platform: pilih MAIN video (untuk di-clip) + kumpulkan kandidat
 # enrichment (clip/screenshot lain) → disimpan ke <output>/content_enrichment.json.
 #
@@ -415,7 +415,7 @@ bearer_token        = ""                    # kosong = pakai public bearer token
 # cookies login yang valid; YouTube & News jalan tanpa login.
 [content_search]
 enabled          = true                     # opt-in (true = aktifkan multi-platform)
-conda_env        = "clipper-news"
+conda_env        = "thoth-news"
 python_path      = "python"
 script           = "scripts/social_search.py"
 # TikTok di-hide dari default: search/hashtag-nya bot-blocked (EmptyResponse)
@@ -468,7 +468,7 @@ lead_in_secs            = 1.6  # detik audio event main keras sebelum narator ma
 max_enrichment_sources  = 3    # max video tambahan (dari pool enrichment) yg subtitle-nya dijadikan konteks narasi LLM
 # RAG struktur narasi: ambil contoh struktur (arc/hook/pelajaran) yg terbukti dari
 # tabel `narration_structures` (diisi scripts/analyze_narration_structure.py) lalu
-# suntikkan sbg referensi ke prompt narator. Butuh CLIPPER_SUPABASE_URL + embed valid.
+# suntikkan sbg referensi ke prompt narator. Butuh THOTH_SUPABASE_URL + embed valid.
 # Independen dari [vector_db] enabled (itu RAG momen). Degrade diam bila tak tersedia.
 structure_rag                 = true   # false = matikan referensi struktur
 structure_rag_count           = 4      # berapa contoh struktur di-retrieve
@@ -533,9 +533,9 @@ enabled = false
 # Backend pencarian: "playwright" (default, Python, tanpa key) | "serper"
 provider = "playwright"
 
-# Nama conda environment untuk Python scripts (buat dengan scripts\setup_clipper_news.bat).
+# Nama conda environment untuk Python scripts (buat dengan scripts\setup_thoth_news.bat).
 # Kosong = pakai python_path langsung tanpa conda.
-conda_env = "clipper-news"
+conda_env = "thoth-news"
 
 # Interpreter Python (hanya dipakai jika conda_env kosong)
 python_path = "python"
@@ -619,9 +619,9 @@ tts_script = "scripts/tts_generate.py"
 [reaction.tts]
 # Provider aktif:
 #   "edge"       — gratis, tidak butuh API key (kualitas cukup)
-#   "minimax"    — MiniMax Speech 2.8 HD Sync (kualitas tinggi, CLIPPER_MINIMAX_API_KEY)
-#   "fish_audio" — Fish Audio S2 Pro (sangat natural, CLIPPER_FISH_AUDIO_API_KEY)
-#   "openai"     — OpenAI TTS (CLIPPER_OPENAI_API_KEY)
+#   "minimax"    — MiniMax Speech 2.8 HD Sync (kualitas tinggi, THOTH_MINIMAX_API_KEY)
+#   "fish_audio" — Fish Audio S2 Pro (sangat natural, THOTH_FISH_AUDIO_API_KEY)
+#   "openai"     — OpenAI TTS (THOTH_OPENAI_API_KEY)
 #   "elevenlabs" — ElevenLabs (kualitas terbaik, termahal)
 #   "none"       — nonaktifkan TTS
 provider = "elevenlabs"
@@ -631,7 +631,7 @@ provider = "elevenlabs"
 edge_voice = "id-ID-ArdiNeural"
 
 # ── MiniMax Speech 2.8 HD Sync ────────────────────────────────────────────────
-# Key: CLIPPER_MINIMAX_API_KEY + CLIPPER_MINIMAX_GROUP_ID (dari API dashboard)
+# Key: THOTH_MINIMAX_API_KEY + THOTH_MINIMAX_GROUP_ID (dari API dashboard)
 #
 # Model:
 #   "speech-02-hd"    — Speech 2.8 HD  ✅ direkomendasikan
@@ -657,7 +657,7 @@ minimax_speed = 1.1
 minimax_emotion = "excited"
 
 # ── Fish Audio S2 Pro ─────────────────────────────────────────────────────────
-# Key: CLIPPER_FISH_AUDIO_API_KEY
+# Key: THOTH_FISH_AUDIO_API_KEY
 #
 # Model: "s2-pro" (S2 Pro, kualitas tertinggi) | "s1" (lebih cepat)
 fish_audio_model = "s2-pro"
@@ -668,12 +668,12 @@ fish_audio_model = "s2-pro"
 fish_audio_reference_id = ""
 
 # ── ElevenLabs ────────────────────────────────────────────────────────────────
-# Key: CLIPPER_ELEVENLABS_API_KEY
+# Key: THOTH_ELEVENLABS_API_KEY
 elevenlabs_voice_id = "plgKUYgnlZ1DCNh54DwJ"
 elevenlabs_model = "eleven_multilingual_v2"
 
 # ── OpenAI TTS ────────────────────────────────────────────────────────────────
-# Pakai CLIPPER_OPENAI_API_KEY
+# Pakai THOTH_OPENAI_API_KEY
 openai_voice = "nova"
 openai_model = "tts-1-hd"
 
@@ -685,7 +685,7 @@ mode = "none"
 # Path ke gambar avatar PNG (mode = "static_image")
 image_path = "assets/avatar.png"
 sadtalker_dir = "tools/SadTalker"
-sadtalker_env = "clipper-sadtalker"
+sadtalker_env = "thoth-sadtalker"
 sadtalker_size = 256
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -698,6 +698,6 @@ sadtalker_size = 256
 #   mode          = "sad_talker"
 #   image_path    = "assets/avatar.png"  # foto portrait wajah kamu
 #   sadtalker_dir = "tools/SadTalker"    # path ke repo SadTalker
-#   sadtalker_env = "clipper-sadtalker"  # conda env yang dibuat setup_sadtalker.bat
+#   sadtalker_env = "thoth-sadtalker"  # conda env yang dibuat setup_sadtalker.bat
 #   sadtalker_size  = 256    # 256 = cepat, 512 = kualitas lebih tinggi
 #   sadtalker_still = false  # true = minimal head movement

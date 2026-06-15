@@ -15,7 +15,7 @@ const { execSync } = require('child_process');
 const { connect, sleep, run } = require('./cdp');
 const { cropPath } = require('./paths');
 
-const FFMPEG = process.env.CLIPPER_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
+const FFMPEG = process.env.THOTH_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
 
 // Per-platform: domain(s) to attach + how to find the MAIN post element in the page.
 const PLATFORMS = {

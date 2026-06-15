@@ -1,14 +1,14 @@
 // enrich_image_paths.js — fill `image_path` for every NON-VIDEO entry (main + footage[]) of a
 // content-set, by DOM-cropping the post (crop_post.js) on X / Instagram / Facebook. This wires
 // crop_post into content-set building: after OpenClaw assembles main/footage/comments, run this
-// to attach a clean post-card PNG to each non-video entry so CLIPPER renders it as a still card.
+// to attach a clean post-card PNG to each non-video entry so Thoth renders it as a still card.
 //
 //   node enrich_image_paths.js <content_set.json> [--force] [--keywords k1,k2] [--mode any|all]
 //
 // - Targets entries with is_video === false, a supported URL (x/ig/fb), and no existing crop.
 //   --force re-crops even if image_path is already set.
 // - With --keywords, ALSO sets relevance: the post caption (read while cropping) is matched vs the
-//   keywords → "match" (CLIPPER keeps it) or "unverified" (CLIPPER drops it). Without --keywords,
+//   keywords → "match" (Thoth keeps it) or "unverified" (Thoth drops it). Without --keywords,
 //   relevance is left untouched. mode "any" (default) needs one keyword; "all" needs every keyword.
 // - Per-entry failure (tab not attached, post not found) is logged and SKIPPED — never aborts the
 //   whole set. Writes the content-set back in place.
@@ -65,7 +65,7 @@ if (KEYWORDS.length) console.log(`Gate relevansi: keywords=[${KEYWORDS.join(', '
           const hit = matchesTopic(r.text || '', KEYWORDS, MODE);
           e.relevance = hit ? 'match' : 'unverified';
           if (hit) matched++;
-          tag = hit ? ' [match]' : ' [unverified→CLIPPER buang]';
+          tag = hit ? ' [match]' : ' [unverified→Thoth buang]';
         }
         console.log(`✅ ${path.basename(r.image_path)} (${r.w}x${r.h})${tag}`);
       }
@@ -76,7 +76,7 @@ if (KEYWORDS.length) console.log(`Gate relevansi: keywords=[${KEYWORDS.join(', '
       else console.log(`⚠️  ${err && err.message ? err.message.slice(0, 60) : err}`);
     }
   }
-  // Drop non-video footage we couldn't crop (no image_path): CLIPPER can't render them and they'd
+  // Drop non-video footage we couldn't crop (no image_path): Thoth can't render them and they'd
   // fail lint ("is_video:false TANPA image_path"). A transient tab/crop miss must not break the set
   // — re-run with the tab attached + --force to recover them.
   const before = (set.footage || []).length;

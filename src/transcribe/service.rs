@@ -210,8 +210,8 @@ impl<'a> TranscribeService<'a> {
     async fn transcribe_via_groq(&self, wav_path: &Path) -> Result<Transcript, TranscribeError> {
         if self.config.llm.groq_api_key.is_empty() {
             return Err(TranscribeError::InitFailed(
-                "CLIPPER_GROQ_API_KEY is not set.\n\
-                 Set it via: $env:CLIPPER_GROQ_API_KEY = \"gsk_...\"\n\
+                "THOTH_GROQ_API_KEY is not set.\n\
+                 Set it via: $env:THOTH_GROQ_API_KEY = \"gsk_...\"\n\
                  Or add to your .env file."
                     .to_owned(),
             ));

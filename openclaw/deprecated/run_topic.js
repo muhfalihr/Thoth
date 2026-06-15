@@ -2,19 +2,19 @@
 //
 // KENAPA DEPRECATED: orkestrator ini berangkat dari topik-STRING (hasil search), bukan dari URL
 // reel sumber. Akibatnya content-set-nya TIPIS: tanpa build_footage (objek/profil creator), tanpa
-// extract_figures, dan TANPA collect_comments — padahal prompt narasi CLIPPER sangat bergantung
+// extract_figures, dan TANPA collect_comments — padahal prompt narasi Thoth sangat bergantung
 // pada komentar netizen. Jalur yang benar: discover_reels.js (topik dari hook/voiceover akun IG
 // terkurasi) → run_pipeline.js <reel_url> (seed→trace→footage→figures→comments→validate).
 // Disimpan di deprecated/ untuk referensi; masih bisa dijalankan dari folder ini.
 //
-// ONE command for the whole OpenClaw upstream: a topic → a validated CLIPPER
+// ONE command for the whole OpenClaw upstream: a topic → a validated Thoth
 // content-set. Chains the tested scripts in order, each fault-isolated; stops (non-zero) only if
 // a step truly can't continue (e.g. 0 URLs, or validate FAIL).
 //
 //   node deprecated/run_topic.js "<topik>" [--platforms tiktok,tw,ig,fb] [--max N] [--main <url>] [--no-enrich]
 //
 // Stages:  topic_to_urls → urls_to_contentset → enrich_image_paths → validate_content_set
-// Then prints the `clipper run --content …` command (the Rust side stays separate — not auto-run).
+// Then prints the `thoth run --content …` command (the Rust side stays separate — not auto-run).
 
 const fs = require('fs');
 const path = require('path');
@@ -30,7 +30,7 @@ const QUERY = args.find(a => !a.startsWith('--') && !['--platforms', '--max', '-
 const PLATFORMS = getFlag('--platforms', 'tiktok,tw,ig,fb');
 const MAX = getFlag('--max', '8');
 const MAIN = getFlag('--main', null);
-// Relevance keywords default to the topic itself; mode "any" (lenient). CLIPPER drops footage
+// Relevance keywords default to the topic itself; mode "any" (lenient). Thoth drops footage
 // whose relevance != "match", so gating is what makes footage actually usable.
 const KEYWORDS = getFlag('--keywords', QUERY);
 const MODE = getFlag('--mode', 'any');
@@ -70,7 +70,7 @@ try {
   step(4, 'Validate content-set', 'validate_content_set.js', [contentSet]);
 
   console.log(`\n${'='.repeat(60)}\n✅ SIAP. Content-set tervalidasi: ${contentSet}`);
-  console.log(`Jalankan di project CLIPPER:\n  clipper run --content "${contentSet}"`);
+  console.log(`Jalankan di project Thoth:\n  thoth run --content "${contentSet}"`);
 } catch (e) {
   const msg = String(e && e.message || e);
   // execFileSync throws with the child's exit status; validate FAIL = exit 1.

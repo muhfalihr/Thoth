@@ -12,7 +12,7 @@ Usage:
         --title "..." --channel "Animelorian" --duration 46.7 \
         --out test/analysis/report_v1.md
 
-Requires CLIPPER_NOVITA_API_KEY in .env or environment.
+Requires THOTH_NOVITA_API_KEY in .env or environment.
 """
 import argparse
 import base64
@@ -135,9 +135,9 @@ def main():
     args = ap.parse_args()
 
     load_env()
-    api_key = os.environ.get("CLIPPER_NOVITA_API_KEY", "")
+    api_key = os.environ.get("THOTH_NOVITA_API_KEY", "")
     if not api_key:
-        print("ERROR: CLIPPER_NOVITA_API_KEY not set", file=sys.stderr)
+        print("ERROR: THOTH_NOVITA_API_KEY not set", file=sys.stderr)
         sys.exit(1)
 
     frames_dir = Path(args.frames_dir)
@@ -173,7 +173,7 @@ def main():
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "clipper-analyzer/1.0 (+https://novita.ai)",
+                "User-Agent": "thoth-analyzer/1.0 (+https://novita.ai)",
                 "Accept": "application/json",
             },
             method="POST",

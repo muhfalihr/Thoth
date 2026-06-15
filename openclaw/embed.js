@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
-const MODEL = process.env.CLIPPER_EMBED_MODEL || 'qwen/qwen3-embedding-8b';
+const MODEL = process.env.THOTH_EMBED_MODEL || 'qwen/qwen3-embedding-8b';
 
 // Embed an array of strings → array of vectors (same order). Empty strings → null slot.
 async function embed(texts) {

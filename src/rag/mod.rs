@@ -1,6 +1,6 @@
 /// Vector DB + RAG module — Supabase PostgreSQL + pgvector.
 ///
-/// Provides long-term memory for CLIPPER:
+/// Provides long-term memory for Thoth:
 /// - `embed`  — semantic embeddings via Gemini text-embedding-004
 /// - `store`  — pgvector store/retrieve via sqlx + Supabase PostgreSQL
 

@@ -2,9 +2,9 @@
 // Pengganti: run_pipeline.js (orkestrator penuh) + collect_comments.js (DOM scraper, lebih akurat).
 // Disimpan untuk referensi; masih bisa dijalankan dari folder deprecated/ ini.
 // ============================================================
-//  CLIPPER BATCH PIPELINE — Per-Topic Content Set Generator
+//  Thoth BATCH PIPELINE — Per-Topic Content Set Generator
 //  Usage: node batch_pipeline.js <topic_slug> <topic_name> <main_url> [react_url1 react_url2 ...]
-//  Output: output/clipper_content_<topic_slug>.json (crops in output/crops/)
+//  Output: output/thoth_content_<topic_slug>.json (crops in output/crops/)
 // ============================================================
 const fs = require('fs');
 const path = require('path');
@@ -13,9 +13,9 @@ const { connect, sleep, run } = require('../cdp');
 const { detectComments } = require('../comments');
 const { OUTPUT_DIR: OUT_JSON_DIR, CROPS_DIR, outPath } = require('../paths');
 
-const CLIPPER_DIR = 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER';
+const THOTH_DIR = 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER';
 const OUTPUT_DIR = CROPS_DIR;
-const FFMPEG = process.env.CLIPPER_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
+const FFMPEG = process.env.THOTH_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
 const NOVITA_KEY_FILE = require('path').join(__dirname, '..', '.novita_key');
 const NOVITA_KEY = fs.existsSync(NOVITA_KEY_FILE) ? fs.readFileSync(NOVITA_KEY_FILE, 'utf8').trim() : null;
 
@@ -29,7 +29,7 @@ if (args.length < 3) {
   console.error('  node batch_pipeline.js korupsi_bgn_mbg "Korupsi BGN/MBG" https://tiktok.com/@kompascom/video/xxx https://tiktok.com/@user/video/yyy');
   console.error('\nTopics already created:');
   if (fs.existsSync(OUT_JSON_DIR)) {
-    fs.readdirSync(OUT_JSON_DIR).filter(f => f.startsWith('clipper_content_') && f.endsWith('.json')).forEach(f => console.error('  - ' + f));
+    fs.readdirSync(OUT_JSON_DIR).filter(f => f.startsWith('thoth_content_') && f.endsWith('.json')).forEach(f => console.error('  - ' + f));
   }
   process.exit(1);
 }
@@ -38,7 +38,7 @@ const TOPIC_SLUG = args[0];
 const TOPIC_NAME = args[1];
 const MAIN_URL = args[2];
 const REACT_URLS = args.slice(3);
-const CLIPPER_FILE = outPath(`clipper_content_${TOPIC_SLUG}.json`);
+const THOTH_FILE = outPath(`thoth_content_${TOPIC_SLUG}.json`);
 
 function extractUsername(url) { const m = url.match(/@([\w.]+)/); return m ? m[1] : 'unknown'; }
 
@@ -86,7 +86,7 @@ async function scrapeComments(videoUrl) {
 // ============================================================
 async function main() {
   console.log('='.repeat(60));
-  console.log(`  CLIPPER Batch — "${TOPIC_NAME}"`);
+  console.log(`  Thoth Batch — "${TOPIC_NAME}"`);
   console.log(`  Slug: ${TOPIC_SLUG}`);
   console.log(`  Main: ${MAIN_URL}`);
   console.log(`  Reactions: ${REACT_URLS.length}`);
@@ -110,8 +110,8 @@ async function main() {
   };
 
   let existing = null;
-  if (fs.existsSync(CLIPPER_FILE)) {
-    try { existing = JSON.parse(fs.readFileSync(CLIPPER_FILE, 'utf8')); } catch (e) {}
+  if (fs.existsSync(THOTH_FILE)) {
+    try { existing = JSON.parse(fs.readFileSync(THOTH_FILE, 'utf8')); } catch (e) {}
   }
 
   if (existing && existing.main?.url === MAIN_URL) {
@@ -122,14 +122,14 @@ async function main() {
       }
     }
     if (comments.length > 0) existing.comments = comments;
-    fs.writeFileSync(CLIPPER_FILE, JSON.stringify(existing, null, 2), 'utf8');
-    console.log(`\n✅ Updated: ${CLIPPER_FILE}`);
+    fs.writeFileSync(THOTH_FILE, JSON.stringify(existing, null, 2), 'utf8');
+    console.log(`\n✅ Updated: ${THOTH_FILE}`);
   } else {
-    fs.writeFileSync(CLIPPER_FILE, JSON.stringify(contentSet, null, 2), 'utf8');
-    console.log(`\n✅ Created: ${CLIPPER_FILE}`);
+    fs.writeFileSync(THOTH_FILE, JSON.stringify(contentSet, null, 2), 'utf8');
+    console.log(`\n✅ Created: ${THOTH_FILE}`);
   }
 
-  const saved = JSON.parse(fs.readFileSync(CLIPPER_FILE, 'utf8'));
+  const saved = JSON.parse(fs.readFileSync(THOTH_FILE, 'utf8'));
   console.log(`\n📊 Summary:`);
   console.log(`  Raw: ${saved.main?.url?.slice(0, 80) || '-'}`);
   console.log(`  Reactions: ${(saved.footage || []).length}`);
@@ -140,9 +140,9 @@ async function main() {
     viral.forEach(c => console.log(`  ${c.author} (${c.likes}❤️): "${c.text.slice(0, 60)}"`));
   }
 
-  console.log(`\nValidate dulu, lalu run CLIPPER:`);
-  console.log(`  node validate_content_set.js "${CLIPPER_FILE}"`);
-  console.log(`  clipper run --content "${CLIPPER_FILE}"`);
+  console.log(`\nValidate dulu, lalu run Thoth:`);
+  console.log(`  node validate_content_set.js "${THOTH_FILE}"`);
+  console.log(`  thoth run --content "${THOTH_FILE}"`);
 }
 
 run(main);

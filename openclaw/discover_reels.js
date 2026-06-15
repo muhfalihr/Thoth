@@ -33,7 +33,7 @@ const ACCOUNTS = (getFlag('--accounts', defaultAccounts())).split(',').map(s => 
 const MAX_PER = parseInt(getFlag('--max-per', '5'), 10);
 const HOURS = parseInt(getFlag('--hours', '48'), 10);
 const OUT = getFlag('--out', null);
-const MODEL = process.env.CLIPPER_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct';
+const MODEL = process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct';
 
 const NOVITA_KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
 const GROQ_KEY = process.env.GROQ_API_KEY || (() => { const f = path.join(__dirname, '.groq_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();

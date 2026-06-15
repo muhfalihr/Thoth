@@ -377,7 +377,7 @@ impl<'a> VisualAnalyzer<'a> {
     ) -> Result<String> {
         let api_key = &self.llm_config.gemini_api_key;
         if api_key.is_empty() {
-            anyhow::bail!("CLIPPER_GEMINI_API_KEY is not set");
+            anyhow::bail!("THOTH_GEMINI_API_KEY is not set");
         }
         let model = &self.llm_config.gemini_model;
         let url = format!(
@@ -421,7 +421,7 @@ impl<'a> VisualAnalyzer<'a> {
     ) -> Result<String> {
         let api_key = &self.llm_config.openai_api_key;
         if api_key.is_empty() {
-            anyhow::bail!("CLIPPER_OPENAI_API_KEY is not set");
+            anyhow::bail!("THOTH_OPENAI_API_KEY is not set");
         }
         let model = &self.llm_config.openai_model;
         let url   = "https://api.openai.com/v1/chat/completions";
@@ -638,7 +638,7 @@ impl<'a> VisualAnalyzer<'a> {
     ) -> Result<String> {
         let api_key = &self.llm_config.claude_api_key;
         if api_key.is_empty() {
-            anyhow::bail!("CLIPPER_CLAUDE_API_KEY is not set");
+            anyhow::bail!("THOTH_CLAUDE_API_KEY is not set");
         }
         let model = &self.llm_config.claude_model;
         let url   = "https://api.anthropic.com/v1/messages";

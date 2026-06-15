@@ -296,7 +296,7 @@ async fn synthesize_openai(
 ) -> Result<TtsResult, ReactionError> {
     let key = match api_key.filter(|k| !k.is_empty()) {
         Some(k) => k.to_owned(),
-        None => return Err(ReactionError::Tts("CLIPPER_OPENAI_API_KEY not set".to_owned())),
+        None => return Err(ReactionError::Tts("THOTH_OPENAI_API_KEY not set".to_owned())),
     };
 
     let client = reqwest::Client::new();
@@ -338,7 +338,7 @@ async fn synthesize_elevenlabs(
     cfg: &ReactionConfig,
 ) -> Result<TtsResult, ReactionError> {
     if cfg.tts.elevenlabs_api_key.is_empty() {
-        return Err(ReactionError::Tts("CLIPPER_ELEVENLABS_API_KEY not set".to_owned()));
+        return Err(ReactionError::Tts("THOTH_ELEVENLABS_API_KEY not set".to_owned()));
     }
     if cfg.tts.elevenlabs_voice_id.is_empty() {
         return Err(ReactionError::Tts("reaction.tts.elevenlabs_voice_id not set".to_owned()));
@@ -393,11 +393,11 @@ async fn synthesize_minimax(
     let group_id = &cfg.tts.minimax_group_id;
 
     if api_key.is_empty() {
-        return Err(ReactionError::Tts("CLIPPER_MINIMAX_API_KEY is not set".to_owned()));
+        return Err(ReactionError::Tts("THOTH_MINIMAX_API_KEY is not set".to_owned()));
     }
     if group_id.is_empty() {
         return Err(ReactionError::Tts(
-            "CLIPPER_MINIMAX_GROUP_ID is not set (find it in your MiniMax API dashboard)".to_owned()
+            "THOTH_MINIMAX_GROUP_ID is not set (find it in your MiniMax API dashboard)".to_owned()
         ));
     }
 
@@ -484,7 +484,7 @@ async fn synthesize_fish_audio(
 ) -> Result<TtsResult, ReactionError> {
     let api_key = &cfg.tts.fish_audio_api_key;
     if api_key.is_empty() {
-        return Err(ReactionError::Tts("CLIPPER_FISH_AUDIO_API_KEY is not set".to_owned()));
+        return Err(ReactionError::Tts("THOTH_FISH_AUDIO_API_KEY is not set".to_owned()));
     }
 
     let mut body = serde_json::json!({

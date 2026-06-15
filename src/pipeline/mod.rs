@@ -365,7 +365,7 @@ impl<'a> PipelineRunner<'a> {
     /// table (built by `scripts/analyze_narration_structure.py`) most similar to this
     /// video's context, and format them as a reference block for the narrator prompt.
     ///
-    /// Gated on `[narration] structure_rag` + a configured `CLIPPER_SUPABASE_URL` +
+    /// Gated on `[narration] structure_rag` + a configured `THOTH_SUPABASE_URL` +
     /// a valid embed provider. Independent of `[vector_db] enabled` (moments-RAG).
     /// Returns an empty string on any miss — narration always proceeds.
     async fn build_narration_structure_refs(&self, source_text: &str) -> String {

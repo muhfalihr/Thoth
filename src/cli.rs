@@ -477,10 +477,10 @@ pub enum LlmProviderName {
     Groq,
     Openai,
     /// Anthropic Claude — claude-sonnet-4-5 | claude-opus-4-5 | claude-haiku-3-5
-    /// Set CLIPPER_CLAUDE_API_KEY and optionally claude_model in config.toml
+    /// Set THOTH_CLAUDE_API_KEY and optionally claude_model in config.toml
     Claude,
     /// Google Gemini — gemini-2.0-flash | gemini-1.5-pro | gemini-2.5-pro
-    /// Set CLIPPER_GEMINI_API_KEY. Free key: https://aistudio.google.com/apikey
+    /// Set THOTH_GEMINI_API_KEY. Free key: https://aistudio.google.com/apikey
     Gemini,
     /// Self-hosted vLLM server (OpenAI-compatible API)
     /// Set vllm_base_url and vllm_model in config.toml
@@ -488,13 +488,13 @@ pub enum LlmProviderName {
     Ollama,
     /// Novita AI — fast & cheap OpenAI-compatible inference
     /// Models: meta-llama/llama-3.3-70b-instruct, deepseek/deepseek-r1-turbo, etc.
-    /// Set CLIPPER_NOVITA_API_KEY. Get key: https://novita.ai/settings#key-management
+    /// Set THOTH_NOVITA_API_KEY. Get key: https://novita.ai/settings#key-management
     Novita,
     /// Together AI — OpenAI-compatible, wide model selection
-    /// Set CLIPPER_TOGETHER_API_KEY
+    /// Set THOTH_TOGETHER_API_KEY
     Together,
     /// Fireworks AI — OpenAI-compatible, fast open-source serving
-    /// Set CLIPPER_FIREWORKS_API_KEY
+    /// Set THOTH_FIREWORKS_API_KEY
     Fireworks,
 }
 

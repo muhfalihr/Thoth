@@ -40,9 +40,9 @@ pub struct EmbedConfig {
     /// - vllm:   nama model yang diload di server, e.g. "Qwen/Qwen3-Embedding-8B"
     pub model: String,
     /// API key.
-    /// - gemini: CLIPPER_GEMINI_API_KEY
-    /// - openai/novita: CLIPPER_EMBED_API_KEY (atau CLIPPER_OPENAI_API_KEY sebagai fallback)
-    /// - vllm:   CLIPPER_VLLM_API_KEY (opsional jika server tidak butuh auth)
+    /// - gemini: THOTH_GEMINI_API_KEY
+    /// - openai/novita: THOTH_EMBED_API_KEY (atau THOTH_OPENAI_API_KEY sebagai fallback)
+    /// - vllm:   THOTH_VLLM_API_KEY (opsional jika server tidak butuh auth)
     pub api_key: String,
 }
 
@@ -56,14 +56,14 @@ impl EmbedConfig {
         let api_key = match provider.as_str() {
             "gemini" => config.llm.gemini_api_key.clone(),
             "novita" => {
-                // Prioritas: CLIPPER_EMBED_API_KEY > CLIPPER_NOVITA_API_KEY
+                // Prioritas: THOTH_EMBED_API_KEY > THOTH_NOVITA_API_KEY
                 if !vdb.embed_api_key.is_empty() { vdb.embed_api_key.clone() }
                 else { config.llm.novita_api_key.clone() }
             }
             "vllm" => config.llm.vllm_api_key.clone(),
             _ => {
                 // "openai" dan provider OpenAI-compatible lainnya:
-                // Prioritas: CLIPPER_EMBED_API_KEY > CLIPPER_OPENAI_API_KEY
+                // Prioritas: THOTH_EMBED_API_KEY > THOTH_OPENAI_API_KEY
                 if !vdb.embed_api_key.is_empty() { vdb.embed_api_key.clone() }
                 else { config.llm.openai_api_key.clone() }
             }
@@ -192,7 +192,7 @@ async fn embed_via_gemini(
     client:  &reqwest::Client,
 ) -> Option<Vec<f32>> {
     if api_key.is_empty() {
-        warn!("rag/embed[gemini]: CLIPPER_GEMINI_API_KEY not set");
+        warn!("rag/embed[gemini]: THOTH_GEMINI_API_KEY not set");
         return None;
     }
 

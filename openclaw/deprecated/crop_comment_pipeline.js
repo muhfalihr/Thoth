@@ -9,12 +9,12 @@ const { detectComments, VISION_MODEL } = require('../comments');
 const { CROPS_DIR, outPath } = require('../paths');
 
 // ============================================================
-//  CLIPPER COMMENT CROP PIPELINE — Full Pipeline
+//  Thoth COMMENT CROP PIPELINE — Full Pipeline
 //  Usage: node crop_comment_pipeline.js <tiktok_url> [output_file]
 // ============================================================
 
 const CONFIG = {
-  ffmpeg: process.env.CLIPPER_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe',
+  ffmpeg: process.env.THOTH_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe',
   outputDir: CROPS_DIR,
   novitaKey: fs.existsSync(path.join(__dirname, '..', '.novita_key')) ? fs.readFileSync(path.join(__dirname, '.novita_key'), 'utf8').trim() : 'sk-placeholder',
   visionModel: VISION_MODEL,
@@ -27,7 +27,7 @@ const CONFIG = {
 
 const args = process.argv.slice(2);
 if (args.length < 1) {
-  console.error('\n❌ Usage: node crop_comment_pipeline.js <tiktok_url> [output_clipper_file.json]\n');
+  console.error('\n❌ Usage: node crop_comment_pipeline.js <tiktok_url> [output_thoth_file.json]\n');
   console.error('Examples:');
   console.error('  node crop_comment_pipeline.js https://www.tiktok.com/@kompascom/video/7647116110399048980');
   console.error('  node crop_comment_pipeline.js https://www.tiktok.com/@user/video/123 content_set.json\n');
@@ -35,7 +35,7 @@ if (args.length < 1) {
 }
 
 const TARGET_URL = args[0];
-const CLIPPER_OUTPUT = outPath(args[1] || 'clipper_content_set.json');
+const THOTH_OUTPUT = outPath(args[1] || 'thoth_content_set.json');
 
 function extractUsername(url) { const m = url.match(/@([\w.]+)/); return m ? m[1] : 'unknown'; }
 function extractVideoId(url) { const m = url.match(/video\/(\d+)/); return m ? m[1] : 'unknown'; }
@@ -124,9 +124,9 @@ function cropComments(ssPath, comments, vis) {
   return results;
 }
 
-// === STEP 5: SAVE CLIPPER FORMAT ===
-function saveClipperFormat(url, results) {
-  console.log('\n[4/4] Simpan ke format CLIPPER...');
+// === STEP 5: SAVE Thoth FORMAT ===
+function saveThothFormat(url, results) {
+  console.log('\n[4/4] Simpan ke format Thoth...');
   const username = extractUsername(url) || 'unknown';
   const videoId = extractVideoId(url) || 'unknown';
 
@@ -141,15 +141,15 @@ function saveClipperFormat(url, results) {
   };
 
   let existing = [];
-  if (fs.existsSync(CLIPPER_OUTPUT)) {
-    try { existing = JSON.parse(fs.readFileSync(CLIPPER_OUTPUT, 'utf8')); if (!Array.isArray(existing)) existing = []; }
+  if (fs.existsSync(THOTH_OUTPUT)) {
+    try { existing = JSON.parse(fs.readFileSync(THOTH_OUTPUT, 'utf8')); if (!Array.isArray(existing)) existing = []; }
     catch (e) { existing = []; }
   }
 
   const dup = existing.find(e => e.main?.url === url);
   if (!dup) {
     existing.push(contentSet);
-    console.log(`  Menambahkan URL baru ke ${CLIPPER_OUTPUT}`);
+    console.log(`  Menambahkan URL baru ke ${THOTH_OUTPUT}`);
   } else if (contentSet.comments.length > 0) {
     dup.comments = contentSet.comments;
     console.log(`  Update komentar untuk URL yang sudah ada`);
@@ -157,18 +157,18 @@ function saveClipperFormat(url, results) {
     console.log(`  URL sudah ada, skip`);
   }
 
-  fs.writeFileSync(CLIPPER_OUTPUT, JSON.stringify(existing, null, 2), 'utf8');
-  console.log(`  ✅ Disimpan: ${CLIPPER_OUTPUT} (total entri: ${existing.length})`);
+  fs.writeFileSync(THOTH_OUTPUT, JSON.stringify(existing, null, 2), 'utf8');
+  console.log(`  ✅ Disimpan: ${THOTH_OUTPUT} (total entri: ${existing.length})`);
   return contentSet;
 }
 
 // === MAIN ===
 async function main() {
   console.log('='.repeat(60));
-  console.log('  CLIPPER Comment Crop Pipeline');
+  console.log('  Thoth Comment Crop Pipeline');
   console.log('='.repeat(60));
   console.log(`URL: ${TARGET_URL}`);
-  console.log(`Output: ${CLIPPER_OUTPUT}\n`);
+  console.log(`Output: ${THOTH_OUTPUT}\n`);
 
   if (!fs.existsSync(CONFIG.outputDir)) fs.mkdirSync(CONFIG.outputDir, { recursive: true });
 
@@ -179,7 +179,7 @@ async function main() {
   const results = cropComments(ssPath, comments, vis);
   if (results.length === 0) { console.log('\n⚠️ Tidak ada komentar yang berhasil di-crop.'); return; }
 
-  saveClipperFormat(TARGET_URL, results);
+  saveThothFormat(TARGET_URL, results);
 
   console.log('\n' + '='.repeat(60));
   console.log('  HASIL');
@@ -192,15 +192,15 @@ async function main() {
 
   const viral = results.filter(r => r.likes >= 1000);
   if (viral.length > 0) {
-    console.log('🔥 Viral potensial untuk CLIPPER:');
+    console.log('🔥 Viral potensial untuk Thoth:');
     viral.forEach(r => console.log(`  → @${r.user} (${r.likes} likes) — "${r.text.slice(0, 50)}"`));
   }
 
   console.log(`\n📁 Crop images: ${CONFIG.outputDir}`);
-  console.log(`📄 CLIPPER data: ${CLIPPER_OUTPUT}`);
-  console.log('\nValidate dulu, lalu jalankan CLIPPER:');
-  console.log(`  node validate_content_set.js "${CLIPPER_OUTPUT}"`);
-  console.log(`  clipper run --content "${CLIPPER_OUTPUT}"`);
+  console.log(`📄 Thoth data: ${THOTH_OUTPUT}`);
+  console.log('\nValidate dulu, lalu jalankan Thoth:');
+  console.log(`  node validate_content_set.js "${THOTH_OUTPUT}"`);
+  console.log(`  thoth run --content "${THOTH_OUTPUT}"`);
 }
 
 run(main);

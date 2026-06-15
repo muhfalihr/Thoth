@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLIPPER narration TTS — full narrator voice + WORD-LEVEL timings.
+"""Thoth narration TTS — full narrator voice + WORD-LEVEL timings.
 
 Drives the Animelorian "narrator-driven" edit: synthesizes one continuous
 narration to MP3 AND returns per-word timestamps so the edit can word-pop
@@ -102,7 +102,7 @@ async def synth(text, voice, out_path, rate, volume, pitch):
 
 
 def main():
-    p = argparse.ArgumentParser(description="CLIPPER narration TTS with word timings")
+    p = argparse.ArgumentParser(description="Thoth narration TTS with word timings")
     p.add_argument("--text", required=True)
     p.add_argument("--voice", default="id-ID-ArdiNeural")
     p.add_argument("--output", required=True)

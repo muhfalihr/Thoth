@@ -81,7 +81,7 @@ pub struct NarrationConfig {
     /// Supabase table (built by `scripts/analyze_narration_structure.py`) and
     /// inject them as a reference block into the narrator prompt — so the script
     /// copies arcs/hooks/lessons that worked instead of hallucinating. Requires
-    /// `CLIPPER_SUPABASE_URL` + a valid embed provider; degrades silently if
+    /// `THOTH_SUPABASE_URL` + a valid embed provider; degrades silently if
     /// unavailable. Independent of `[vector_db] enabled` (which is moments-RAG).
     #[serde(default = "default_narr_struct_rag")]
     pub structure_rag: bool,
@@ -201,7 +201,7 @@ fn default_anim_max_cuts()  -> u32     { 2 }
 /// ```toml
 /// [content_search]
 /// enabled          = true
-/// conda_env        = "clipper-news"
+/// conda_env        = "thoth-news"
 /// python_path      = "python"
 /// script           = "scripts/social_search.py"
 /// platforms        = "youtube,instagram,twitter,news"  # tiktok bot-blocked, opt-in only
@@ -267,7 +267,7 @@ impl Default for ContentSearchConfig {
     }
 }
 
-fn default_cs_conda()     -> String { "clipper-news".to_owned() }
+fn default_cs_conda()     -> String { "thoth-news".to_owned() }
 fn default_cs_python()    -> String { "python".to_owned() }
 fn default_cs_script()    -> String { "scripts/social_search.py".to_owned() }
 // TikTok dropped from defaults: its search/hashtag endpoints are bot-blocked
@@ -782,15 +782,15 @@ fn default_true() -> bool { true }
 
 /// Configuration for Supabase PostgreSQL + pgvector long-term memory.
 ///
-/// When `enabled = true`, CLIPPER:
+/// When `enabled = true`, Thoth:
 /// 1. Retrieves similar past viral moments BEFORE LLM analysis → injects as examples
 /// 2. Stores finalized moments AFTER analysis → builds library over time
 ///
-/// Connection URI is loaded exclusively from `CLIPPER_SUPABASE_URL` env var.
+/// Connection URI is loaded exclusively from `THOTH_SUPABASE_URL` env var.
 /// Embeddings use Gemini `text-embedding-004` (free tier, 768 dims).
 #[derive(Debug, Deserialize, Clone)]
 pub struct VectorDbConfig {
-    /// Enable Vector DB + RAG (default: false — requires CLIPPER_SUPABASE_URL).
+    /// Enable Vector DB + RAG (default: false — requires THOTH_SUPABASE_URL).
     pub enabled: bool,
     /// Number of similar past moments to retrieve and inject per analysis (default: 3).
     pub retrieval_count: usize,
@@ -808,12 +808,12 @@ pub struct VectorDbConfig {
     /// Pilihan: "gemini" (default) | "openai" | "vllm"
     ///
     /// - "gemini": Gunakan Gemini text-embedding-004 (768 dims, gratis).
-    ///   Requires CLIPPER_GEMINI_API_KEY.
+    ///   Requires THOTH_GEMINI_API_KEY.
     /// - "openai": Gunakan endpoint OpenAI-compatible — cocok untuk Novita AI,
     ///   Together AI, OpenAI, dll. Set `embed_base_url` dan `embed_model`.
-    ///   Requires CLIPPER_EMBED_API_KEY (atau fallback ke CLIPPER_OPENAI_API_KEY).
+    ///   Requires THOTH_EMBED_API_KEY (atau fallback ke THOTH_OPENAI_API_KEY).
     /// - "vllm": Server vLLM self-hosted dengan model embedding (e.g. Qwen3-Embedding).
-    ///   Requires `embed_base_url` dan opsional CLIPPER_VLLM_API_KEY.
+    ///   Requires `embed_base_url` dan opsional THOTH_VLLM_API_KEY.
     #[serde(default = "default_embed_provider")]
     pub embed_provider: String,
 
@@ -835,9 +835,9 @@ pub struct VectorDbConfig {
     pub embed_model: String,
 
     /// API key khusus untuk embedding.
-    /// Diisi dari env var CLIPPER_EMBED_API_KEY.
-    /// Jika kosong, fallback ke CLIPPER_OPENAI_API_KEY (untuk provider "openai"),
-    /// CLIPPER_GEMINI_API_KEY (untuk "gemini"), atau CLIPPER_VLLM_API_KEY (untuk "vllm").
+    /// Diisi dari env var THOTH_EMBED_API_KEY.
+    /// Jika kosong, fallback ke THOTH_OPENAI_API_KEY (untuk provider "openai"),
+    /// THOTH_GEMINI_API_KEY (untuk "gemini"), atau THOTH_VLLM_API_KEY (untuk "vllm").
     #[serde(skip)]
     pub embed_api_key: String,
 }
@@ -1015,7 +1015,7 @@ pub struct NewsConfig {
     ///
     /// When non-empty, scripts are run via `conda run -n <conda_env> python <script>`.
     /// When empty, `python_path` is used directly.
-    /// Default: "clipper-news" (created by scripts/setup_clipper_news.bat).
+    /// Default: "thoth-news" (created by scripts/setup_thoth_news.bat).
     #[serde(default = "default_conda_env")]
     pub conda_env: String,
 
@@ -1031,7 +1031,7 @@ pub struct NewsConfig {
     #[serde(default = "default_news_screenshot_script")]
     pub screenshot_script: PathBuf,
 
-    /// Serper.dev API key (provider = "serper"). Loaded from env: CLIPPER_SERPER_API_KEY.
+    /// Serper.dev API key (provider = "serper"). Loaded from env: THOTH_SERPER_API_KEY.
     #[serde(skip)]
     pub serper_api_key: String,
 
@@ -1095,7 +1095,7 @@ pub struct NewsConfig {
 }
 
 fn default_news_provider()          -> String  { "playwright".to_owned() }
-fn default_conda_env()              -> String  { "clipper-news".to_owned() }
+fn default_conda_env()              -> String  { "thoth-news".to_owned() }
 fn default_python_path()            -> String  { "python".to_owned() }
 fn default_news_search_script()     -> PathBuf { PathBuf::from("scripts/news_search.py") }
 fn default_news_screenshot_script() -> PathBuf { PathBuf::from("scripts/news_screenshot.py") }
@@ -1182,11 +1182,11 @@ pub struct TtsConfig {
     pub minimax_emotion: String,
 
     /// MiniMax Group ID — from the API Dashboard. Required in the API URL.
-    /// Loaded from env: CLIPPER_MINIMAX_GROUP_ID
+    /// Loaded from env: THOTH_MINIMAX_GROUP_ID
     #[serde(skip)]
     pub minimax_group_id: String,
 
-    /// MiniMax API key. Loaded from env: CLIPPER_MINIMAX_API_KEY
+    /// MiniMax API key. Loaded from env: THOTH_MINIMAX_API_KEY
     #[serde(skip)]
     pub minimax_api_key: String,
 
@@ -1202,12 +1202,12 @@ pub struct TtsConfig {
     #[serde(default)]
     pub fish_audio_reference_id: String,
 
-    /// Fish Audio API key. Loaded from env: CLIPPER_FISH_AUDIO_API_KEY
+    /// Fish Audio API key. Loaded from env: THOTH_FISH_AUDIO_API_KEY
     #[serde(skip)]
     pub fish_audio_api_key: String,
 
     // ── ElevenLabs ────────────────────────────────────────────────────────────
-    /// ElevenLabs voice ID. From CLIPPER_ELEVENLABS_API_KEY.
+    /// ElevenLabs voice ID. From THOTH_ELEVENLABS_API_KEY.
     #[serde(default)]
     pub elevenlabs_voice_id: String,
     /// ElevenLabs model (default: eleven_multilingual_v2).
@@ -1299,7 +1299,7 @@ pub struct AvatarConfig {
 }
 
 fn default_sadtalker_dir()    -> PathBuf { PathBuf::from("tools/SadTalker") }
-fn default_sadtalker_env()    -> String  { "clipper-sadtalker".to_owned() }
+fn default_sadtalker_env()    -> String  { "thoth-sadtalker".to_owned() }
 fn default_sadtalker_size()   -> u32     { 256 }
 fn default_sadtalker_script() -> PathBuf { PathBuf::from("scripts/sadtalker_generate.py") }
 
@@ -1526,38 +1526,38 @@ impl AppConfig {
             .set_default("vector_db.embed_base_url", "")?
             .set_default("vector_db.embed_model", "")?
             .add_source(File::with_name("config").required(false))
-            .add_source(Environment::with_prefix("CLIPPER").separator("_"))
+            .add_source(Environment::with_prefix("THOTH").separator("_"))
             .build()
             .context("failed to build configuration")?;
 
         let mut app: AppConfig = cfg.try_deserialize().context("failed to parse configuration")?;
 
         // Load API keys from env — never from config file
-        app.llm.groq_api_key   = std::env::var("CLIPPER_GROQ_API_KEY").unwrap_or_default();
-        app.llm.openai_api_key = std::env::var("CLIPPER_OPENAI_API_KEY").unwrap_or_default();
-        app.llm.claude_api_key = std::env::var("CLIPPER_CLAUDE_API_KEY").unwrap_or_default();
-        app.llm.gemini_api_key = std::env::var("CLIPPER_GEMINI_API_KEY").unwrap_or_default();
-        app.llm.novita_api_key    = std::env::var("CLIPPER_NOVITA_API_KEY").unwrap_or_default();
-        app.llm.together_api_key  = std::env::var("CLIPPER_TOGETHER_API_KEY").unwrap_or_default();
-        app.llm.fireworks_api_key = std::env::var("CLIPPER_FIREWORKS_API_KEY").unwrap_or_default();
-        app.llm.vllm_api_key      = std::env::var("CLIPPER_VLLM_API_KEY").unwrap_or_default();
+        app.llm.groq_api_key   = std::env::var("THOTH_GROQ_API_KEY").unwrap_or_default();
+        app.llm.openai_api_key = std::env::var("THOTH_OPENAI_API_KEY").unwrap_or_default();
+        app.llm.claude_api_key = std::env::var("THOTH_CLAUDE_API_KEY").unwrap_or_default();
+        app.llm.gemini_api_key = std::env::var("THOTH_GEMINI_API_KEY").unwrap_or_default();
+        app.llm.novita_api_key    = std::env::var("THOTH_NOVITA_API_KEY").unwrap_or_default();
+        app.llm.together_api_key  = std::env::var("THOTH_TOGETHER_API_KEY").unwrap_or_default();
+        app.llm.fireworks_api_key = std::env::var("THOTH_FIREWORKS_API_KEY").unwrap_or_default();
+        app.llm.vllm_api_key      = std::env::var("THOTH_VLLM_API_KEY").unwrap_or_default();
         // Supabase connection URI (full URI with password — never in config file)
-        app.vector_db.supabase_url = std::env::var("CLIPPER_SUPABASE_URL").unwrap_or_default();
+        app.vector_db.supabase_url = std::env::var("THOTH_SUPABASE_URL").unwrap_or_default();
         // Embedding API key — khusus untuk RAG embedding, opsional
-        app.vector_db.embed_api_key = std::env::var("CLIPPER_EMBED_API_KEY").unwrap_or_default();
+        app.vector_db.embed_api_key = std::env::var("THOTH_EMBED_API_KEY").unwrap_or_default();
         // News search: Serper.dev API key (only needed when news.provider = "serper")
-        app.news.serper_api_key = std::env::var("CLIPPER_SERPER_API_KEY").unwrap_or_default();
+        app.news.serper_api_key = std::env::var("THOTH_SERPER_API_KEY").unwrap_or_default();
         // Reaction TTS API keys
-        app.reaction.tts.elevenlabs_api_key     = std::env::var("CLIPPER_ELEVENLABS_API_KEY").unwrap_or_default();
-        app.reaction.tts.minimax_api_key        = std::env::var("CLIPPER_MINIMAX_API_KEY").unwrap_or_default();
-        app.reaction.tts.minimax_group_id       = std::env::var("CLIPPER_MINIMAX_GROUP_ID").unwrap_or_default();
-        app.reaction.tts.fish_audio_api_key     = std::env::var("CLIPPER_FISH_AUDIO_API_KEY").unwrap_or_default();
+        app.reaction.tts.elevenlabs_api_key     = std::env::var("THOTH_ELEVENLABS_API_KEY").unwrap_or_default();
+        app.reaction.tts.minimax_api_key        = std::env::var("THOTH_MINIMAX_API_KEY").unwrap_or_default();
+        app.reaction.tts.minimax_group_id       = std::env::var("THOTH_MINIMAX_GROUP_ID").unwrap_or_default();
+        app.reaction.tts.fish_audio_api_key     = std::env::var("THOTH_FISH_AUDIO_API_KEY").unwrap_or_default();
         // Reaction Avatar API keys
-        app.reaction.avatar.did_api_key    = std::env::var("CLIPPER_DID_API_KEY").unwrap_or_default();
-        app.reaction.avatar.heygen_api_key = std::env::var("CLIPPER_HEYGEN_API_KEY").unwrap_or_default();
+        app.reaction.avatar.did_api_key    = std::env::var("THOTH_DID_API_KEY").unwrap_or_default();
+        app.reaction.avatar.heygen_api_key = std::env::var("THOTH_HEYGEN_API_KEY").unwrap_or_default();
         
         // Priority for language: env var > config file
-        if let Ok(lang) = std::env::var("CLIPPER_WHISPER_LANGUAGE") {
+        if let Ok(lang) = std::env::var("THOTH_WHISPER_LANGUAGE") {
             app.whisper.language = lang;
         }
 

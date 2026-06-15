@@ -1,9 +1,9 @@
-# OpenClaw Module — Upstream Content-Sourcing untuk CLIPPER
+# OpenClaw Module — Upstream Content-Sourcing untuk Thoth
 
 Module ini adalah **source-of-truth ter-git** dari semua script JS yang berjalan di
 `~/.openclaw/workspace` (runtime OpenClaw/Ella). Tugasnya: menemukan topik viral → merakit
 **content-set JSON** `{main, footage[], comments[], figures[]}` → diserahkan ke pipeline Rust
-via `clipper run --content <set.json>`.
+via `thoth run --content <set.json>`.
 
 > **Penting:** script TIDAK dijalankan dari folder ini. Runtime tetap di
 > `~/.openclaw/workspace` (di sanalah key file `.novita_key`/`.groq_key`, folder `output/`,
@@ -54,7 +54,7 @@ via `clipper run --content <set.json>`.
 | **`run_pipeline.js`** | **Orkestrator utama.** Satu URL reel/post → content-set LENGKAP: seed → trace_source → build_footage → extract_figures → collect_comments → validate. |
 | `discover_topics.js` | Discovery sekunder: trending X/YouTube + mode `instagram` berbasis caption (cepat tapi sinyal lemah — caption sering nama lagu). |
 | `vision_crop.js` | Fallback terakhir crop post dari screenshot manual (kalau CDP tak bisa). |
-| `test_narration.js` | A/B prompt narasi antar model TANPA full run CLIPPER. |
+| `test_narration.js` | A/B prompt narasi antar model TANPA full run Thoth. |
 
 ### `deprecated/` — disimpan, jangan dipakai
 
@@ -83,7 +83,7 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
    tambah x.com / facebook.com / google.com sesuai platform yang dipakai. Tab harus DIBIARKAN terbuka.
 3. **Key file di WORKSPACE** (bukan di module ini, tidak di-commit): `.novita_key` (LLM/vision/embedding),
    `.groq_key` (Whisper fallback discovery).
-4. **CLIPPER** terbuild (`build_cuda.bat`) + `config.toml`: `[narration] enabled = true`.
+4. **Thoth** terbuild (`build_cuda.bat`) + `config.toml`: `[narration] enabled = true`.
    Default `--provider` CLI sudah **novita** (jangan pakai groq — rate limit 12k TPM bikin narasi
    diam-diam gagal dan video jatuh ke clip-mode).
 
@@ -126,11 +126,11 @@ node -e "const{tiktokDirectUrl}=require('./tiktok_video');tiktokDirectUrl('<page
 ```
 ⚠️ **URL CDN tikwm/fbcdn EPHEMERAL (kedaluwarsa dalam hitungan jam) → lanjut ke Step 4 SEGERA.**
 
-### Step 4 — Render di CLIPPER
+### Step 4 — Render di Thoth
 
 ```powershell
 cd C:\Users\mfr\Documents\MyTools\CLIPPER
-.\target\release\clipper.exe run --content "C:\Users\mfr\.openclaw\workspace\output\topik_slug.json"
+.\target\release\thoth.exe run --content "C:\Users\mfr\.openclaw\workspace\output\topik_slug.json"
 ```
 (`--provider` default sudah novita → narasi voiceover sendiri jalan.)
 
@@ -154,12 +154,12 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 
 | Knob | Lokasi | Default | Efek |
 |---|---|---|---|
-| `placement_min_similarity` | CLIPPER `config.toml` `[overlay]` | 0.46 | Turunkan ke ~0.40 → lebih banyak footage masuk montase; naikkan → lebih ketat (fallback B-roll main). |
-| `CLIPPER_FOOTAGE_STORY_MIN` | env saat `build_footage` | 0.33 | Gate kasar buang footage beda-angle. Naikkan hati-hati (embedding domain-mirip skornya rapat ~0.4). |
+| `placement_min_similarity` | Thoth `config.toml` `[overlay]` | 0.46 | Turunkan ke ~0.40 → lebih banyak footage masuk montase; naikkan → lebih ketat (fallback B-roll main). |
+| `THOTH_FOOTAGE_STORY_MIN` | env saat `build_footage` | 0.33 | Gate kasar buang footage beda-angle. Naikkan hati-hati (embedding domain-mirip skornya rapat ~0.4). |
 | `--per` / `--max` (run_pipeline) | CLI | 2 / 4 | Footage per objek / objek maksimal. |
 | `--cap` (run_pipeline) | CLI | 12 | Jumlah komentar maksimal. Jangan kecilkan — komentar = bahan narasi. |
 | `--hours` (discover_reels) | CLI | 48 | Window recency topik. |
-| `[narration] target_secs` | CLIPPER `config.toml` | 45 | Panjang narasi (≈3 kata/detik). |
+| `[narration] target_secs` | Thoth `config.toml` | 45 | Panjang narasi (≈3 kata/detik). |
 
 ---
 
@@ -173,7 +173,7 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 | Narasi hambar / generik | `comments[] = 0` di content-set | Jalankan `node collect_comments.js <set.json> --extra <url_post_rame>`. |
 | Video jadi clip-mode padahal narration enabled | Provider groq kena 429 (12k TPM) → narasi gagal diam-diam | Pastikan provider novita (default baru). Cek log: `Narration failed`. |
 | yt-dlp gagal download TikTok | Extractor TikTok rusak + page 403 | Sudah ditangani `tiktok_video.js` (tikwm→CDN). Pastikan `main.url` = URL tiktokcdn, bukan page. |
-| URL CDN expired saat clipper run | tikwm/fbcdn ephemeral | Pakai `main.source_local` (mp4 backup) atau re-resolve lalu run segera. |
+| URL CDN expired saat thoth run | tikwm/fbcdn ephemeral | Pakai `main.source_local` (mp4 backup) atau re-resolve lalu run segera. |
 | Lint FAIL `is_video:false TANPA image_path` | Crop post gagal (tab tak attach) | Attach tab platform itu → `node enrich_image_paths.js <set.json> --force`. |
 | Footage semua di-skip `<floor 0.46` | Footage beda-angle dari narasi (normal untuk cerita niche) | Bukan bug. Turunkan `placement_min_similarity` kalau mau lebih banyak cutaway. |
 
@@ -186,7 +186,7 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 node sync.js push        # module  → ~/.openclaw/workspace
 
 # Kalau ada hotfix langsung di workspace (mis. selector DOM berubah), tarik balik:
-node sync.js pull        # workspace → module  → lalu commit di repo CLIPPER
+node sync.js pull        # workspace → module  → lalu commit di repo Thoth
 ```
 
 Aturan:

@@ -15,7 +15,7 @@ use super::LlmProvider;
 /// Auth: API key as `?key=` query param — no Bearer header needed.
 /// Get a free key: https://aistudio.google.com/apikey
 ///
-/// Env var: CLIPPER_GEMINI_API_KEY
+/// Env var: THOTH_GEMINI_API_KEY
 pub struct GeminiProvider {
     client: Client,
     api_key: String,

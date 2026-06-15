@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLIPPER news screenshot — Playwright backend (Phase 2).
+"""Thoth news screenshot — Playwright backend (Phase 2).
 
 Strategi screenshot yang dihasilkan:
   1. Network-level ad blocking (Playwright route intercept)

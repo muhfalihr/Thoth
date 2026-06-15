@@ -90,5 +90,5 @@ run(() => scrapeComments({
   scrollJs: SCROLL_JS,
   buildMain: u => ({ url: u, platform: 'instagram', title: `Instagram ${code}`, is_video: false, duration_sec: 0,
     profile: { name: '', handle: '', followers: '', avatar_url: '' } }),
-  max: max || 12, out: out || 'clipper_content_set.json',
+  max: max || 12, out: out || 'thoth_content_set.json',
 }));

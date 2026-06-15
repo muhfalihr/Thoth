@@ -40,5 +40,5 @@ run(() => scrapeComments({
   scrollJs: 'window.scrollBy(0, 1400)',
   buildMain: u => ({ url: u, platform: 'reddit', title: `Reddit ${id}`, is_video: false, duration_sec: 0,
     profile: { name: '', handle: '', followers: '', avatar_url: '' } }),
-  max: max || 12, out: out || 'clipper_content_set.json',
+  max: max || 12, out: out || 'thoth_content_set.json',
 }));

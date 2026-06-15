@@ -3,7 +3,7 @@
 Status: **DRAFT / PROPOSAL** · Dibuat: 2026-06-01 · Basis: analisis 3 Shorts Animelorian
 (`test/analysis/SYNTHESIS.md` + `report_v1/2/3.md`).
 
-Tujuan: mengubah CLIPPER dari "auto-clipper + subtitle" menjadi **template engine**
+Tujuan: mengubah Thoth dari "auto-thoth + subtitle" menjadi **template engine**
 yang bisa mereproduksi (dan menyempurnakan) struktur 5-beat khas reaction-news Indonesia,
 secara otomatis dari satu URL sumber.
 
@@ -11,7 +11,7 @@ secara otomatis dari satu URL sumber.
 
 ## 0. Ringkasan Template Target (5 Beat)
 
-| Beat | Waktu | Isi | Status di CLIPPER |
+| Beat | Waktu | Isi | Status di Thoth |
 |---|---|---|---|
 | 1. Hook | 0–3s | BG petir + ekspresi ekstrem + **judul raksasa multi-warna per kata** + 1 kalimat paradoks | ⚠️ Parsial (`intro.rs` banner putih, bukan judul overlay multi-warna; belum ada petir/PiP) |
 | 2. Intro tokoh | 3–6s | Nama BESAR di atas kepala + **kartu profil IG** (follower/like) | ❌ Belum ada (enrich hanya screenshot berita) |
@@ -23,7 +23,7 @@ secara otomatis dari satu URL sumber.
 
 ## 1. Pemetaan ke Arsitektur Saat Ini
 
-CLIPPER pipeline: **Ingest → Transcribe → Analyze → Enrich(Stage 4) → Edit(Stage 5)**.
+Thoth pipeline: **Ingest → Transcribe → Analyze → Enrich(Stage 4) → Edit(Stage 5)**.
 
 Template engine ini hidup di **2 tempat**:
 1. **Enrich (Stage 4)** — *menyiapkan bahan*: deteksi tokoh, ambil kartu IG, generate kartu komentar,
@@ -222,7 +222,7 @@ Backward-compatible: semua field pakai `#[serde(default)]` (aturan CLAUDE.md).
 ### 5.7 Data & konfigurasi
 | Aset | Fungsi |
 |---|---|
-| 🔴 `CLIPPER_NOVITA_API_KEY` (ADA) | LLM + vision |
+| 🔴 `THOTH_NOVITA_API_KEY` (ADA) | LLM + vision |
 | 🔴 `data/cookies.txt` (ADA) | Playwright scrape profil/komentar |
 | 🟡 Voice ID TTS (ElevenLabs/MiniMax/Fish) | Suara narator outro |
 | 🟡 LUT `.cube` (`assets/luts/`) | Color grade `edit/color.rs` |
@@ -269,7 +269,7 @@ Backward-compatible: semua field pakai `#[serde(default)]` (aturan CLAUDE.md).
 ---
 
 ## 8. Definisi Selesai (Acceptance)
-Satu perintah `clipper run <url> --profile animelorian` menghasilkan klip 9:16 yang:
+Satu perintah `thoth run <url> --profile animelorian` menghasilkan klip 9:16 yang:
 1. Hook 0–3s: judul multi-warna animasi + petir + 1 kalimat paradoks. ✅
 2. 3–6s: nama besar + kartu profil IG (data real bila bisa). ✅
 3. Body: subtitle CapCut sinkron + ≥1 callout angka/arrow + ganti visual ≤5s. ✅

@@ -1,12 +1,12 @@
 ---
-name: clipper-pipeline
-description: "Konvensi arsitektur & alur kerja CLIPPER — CLI Rust video short-form. PROACTIVELY activate saat: (1) menambah/mengubah stage pipeline (ingest/transcribe/analyze/edit), (2) menambah field schema serde, (3) menambah provider LLM, (4) kerja di modul news/reaction/narration, (5) sebelum melapor fitur selesai. Memuat: urutan build_cuda.bat → test wajib, aturan backward-compat serde, graceful degrade, dan kewajiban update BLUEPRINT.md."
+name: thoth-pipeline
+description: "Konvensi arsitektur & alur kerja Thoth — CLI Rust video short-form. PROACTIVELY activate saat: (1) menambah/mengubah stage pipeline (ingest/transcribe/analyze/edit), (2) menambah field schema serde, (3) menambah provider LLM, (4) kerja di modul news/reaction/narration, (5) sebelum melapor fitur selesai. Memuat: urutan build_cuda.bat → test wajib, aturan backward-compat serde, graceful degrade, dan kewajiban update BLUEPRINT.md."
 version: 1.0.0
 ---
 
-# CLIPPER Pipeline Conventions
+# Thoth Pipeline Conventions
 
-CLIPPER = CLI Rust (2024 edition, Tokio async) yang mengotomasi pembuatan video short-form
+Thoth = CLI Rust (2024 edition, Tokio async) yang mengotomasi pembuatan video short-form
 viral dari long-form. Skill ini menjaga setiap perubahan selaras dengan arsitektur & aturan rilis.
 
 ## When to Use This Skill
@@ -31,7 +31,7 @@ src/ingest/   src/edit/(whisper)   src/analyze/         src/edit/
 1. **`build_cuda.bat`** — full CUDA build, BUKAN cukup `cargo check`. Harus zero error & zero
    warning kritis. *(catatan: `cargo check`/`test` bisa jalan tanpa CUDA untuk iterasi cepat,
    tapi laporan "selesai" wajib lewat `build_cuda.bat`.)*
-2. **`cargo test --bin clipper <modul>`** — jalankan test relevan, perbaiki yang fail dulu.
+2. **`cargo test --bin thoth <modul>`** — jalankan test relevan, perbaiki yang fail dulu.
 3. **Baru** tandai selesai + update `BLUEPRINT.md`.
 
 ### 2. Backward-compatible schema
@@ -52,7 +52,7 @@ src/ingest/   src/edit/(whisper)   src/analyze/         src/edit/
 1. Baca `BLUEPRINT.md` (status + Gap Prioritas) sebelum mulai.
 2. Implementasi; field schema baru → `#[serde(default)]`; sediakan fallback.
 3. `build_cuda.bat` → zero error.
-4. `cargo test --bin clipper <modul>` → hijau.
+4. `cargo test --bin thoth <modul>` → hijau.
 5. Update `BLUEPRINT.md`.
 6. (Opsional) `graphify update .` untuk refresh knowledge graph.
 

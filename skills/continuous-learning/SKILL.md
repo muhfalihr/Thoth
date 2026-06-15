@@ -1,12 +1,12 @@
 ---
 name: continuous-learning
-description: "Ekstrak pola reusable ('instinct') dari sesi kerja CLIPPER menjadi memory/skill, dengan confidence scoring. PROACTIVELY activate saat: (1) sesi menghasilkan pelajaran berulang (fix yang sama 2x+, konvensi baru, jebakan Windows/CUDA), (2) user bilang 'ingat ini', (3) akhir sesi panjang. Port pola continuous-learning-v2 dari ECC ke konteks CLIPPER (memory dir + BLUEPRINT/CLAUDE.md). Atomic, project-scoped, confidence-scored."
+description: "Ekstrak pola reusable ('instinct') dari sesi kerja Thoth menjadi memory/skill, dengan confidence scoring. PROACTIVELY activate saat: (1) sesi menghasilkan pelajaran berulang (fix yang sama 2x+, konvensi baru, jebakan Windows/CUDA), (2) user bilang 'ingat ini', (3) akhir sesi panjang. Port pola continuous-learning-v2 dari ECC ke konteks Thoth (memory dir + BLUEPRINT/CLAUDE.md). Atomic, project-scoped, confidence-scored."
 version: 1.0.0
 ---
 
 # Continuous Learning (Instinct Capture)
 
-Port ringan dari pola **continuous-learning-v2 / instinct** ECC ke CLIPPER. Tujuannya: ubah
+Port ringan dari pola **continuous-learning-v2 / instinct** ECC ke Thoth. Tujuannya: ubah
 pelajaran sesi jadi pengetahuan tahan-lama, bukan "mental note" yang hilang tiap sesi.
 
 ## When to Use This Skill
@@ -25,10 +25,10 @@ Sebuah **instinct** = satu pelajaran atomik (bukan dokumen besar), dengan:
 - **Confidence** — `low` (1x amatan) · `medium` (2–3x) · `high` (terverifikasi berulang)
 
 ### Di mana disimpan (project-scoped → promosi)
-1. **Memory CLIPPER** (`C:\Users\mfr\.claude\projects\C--Users-mfr-Documents-MyTools-CLIPPER\memory\`)
+1. **Memory Thoth** (`C:\Users\mfr\.claude\projects\C--Users-mfr-Documents-MyTools-Thoth\memory\`)
    — untuk pelajaran lintas-sesi. Satu file = satu instinct, tulis pointer di `MEMORY.md`.
 2. **Promosi ke aturan permanen** kalau confidence `high` & berlaku umum:
-   - Konvensi pipeline → `CLAUDE.md` / skill `clipper-pipeline`
+   - Konvensi pipeline → `CLAUDE.md` / skill `thoth-pipeline`
    - Status fitur → `BLUEPRINT.md`
    - Pola GPU/FFmpeg → skill `rust-gpu-ffmpeg`
 
@@ -67,4 +67,4 @@ metadata: { type: feedback | project }
 > Sesi: build gagal 2x karena warning kritis CUDA diabaikan.
 > → instinct: Trigger="lapor selesai"; Action="wajib build_cuda.bat zero-warning, jangan andalkan
 > cargo check"; Evidence="sesi 2026-06-04"; Confidence=medium. Simpan ke memory; kalau berulang,
-> promosikan ke `clipper-pipeline`.
+> promosikan ke `thoth-pipeline`.

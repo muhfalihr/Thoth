@@ -67,7 +67,7 @@ async function main() {
   console.log(`\n✅ ${valid.length} URL canonical tervalidasi:`);
   valid.slice(0, 15).forEach((l, i) => console.log(`   ${i + 1}. ${l}`));
   if (rejected.length) {
-    console.log(`\n🚫 ${rejected.length} ditolak (bentuk tidak valid — JANGAN kirim ke CLIPPER):`);
+    console.log(`\n🚫 ${rejected.length} ditolak (bentuk tidak valid — JANGAN kirim ke Thoth):`);
     rejected.slice(0, 5).forEach(l => console.log(`   - ${l}`));
   }
 

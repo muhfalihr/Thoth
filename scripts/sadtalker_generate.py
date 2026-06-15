@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLIPPER SadTalker talking avatar generation (Phase 6).
+"""Thoth SadTalker talking avatar generation (Phase 6).
 
 Wrapper untuk SadTalker inference.py yang menghasilkan video talking head
 lip-synced dari 1 foto avatar + audio TTS.
@@ -16,7 +16,7 @@ Usage:
         --sadtalker-dir tools/SadTalker \\
         [--size 256] [--still] [--enhancer gfpgan]
 
-Requirements (conda env clipper-sadtalker):
+Requirements (conda env thoth-sadtalker):
     Setup via scripts/setup_sadtalker.bat
 
 SadTalker repo: https://github.com/OpenTalker/SadTalker
@@ -50,7 +50,7 @@ def emit(success: bool, path=None, duration_secs=0.0, error="") -> None:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="CLIPPER SadTalker wrapper")
+    p = argparse.ArgumentParser(description="Thoth SadTalker wrapper")
     p.add_argument("--audio",         required=True,  help="TTS audio file (MP3/WAV)")
     p.add_argument("--image",         required=True,  help="avatar portrait PNG/JPG")
     p.add_argument("--output",        required=True,  help="output MP4 file path")
@@ -124,7 +124,7 @@ def main():
     result_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        sys.executable,        # use current Python (already in clipper-sadtalker env)
+        sys.executable,        # use current Python (already in thoth-sadtalker env)
         str(inference_py),
         "--driven_audio",  str(audio_path),
         "--source_image",  str(image_path),

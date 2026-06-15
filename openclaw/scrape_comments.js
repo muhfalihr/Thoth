@@ -3,12 +3,12 @@
 // Why DOM, not vision: qwen3-vl-8b guesses bounding boxes (uniform grid) and OCRs text
 // with errors. The comments are real HTML elements, so the DOM gives EXACT author / text /
 // like count / avatar image URL, plus exact getBoundingClientRect → pixel-perfect crops via
-// CDP's screenshot `clip`. CLIPPER renders its comment card from {author,text,likes,
+// CDP's screenshot `clip`. Thoth renders its comment card from {author,text,likes,
 // avatar_url}; image_path is included too (forward-compat for pasting the real crop).
 //
 //   node scrape_comments.js <tiktok_url> [out.json] [--max N]
 //
-// Output: content-set JSON in output/ (default output/clipper_content_set.json) + crop
+// Output: content-set JSON in output/ (default output/thoth_content_set.json) + crop
 // PNGs in output/crops/. Nothing is written to the workspace root.
 
 const fs = require('fs');
@@ -28,7 +28,7 @@ for (let i = 0; i < args.length; i++) {
   else pos.push(args[i]);
 }
 const TARGET_URL = pos[0];
-const OUT_JSON = outPath(pos[1] || 'clipper_content_set.json');
+const OUT_JSON = outPath(pos[1] || 'thoth_content_set.json');
 const MAX = flags.max || 12;
 
 if (!TARGET_URL) {
@@ -168,7 +168,7 @@ async function main() {
   }
   client.close();
 
-  // Build content-set. CLIPPER's load_content_set parses a SINGLE object
+  // Build content-set. Thoth's load_content_set parses a SINGLE object
   // {main,footage,comments} (NOT an array). If OUT_JSON already holds a content-set for
   // the same main.url, only its comments are refreshed (footage from content-sourcing kept).
   const username = extractUsername(TARGET_URL);
@@ -195,7 +195,7 @@ async function main() {
   console.log(`📄 ${OUT_JSON} (${results.length} komentar)  |  📁 crops: ${OUT_DIR}`);
   console.log('\nValidate lalu run:');
   console.log(`  node validate_content_set.js "${OUT_JSON}"`);
-  console.log(`  clipper run --content "${OUT_JSON}"`);
+  console.log(`  thoth run --content "${OUT_JSON}"`);
 }
 
 run(main);

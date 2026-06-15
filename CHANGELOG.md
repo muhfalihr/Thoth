@@ -11,7 +11,7 @@ All notable changes to this project will be documented in this file.
 - **News enrichment** (Stage 4, `[news]`): keyword extraction from the spoken transcript → Playwright Google News search → screenshot cards (no paid API key).
 - **Reaction module** (`[reaction]`): reaction script + TTS + optional talking avatar (static image / SadTalker / D-ID / HeyGen).
 - **Multi-platform content search** (`[content_search]`): pick a MAIN video + enrichment pool across YouTube / Instagram / Twitter / News (Playwright / Scrapling).
-- **OpenClaw content-set integration** (`clipper run --content set.json`): externally-sourced `{main, footage, comments, figures, profile}`; real cropped screenshots drive the comment cards and profile card.
+- **OpenClaw content-set integration** (`thoth run --content set.json`): externally-sourced `{main, footage, comments, figures, profile}`; real cropped screenshots drive the comment cards and profile card.
 - **Reaction-news beat overlays**: hook title (giant multi-colour, `[hook_title]`), profile card (real cropped social header, `[profile_card]`), comment cards (real crops), callout (number + arrow, `[callout]`).
 - **Animelorian montage style** (`[animelorian]`): paper-grid canvas with footage cards intercut between beats.
 - **Asset catalog + beat-sync** SFX/meme cues (`scripts/annotate_assets.py` → `assets/asset_catalog.json`).

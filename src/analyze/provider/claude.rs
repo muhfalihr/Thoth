@@ -10,7 +10,7 @@ use super::LlmProvider;
 /// Anthropic Claude provider.
 ///
 /// Uses the Messages API: https://docs.anthropic.com/en/api/messages
-/// Env var: CLIPPER_CLAUDE_API_KEY
+/// Env var: THOTH_CLAUDE_API_KEY
 pub struct ClaudeProvider {
     client: Client,
     api_key: String,

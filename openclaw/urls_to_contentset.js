@@ -1,11 +1,11 @@
 // urls_to_contentset.js — last glue: a topic's URL list (from topic_to_urls.js) → a ready
-// CLIPPER content-set {main, footage[], comments[]}. Picks a video as `main` (what CLIPPER
+// Thoth content-set {main, footage[], comments[]}. Picks a video as `main` (what Thoth
 // downloads+clips), turns the rest into `footage[]` with is_video flags so the pipeline knows
 // which to download (TikTok/YouTube) vs crop as a still card (X/IG/FB → image_path via enrich).
 //
 //   node urls_to_contentset.js <topic_urls_*.json> [--main <url>] [--out <file>]
 //
-// Output → output/content_set_<slug>.json. Then: enrich_image_paths → validate_content_set → clipper run.
+// Output → output/content_set_<slug>.json. Then: enrich_image_paths → validate_content_set → thoth run.
 
 const fs = require('fs');
 const path = require('path');
@@ -31,7 +31,7 @@ const OUT = getFlag('--out') || outPath(`content_set_${slug}.json`);
 const handleOf = u => (u.match(/@([\w.]+)/) || [, ''])[1] || (u.match(/(?:x|twitter)\.com\/([^/?#]+)/) || [, ''])[1] || '';
 
 (async () => {
-  // Keywords for relevance gating (CLIPPER drops footage relevance != "match"). Default = topic.
+  // Keywords for relevance gating (Thoth drops footage relevance != "match"). Default = topic.
   const KEYWORDS = (getFlag('--keywords') || query).split(/[ ,]+/).filter(Boolean);
   const MODE = getFlag('--mode') || 'any';
   const platOf = u => /threads\.(com|net)/.test(u) ? 'threads' : /tiktok\.com/.test(u) ? 'tiktok' : /youtube\.com|youtu\.be/.test(u) ? 'youtube'
@@ -44,7 +44,7 @@ const handleOf = u => (u.match(/@([\w.]+)/) || [, ''])[1] || (u.match(/(?:x|twit
     return '';
   };
 
-  // Choose main = the video CLIPPER will clip → MUST be on-topic. Prefer the first video (TikTok
+  // Choose main = the video Thoth will clip → MUST be on-topic. Prefer the first video (TikTok
   // then YouTube) whose oEmbed caption matches the keywords; fall back to the first video (with a
   // warning) or the first URL. An off-topic main would derail the entire clip.
   let main, mainCaption = '';
@@ -62,7 +62,7 @@ const handleOf = u => (u.match(/@([\w.]+)/) || [, ''])[1] || (u.match(/(?:x|twit
   if (!main) { console.log('❌ Tak ada kandidat main.'); process.exit(1); }
 
   const mainIsVideo = VIDEO.has(main.platform);
-  if (!mainIsVideo) console.log(`⚠️  main bukan video (${main.platform}) — CLIPPER butuh main yg bisa di-ingest yt-dlp. Pertimbangkan --main <url tiktok/youtube>.`);
+  if (!mainIsVideo) console.log(`⚠️  main bukan video (${main.platform}) — Thoth butuh main yg bisa di-ingest yt-dlp. Pertimbangkan --main <url tiktok/youtube>.`);
 
   // Title/description from the main's real caption (grounds narration); else topic line.
   const title = mainCaption || `${query}`;
@@ -108,5 +108,5 @@ const handleOf = u => (u.match(/@([\w.]+)/) || [, ''])[1] || (u.match(/(?:x|twit
   console.log('Lanjut:');
   console.log(`  node enrich_image_paths.js "${OUT}"`);
   console.log(`  node validate_content_set.js "${OUT}"`);
-  console.log(`  clipper run --content "${OUT}"`);
+  console.log(`  thoth run --content "${OUT}"`);
 })();

@@ -3,7 +3,7 @@
 // Footage = cutaway b-roll of the concrete things in the story. For each object (e.g. gojek, grab,
 // indofest senayan) we search all platforms and take `--per` items as a MIX of video b-roll
 // (TikTok/YouTube → is_video:true) and posts (X/IG/FB/Threads → cropped to image_path). Each footage
-// is gated to ITS object (relevance:"match", query=object) so CLIPPER keeps it.
+// is gated to ITS object (relevance:"match", query=object) so Thoth keeps it.
 //
 //   node build_footage.js <content_set.json> [--objects "a,b,c"] [--per 2] [--max 3] [--no-crop]
 //
@@ -85,7 +85,7 @@ function searchObject(obj) {
   let addedV = 0, addedP = 0;
 
   // FOOTAGE dari profil SUMBER (creator asli): reel-reel creator yang RELEVAN ke topik (selain main) —
-  // konten autentik & on-topik. IG reel downloadable CLIPPER via cookies. Cap biar tetap variatif.
+  // konten autentik & on-topik. IG reel downloadable Thoth via cookies. Cap biar tetap variatif.
   const REL_MIN = 0.30; // cosine floor: on-topic reels ≥~0.33, off-topic ≤~0.27 (qwen3-embedding).
   if (profileUser && isCuratedAggregator(profileUser)) {
     console.log(`• profil @${profileUser} = akun kurator (ig_accounts) → skip footage profil`);
@@ -136,7 +136,7 @@ function searchObject(obj) {
     let pv = 0, pp = 0, dropped = 0;
     for (const e of pickV) {
       have.add(e.url);
-      // description = caption asli footage (oEmbed) → di-embed CLIPPER utk cocokkan ke narasi.
+      // description = caption asli footage (oEmbed) → di-embed Thoth utk cocokkan ke narasi.
       let description = '';
       try {
         if (e.platform === 'tiktok') { const m = await tiktokOembed(e.url); description = (m && m.title) || ''; }
@@ -145,9 +145,9 @@ function searchObject(obj) {
       // GATE: video TikTok sudah di-caption-gate saat search → caption kosong tetap diterima
       // (percaya gate search); kalau ADA caption, harus cocok ke objek.
       if (description.trim() && !relevant(description, obj)) { dropped++; continue; }
-      // TikTok: yt-dlp (CLIPPER) tak bisa download PAGE TikTok (extractor rusak/403) → resolve ke URL
+      // TikTok: yt-dlp (Thoth) tak bisa download PAGE TikTok (extractor rusak/403) → resolve ke URL
       // CDN mp4 langsung (tikwm→CDP) yg yt-dlp generic BISA download. Simpan page asli di source_url.
-      // Gagal resolve → biar page url (CLIPPER drop diam, non-fatal). URL CDN ephemeral → jalankan clipper segera.
+      // Gagal resolve → biar page url (Thoth drop diam, non-fatal). URL CDN ephemeral → jalankan thoth segera.
       let furl = e.url, src_url;
       if (e.platform === 'tiktok') { try { const d = await tiktokDirectUrl(e.url); if (d && d.url) { furl = d.url; src_url = e.url; } } catch (err) {} }
       set.footage.push({ url: furl, platform: e.platform, query: obj, is_video: true, relevance: 'match', description, ...(src_url ? { source_url: src_url } : {}) });
@@ -173,8 +173,8 @@ function searchObject(obj) {
   // Gaji Petugas SPBU" / "Harga Pertamax naik" share domain SPBU/bensin tapi bukan insidennya).
   // CATATAN: gate ini KASAR — footage yang share domain skornya mirip yang on-topik (semua ~0.4),
   // jadi ambang dibuat KONSERVATIF (buang ekor terjelas saja); penyaringan halus ada di placement
-  // CLIPPER (relevance floor per-window). Override: CLIPPER_FOOTAGE_STORY_MIN.
-  const STORY_MIN = parseFloat(process.env.CLIPPER_FOOTAGE_STORY_MIN || '0.33');
+  // Thoth (relevance floor per-window). Override: THOTH_FOOTAGE_STORY_MIN.
+  const STORY_MIN = parseFloat(process.env.THOTH_FOOTAGE_STORY_MIN || '0.33');
   try {
     const story = `${main.title || ''}. ${main.description || ''}`.trim();
     const gated = set.footage.filter(f => (f.description || '').trim());

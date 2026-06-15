@@ -22,7 +22,7 @@ use super::LlmProvider;
 ///   vllm_model    = "Qwen/Qwen2.5-72B-Instruct"
 ///
 /// No API key is required unless your vLLM server is configured with one.
-/// Set CLIPPER_VLLM_API_KEY if needed; leave empty otherwise.
+/// Set THOTH_VLLM_API_KEY if needed; leave empty otherwise.
 pub struct VllmProvider {
     client:   Client,
     base_url: String,

@@ -181,7 +181,7 @@ RevealLeft, SqueezeH, SmoothLeft
 
 ## CLI Commands
 
-> 🪶 **Brand: Thoth.** Nama internal masih `clipper` untuk sekarang — binary, crate (`clipper::`), prefix env (`CLIPPER_`), dan folder output (`.clipper/`). Rename binary opsional via `Cargo.toml` (`[[bin]] name = "thoth"`); contoh di bawah memakai `thoth`.
+> 🪶 **Thoth.** Binary `thoth`, crate `thoth::`, folder output job `.thoth/`, prefix env **`THOTH_*`**. Var env lama `CLIPPER_*` tetap dibaca otomatis (shim backward-compat di `main.rs`), jadi `.env` lama tak perlu diubah. Conda env: `thoth-news` / `thoth-sadtalker` (buat via `scripts/setup_thoth_news.bat`).
 
 ### `run` — Pipeline Utama
 ```bash
@@ -398,7 +398,7 @@ montage_max_cuts     = 2
 [news]
 enabled       = false                # keyword → Google News (Playwright) → screenshot cards
 provider      = "playwright"
-conda_env     = "clipper-news"       # buat: scripts/setup_clipper_news.bat
+conda_env     = "thoth-news"       # buat: scripts/setup_thoth_news.bat
 
 [reaction]
 enabled  = false                     # script reaksi + TTS + avatar
@@ -417,14 +417,14 @@ mode = "none"                        # none | static_image | sad_talker | did | 
 
 ```env
 # LLM
-CLIPPER_CLAUDE_API_KEY=sk-ant-...
-CLIPPER_GEMINI_API_KEY=AIza...
-CLIPPER_OPENAI_API_KEY=sk-...
-CLIPPER_GROQ_API_KEY=gsk_...
-CLIPPER_NOVITA_API_KEY=...
+THOTH_CLAUDE_API_KEY=sk-ant-...
+THOTH_GEMINI_API_KEY=AIza...
+THOTH_OPENAI_API_KEY=sk-...
+THOTH_GROQ_API_KEY=gsk_...
+THOTH_NOVITA_API_KEY=...
 
 # Database (RAG)
-CLIPPER_SUPABASE_URL=postgresql://...
+THOTH_SUPABASE_URL=postgresql://...
 
 # Ingest
 FFMPEG_PATH=C:/tools/ffmpeg.exe   # opsional, override auto-download
@@ -436,7 +436,7 @@ FFMPEG_PATH=C:/tools/ffmpeg.exe   # opsional, override auto-download
 
 ```
 output/
-└── .clipper/<job_id>/
+└── .thoth/<job_id>/
     ├── state.json              ← stage checkpoints (resume support)
     ├── source/
     │   └── video.mp4
@@ -491,8 +491,8 @@ LLM menghasilkan field berikut per clip:
 ## Cara Pakai GPU Pipeline (Rust API)
 
 ```rust
-use clipper::gpu::{GpuProcessor, ClipJob, ColorParams};
-use clipper::edit::{ColorGrading, Transition};
+use thoth::gpu::{GpuProcessor, ClipJob, ColorParams};
+use thoth::edit::{ColorGrading, Transition};
 
 // Init GPU (otomatis pilih NVIDIA/AMD terbaik)
 let gpu = GpuProcessor::new().await?;

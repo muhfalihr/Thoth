@@ -75,7 +75,7 @@ async function tiktokProfileVideos(username, { max = 12, captions = true, client
 }
 
 // Screenshot the creator's PROFILE-CARD header (avatar + name + follower/like counts) into `outPng`.
-// CLIPPER pastes this real crop as the on-screen profile card (replacing the synthetic one). Computes a
+// Thoth pastes this real crop as the on-screen profile card (replacing the synthetic one). Computes a
 // clip from the bounding box of the header elements (avatar + title + stats), with padding. Returns the
 // path on success, '' on failure. Needs a logged-in tiktok.com tab attached.
 async function cropTiktokProfile(username, outPng, { client } = {}) {

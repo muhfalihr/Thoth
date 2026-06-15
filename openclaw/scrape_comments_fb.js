@@ -53,5 +53,5 @@ run(() => scrapeComments({
   })()`,
   buildMain: u => ({ url: u, platform: 'facebook', title: 'Facebook post', is_video: false, duration_sec: 0,
     profile: { name: '', handle: '', followers: '', avatar_url: '' } }),
-  max: max || 12, out: out || 'clipper_content_set.json',
+  max: max || 12, out: out || 'thoth_content_set.json',
 }));

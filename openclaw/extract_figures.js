@@ -1,6 +1,6 @@
 // extract_figures.js — identify the FIGURE(S) a topic is about (person / organization / community)
 // from the main title + description/caption + headline, and write them into the content-set as
-// `figures[]`. CLIPPER can use this for a subject intro card and to ground the narration.
+// `figures[]`. Thoth can use this for a subject intro card and to ground the narration.
 //
 //   module: const { figuresFrom } = require('./extract_figures');
 //           await figuresFrom({ title, description, caption, headline })  → [{name,type,role,description}]
@@ -8,13 +8,13 @@
 //   CLI (test):        node extract_figures.js --title "..." --desc "..." [--caption] [--headline]
 //
 // Returns [] when there is no specific notable figure (e.g. an ordinary anonymous person). Uses
-// Novita (.novita_key); model via CLIPPER_LLM_MODEL (default 235b — discrimination needs a strong model).
+// Novita (.novita_key); model via THOTH_LLM_MODEL (default 235b — discrimination needs a strong model).
 
 const fs = require('fs');
 const path = require('path');
 
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
-const MODEL = process.env.CLIPPER_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
+const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
 const TYPES = ['person', 'organization', 'community'];
 
 const PROMPT = ({ title, description, caption, headline }) => `Dari teks topik di bawah, identifikasi TOKOH UTAMA yang sedang DIBICARAKAN: ORANG (nama tokoh),

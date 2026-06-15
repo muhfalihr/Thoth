@@ -3,7 +3,7 @@
 //! Two backends are supported, selected by `config.news.provider`:
 //!   - `"playwright"` (default): runs an external Python + Playwright script
 //!     (`scripts/news_search.py`) that scrapes Google News — no paid API key.
-//!   - `"serper"`: Serper.dev `/news` endpoint (requires `CLIPPER_SERPER_API_KEY`).
+//!   - `"serper"`: Serper.dev `/news` endpoint (requires `THOTH_SERPER_API_KEY`).
 //!
 //! Results are normalized into [`NewsItem`]s; the caller aggregates across
 //! keywords, deduplicates by URL, scores relevance, and keeps the top N.
@@ -113,7 +113,7 @@ fn parse_envelope(stdout: &str) -> Result<Vec<RawSearchResult>, NewsError> {
 /// Serper.dev `/news` search backend.
 async fn search_serper(config: &NewsConfig, keyword: &str) -> Result<Vec<RawSearchResult>, NewsError> {
     if config.serper_api_key.is_empty() {
-        return Err(NewsError::Search("CLIPPER_SERPER_API_KEY is not set".to_owned()));
+        return Err(NewsError::Search("THOTH_SERPER_API_KEY is not set".to_owned()));
     }
 
     #[derive(Deserialize)]

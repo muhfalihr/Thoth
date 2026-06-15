@@ -1,7 +1,7 @@
-// validate.js — shared URL validators + content-set linting for the CLIPPER hand-off.
+// validate.js — shared URL validators + content-set linting for the Thoth hand-off.
 //
 // Single source of truth for the URL shapes content-sourcing/SKILL.md mandates, plus a
-// linter that checks a content-set BEFORE `clipper run --content` so 404 / off-topic /
+// linter that checks a content-set BEFORE `thoth run --content` so 404 / off-topic /
 // missing-image hand-offs never reach the Rust pipeline. Used by search_social_v2.js,
 // search_tiktok_v2.js and validate_content_set.js.
 
@@ -84,7 +84,7 @@ function lintContentSet(data) {
       if (!v.ok) errors.push(`${ft}.url: bentuk URL tidak valid untuk ${v.platform} → ${f.url}`);
       if (f.relevance && !['match', 'unverified'].includes(f.relevance))
         warnings.push(`${ft}.relevance="${f.relevance}" tak dikenal (harap match|unverified).`);
-      if (f.relevance === 'unverified') info.push(`${ft}: unverified — CLIPPER akan membuangnya.`);
+      if (f.relevance === 'unverified') info.push(`${ft}: unverified — Thoth akan membuangnya.`);
       if (!f.relevance) warnings.push(`${ft}.relevance kosong — set "match" hanya jika terverifikasi on-topic.`);
       if (!f.query) info.push(`${ft}.query kosong — sebaiknya isi keyword penemu footage.`);
       if (f.is_video === false) {

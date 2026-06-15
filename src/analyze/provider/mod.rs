@@ -43,7 +43,7 @@ pub fn build_llm_provider(
             if config.llm.openai_api_key.is_empty() {
                 return Err(AnalyzeError::ApiError {
                     provider: "openai".to_owned(),
-                    message: "CLIPPER_OPENAI_API_KEY is not set".to_owned(),
+                    message: "THOTH_OPENAI_API_KEY is not set".to_owned(),
                 });
             }
             Ok(Box::new(OpenAiProvider::new(
@@ -55,7 +55,7 @@ pub fn build_llm_provider(
             if config.llm.claude_api_key.is_empty() {
                 return Err(AnalyzeError::ApiError {
                     provider: "claude".to_owned(),
-                    message: "CLIPPER_CLAUDE_API_KEY is not set.\n\
+                    message: "THOTH_CLAUDE_API_KEY is not set.\n\
                               Get your key at: https://console.anthropic.com/".to_owned(),
                 });
             }
@@ -68,7 +68,7 @@ pub fn build_llm_provider(
             if config.llm.gemini_api_key.is_empty() {
                 return Err(AnalyzeError::ApiError {
                     provider: "gemini".to_owned(),
-                    message: "CLIPPER_GEMINI_API_KEY is not set.\n\
+                    message: "THOTH_GEMINI_API_KEY is not set.\n\
                               Get your free key at: https://aistudio.google.com/apikey".to_owned(),
                 });
             }
@@ -99,7 +99,7 @@ pub fn build_llm_provider(
             if config.llm.novita_api_key.is_empty() {
                 return Err(AnalyzeError::ApiError {
                     provider: "novita".to_owned(),
-                    message: "CLIPPER_NOVITA_API_KEY is not set.\n\
+                    message: "THOTH_NOVITA_API_KEY is not set.\n\
                               Get key: https://novita.ai/settings#key-management".to_owned(),
                 });
             }
@@ -119,7 +119,7 @@ pub fn build_llm_provider(
             if config.llm.together_api_key.is_empty() {
                 return Err(AnalyzeError::ApiError {
                     provider: "together".to_owned(),
-                    message: "CLIPPER_TOGETHER_API_KEY is not set.".to_owned(),
+                    message: "THOTH_TOGETHER_API_KEY is not set.".to_owned(),
                 });
             }
             Ok(Box::new(openai_compat::together(
@@ -131,7 +131,7 @@ pub fn build_llm_provider(
             if config.llm.fireworks_api_key.is_empty() {
                 return Err(AnalyzeError::ApiError {
                     provider: "fireworks".to_owned(),
-                    message: "CLIPPER_FIREWORKS_API_KEY is not set.".to_owned(),
+                    message: "THOTH_FIREWORKS_API_KEY is not set.".to_owned(),
                 });
             }
             Ok(Box::new(openai_compat::fireworks(
@@ -143,7 +143,7 @@ pub fn build_llm_provider(
             if config.llm.groq_api_key.is_empty() {
                 return Err(AnalyzeError::ApiError {
                     provider: "groq".to_owned(),
-                    message: "CLIPPER_GROQ_API_KEY is not set".to_owned(),
+                    message: "THOTH_GROQ_API_KEY is not set".to_owned(),
                 });
             }
             Ok(Box::new(GroqProvider::new(

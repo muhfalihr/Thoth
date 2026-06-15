@@ -1,4 +1,4 @@
-// search_news.js — news/data sourcing for a topic, in OpenClaw (was CLIPPER-side), via CDP/Google.
+// search_news.js — news/data sourcing for a topic, in OpenClaw (was Thoth-side), via CDP/Google.
 //
 // Two modes, auto-detected from the topic:
 //   - CHART : currency topics (e.g. "rupiah menurun dibanding dolar") → query Google "USD to IDR"

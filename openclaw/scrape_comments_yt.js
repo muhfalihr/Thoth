@@ -72,5 +72,5 @@ run(() => scrapeComments({
   scrollJs: 'window.scrollBy(0, 1600)',
   buildMain: u => ({ url: u, platform: 'youtube', title: `YouTube ${id}`, is_video: true, duration_sec: 0,
     profile: { name: '', handle: '', followers: '', avatar_url: '' } }),
-  max: max || 12, out: out || 'clipper_content_set.json',
+  max: max || 12, out: out || 'thoth_content_set.json',
 }));

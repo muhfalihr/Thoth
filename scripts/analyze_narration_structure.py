@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Analyze the NARRATION STRUCTURE of reference videos → store to Supabase.
 
-Goal: build a corpus of *what good narration looks like* so CLIPPER's narration
+Goal: build a corpus of *what good narration looks like* so Thoth's narration
 generator (`src/narration/mod.rs`) can ground its scripts in proven structures
 instead of hallucinating weird ones. Each video is broken into an ordered BEAT
 ARC (HOOK → SETUP_KARAKTER → KONTEKS → INSIDEN → flexible middle [comedy /
@@ -17,9 +17,9 @@ Pipeline per URL:
   3. Groq Whisper (large-v3) → transcript of the spoken narration
   4. Novita LLM → structured narration-structure analysis (strict JSON)
   5. Novita embeddings (qwen3-embedding-8b, 4096-d) → semantic vector (optional)
-  6. Supabase (same DB as CLIPPER, OWN table `narration_structures`) → upsert
+  6. Supabase (same DB as Thoth, OWN table `narration_structures`) → upsert
 
-Uses the SAME Supabase + provider creds as CLIPPER (read from .env / config.toml).
+Uses the SAME Supabase + provider creds as Thoth (read from .env / config.toml).
 The table is separate from `viral_moments` and never touches it.
 
 Usage:
@@ -43,9 +43,9 @@ Options:
     --dry-run            Do everything except the DB write (prints the analysis JSON).
 
 Requires in .env / environment:
-    CLIPPER_SUPABASE_URL   postgresql://...        (same DB as CLIPPER)
-    CLIPPER_GROQ_API_KEY   for Whisper transcription
-    CLIPPER_NOVITA_API_KEY for LLM analysis + embeddings  (or CLIPPER_EMBED_API_KEY)
+    THOTH_SUPABASE_URL   postgresql://...        (same DB as Thoth)
+    THOTH_GROQ_API_KEY   for Whisper transcription
+    THOTH_NOVITA_API_KEY for LLM analysis + embeddings  (or THOTH_EMBED_API_KEY)
 
 Install once:  python -m pip install psycopg2-binary requests json_repair
                (json_repair is optional but recommended — repairs LLM JSON that
@@ -229,9 +229,9 @@ def ytdlp_download_audio(url: str, out_dir: Path, cfg: dict, use_cookies: bool,
 # ──────────────────────────────────────────────────────────────────────────────
 def transcribe_groq(audio: Path, model: str, language: str):
     """Return (plain_text, segments) where segments = [{start,end,text}]."""
-    key = os.environ.get("CLIPPER_GROQ_API_KEY", "").strip()
+    key = os.environ.get("THOTH_GROQ_API_KEY", "").strip()
     if not key:
-        raise RuntimeError("CLIPPER_GROQ_API_KEY not set — cannot transcribe")
+        raise RuntimeError("THOTH_GROQ_API_KEY not set — cannot transcribe")
     size_mb = audio.stat().st_size / 1_048_576
     if size_mb > 24:
         log(f"  ! audio is {size_mb:.1f} MB (Groq free limit ~25 MB) — "
@@ -615,9 +615,9 @@ ON CONFLICT (source_url) DO UPDATE SET
 
 def db_connect():
     import psycopg2  # lazy — only needed when actually writing to the DB
-    url = os.environ.get("CLIPPER_SUPABASE_URL", "").strip()
+    url = os.environ.get("THOTH_SUPABASE_URL", "").strip()
     if not url:
-        raise RuntimeError("CLIPPER_SUPABASE_URL not set")
+        raise RuntimeError("THOTH_SUPABASE_URL not set")
     return psycopg2.connect(url)
 
 
@@ -817,14 +817,14 @@ def main():
     # de-dup, keep order
     urls = list(dict.fromkeys(urls))
 
-    novita_key = os.environ.get("CLIPPER_NOVITA_API_KEY", "").strip()
-    embed_key = (os.environ.get("CLIPPER_EMBED_API_KEY", "").strip() or novita_key)
+    novita_key = os.environ.get("THOTH_NOVITA_API_KEY", "").strip()
+    embed_key = (os.environ.get("THOTH_EMBED_API_KEY", "").strip() or novita_key)
 
     if not args.init_db and not urls:
         log("No URLs given. Pass URLs or --urls-file (or --init-db to just create the table).")
         return 2
     if not novita_key and urls:
-        log("warn: CLIPPER_NOVITA_API_KEY not set — LLM analysis will fail")
+        log("warn: THOTH_NOVITA_API_KEY not set — LLM analysis will fail")
 
     conn = None
     if not args.dry_run or args.init_db:

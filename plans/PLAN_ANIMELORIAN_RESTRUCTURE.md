@@ -1,7 +1,7 @@
 # PLAN — Animelorian Narrative Restructure + Meme/Humor Timing
 
 > Status: **Part A + C + B SUDAH diimplementasi & diverifikasi (2026-06-02)** — lihat BLUEPRINT entry n & o.
-> **Iterasi tersisa SELESAI (2026-06-04, entry v)** — dengan lensa OpenClaw (data faktual) ↔ CLIPPER (render):
+> **Iterasi tersisa SELESAI (2026-06-04, entry v)** — dengan lensa OpenClaw (data faktual) ↔ Thoth (render):
 >   - ✅ Montase lebih padat → config `montage_max_cuts` (tile footage pool tambahan per clip).
 >   - ✅ Beat reaksi komentar → modul `edit/comment_card.rs` (kartu komentar screenshot dari `comments[]` OpenClaw) + SFX notif.
 >   - ✅ Kartu IG kenalan real-data → `main.profile` OpenClaw (handle/follower/avatar ASLI) override tebakan LLM, foto di-composite.

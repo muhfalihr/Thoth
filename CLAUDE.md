@@ -1,4 +1,4 @@
-# CLIPPER — Project Instructions for Claude
+# Thoth — Project Instructions for Claude
 
 ## Context Memory
 
@@ -14,7 +14,7 @@ File tersebut berisi:
 **Prioritas yang BELUM diimplementasi (penting untuk masa depan):**
 1. 🔴 **Style Profiles** — Named presets gaya editing trending (config.toml)
 2. 🔴 **CapCut-style subtitle** — Animasi kata bold/berwarna dinamis
-3. 🔴 **Reference Video Analyzer** — `clipper trend-analyze` command
+3. 🔴 **Reference Video Analyzer** — `thoth trend-analyze` command
 4. 🔵 **Beat-sync SFX** — Sinkronisasi SFX ke beat musik
 5. 🔵 **Full Adaptive Trend Learning** — Auto-update style dari TikTok/YT trending
 
@@ -46,7 +46,7 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
 
 2. **Testing** — jalankan unit test yang relevan:
    ```
-   cargo test --bin clipper <modul>
+   cargo test --bin thoth <modul>
    ```
    Jika ada test yang fail, perbaiki dulu sebelum melaporkan selesai.
 
@@ -63,7 +63,7 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
 
 ## Kontrak Content-Set dari OpenClaw (Ella)
 
-Discovery 100% di OpenClaw. CLIPPER menerima **content-set JSON** via `clipper run --content set.json`
+Discovery 100% di OpenClaw. Thoth menerima **content-set JSON** via `thoth run --content set.json`
 (loader: `src/ingest/content_search.rs::load_content_set`). Struktur:
 `{ main: MainVideo, footage: [ContentResult], comments: [CommentInfo] }`, `main.profile` opsional.
 Semua struct pakai `#[serde(default)]` + TANPA `deny_unknown_fields` → field JSON baru aman
@@ -72,8 +72,8 @@ Semua struct pakai `#[serde(default)]` + TANPA `deny_unknown_fields` → field J
 **Lokasi file hand-off (konvensi OpenClaw, 2026-06-06):** semua content-set JSON + crop komentar
 ditulis OpenClaw ke folder **`~/.openclaw/workspace/output/`** (JSON) dan **`output/crops/`** (PNG),
 lewat helper `paths.js` — TIDAK lagi berserakan di root workspace. Default content-set:
-`output/clipper_content_set.json`; `comments[].image_path` menunjuk ke `output/crops/comment_*.png`
-(path absolut). `clipper run --content` menerima path absolut apa pun, jadi lokasi ini bebas — tapi
+`output/thoth_content_set.json`; `comments[].image_path` menunjuk ke `output/crops/comment_*.png`
+(path absolut). `thoth run --content` menerima path absolut apa pun, jadi lokasi ini bebas — tapi
 saat membuat/membaca content-set hasil Ella, cari di `output/`, bukan root.
 
 ### Field `image_path` (postingan non-video)
@@ -105,7 +105,7 @@ layar — dari vision model `describe_video`, di-persist ke `analyze/video_descr
 `[Analisa Momen]` (ranked viral angle + vision note tiap momen, dari `moments.json`) +
 `[Transkrip Audio]` (hanya jika ≥8 kata) + `[Video Terkait]` (subtitle enrichment). Prompt LLM
 (`src/narration/mod.rs`) diinstruksi **WAJIB grounding** ke blok-blok itu, dilarang mengarang
-topik di luar konteks. `[Deskripsi Visual]` + `[Analisa Momen]` lahir dari CLIPPER sendiri
+topik di luar konteks. `[Deskripsi Visual]` + `[Analisa Momen]` lahir dari Thoth sendiri
 (stage analyze), bukan OpenClaw — jadi tetap berfungsi untuk run `--url` biasa.
 
 Kontrak baru:
@@ -127,7 +127,7 @@ tabel Supabase **`narration_structures`** (`rag/store.rs::retrieve_narration_str
 jadi blok "REFERENSI STRUKTUR" (arc/hook/pelajaran) yang disuntik ke prompt narator
 (`narration/mod.rs::generate_script`). Korpus diisi oleh `scripts/analyze_narration_structure.py`
 (kirim URL referensi → beat-arc + hook_format/posture/punchline/lessons + embedding 4096-d).
-Gating: `[narration] structure_rag` (default true) + `CLIPPER_SUPABASE_URL` + embed valid —
+Gating: `[narration] structure_rag` (default true) + `THOTH_SUPABASE_URL` + embed valid —
 INDEPENDEN dari `[vector_db] enabled` (itu RAG momen). Degrade diam bila tak tersedia.
 
 ## graphify

@@ -1,4 +1,4 @@
-// run_pipeline.js — one command: a chosen topic URL → a complete, validated CLIPPER content-set.
+// run_pipeline.js — one command: a chosen topic URL → a complete, validated Thoth content-set.
 //
 // Chains the whole OpenClaw enrich flow that was previously run by hand:
 //   seed (auto-fetch caption) → trace_source (resolve real source / keyword-find main)
@@ -22,7 +22,7 @@ const { outPath } = require('./paths');
 const args = process.argv.slice(2);
 const getFlag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const URL = args.find((a, i) => !a.startsWith('--') && !['--out', '--title', '--desc', '--per', '--max', '--cap'].includes(args[i - 1]));
-const OUT = getFlag('--out', 'clipper_content_set.json');
+const OUT = getFlag('--out', 'thoth_content_set.json');
 const TITLE = getFlag('--title', '');
 const DESC = getFlag('--desc', '');
 const PER = getFlag('--per', '2');

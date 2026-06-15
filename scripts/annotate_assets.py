@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Annotate existing CLIPPER assets so the pipeline LLM knows WHERE (which beat /
+"""Annotate existing Thoth assets so the pipeline LLM knows WHERE (which beat /
 duration) each asset belongs on the 5-beat viral template.
 
 Process:
@@ -10,7 +10,7 @@ Process:
   3. Write assets/asset_catalog.json (machine, consumed by analyze/edit) and
      assets/ASSET_CATALOG.md (human-readable).
 
-Stdlib + ffmpeg/ffprobe only. Requires CLIPPER_NOVITA_API_KEY in .env.
+Stdlib + ffmpeg/ffprobe only. Requires THOTH_NOVITA_API_KEY in .env.
 
 Usage:
     python scripts/annotate_assets.py
@@ -249,9 +249,9 @@ def load_env():
 
 
 def llm_annotate(records: list[dict], model: str) -> list[dict]:
-    api_key = os.environ.get("CLIPPER_NOVITA_API_KEY", "")
+    api_key = os.environ.get("THOTH_NOVITA_API_KEY", "")
     if not api_key:
-        print("WARN: no CLIPPER_NOVITA_API_KEY -> skipping LLM enrichment", file=sys.stderr)
+        print("WARN: no THOTH_NOVITA_API_KEY -> skipping LLM enrichment", file=sys.stderr)
         return []
 
     # Slim feature view for the prompt (drop long/internal fields).
@@ -290,7 +290,7 @@ def llm_annotate(records: list[dict], model: str) -> list[dict]:
             "https://api.novita.ai/openai/chat/completions", data=payload,
             headers={"Authorization": f"Bearer {api_key}",
                      "Content-Type": "application/json",
-                     "User-Agent": "clipper-annotator/1.0",
+                     "User-Agent": "thoth-annotator/1.0",
                      "Accept": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
@@ -364,7 +364,7 @@ def main():
     ap.add_argument("--out-md", default="assets/ASSET_CATALOG.md")
     args = ap.parse_args()
 
-    tmp = tempfile.TemporaryDirectory(prefix="clipper_annot_")
+    tmp = tempfile.TemporaryDirectory(prefix="thoth_annot_")
     frame_dir = Path(tmp.name)
 
     print("Measuring assets…", file=sys.stderr)

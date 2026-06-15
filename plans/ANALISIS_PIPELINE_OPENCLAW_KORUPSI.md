@@ -21,7 +21,7 @@ diverifikasi dari kode dan artefak job.
 | **4** | Footage tidak dipakai (konteks narasi) | **Enrichment-text utk narasi hanya ambil YouTube.** 6 footage semua TikTok → 0 konteks tambahan. | `pipeline::fetch_enrichment_texts()` filter `r.platform == "youtube"`. |
 | **5** | Video kependekan & terasa "kosong" | Sumber narasi kosong → LLM cuma hasilkan ~7 dtk narasi (bukan target 45 dtk) → video final **8.5 dtk** berisi b-roll utama + subtitle ngawur. | `narration.mp3` durasi **6.92s**; clip final **8.52s**; `target_secs=45`. |
 
-**Inti masalah arsitektur:** CLIPPER's narasi dirancang untuk video yang KONTEN-nya ada di
+**Inti masalah arsitektur:** Thoth's narasi dirancang untuk video yang KONTEN-nya ada di
 AUDIO (talking-head, podcast, ceramah → transkrip = cerita). Tapi content-set ini adalah
 **raw b-roll berita 29 detik tanpa narasi suara** — ceritanya ada di **title + komentar +
 visual**, bukan di audio. Pipeline membaca audio (kosong) dan mengabaikan title/komentar →
@@ -175,7 +175,7 @@ yang masuk akal (mis. min 20 dtk) atau sesuaikan ke jumlah bahan.
 ### Prioritas 5 (sisi OpenClaw / Ella)
 Untuk raw b-roll tanpa narasi suara, content-set sebaiknya menandai bahwa **cerita ada di
 komentar/title**, bukan audio — atau menyertakan ringkasan kejadian sebagai field konteks, agar
-CLIPPER tak bergantung pada transkrip yang mungkin kosong.
+Thoth tak bergantung pada transkrip yang mungkin kosong.
 
 ---
 

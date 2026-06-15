@@ -1,5 +1,5 @@
 // test_narration.js — A/B narration prose across models with the IMPROVED prompt, WITHOUT a full
-// CLIPPER run. Builds source_text from a content-set (title+desc+figures+top comments), sends the new
+// Thoth run. Builds source_text from a content-set (title+desc+figures+top comments), sends the new
 // SYSTEM+user prompt to each model via Novita, prints {hook, narration} for comparison.
 //
 //   node test_narration.js <content_set.json> [--models a,b,c]

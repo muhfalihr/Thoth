@@ -1,12 +1,12 @@
 ---
 name: rust-gpu-ffmpeg
-description: "Pola GPU & media-processing CLIPPER di Windows: NVENC encoding, CUDA Whisper, shader wgpu (CapCut-ported color grading & transitions), dan integrasi ffmpeg.exe lokal. PROACTIVELY activate saat: (1) kerja di src/edit/ atau src/gpu/, (2) FFmpeg command building, (3) shader/transition/color grading, (4) NVENC/encoding params, (5) masalah path/binary di Windows. Memuat aturan path Windows, fallback CPU, dan konvensi pemanggilan ffmpeg lokal."
+description: "Pola GPU & media-processing Thoth di Windows: NVENC encoding, CUDA Whisper, shader wgpu (CapCut-ported color grading & transitions), dan integrasi ffmpeg.exe lokal. PROACTIVELY activate saat: (1) kerja di src/edit/ atau src/gpu/, (2) FFmpeg command building, (3) shader/transition/color grading, (4) NVENC/encoding params, (5) masalah path/binary di Windows. Memuat aturan path Windows, fallback CPU, dan konvensi pemanggilan ffmpeg lokal."
 version: 1.0.0
 ---
 
 # Rust GPU & FFmpeg (Windows)
 
-Pola untuk lapisan akselerasi & media CLIPPER. Stack: NVIDIA NVENC (encode), CUDA (Whisper),
+Pola untuk lapisan akselerasi & media Thoth. Stack: NVIDIA NVENC (encode), CUDA (Whisper),
 wgpu (shader CapCut-ported), `ffmpeg.exe` lokal di root project.
 
 ## When to Use This Skill
@@ -28,7 +28,7 @@ wgpu (shader CapCut-ported), `ffmpeg.exe` lokal di root project.
 - Saat Edit/Write & saat menyusun path untuk FFmpeg: pakai backslash `\`. Hati-hati path dengan
   spasi → selalu quote.
 
-### GPU dengan fallback (graceful degrade — lihat `clipper-pipeline`)
+### GPU dengan fallback (graceful degrade — lihat `thoth-pipeline`)
 - **NVENC** untuk encode; kalau GPU/NVENC tak tersedia → fallback encoder CPU (`libx264`) + `warn!`.
 - **CUDA Whisper** → fallback CPU bila CUDA absen.
 - **wgpu shader/transisi** → kalau adapter GPU gagal init, degrade ke jalur FFmpeg `xfade`/filter

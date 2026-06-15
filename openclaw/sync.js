@@ -1,4 +1,4 @@
-// sync.js — sinkronkan module ini (source-of-truth ter-git di CLIPPER/openclaw) dengan runtime
+// sync.js — sinkronkan module ini (source-of-truth ter-git di Thoth/openclaw) dengan runtime
 // di ~/.openclaw/workspace (tempat script BENAR-BENAR dieksekusi: key file, output/, tab relay).
 //
 //   node sync.js push   # module → workspace  (deploy setelah edit di sini; DEFAULT)
@@ -41,4 +41,4 @@ console.log(`sync ${MODE}: ${srcRoot}  →  ${dstRoot}`);
 for (const f of listJs(srcRoot)) copyOne(path.join(srcRoot, f), path.join(dstRoot, f));
 for (const f of listJs(path.join(srcRoot, 'deprecated'))) copyOne(path.join(srcRoot, 'deprecated', f), path.join(dstRoot, 'deprecated', f));
 console.log(`selesai: ${copied} file disalin, ${same} identik (skip).`);
-if (MODE === 'pull') console.log('Jangan lupa commit perubahan module di repo CLIPPER.');
+if (MODE === 'pull') console.log('Jangan lupa commit perubahan module di repo Thoth.');

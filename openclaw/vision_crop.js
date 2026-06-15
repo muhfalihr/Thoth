@@ -17,11 +17,11 @@ const path = require('path');
 const { execSync } = require('child_process');
 const { cropPath } = require('./paths');
 
-const FFMPEG = process.env.CLIPPER_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
+const FFMPEG = process.env.THOTH_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
 const KEY_FILE = path.join(__dirname, '.novita_key');
-// Override with env CLIPPER_VISION_MODEL — the 8b is weak at precise boxes; a larger qwen3-vl
+// Override with env THOTH_VISION_MODEL — the 8b is weak at precise boxes; a larger qwen3-vl
 // (e.g. qwen/qwen3-vl-235b-a22b-instruct) isolates posts far better.
-const VISION_MODEL = process.env.CLIPPER_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct';
+const VISION_MODEL = process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct';
 
 function novitaKey() {
   if (!fs.existsSync(KEY_FILE)) throw new Error(`.novita_key tidak ada di ${KEY_FILE}`);

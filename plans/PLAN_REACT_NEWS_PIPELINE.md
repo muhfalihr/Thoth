@@ -3,7 +3,7 @@
 > Dibuat: 2026-05-31  
 > Revisi: 2026-05-31 (koreksi alur keyword extraction dari transcript)  
 > Implementasi: 2026-05-31 (Phase 1 — internet search via Python Playwright, bukan Serper berbayar)  
-> Prioritas: High (kelanjutan roadmap CLIPPER)
+> Prioritas: High (kelanjutan roadmap Thoth)
 >
 > **Context:** Dokumen ini adalah rencana Phase berikutnya. Pipeline dasar sudah selesai:
 > - Stage 1–4 (Ingest, Transcribe, Analyze, Edit) ✅ implemented
@@ -55,7 +55,7 @@ Keyword yang diekstrak:
 
 ### Apa yang Diinginkan
 
-Transformasi CLIPPER dari **clip extractor** menjadi **full production pipeline** yang:
+Transformasi Thoth dari **clip extractor** menjadi **full production pipeline** yang:
 
 1. **Ekstrak keyword dari transcript** — LLM baca teks transcript setiap moment, hasilkan 3-5 keyword spesifik yang mencerminkan inti kontroversial/menarik dari statement tersebut
 2. **Cari berita di internet** menggunakan keyword dari transcript, bukan query manual
@@ -217,7 +217,7 @@ src/
 ### Output per Job
 
 ```
-output/.clipper/<job_id>/
+output/.thoth/<job_id>/
 ├── state.json
 ├── source/video.mp4
 ├── transcribe/transcript.json
@@ -1198,7 +1198,7 @@ Ini adalah fondasi segalanya — keyword berasal dari transcript.
 
 > **Keputusan desain (per arahan user):** internet search memakai **Python + Playwright**
 > (tanpa API key berbayar) sebagai default, bukan Serper. Serper tetap tersedia sebagai
-> fallback bila `CLIPPER_SERPER_API_KEY` diset dan `provider = "serper"`.
+> fallback bila `THOTH_SERPER_API_KEY` diset dan `provider = "serper"`.
 
 **Output:** `enrich.json` dengan keywords dari transcript + berita yang ditemukan. Belum ada screenshot.
 
@@ -1209,8 +1209,8 @@ pipeline dan periksa `enrich.json` — keywords harus mencerminkan isi transcrip
 ### Phase 2 — Headless Screenshot + Formatting — ✅ SELESAI (2026-05-31)
 **Estimasi: 2-3 hari**
 
-- ✅ `environment.yml` + `scripts/setup_clipper_news.bat` — conda env `clipper-news` (Python 3.11 + Playwright + Chromium); jalankan sekali sebelum pakai
-- ✅ `conda_env` field di `NewsConfig` (default: "clipper-news"); `screenshot_script` field; helper `util::python_command()` yang route otomatis ke `conda run -n env python` atau `python` langsung
+- ✅ `environment.yml` + `scripts/setup_thoth_news.bat` — conda env `thoth-news` (Python 3.11 + Playwright + Chromium); jalankan sekali sebelum pakai
+- ✅ `conda_env` field di `NewsConfig` (default: "thoth-news"); `screenshot_script` field; helper `util::python_command()` yang route otomatis ke `conda run -n env python` atau `python` langsung
 - ✅ `scripts/news_screenshot.py` — Playwright headless, inject JS cleanup popup/cookie, screenshot, extract title + lead paragraph, output JSON envelope
 - ✅ `src/news/scraper.rs` — subprocess wrapper, parsing JSON, `ScreenshotResult`, graceful degrade kalau script tidak ada / browser gagal
 - ✅ `src/news/formatter.rs` — FFmpeg `filter_complex`: blur background 1080×1920 + scale screenshot overlay + `drawtext` source/date/headline; `escape_text`, `truncate_text`; 4 unit test

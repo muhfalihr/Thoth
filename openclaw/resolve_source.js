@@ -11,14 +11,14 @@
 //             → { source: {account,platform}|null, keywords: [], reason }
 //   CLI:    node resolve_source.js --headline "..." [--caption "..."] [--desc "..."]
 //
-// Uses Novita (.novita_key); model via env CLIPPER_LLM_MODEL (default qwen3-vl-8b-instruct, works
+// Uses Novita (.novita_key); model via env THOTH_LLM_MODEL (default qwen3-vl-8b-instruct, works
 // text-only on the OpenAI-compatible endpoint).
 
 const fs = require('fs');
 const path = require('path');
 
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
-const MODEL = process.env.CLIPPER_LLM_MODEL || 'qwen/qwen3-vl-8b-instruct';
+const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-8b-instruct';
 const PLATFORMS = ['tiktok', 'instagram', 'twitter', 'youtube', 'facebook', 'threads'];
 
 const PROMPT = ({ description, caption, headline }) => `Kamu menganalisis sebuah video REPOST/REACTION (mis. reel kurator). Dari teks di bawah, tentukan

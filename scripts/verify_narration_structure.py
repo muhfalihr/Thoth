@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify a GENERATED narration against the proven `narration_structures` corpus.
 
-Closes the loop: after CLIPPER writes a narration (narrator-driven spine), this
+Closes the loop: after Thoth writes a narration (narrator-driven spine), this
 checks whether the resulting script actually FOLLOWS the structures that work —
 strong hook format, a real beat arc, a strong punchline, debate-inviting close —
 and FLAGS the anti-patterns the corpus warns about (moral preaching, weak/empty
@@ -11,13 +11,13 @@ concrete fixes pulled from the nearest reference structures.
 Sources of the generated narration (pick one):
     --text "naskah..."                       analyze raw text
     --narration-file path.txt                a saved narration script
-    --job-dir output/.clipper/<job_id>       reads narration/narration.txt
+    --job-dir output/.thoth/<job_id>       reads narration/narration.txt
                                              (falls back to narration_words.json)
-    --latest                                 newest job under ./output/.clipper
+    --latest                                 newest job under ./output/.thoth
 
 Examples:
     python scripts/verify_narration_structure.py --latest
-    python scripts/verify_narration_structure.py --job-dir output/.clipper/abc123
+    python scripts/verify_narration_structure.py --job-dir output/.thoth/abc123
     python scripts/verify_narration_structure.py --text "Bisa-bisanya ..." --hook "..."
     python scripts/verify_narration_structure.py --latest --json report.json
 
@@ -83,7 +83,7 @@ def text_from_job_dir(job_dir: Path) -> tuple[str, str]:
 
 
 def find_latest_job() -> Path | None:
-    base = ROOT / "output" / ".clipper"
+    base = ROOT / "output" / ".thoth"
     if not base.exists():
         return None
     jobs = [p for p in base.iterdir() if p.is_dir() and (p / "narration").exists()]
@@ -293,8 +293,8 @@ def main():
     ana.load_env()
     cfg = ana.load_config()
     import os
-    novita_key = os.environ.get("CLIPPER_NOVITA_API_KEY", "").strip()
-    embed_key = os.environ.get("CLIPPER_EMBED_API_KEY", "").strip() or novita_key
+    novita_key = os.environ.get("THOTH_NOVITA_API_KEY", "").strip()
+    embed_key = os.environ.get("THOTH_EMBED_API_KEY", "").strip() or novita_key
 
     # ── Resolve narration text ────────────────────────────────────────────────
     hook = args.hook
@@ -318,7 +318,7 @@ def main():
 
     # ── Analyze the generated narration's structure (same schema as corpus) ───
     log("• analyzing generated narration structure (LLM)…")
-    meta = {"title": "(narasi hasil CLIPPER)", "description": hook}
+    meta = {"title": "(narasi hasil Thoth)", "description": hook}
     try:
         analysis = ana.analyze_structure(
             text, meta, args.language,
