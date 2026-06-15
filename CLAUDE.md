@@ -34,12 +34,101 @@ Setiap kali ada implementasi baru atau perubahan status, **langsung update `BLUE
 - **GPU:** NVIDIA NVENC untuk encoding, CUDA untuk Whisper
 - **Config:** `config.toml` (no secrets) + `.env` (API keys)
 
+## ⚠️ Wajib Setelah Setiap Update Fitur
+
+Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
+
+1. **Build dengan `build_cuda.bat`** — bukan hanya `cargo check`, harus full CUDA build:
+   ```
+   build_cuda.bat
+   ```
+   Pastikan zero errors dan zero warnings kritis sebelum lanjut.
+
+2. **Testing** — jalankan unit test yang relevan:
+   ```
+   cargo test --bin clipper <modul>
+   ```
+   Jika ada test yang fail, perbaiki dulu sebelum melaporkan selesai.
+
+3. **Laporkan hasil** — baru setelah build ✅ dan test ✅ selesai, tandai task completed dan update BLUEPRINT.md.
+
+**Jangan** melaporkan fitur sebagai selesai hanya dari `cargo check` — harus full `build_cuda.bat`.
+
 ## Konvensi Penting
 
 - Semua perubahan harus bisa di-build dengan `build_cuda.bat` (zero errors)
 - Gunakan `#[serde(default)]` untuk field baru di schema agar backward-compatible
 - Setiap fitur baru harus graceful degrade jika disabled/unavailable
 - Log level: `info!` untuk progress penting, `warn!` untuk degradasi, `debug!` untuk detail
+
+## Kontrak Content-Set dari OpenClaw (Ella)
+
+Discovery 100% di OpenClaw. CLIPPER menerima **content-set JSON** via `clipper run --content set.json`
+(loader: `src/ingest/content_search.rs::load_content_set`). Struktur:
+`{ main: MainVideo, footage: [ContentResult], comments: [CommentInfo] }`, `main.profile` opsional.
+Semua struct pakai `#[serde(default)]` + TANPA `deny_unknown_fields` → field JSON baru aman
+(forward-compat, field tak dikenal diabaikan).
+
+**Lokasi file hand-off (konvensi OpenClaw, 2026-06-06):** semua content-set JSON + crop komentar
+ditulis OpenClaw ke folder **`~/.openclaw/workspace/output/`** (JSON) dan **`output/crops/`** (PNG),
+lewat helper `paths.js` — TIDAK lagi berserakan di root workspace. Default content-set:
+`output/clipper_content_set.json`; `comments[].image_path` menunjuk ke `output/crops/comment_*.png`
+(path absolut). `clipper run --content` menerima path absolut apa pun, jadi lokasi ini bebas — tapi
+saat membuat/membaca content-set hasil Ella, cari di `output/`, bukan root.
+
+### Field `image_path` (postingan non-video)
+
+Saat URL `main`/`footage` **bukan video** (`is_video:false` — tweet teks, foto IG, status FB,
+artikel), yt-dlp tak bisa download. **OpenClaw** lalu crop kartu postingan jadi PNG bersih →
+kirim path-nya di field **`image_path`** (path absolut lokal) pada entry itu. **Cara utama
+(2026-06-07): `crop_post.js` — crop pixel-perfect dari DOM (X/IG/FB) via CDP**, bukan vision.
+(`vision_crop.js` qwen3-vl terbukti tak andal isolasi post → fallback terakhir saja.) Prosedur di
+sisi Ella: `~/.openclaw/workspace/skills/content-sourcing/SKILL.md` ("Postingan non-video").
+
+**Status di Rust:** field ini **belum dikonsumsi** — `enrichment::is_downloadable_video` mensyaratkan
+`is_video:true`, jadi entry non-video tak masuk pool cutaway video (benar: bukan video yt-dlp).
+Rencana implementasi (FOLLOW-UP, belum dikerjakan): tambah `image_path: String` (`#[serde(default)]`)
+ke `ContentResult`/`MainVideo`, lalu render image statis itu sebagai **kartu visual** (mirip
+`FootageCardCue`/`ImageBadgeCue` tapi sumber gambar diam, durasi terjadwal) untuk postingan non-video.
+Sampai itu ada, `image_path` cuma diparse-diam (additive, tak memengaruhi run lama).
+
+### Narasi grounding: `main.description` + `comments[]` (IMPLEMENTED)
+
+Masalah lama (lihat `ANALISIS_PIPELINE_OPENCLAW_KORUPSI.md`): raw b-roll tanpa voiceover
+→ transkrip Whisper nyaris kosong ("Terima kasih.") → LLM narasi **mengarang topik ngawur**.
+
+Perbaikan: `generate_narration()` (`src/pipeline/mod.rs`) kini menyusun `source_text` dari
+**gabungan blok**, bukan transkrip saja:
+`[Judul]` (`main.title`) + `[Deskripsi]` (`main.description`) + `[Komentar Netizen Teratas]`
+(top-12 by likes dari `content_comments.json`) + `[Deskripsi Visual]` (apa yang TERLIHAT di
+layar — dari vision model `describe_video`, di-persist ke `analyze/video_descriptions.json`) +
+`[Analisa Momen]` (ranked viral angle + vision note tiap momen, dari `moments.json`) +
+`[Transkrip Audio]` (hanya jika ≥8 kata) + `[Video Terkait]` (subtitle enrichment). Prompt LLM
+(`src/narration/mod.rs`) diinstruksi **WAJIB grounding** ke blok-blok itu, dilarang mengarang
+topik di luar konteks. `[Deskripsi Visual]` + `[Analisa Momen]` lahir dari CLIPPER sendiri
+(stage analyze), bukan OpenClaw — jadi tetap berfungsi untuk run `--url` biasa.
+
+Kontrak baru:
+- **`main.description`** (`#[serde(default)]` di `MainVideo`) — caption/deskripsi asli postingan.
+  Ditulis main.rs ke sidecar **`content_context.json`** (`MAIN_CONTEXT_FILE`), dibaca narasi via
+  `content_search::load_main_context`. **OpenClaw WAJIB mengisinya** (bawa topik saat audio kosong).
+- **`footage[].query`** — keyword penemu footage. OpenClaw mengisi footage = hasil search dari
+  keyword penting yang diekstrak dari title+description+komentar main (footage relevan, bukan acak).
+- Empty-transcript tak lagi langsung `bail` — selama ada title/description/komentar, narasi jalan.
+
+Graceful: untuk run `--url` biasa (tanpa content-set), `content_context.json` tak ada → narasi
+fallback ke transkrip seperti sebelumnya.
+
+### Narration Structure RAG (IMPLEMENTED)
+
+Narasi juga di-*ground* ke korpus struktur narasi terbukti. `build_narration_structure_refs()`
+(`src/pipeline/mod.rs`) meng-embed `source_text` lalu retrieve top-N struktur paling mirip dari
+tabel Supabase **`narration_structures`** (`rag/store.rs::retrieve_narration_structures`), format
+jadi blok "REFERENSI STRUKTUR" (arc/hook/pelajaran) yang disuntik ke prompt narator
+(`narration/mod.rs::generate_script`). Korpus diisi oleh `scripts/analyze_narration_structure.py`
+(kirim URL referensi → beat-arc + hook_format/posture/punchline/lessons + embedding 4096-d).
+Gating: `[narration] structure_rag` (default true) + `CLIPPER_SUPABASE_URL` + embed valid —
+INDEPENDEN dari `[vector_db] enabled` (itu RAG momen). Degrade diam bila tak tersedia.
 
 ## graphify
 

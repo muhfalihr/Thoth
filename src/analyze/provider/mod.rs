@@ -29,3 +29,127 @@ pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &str;
     fn model(&self) -> &str;
 }
+
+/// Build a text LLM provider from the application config by name.
+///
+/// Shared factory used by both the analyze stage and the enrich (news/reaction)
+/// stage so provider wiring lives in one place. Unknown names fall back to Groq.
+pub fn build_llm_provider(
+    config: &crate::config::AppConfig,
+    name: &str,
+) -> Result<Box<dyn LlmProvider>, AnalyzeError> {
+    match name {
+        "openai" => {
+            if config.llm.openai_api_key.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "openai".to_owned(),
+                    message: "CLIPPER_OPENAI_API_KEY is not set".to_owned(),
+                });
+            }
+            Ok(Box::new(OpenAiProvider::new(
+                config.llm.openai_api_key.clone(),
+                config.llm.openai_model.clone(),
+            )))
+        }
+        "claude" => {
+            if config.llm.claude_api_key.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "claude".to_owned(),
+                    message: "CLIPPER_CLAUDE_API_KEY is not set.\n\
+                              Get your key at: https://console.anthropic.com/".to_owned(),
+                });
+            }
+            Ok(Box::new(ClaudeProvider::new(
+                config.llm.claude_api_key.clone(),
+                config.llm.claude_model.clone(),
+            )))
+        }
+        "gemini" => {
+            if config.llm.gemini_api_key.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "gemini".to_owned(),
+                    message: "CLIPPER_GEMINI_API_KEY is not set.\n\
+                              Get your free key at: https://aistudio.google.com/apikey".to_owned(),
+                });
+            }
+            Ok(Box::new(GeminiProvider::new(
+                config.llm.gemini_api_key.clone(),
+                config.llm.gemini_model.clone(),
+            )))
+        }
+        "vllm" => {
+            if config.llm.vllm_base_url.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "vllm".to_owned(),
+                    message:  "vllm_base_url is not set in config.toml.\n\
+                               Example: vllm_base_url = \"http://localhost:8000\"".to_owned(),
+                });
+            }
+            Ok(Box::new(VllmProvider::new(
+                config.llm.vllm_base_url.clone(),
+                config.llm.vllm_model.clone(),
+                config.llm.vllm_api_key.clone(),
+            )))
+        }
+        "ollama" => Ok(Box::new(OllamaProvider::new(
+            config.llm.ollama_base_url.clone(),
+            config.llm.ollama_model.clone(),
+        ))),
+        "novita" => {
+            if config.llm.novita_api_key.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "novita".to_owned(),
+                    message: "CLIPPER_NOVITA_API_KEY is not set.\n\
+                              Get key: https://novita.ai/settings#key-management".to_owned(),
+                });
+            }
+            let base_url = if config.llm.novita_base_url.is_empty() {
+                "https://api.novita.ai/openai".to_owned()
+            } else {
+                config.llm.novita_base_url.clone()
+            };
+            Ok(Box::new(OpenAiCompatProvider::new(
+                base_url,
+                config.llm.novita_api_key.clone(),
+                config.llm.novita_model.clone(),
+                "novita".into(),
+            )))
+        }
+        "together" => {
+            if config.llm.together_api_key.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "together".to_owned(),
+                    message: "CLIPPER_TOGETHER_API_KEY is not set.".to_owned(),
+                });
+            }
+            Ok(Box::new(openai_compat::together(
+                config.llm.together_api_key.clone(),
+                config.llm.together_model.clone(),
+            )))
+        }
+        "fireworks" => {
+            if config.llm.fireworks_api_key.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "fireworks".to_owned(),
+                    message: "CLIPPER_FIREWORKS_API_KEY is not set.".to_owned(),
+                });
+            }
+            Ok(Box::new(openai_compat::fireworks(
+                config.llm.fireworks_api_key.clone(),
+                config.llm.fireworks_model.clone(),
+            )))
+        }
+        _ => {
+            if config.llm.groq_api_key.is_empty() {
+                return Err(AnalyzeError::ApiError {
+                    provider: "groq".to_owned(),
+                    message: "CLIPPER_GROQ_API_KEY is not set".to_owned(),
+                });
+            }
+            Ok(Box::new(GroqProvider::new(
+                config.llm.groq_api_key.clone(),
+                config.llm.groq_model.clone(),
+            )))
+        }
+    }
+}

@@ -88,16 +88,17 @@ pub struct AnalyzeArgs {
     pub transcript_path: PathBuf,
 
     /// LLM provider to use
-    #[arg(long, default_value = "groq")]
+    #[arg(long, default_value = "novita")]
     pub provider: LlmProviderName,
 
     /// Maximum number of viral clips to find
     #[arg(long, default_value_t = 3)]
     pub max_clips: usize,
 
-    /// Focus keywords — clip selection is biased toward moments containing
-    /// these terms (comma-separated, e.g. "prabowo,dollar,AI").
-    /// Combined with auto-extracted + trending keywords.
+    /// [Optional override] Focus keywords — ketika di-set, ini MENJADI PRIORITAS
+    /// di atas keyword yang diekstrak otomatis oleh LLM dari transcript.
+    /// Format: comma-separated, e.g. "prabowo,dollar,AI".
+    /// Biasanya TIDAK perlu diisi — LLM mengekstrak keyword secara otomatis.
     #[arg(long, value_delimiter = ',')]
     pub keywords: Vec<String>,
 
@@ -168,9 +169,9 @@ pub struct EditArgs {
     pub headline_dur: f64,
 
     // ── Font settings ─────────────────────────────────────────────────────────
-    /// Directory containing font files (default: "fonts/")
+    /// Directory containing font files (default: "assets/fonts/")
     /// Poppins-Bold.ttf and Poppins-Regular.ttf are auto-downloaded if missing.
-    #[arg(long, default_value = "fonts")]
+    #[arg(long, default_value = "assets/fonts")]
     pub font_dir: PathBuf,
 
     /// Bold font filename inside --font-dir for headlines and subtitles
@@ -208,15 +209,25 @@ pub struct EditArgs {
 
 #[derive(Parser, Debug)]
 pub struct RunArgs {
-    /// YouTube URL to process
-    pub url: String,
+    /// Single video URL to clip (default mode). Takes precedence over --content.
+    /// Example: clipper run --url https://youtu.be/abc
+    pub url: Option<String>,
+
+    /// OpenClaw content set (JSON) supplying the main video + footage pool.
+    /// Content discovery is handled upstream by OpenClaw; CLIPPER no longer
+    /// searches. The file shape is:
+    ///   { "main": { "url": "...", ... }, "footage": [ { "platform": "...", "url": "..." }, ... ] }
+    /// The footage list is written to <output_dir>/content_enrichment.json for the
+    /// edit/narration stages. Example: clipper run --content set.json
+    #[arg(long)]
+    pub content: Option<PathBuf>,
 
     /// Output directory for all job artifacts
     #[arg(short, long, default_value = "./output")]
     pub output_dir: PathBuf,
 
     /// LLM provider for analysis
-    #[arg(long, default_value = "groq")]
+    #[arg(long, default_value = "novita")]
     pub provider: LlmProviderName,
 
     /// Whisper model size
@@ -235,9 +246,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub language: Option<String>,
 
-    /// Focus keywords — clip selection is biased toward moments containing
-    /// these terms (comma-separated, e.g. "prabowo,dollar,AI").
-    /// Combined with auto-extracted + trending keywords.
+    /// [Optional override] Focus keywords — ketika di-set, ini MENJADI PRIORITAS
+    /// di atas keyword yang diekstrak otomatis oleh LLM dari transcript.
+    /// Format: comma-separated, e.g. "prabowo,dollar,AI".
+    /// Biasanya TIDAK perlu diisi — LLM mengekstrak keyword secara otomatis.
     #[arg(long, value_delimiter = ',')]
     pub keywords: Vec<String>,
 
@@ -270,8 +282,8 @@ pub struct RunArgs {
     pub headline_dur: f64,
 
     // ── Font settings ─────────────────────────────────────────────────────────
-    /// Directory containing font files (default: "fonts/")
-    #[arg(long, default_value = "fonts")]
+    /// Directory containing font files (default: "assets/fonts/")
+    #[arg(long, default_value = "assets/fonts")]
     pub font_dir: PathBuf,
 
     /// Bold font filename for headlines and subtitles

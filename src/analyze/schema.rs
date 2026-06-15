@@ -166,7 +166,85 @@ pub struct ViralMoment {
     /// Empty string = use global clip_style setting.
     #[serde(default)]
     pub gpu_transition: String,
+
+    // ── Timestamped asset cues (from assets/asset_catalog.json) ───────────────
+
+    /// Extra timestamped SFX / meme-video punch-ins the LLM places throughout the
+    /// clip, drawn ONLY from the annotated asset catalog. Empty when no catalog is
+    /// available or the clip needs no punctuation. Distinct from the single
+    /// `sfx_vibe`/`overlay_query` — this allows several cues per clip.
+    #[serde(default)]
+    pub asset_cues: Vec<AssetCue>,
+
+    // ── Character intro (Beat-2: name + profile card) ─────────────────────────
+
+    /// Main person/character this clip is about, if any (e.g. "Heru Gundul",
+    /// "HoHo"). Drives the Beat-2 name-above-head + profile card. Empty = none.
+    #[serde(default)]
+    pub character_name: String,
+
+    /// Their social handle EXACTLY as stated/visible in the source, without the
+    /// leading @ (e.g. "heru_gundul"). Empty = unknown — never invent one.
+    #[serde(default)]
+    pub character_handle: String,
+
+    /// Follower/like blurb ONLY if explicitly stated in the transcript
+    /// (e.g. "153K followers"). Empty = unknown — never fabricate numbers.
+    #[serde(default)]
+    pub character_stats: String,
+
+    // ── Number callouts (Beat-3: arrow + figure) ──────────────────────────────
+
+    /// Punchy on-screen callouts for important figures spoken in the clip
+    /// (weights, prices, counts, dates). Empty = none.
+    #[serde(default)]
+    pub callouts: Vec<Callout>,
 }
+
+/// One number/fact callout: a big figure with a pointing arrow, shown briefly.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Callout {
+    /// Short text to emphasise — usually a number with unit (e.g. "25 KG", "Rp2,5JT").
+    pub text: String,
+    /// Seconds from clip start, at the moment the figure is spoken.
+    #[serde(default)]
+    pub at_sec: f64,
+    /// How long it stays (seconds). Default 2.0.
+    #[serde(default = "default_callout_duration")]
+    pub duration_sec: f64,
+    /// Where the figure box sits: "center" | "upper" | "lower" | "left" | "right".
+    #[serde(default)]
+    pub position: String,
+    /// Arrow direction toward the subject: "left" | "right" | "up" | "down".
+    #[serde(default)]
+    pub direction: String,
+}
+
+fn default_callout_duration() -> f64 { 2.0 }
+
+/// One timestamped asset punch-in selected from the annotated catalog.
+///
+/// `file` must match an entry in `assets/asset_catalog.json` exactly. Validated
+/// by the analyze service after parsing — unknown files are dropped with a warn.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AssetCue {
+    /// Catalog file path, e.g. "assets/sfx/vine-boom.mp3" or "assets/meme/clapping.mp4".
+    pub file: String,
+    /// Seconds from CLIP start (start_sec) where the cue fires.
+    #[serde(default)]
+    pub at_sec: f64,
+    /// How long the cue plays/shows (seconds). Default 2.0.
+    #[serde(default = "default_cue_duration")]
+    pub duration_sec: f64,
+    /// The catalog trigger this placement matches (e.g. "shock_reveal", "facepalm_react").
+    #[serde(default)]
+    pub trigger: String,
+    /// One-line reason this asset fits this exact moment.
+    #[serde(default)]
+    pub reason: String,
+}
+
+fn default_cue_duration() -> f64 { 2.0 }
 
 fn default_overlay_duration()  -> f64     { 4.0 }
 fn default_overlay_style()     -> String  { "auto".to_owned() }
@@ -211,7 +289,32 @@ pub const MOMENT_SCHEMA: &str = r#"{
       "overlay_position": "bottom_right | bottom_left | top_right | top_left | bottom_center  (see RULE 7)",
       "overlay_query":    "string (3-5 word query for topic-relevant footage/photo/chart — NOT a meme or reaction; empty string = no overlay, see RULE 7)",
       "overlay_at_sec":   number (seconds from clip start where overlay appears),
-      "overlay_duration": number (seconds to show overlay, default 4.0)
+      "overlay_duration": number (seconds to show overlay, default 4.0),
+      "asset_cues": [
+        {
+          "file": "EXACT path from the ASSET CATALOG section (e.g. assets/sfx/vine-boom.mp3). Never invent files.",
+          "at_sec": number (seconds from CLIP start = absolute_time − start_sec; MUST be between 0 and (end_sec−start_sec)),
+          "duration_sec": number (default 2.0),
+          "trigger": "the catalog trigger that matches what happens at at_sec",
+          "reason": "string (1 line: why this asset fits this exact moment)"
+        }
+      ],
+      "character_name":   "string — main person/character this clip is about, or \"\" if none (e.g. \"Heru Gundul\")",
+      "character_handle": "string — their social handle WITHOUT @, only if stated/visible, else \"\". Never invent.",
+      "character_stats":  "string — follower/like blurb ONLY if explicitly said (e.g. \"153K followers\"), else \"\"",
+      "callouts": [
+        {
+          "text": "short figure spoken in the clip, e.g. \"25 KG\" or \"Rp2,5JT\" (keep it punchy)",
+          "at_sec": number (seconds from CLIP start = absolute_time − start_sec, exactly WHEN the figure is spoken; MUST be 0..(end_sec−start_sec)),
+          "duration_sec": number (default 2.0),
+          "position": "center | upper | lower | left | right",
+          "direction": "left | right | up | down  (arrow points toward the subject)"
+        }
+      ]
     }
   ]
-}"#;
+}
+
+NOTE on "asset_cues": OPTIONAL. Include 0–4 cues per clip, ONLY using files listed in
+the ASSET CATALOG section of the system prompt. Omit or use [] when no catalog is given
+or the clip needs no punctuation."#;

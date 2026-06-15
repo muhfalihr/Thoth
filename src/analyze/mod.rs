@@ -1,3 +1,4 @@
+pub mod asset_catalog;
 pub mod error;
 pub mod prompt;
 pub mod provider;

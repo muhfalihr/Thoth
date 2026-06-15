@@ -94,6 +94,18 @@ pub enum OverlayStyle {
         /// Display width as percentage of frame width (28% default).
         scale_pct: u32,
     },
+
+    /// Centred footage CARD on the paper canvas — Animelorian montage.
+    /// The enrichment clip is shown large in the centre (same width as the main
+    /// footage card) during its time window, so the video cuts main↔enrichment.
+    /// Best for: reaction montage of multiple relevant clips.
+    FootageCard {
+        /// Display width as percentage of frame width (≈88% — matches main card).
+        scale_pct: u32,
+        /// Vertical placement variation: 0 = centre, negative = up, positive = down
+        /// (pixels). Keeps the card clear while adding per-beat dynamism.
+        y_offset: i32,
+    },
 }
 
 // ── OverlaySpec ───────────────────────────────────────────────────────────────
@@ -113,159 +125,68 @@ pub struct OverlaySpec {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Download (or serve from cache) a short overlay clip matching `query`.
+
+/// Download (or serve from cache) an overlay clip from a SPECIFIC, pre-curated URL.
 ///
-/// Download strategy (tried in order):
-///   1. **Stealth scraper** (when `cfg.scraper_enabled`): fetches TikTok / YouTube
-///      search pages with Chrome-fingerprint headers, extracts direct video URLs
-///      pre-ranked by view count, passes them straight to yt-dlp — 3–5× faster
-///      than a blind yt-dlp search and picks the most-viral matching clip.
-///   2. **yt-dlp TikTok search** (fallback): existing `ytsearch`/TikTok URL approach.
-///   3. **yt-dlp YouTube Shorts** (final fallback, when `cfg.fallback_to_youtube`).
+/// Takes a URL already picked from the cross-platform enrichment pool
+/// (`content_enrichment.json`) — relevance-filtered YouTube/Instagram videos — and
+/// downloads it directly via yt-dlp. This is what powers the Animelorian
+/// "multiple relevant clips" cutaway style.
 ///
-/// Downloads up to `cfg.max_variants` different clips per query and selects
-/// one based on `variant_index % max_variants`.
-///
-/// Cache layout: `{cache_dir}/{md5(query)}_{0,1,2}.mp4`
-///
-/// Returns `None` on any error — an overlay is purely additive and should
-/// never block clip rendering.
-pub async fn fetch_overlay_clip(
-    query:         &str,
-    at_sec:        f64,
-    duration:      f64,
-    cfg:           &OverlayConfig,
-    ytdlp_path:    &str,
-    ffmpeg_dir:    &str,
-    // variant_index: index of this clip in the render batch — used to rotate variants
-    variant_index: usize,
+/// Cache key is `md5(url)` (variant slot 0). Returns `None` on any failure — an
+/// overlay is purely additive and must never block clip rendering.
+pub async fn fetch_overlay_from_url(
+    url:        &str,
+    at_sec:     f64,
+    duration:   f64,
+    cfg:        &OverlayConfig,
+    ytdlp_path: &str,
+    ffmpeg_dir: &str,
+    cookie:     Option<&crate::ingest::CookieSource>,
 ) -> Option<OverlaySpec> {
-    let query = query.trim();
-    if query.is_empty() { return None; }
+    let url = url.trim();
+    if url.is_empty() { return None; }
 
     if let Err(e) = tokio::fs::create_dir_all(&cfg.cache_dir).await {
         warn!("overlay: cannot create cache dir: {e}");
         return None;
     }
 
-    let max_variants = cfg.max_variants.max(1) as usize;
-
-    // ── Stage 1: stealth scraper — resolve ranked direct URLs ─────────────────
-    // The scraper fetches TikTok / YouTube search pages with Chrome-matched TLS
-    // and headers, parses embedded JSON for video IDs, and returns direct URLs
-    // sorted by view count.  yt-dlp then downloads a specific URL instead of
-    // running a search query — much faster and higher quality.
-    let scraped: Vec<String> = if cfg.scraper_enabled {
-        let results = crate::scraper::resolve_overlay_urls(
-            query,
-            max_variants,
-            (cfg.max_duration * 1.5) as u32,
+    // Cache by URL hash so the same enrichment clip is downloaded only once.
+    let dest = cache_path_variant(&cfg.cache_dir, url, 0);
+    if !dest.exists() {
+        info!("overlay: downloading enrichment clip {url}");
+        let tmp_prefix = dest.with_extension("tmpurl");
+        // Grab only the opening slice — enrichment clips are full-length videos,
+        // so a max-duration *filter* (download_clip_direct) would reject them.
+        let ok = download_clip_section(
+            ytdlp_path, url, &tmp_prefix, cfg.max_duration, ffmpeg_dir, cookie,
         ).await;
-        if !results.is_empty() {
-            info!(
-                "overlay: scraper resolved {} URL(s) for '{query}' (top: {} views)",
-                results.len(),
-                results.first().map(|r| r.view_count).unwrap_or(0)
-            );
+        if !ok {
+            warn!("overlay: enrichment download failed for {url}");
+            return None;
         }
-        results.into_iter().map(|r| r.url).collect()
-    } else {
-        Vec::new()
-    };
-
-    // ── Stage 2: download each variant (scraped URL → yt-dlp search fallback) ─
-    let mut downloaded_count = 0usize;
-    for idx in 0..max_variants {
-        let dest = cache_path_variant(&cfg.cache_dir, query, idx);
-        if dest.exists() {
-            downloaded_count += 1;
-            continue; // already cached
-        }
-
-        // Only download if we haven't already hit a failure for this query
-        if downloaded_count == 0 && idx > 0 {
-            break;
-        }
-
-        info!("overlay: downloading variant {}/{} for query '{query}'…", idx + 1, max_variants);
-        let tmp_prefix = dest.with_extension(format!("tmp{idx}"));
-
-        // ── 2a. Scraped direct URL (fastest, view-count ranked) ───────────────
-        let downloaded = if let Some(direct_url) = scraped.get(idx) {
-            info!("overlay: direct URL download ({direct_url})");
-            download_clip_direct(
-                ytdlp_path, direct_url, &tmp_prefix,
-                cfg.max_duration, ffmpeg_dir, idx,
-            ).await
-        } else {
-            false
-        };
-
-        // ── 2b. yt-dlp TikTok search fallback ────────────────────────────────
-        let downloaded = if !downloaded {
-            let tiktok_url = format!(
-                "https://www.tiktok.com/search?q={}&type=video",
-                urlencoded(query)
-            );
-            download_clip_variant(
-                ytdlp_path, &tiktok_url, &tmp_prefix,
-                cfg.max_duration, ffmpeg_dir, "TikTok", idx,
-            ).await
-        } else {
-            downloaded
-        };
-
-        // ── 2c. yt-dlp YouTube Shorts final fallback ──────────────────────────
-        if !downloaded && cfg.fallback_to_youtube {
-            info!("overlay: TikTok failed, trying YouTube Shorts (variant {idx})…");
-            download_clip_variant(
-                ytdlp_path,
-                &format!("ytsearch10:{query} short"),
-                &tmp_prefix, cfg.max_duration, ffmpeg_dir, "YouTube", idx,
-            ).await;
-        }
-
         if let Some(raw) = find_downloaded(&tmp_prefix) {
             if trim_clip(&raw, &dest, cfg.max_duration, ffmpeg_dir).await.is_ok() {
                 let _ = tokio::fs::remove_file(&raw).await;
             } else {
                 let _ = tokio::fs::rename(&raw, &dest).await;
             }
-            downloaded_count += 1;
+        } else {
+            warn!("overlay: enrichment clip not found on disk after download ({url})");
+            return None;
         }
     }
 
-    if downloaded_count == 0 {
-        warn!("overlay: no clips downloaded for query '{query}'");
-        return None;
-    }
-
-    // ── Pick variant by rotation ──────────────────────────────────────────────
-    let pick = variant_index % downloaded_count;
-    let chosen = cache_path_variant(&cfg.cache_dir, query, pick);
-
-    if chosen.exists() {
-        debug!("overlay: using variant {pick}/{downloaded_count} for '{query}': {}", chosen.display());
+    if dest.exists() {
+        debug!("overlay: using enrichment clip for {url}: {}", dest.display());
         Some(OverlaySpec {
-            path: chosen,
+            path: dest,
             at_sec,
             duration_sec: duration,
             style: OverlayStyle::FullScreen, // style resolved in service.rs
         })
     } else {
-        // Fallback: pick any available variant
-        for idx in 0..max_variants {
-            let fallback = cache_path_variant(&cfg.cache_dir, query, idx);
-            if fallback.exists() {
-                return Some(OverlaySpec {
-                    path: fallback,
-                    at_sec,
-                    duration_sec: duration,
-                    style: OverlayStyle::FullScreen,
-                });
-            }
-        }
-        warn!("overlay: no cached variant found for query '{query}'");
         None
     }
 }
@@ -472,6 +393,28 @@ fn urlencoded(s: &str) -> String {
         .collect()
 }
 
+/// Apply cookie authentication to a yt-dlp arg builder, mirroring the ingest path.
+/// `None` leaves the builder unchanged. Any temp cookie DB copy it creates is
+/// recorded in `builder.temp_cookie_path` — capture it before `.build()` and pass
+/// to [`cleanup_temp_cookie`] afterwards.
+async fn apply_cookie(
+    builder: crate::ingest::YtDlpArgs,
+    cookie:  Option<&crate::ingest::CookieSource>,
+) -> crate::ingest::YtDlpArgs {
+    match cookie {
+        Some(src) => builder.with_cookie(src).await,
+        None => builder,
+    }
+}
+
+/// Delete the temp cookie DB copy created by `with_cookie` (Windows Chromium),
+/// if any. Best-effort — a leftover temp file must never fail a footage download.
+async fn cleanup_temp_cookie(path: Option<std::path::PathBuf>) {
+    if let Some(p) = path {
+        let _ = tokio::fs::remove_file(p).await;
+    }
+}
+
 /// Download a clip from a DIRECT URL (resolved by the stealth scraper).
 ///
 /// Unlike `download_clip_variant` which runs a search query inside yt-dlp,
@@ -484,10 +427,11 @@ async fn download_clip_direct(
     max_dur:     f64,
     ffmpeg_dir:  &str,
     variant_idx: usize,
+    cookie:      Option<&crate::ingest::CookieSource>,
 ) -> bool {
     let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
 
-    let (bin, args) = crate::ingest::YtDlpArgs::new(ytdlp)
+    let builder = crate::ingest::YtDlpArgs::new(ytdlp)
         .quiet()
         .no_playlist()
         .format("mp4/bestvideo[height<=1920]+bestaudio/best")
@@ -501,8 +445,11 @@ async fn download_clip_direct(
         .windows_safe()
         .ffmpeg_dir(ffmpeg_dir)
         .output(&template)
-        .url(url)
-        .build();
+        .url(url);
+    // SKILL.md §3A — cookie auth (TikTok/IG/age-gated footage needs login cookies).
+    let builder = apply_cookie(builder, cookie).await;
+    let temp_cookie = builder.temp_cookie_path.clone();
+    let (bin, args) = builder.build();
 
     debug!("overlay: yt-dlp direct[v{variant_idx}] {url}");
 
@@ -515,6 +462,57 @@ async fn download_clip_direct(
             .status(),
     ).await;
 
+    cleanup_temp_cookie(temp_cookie).await;
+    matches!(result, Ok(Ok(s)) if s.success())
+}
+
+/// Download only the OPENING `max_dur` seconds of a specific video URL.
+///
+/// Used for enrichment cutaways: the source is a full-length video, so we slice
+/// the first few seconds via `--download-sections` instead of applying a
+/// max-duration *filter* (which would reject the whole video). Fast — only the
+/// requested slice is fetched.
+async fn download_clip_section(
+    ytdlp:      &str,
+    url:        &str,
+    out_prefix: &Path,
+    max_dur:    f64,
+    ffmpeg_dir: &str,
+    cookie:     Option<&crate::ingest::CookieSource>,
+) -> bool {
+    let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
+    // Grab a little extra so trim_clip has headroom to land on a clean keyframe.
+    let secs = ((max_dur + 2.0) as u64).max(2);
+
+    let builder = crate::ingest::YtDlpArgs::new(ytdlp)
+        .quiet()
+        .no_playlist()
+        .format("mp4/bestvideo[height<=1920]+bestaudio/best")
+        .merge_mp4()
+        .download_first_secs(secs)
+        .resilience(3, 3, 1, 20)
+        .youtube_client_fallback(url)
+        .windows_safe()
+        .ffmpeg_dir(ffmpeg_dir)
+        .output(&template)
+        .url(url);
+    // SKILL.md §3A — cookie auth so footage from TikTok/IG (login-gated) downloads.
+    let builder = apply_cookie(builder, cookie).await;
+    let temp_cookie = builder.temp_cookie_path.clone();
+    let (bin, args) = builder.build();
+
+    debug!("overlay: yt-dlp section[0-{secs}s] {url}");
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(90),
+        tokio::process::Command::new(&bin)
+            .args(&args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(),
+    ).await;
+
+    cleanup_temp_cookie(temp_cookie).await;
     matches!(result, Ok(Ok(s)) if s.success())
 }
 
@@ -530,10 +528,11 @@ async fn download_clip_variant(
     ffmpeg_dir:  &str,
     label:       &str,
     variant_idx: usize,
+    cookie:      Option<&crate::ingest::CookieSource>,
 ) -> bool {
     let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
 
-    let (bin, args) = crate::ingest::YtDlpArgs::new(ytdlp)
+    let builder = crate::ingest::YtDlpArgs::new(ytdlp)
         // Allow search results; max_downloads(1) picks first matching clip
         .max_downloads(1)
         .quiet()
@@ -550,8 +549,11 @@ async fn download_clip_variant(
         .js_runtimes()
         .ffmpeg_dir(ffmpeg_dir)
         .output(&template)
-        .url(url)
-        .build();
+        .url(url);
+    // SKILL.md §3A — cookie auth (TikTok search/download needs login cookies).
+    let builder = apply_cookie(builder, cookie).await;
+    let temp_cookie = builder.temp_cookie_path.clone();
+    let (bin, args) = builder.build();
 
     debug!("overlay: yt-dlp {label}[v{variant_idx}] args: {:?}", args);
 
@@ -564,6 +566,7 @@ async fn download_clip_variant(
             .status(),
     ).await;
 
+    cleanup_temp_cookie(temp_cookie).await;
     matches!(result, Ok(Ok(s)) if s.success())
 }
 

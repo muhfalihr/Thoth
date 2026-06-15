@@ -91,10 +91,16 @@ impl<'a> IngestService<'a> {
 
     pub async fn run(&self, url: &str, force: bool) -> Result<IngestResult, IngestError> {
         let t0 = Instant::now();
+        // Bound the id length in the template. For normal sites %(id)s is a short id (e.g. a YouTube
+        // 11-char id), but for a direct CDN .mp4 URL (TikTok/fbcdn, used by OpenClaw content-sets) the
+        // generic extractor sets `id` to the URL's long query string. yt-dlp's `--trim-filenames` does
+        // NOT trim the `.part` temp name during download, so the untrimmed ~250-char path overflows
+        // Windows MAX_PATH → "[Errno 22] Invalid argument". Template field-slicing (`%(id).64s`) IS
+        // applied at filename-render time (incl. the .part), so it bounds the name reliably.
         let out_template = self
             .job
             .source_dir()
-            .join("%(id)s.%(ext)s")
+            .join("%(id).64s.%(ext)s")
             .to_string_lossy()
             .to_string();
 
@@ -435,10 +441,12 @@ impl<'a> IngestService<'a> {
     /// returns HTTP 429 (Too Many Requests) if the subtitle fetch follows the video
     /// download too quickly. The call is retried once after 5s on failure.
     async fn download_subtitles_optional(&self, url: &str, ffmpeg_dir: &str) {
+        // Bound id length — see run(): a CDN .mp4 URL yields a long query-string id that overflows
+        // Windows MAX_PATH. Template field-slicing (`%(id).64s`) bounds it at render time.
         let out_template = self
             .job
             .source_dir()
-            .join("%(id)s.%(ext)s")
+            .join("%(id).64s.%(ext)s")
             .to_string_lossy()
             .to_string();
 

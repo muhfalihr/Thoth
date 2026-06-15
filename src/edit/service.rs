@@ -17,12 +17,37 @@ use crate::util::progress::{stage_done, step_bar, sub_spinner};
 
 use super::color::ColorGrading;
 use super::error::EditError;
-use super::ffmpeg::{encode_clip_direct, generate_thumbnail, AudioOptions, ClipStyle, HeadlineOverlay};
+use super::ffmpeg::{concat_post_roll, encode_clip_direct, generate_thumbnail, AssetSfxCue, AudioOptions, ClipStyle, HeadlineOverlay, ImageOverlaySpec};
 use super::layout::OutputLayout;
-use super::overlay::{detect_overlay_style, fetch_overlay_clip};
+use super::enrichment;
+use super::overlay::{detect_overlay_style, fetch_overlay_from_url};
+use crate::news::model::EnrichResult;
 use super::subtitle::{generate_ass, SubtitleStyle};
 use super::transition::Transition;
 use crate::gpu::processor::{ClipJob, GpuProcessor};
+
+/// Narration text spoken within `[lo_sec, hi_sec]` of NARRATION time (from the word
+/// timings). Used to semantically match a footage cutaway to what the narrator is
+/// saying at the moment the card appears.
+fn narration_window_text(words: &[crate::transcribe::model::WordTimestamp], lo_sec: f64, hi_sec: f64) -> String {
+    let lo = (lo_sec * 1000.0) as i64;
+    let hi = (hi_sec * 1000.0) as i64;
+    words.iter()
+        .filter(|w| w.start_ms >= lo && w.start_ms < hi)
+        .map(|w| w.word.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Cosine similarity of two equal-length vectors. `-1.0` on degenerate input.
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() { return -1.0; }
+    let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
+    for i in 0..a.len() { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+    if na == 0.0 || nb == 0.0 { return -1.0; }
+    dot / (na.sqrt() * nb.sqrt())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipOutput {
@@ -49,6 +74,23 @@ pub struct EditService<'a> {
 impl<'a> EditService<'a> {
     pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
         Self { config, job }
+    }
+
+    /// Resolve the cookie source for footage (overlay) downloads, mirroring the
+    /// ingest path (priority: file > browser). Login-gated platforms like TikTok/IG
+    /// refuse downloads without cookies, so footage cutaways need the same auth the
+    /// main video gets. `None` = no cookies configured.
+    fn overlay_cookie(&self) -> Option<crate::ingest::CookieSource> {
+        let ing = &self.config.ingest;
+        if !ing.cookie_file.trim().is_empty() {
+            Some(crate::ingest::CookieSource::File(
+                std::path::PathBuf::from(&ing.cookie_file),
+            ))
+        } else if !ing.cookie_browser.trim().is_empty() {
+            Some(crate::ingest::CookieSource::Browser(ing.cookie_browser.clone()))
+        } else {
+            None
+        }
     }
 
     pub async fn run(
@@ -107,6 +149,59 @@ impl<'a> EditService<'a> {
         // This is idempotent — safe to call even if already fixed.
         transcript.fix_subwords();
 
+        // ── Load enrich data (optional — present only after Stage 4) ─────────
+        // Load enrich.json if it exists and news.enabled. The data provides
+        // formatted_screenshot_path for each moment's best news article.
+        let enrich_data: Option<EnrichResult> = if self.config.news.enabled {
+            let enrich_path = self.job.enrich_path();
+            if enrich_path.exists() {
+                match tokio::fs::read_to_string(&enrich_path).await {
+                    Ok(raw) => match serde_json::from_str::<EnrichResult>(&raw) {
+                        Ok(e) => {
+                            info!("loaded enrich.json: {} moments, {} news articles",
+                                  e.enrichments.len(), e.news_found);
+                            Some(e)
+                        }
+                        Err(e) => { warn!("failed to parse enrich.json: {e}"); None }
+                    }
+                    Err(e) => { warn!("failed to read enrich.json: {e}"); None }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // ── Load cross-platform enrichment cutaway pool (optional) ───────────
+        // `content_enrichment.json` (written by Stage 0.5 multi-platform search)
+        // lives in the pipeline base dir. When present + overlay enabled, its
+        // relevance-verified videos drive the cutaways — preferred over a fresh
+        // per-moment yt-dlp search. Empty when absent → graceful fallback.
+        let enrich_pool = if self.config.overlay.enabled {
+            enrichment::load_pool(&self.job.base_dir)
+        } else {
+            Vec::new()
+        };
+        // Static image-card pool: non-video posts (tweet/IG photo/article) that
+        // OpenClaw screenshotted + vision-cropped. Independent of `overlay.enabled`
+        // (these are not downloaded — just composited as stills). Empty when none.
+        let image_pool = enrichment::load_image_pool(&self.job.base_dir);
+
+        // ── OpenClaw real-data sidecars (optional) ───────────────────────────
+        // `content_profile.json` / `content_comments.json` are written by `main.rs`
+        // from the `--content` set: the subject's FACTUAL profile (overrides the
+        // LLM's guessed character_* fields) and scraped viral comments. Absent for
+        // plain `--url` runs → cards fall back to LLM data / no comment card.
+        let profile_override = super::profile_card::load_profile_override(&self.job.base_dir);
+        let comment_pool = super::comment_card::load_comment_pool(&self.job.base_dir);
+        if profile_override.is_some() {
+            info!("🪪 using OpenClaw real profile for the character card");
+        }
+        if !comment_pool.is_empty() {
+            info!("💬 OpenClaw comment pool: {} viral comment(s)", comment_pool.len());
+        }
+
         let encoder = if self.config.ffmpeg.nvenc { "NVENC (GPU)" } else { "libx264 (CPU)" };
         info!(
             "rendering {} clip(s) — layout: {}, encoder: {}",
@@ -128,6 +223,12 @@ impl<'a> EditService<'a> {
         );
         super::sfx::log_catalogs(&sfx_catalog, &bgm_catalog);
 
+        // Annotated asset catalog — used to know which meme cue carries its own
+        // audio (so the edit stage can mix it + duck the narration). Optional.
+        let asset_catalog = crate::analyze::asset_catalog::AssetCatalog::load(
+            &self.config.assets.catalog_path,
+        );
+
         // Resolve effective yt-dlp path for overlay downloads
         let overlay_ytdlp = if self.config.overlay.ytdlp_path.is_empty() {
             self.config.ingest.ytdlp_path.clone()
@@ -142,11 +243,34 @@ impl<'a> EditService<'a> {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        // Cookies for footage downloads (TikTok/IG need login cookies, like ingest).
+        let overlay_cookie = self.overlay_cookie();
+
         // Top-level clip counter bar
         let mp = MultiProgress::new();
         let pb_clips = mp.add(step_bar(moments.moments.len() as u64, "Rendering clips"));
 
         let mut output_clips = Vec::new();
+
+        // ── Narrator-driven mode ─────────────────────────────────────────────
+        // When a narration voiceover exists, build ONE video AROUND it: the
+        // narration is the audio spine (event ducked), footage is B-roll on the
+        // paper canvas, and subtitles come from the narration word timings.
+        if self.config.narration.enabled && self.job.narration_mp3().exists() {
+            let video_dur = transcript.duration_ms as f64 / 1000.0;
+            match self.render_narration_video(
+                video_path, &moments, layout, audio_opts, &enrich_pool, &image_pool,
+                &overlay_ytdlp, &ffmpeg_dir, video_dur,
+                profile_override.as_ref(), &comment_pool,
+            ).await {
+                Ok(clip) => {
+                    output_clips.push(clip);
+                    pb_clips.finish_with_message("narrator-driven video rendered".to_owned());
+                    return Ok(EditResult { output_clips, completed_at: Utc::now() });
+                }
+                Err(e) => warn!("narration render failed ({e}) — falling back to per-clip edit"),
+            }
+        }
 
         for (i, moment) in moments.moments.iter().enumerate() {
             let slug     = slugify(&moment.title);
@@ -229,10 +353,28 @@ impl<'a> EditService<'a> {
                     moment.subtitle_style.clone()
                 };
 
+            // ── Beat role (Animelorian narrative) ────────────────────────────
+            // The video is ONE arc: clip 0 = HOOK (giant headline only, no running
+            // subtitle while it shows), clips 1+ = CONTENT (subtitle + callouts, no
+            // giant headline). Drives per-beat layer gating below.
+            let is_hook    = i == 0;
+            let anim_on_clip = self.config.animelorian.enabled;
+            // Hook headline window — used to suppress the running subtitle while the
+            // giant hook title is on screen (reference: hook = headline only).
+            let hook_window = if is_hook && self.config.hook_title.enabled {
+                self.config.hook_title.duration_sec.min(duration - 0.2).max(0.0)
+            } else { 0.0 };
+
             // ── Step 1: Generate ASS subtitles ───────────────────────────
             let sp_sub = sub_spinner(&mp, "Generating subtitles (ASS)…");
             let word_count_in_clip = {
-                let words = transcript.words_in_window(start, end);
+                let mut words = transcript.words_in_window(start, end);
+                // On the hook clip, drop words that fall inside the hook-title window
+                // so the giant headline reads alone (no competing running subtitle).
+                if hook_window > 0.0 {
+                    let cutoff_ms = ((start + hook_window) * 1000.0) as i64;
+                    words.retain(|w| w.start_ms >= cutoff_ms);
+                }
                 let n = words.len();
                 let sub_style = SubtitleStyle::from_str(&effective_subtitle_style);
                 generate_ass(&words, start, &ass_path, &audio_opts.font, &sub_style)?;
@@ -284,6 +426,196 @@ impl<'a> EditService<'a> {
             let mut audio_clone  = audio_opts.clone();
             let has_headline     = headline.is_some();
             audio_clone.headline = headline;
+
+            // ── Hook title (giant multi-colour scroll-stopper, first N seconds) ──
+            // Animelorian: the giant headline appears ONLY on the hook (clip 0) —
+            // content clips must NOT carry it. Non-Animelorian keeps legacy behaviour.
+            if self.config.hook_title.enabled && (is_hook || !anim_on_clip) {
+                let hk = &self.config.hook_title;
+                let text = if !moment.headline.is_empty() {
+                    moment.headline.clone()
+                } else {
+                    moment.title.clone()
+                };
+                if !text.trim().is_empty() {
+                    let clip_dur = end - start;
+                    let spec = super::hook_title::HookTitleSpec {
+                        text,
+                        duration_sec: hk.duration_sec.min(clip_dur - 0.2).max(0.5),
+                        palette: hk.palette.clone(),
+                        font: hk.font.clone(),
+                        fontsize: hk.fontsize,
+                        outline_px: hk.outline_px,
+                        margin_v: hk.margin_v,
+                        animate: hk.animate,
+                    };
+                    let hook_ass_path = ass_path.with_extension("hook.ass");
+                    match super::hook_title::generate_hook_ass(&spec, &hook_ass_path) {
+                        Ok(()) => {
+                            info!("       💥 Hook title: \"{}\" ({:.1}s, {} colours)",
+                                  spec.text, spec.duration_sec, hk.palette.len());
+                            audio_clone.hook_title_ass = Some(hook_ass_path);
+                            // Avoid duplicate text: the giant hook title replaces the
+                            // lower-third headline panel (same words, top vs bottom).
+                            audio_clone.headline = None;
+                        }
+                        Err(e) => warn!("hook title generation failed: {e}"),
+                    }
+                }
+            }
+
+            // Animelorian has NO lower-third headline panel at all (the giant hook
+            // title carries the message). Drop it on every clip in this mode.
+            if anim_on_clip {
+                audio_clone.headline = None;
+            }
+
+            // ── Beat-2 character intro (profile card + name above head) ──────
+            // Skip on the hook clip — character intro is a CONTENT beat (3–6s).
+            // Real OpenClaw profile (factual handle/followers/avatar) OVERRIDES the
+            // LLM's guessed character_* fields when present. The card still renders
+            // on a content clip; if the LLM found no character but OpenClaw supplied
+            // one, the real profile alone is enough to show it.
+            let has_llm_character = !moment.character_name.trim().is_empty();
+            let has_real_profile  = profile_override.as_ref()
+                .map(|p| !p.name.trim().is_empty() || !p.handle.trim().is_empty())
+                .unwrap_or(false);
+            if self.config.profile_card.enabled && !is_hook && (has_llm_character || has_real_profile) {
+                let pc = &self.config.profile_card;
+                let clip_dur = end - start;
+                let at = pc.at_sec.clamp(0.0, (clip_dur - 0.5).max(0.0));
+                let dur = pc.duration_sec.min(clip_dur - at).max(0.5);
+
+                // Start from the LLM guess, then overlay real data field-by-field.
+                let mut name   = moment.character_name.trim().to_string();
+                let mut handle = moment.character_handle.trim().to_string();
+                let mut stats  = moment.character_stats.trim().to_string();
+                let mut avatar_path = String::new();
+                let mut image_path = String::new();
+                if let Some(p) = &profile_override {
+                    if !p.name.trim().is_empty()   { name   = p.name.trim().to_string(); }
+                    if !p.handle.trim().is_empty() { handle = p.handle.trim().to_string(); }
+                    if !p.stats.trim().is_empty()  { stats  = p.stats.trim().to_string(); }
+                    avatar_path = p.avatar_path.trim().to_string();
+                    image_path  = p.image_path.trim().to_string();
+                }
+
+                let card = super::profile_card::ProfileCard {
+                    name:            name.clone(),
+                    handle:          handle.clone(),
+                    stats:           stats.clone(),
+                    accent:          pc.accent.clone(),
+                    font:            pc.font.clone(),
+                    at_sec:          at,
+                    duration_sec:    dur,
+                    position:        pc.position.clone(),
+                    name_above_head: pc.name_above_head,
+                    show_card:       pc.show_card,
+                    avatar_path:     avatar_path.clone(),
+                    image_path:      image_path.clone(),
+                };
+
+                // Composite the real avatar photo onto the card's avatar tile — but NOT
+                // when a full profile-card crop is pasted (the crop already has the avatar).
+                if !avatar_path.is_empty() && !card.has_crop() {
+                    if let Some((bx, by, bsz)) = card.avatar_rect(1080, 1920) {
+                        audio_clone.image_badges.push(super::ffmpeg::ImageBadgeCue {
+                            path: std::path::PathBuf::from(&avatar_path),
+                            x: bx, y: by, size: bsz,
+                            at_sec: at, duration_sec: dur,
+                        });
+                    }
+                }
+
+                audio_clone.profile_card = Some(card);
+                info!("       🪪 Profile card: \"{}\"{}{} at t={:.1}s",
+                      name,
+                      if handle.is_empty() { String::new() } else { format!(" @{handle}") },
+                      if avatar_path.is_empty() { "" } else { " +photo" },
+                      at);
+            }
+
+            // ── Beat-3 number callouts (figure + arrow) ──────────────────────
+            // Skip on the hook clip — callouts belong to the CHRONOLOGY beat.
+            if self.config.callout.enabled && !is_hook && !moment.callouts.is_empty() {
+                let cc = &self.config.callout;
+                let clip_dur = end - start;
+                let mut rendered: Vec<super::callout::Callout> = Vec::new();
+                for c in &moment.callouts {
+                    if c.text.trim().is_empty() { continue; }
+                    let raw = if c.at_sec > clip_dur { (c.at_sec - start).max(0.0) } else { c.at_sec };
+                    let at = raw.clamp(0.0, (clip_dur - 0.3).max(0.0));
+                    let dur = if c.duration_sec > 0.0 { c.duration_sec } else { 2.0 };
+                    rendered.push(super::callout::Callout {
+                        text:         c.text.trim().to_string(),
+                        at_sec:       at,
+                        duration_sec: dur.min(clip_dur - at).max(0.3),
+                        position:     c.position.clone(),
+                        direction:    c.direction.clone(),
+                        accent:       cc.accent.clone(),
+                        font:         cc.font.clone(),
+                    });
+                    if rendered.len() >= cc.max_per_clip { break; }
+                }
+                if !rendered.is_empty() {
+                    info!("       🔢 Callouts: {} placed", rendered.len());
+                    audio_clone.callouts = rendered;
+                }
+            }
+
+            // ── Reaction beat: real viral comment card (OpenClaw) ────────────
+            // Distribute scraped comments across the CONTENT clips (rotate by clip
+            // index), landing one in the reaction zone of each. Skips the hook clip.
+            // A notification SFX punctuates the comment's entrance when available.
+            if !is_hook && !comment_pool.is_empty() {
+                let clip_dur = end - start;
+                // content clips are i>=1 → rotate from index 0.
+                let c = &comment_pool[(i - 1) % comment_pool.len()];
+                let at  = (clip_dur * 0.45).clamp(0.0, (clip_dur - 1.0).max(0.0));
+                let dur = 3.5_f64.min(clip_dur - at).max(1.0);
+                let pc = &self.config.profile_card;
+                let card = super::comment_card::CommentCard {
+                    author:       c.author.clone(),
+                    text:         c.text.clone(),
+                    likes:        c.likes,
+                    avatar_path:  c.avatar_path.clone(),
+                    image_path:   c.image_path.clone(),
+                    accent:       pc.accent.clone(),
+                    font:         pc.font.clone(),
+                    at_sec:       at,
+                    duration_sec: dur,
+                };
+
+                // Composite the commenter's real avatar onto its tile — only for the
+                // drawn card. When a real crop is pasted, the avatar is already in it.
+                if !card.has_crop() && !c.avatar_path.trim().is_empty() {
+                    let (bx, by, bsz) = card.avatar_rect(1080, 1920);
+                    audio_clone.image_badges.push(super::ffmpeg::ImageBadgeCue {
+                        path: std::path::PathBuf::from(c.avatar_path.trim()),
+                        x: bx, y: by, size: bsz,
+                        at_sec: at, duration_sec: dur,
+                    });
+                }
+
+                // Notification SFX on the comment's entrance (graceful if missing).
+                let notif = std::path::Path::new(&self.config.assets.sfx_dir).join("notification.mp3");
+                if notif.exists() {
+                    audio_clone.asset_sfx_cues.push(super::ffmpeg::AssetSfxCue {
+                        path: notif,
+                        at_sec: at,
+                        duration_sec: 1.2,
+                        volume: 0.8,
+                    });
+                }
+
+                audio_clone.comment_cards.push(card);
+                let preview: String = c.text.chars().take(40).collect();
+                info!("       💬 Comment card: {} — \"{}{}\" at t={:.1}s",
+                      c.author,
+                      preview,
+                      if c.text.chars().count() > 40 { "…" } else { "" },
+                      at);
+            }
 
             // ── Apply style profile (if specified) ───────────────────────────
             // A style profile overrides the LLM's per-clip field picks with a
@@ -361,7 +693,32 @@ impl<'a> EditService<'a> {
                 .unwrap_or_else(|| "none".to_owned());
 
             // ── Download overlay clip + detect style (opt-in) ────────────────
-            if self.config.overlay.enabled && !moment.overlay_query.is_empty() {
+            // Cutaway source priority:
+            //   1. cross-platform enrichment pool (content_enrichment.json) — a
+            //      curated, relevance-verified clip rotated per moment by index;
+            //   2. per-moment `overlay_query` yt-dlp search (legacy fallback).
+            // ── Animelorian composite (paper canvas + footage card) ──────────
+            // Active for CONTENT clips; the hook clip (i==0) stays full-frame
+            // immersive when hook_fullscreen.
+            let anim_cfg = &self.config.animelorian;
+            let anim_on  = anim_cfg.enabled && !(is_hook && anim_cfg.hook_fullscreen);
+            // Placement is FIXED & CONSISTENT (comfortable for viewers): the footage
+            // card sits in the same centred band on every content clip — no random
+            // per-clip jumping. `card_y_off = 0` = vertical centre. (Subtle motion
+            // like ken-burns is a future option; position must stay stable.)
+            let card_y_off = 0i32;
+            if anim_on {
+                audio_clone.animelorian = Some(super::ffmpeg::AnimelorianRender {
+                    paper_bg: anim_cfg.paper_bg.clone(),
+                    footage_scale_pct: anim_cfg.footage_scale_pct,
+                    card_y_offset: card_y_off,
+                });
+            }
+
+            let has_enrich_pool = !enrich_pool.is_empty();
+            if self.config.overlay.enabled
+                && (!moment.overlay_query.is_empty() || has_enrich_pool)
+            {
                 let clip_duration = end - start;
                 let at  = if moment.overlay_at_sec  > 0.0 { moment.overlay_at_sec  } else { 5.0 };
                 let dur = if moment.overlay_duration > 0.0 { moment.overlay_duration } else { 4.0 };
@@ -372,37 +729,136 @@ impl<'a> EditService<'a> {
                     .min(self.config.overlay.max_duration)  // never show more than downloaded
                     .max(1.0);
 
-                let mut spec = fetch_overlay_clip(
-                    &moment.overlay_query,
-                    at_clamped,
-                    dur_clamped,
-                    &self.config.overlay,
-                    &overlay_ytdlp,
-                    &ffmpeg_dir,
-                    i,  // variant_index → guarantees each clip gets a different video
-                ).await;
-
-                // Detect/set overlay style (greenscreen → sticker, LLM hint → respected)
-                if let Some(ref mut ov) = spec {
-                    ov.style = detect_overlay_style(
-                        &ov.path,
-                        &moment.overlay_style,    // LLM hint: "sticker"|"pip"|"fullscreen"|"auto"
+                // 1) Enrichment pool — rotate by clip index so each clip gets a
+                //    different relevant cutaway.
+                let mut overlay_source = String::new();
+                let mut spec = if has_enrich_pool {
+                    let cand = &enrich_pool[i % enrich_pool.len()];
+                    overlay_source = format!("{} [{}]", cand.url, cand.platform);
+                    fetch_overlay_from_url(
+                        &cand.url,
+                        at_clamped,
+                        dur_clamped,
+                        &self.config.overlay,
+                        &overlay_ytdlp,
                         &ffmpeg_dir,
-                        &moment.overlay_position, // LLM position: "bottom_right"|"bottom_left"|...
-                    ).await;
+                        overlay_cookie.as_ref(),
+                    ).await
+                } else {
+                    None
+                };
+
+                // (Footage comes ONLY from the OpenClaw enrichment pool above. The old
+                // query-based auto-search overlay was removed — CLIPPER no longer invents
+                // footage; if the pool is empty/undownloadable the overlay is simply skipped.)
+
+                // Set overlay style.
+                if let Some(ref mut ov) = spec {
+                    if anim_on && anim_cfg.montage {
+                        // Animelorian montage: enrichment shown as a centred footage
+                        // CARD (cuts main↔enrichment), not a corner Pip. Window =
+                        // [seg, seg+seg] so the video changes footage mid-clip.
+                        let clip_duration = end - start;
+                        let seg   = anim_cfg.montage_segment_secs.max(1.0);
+                        let m_at  = seg.min((clip_duration - 1.0).max(0.0));
+                        let m_dur = seg
+                            .min(clip_duration - m_at)
+                            .min(self.config.overlay.max_duration)
+                            .max(1.0);
+                        ov.at_sec = m_at;
+                        ov.duration_sec = m_dur;
+                        // Same position + scale as the main card → the enrichment
+                        // cleanly REPLACES it during [seg, 2·seg] (a montage cut).
+                        ov.style = super::overlay::OverlayStyle::FootageCard {
+                            scale_pct: anim_cfg.footage_scale_pct,
+                            y_offset:  card_y_off,
+                        };
+                    } else {
+                        // Legacy: greenscreen → sticker, LLM hint respected.
+                        ov.style = detect_overlay_style(
+                            &ov.path,
+                            &moment.overlay_style,    // LLM hint: "sticker"|"pip"|"fullscreen"|"auto"
+                            &ffmpeg_dir,
+                            &moment.overlay_position, // LLM position: "bottom_right"|"bottom_left"|...
+                        ).await;
+                    }
 
                     info!(
-                        "       🎬 Overlay: {} | style={:?} | t={:.1}s for {:.1}s | query=\"{}\"",
+                        "       🎬 Overlay: {} | style={:?} | t={:.1}s for {:.1}s | src={}",
                         ov.path.file_name().unwrap_or_default().to_string_lossy(),
                         ov.style,
                         ov.at_sec, ov.duration_sec,
-                        moment.overlay_query
+                        overlay_source
                     );
                 } else {
-                    info!("       🎬 Overlay: skipped (query=\"{}\")", moment.overlay_query);
+                    info!("       🎬 Overlay: skipped (src={})", overlay_source);
                 }
 
                 audio_clone.overlay = spec;
+
+                // ── Densify montage (Item 1): extra tiled footage cards ──────
+                // Beyond the single primary card (above, window [seg, 2·seg]), pull
+                // up to `montage_max_cuts − 1` MORE distinct clips from the footage
+                // pool and tile them at later windows so the footage keeps changing.
+                // Each is rendered as a centred FootageCard (cuts main↔footage).
+                if anim_on && anim_cfg.montage && !enrich_pool.is_empty() {
+                    let extra = anim_cfg.montage_max_cuts.saturating_sub(1) as usize;
+                    if extra > 0 {
+                        let clip_duration = end - start;
+                        let seg = anim_cfg.montage_segment_secs.max(1.0);
+                        let gap = (seg * 0.6).max(1.0); // base B-roll breathes between cuts
+                        let mut win_start = seg * 2.0 + gap; // start after the primary card
+                        let mut placed = 0usize;
+                        for k in 0..extra {
+                            if win_start + 1.0 >= clip_duration { break; }
+                            let dur = seg
+                                .min(clip_duration - win_start)
+                                .min(self.config.overlay.max_duration)
+                                .max(1.0);
+                            // Rotate to clips DIFFERENT from the primary (i % len).
+                            let cand = &enrich_pool[(i + 1 + k) % enrich_pool.len()];
+                            if let Some(fspec) = fetch_overlay_from_url(
+                                &cand.url, win_start, dur,
+                                &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
+                                overlay_cookie.as_ref(),
+                            ).await {
+                                audio_clone.footage_cards.push(super::ffmpeg::FootageCardCue {
+                                    path:         fspec.path,
+                                    at_sec:       win_start,
+                                    duration_sec: dur,
+                                    scale_pct:    anim_cfg.footage_scale_pct,
+                                });
+                                placed += 1;
+                                info!("       🎞️ Montage cut {}: {} [{}] at t={:.1}s",
+                                      placed + 1, cand.url, cand.platform, win_start);
+                            }
+                            win_start += dur + gap;
+                        }
+                    }
+                }
+            }
+
+            // ── Image cards (Item: non-video posts) ──────────────────────────
+            // Tile cropped post screenshots (tweets/IG photos/articles supplied by
+            // OpenClaw as stills) as centred cards on CONTENT clips. Independent of
+            // the video-overlay gate above — image cards need no download. Rotate by
+            // clip index so each content clip shows a different post.
+            if anim_on && anim_cfg.montage && !is_hook && !image_pool.is_empty() {
+                let clip_duration = end - start;
+                let at = (clip_duration * 0.5).min(clip_duration - 1.2).max(0.5);
+                if at + 1.0 < clip_duration {
+                    let seg = anim_cfg.montage_segment_secs.max(1.0);
+                    let dur = seg.min(clip_duration - at).max(1.0);
+                    let cand = &image_pool[i % image_pool.len()];
+                    audio_clone.image_cards.push(super::ffmpeg::ImageCardCue {
+                        path:         std::path::PathBuf::from(&cand.image_path),
+                        at_sec:       at,
+                        duration_sec: dur,
+                        scale_pct:    anim_cfg.footage_scale_pct,
+                    });
+                    info!("       🖼️ Image card: {} [{}] at t={:.1}s",
+                          cand.url, cand.platform, at);
+                }
             }
 
             // ── Beat-sync: align transitions + SFX to BGM downbeats ─────────
@@ -424,6 +880,35 @@ impl<'a> EditService<'a> {
                 }
             }
 
+            // ── News screenshot overlay (Phase 3) ────────────────────────────
+            // Attach the formatted news image (if available) to be shown over the
+            // video at config.news.display_start_sec for display_duration_secs.
+            if let Some(ref enrich) = enrich_data {
+                if let Some(enrichment) = enrich.enrichments.get(i) {
+                    if let Some(fmt_path) = enrichment.best_news()
+                        .and_then(|n| n.formatted_screenshot_path.as_ref())
+                    {
+                        if fmt_path.exists() {
+                            let clip_dur = end - start;
+                            let at  = self.config.news.display_start_sec;
+                            let dur = self.config.news.display_duration_secs;
+                            // Only insert if clip is long enough to show it
+                            if clip_dur > at + dur + 1.0 {
+                                audio_clone.news_overlay = Some(ImageOverlaySpec {
+                                    path:         fmt_path.clone(),
+                                    at_sec:       at,
+                                    duration_sec: dur,
+                                    ken_burns:    true,
+                                });
+                                info!("       📰 News overlay: {} at t={:.1}s for {:.1}s",
+                                      fmt_path.file_name().unwrap_or_default().to_string_lossy(),
+                                      at, dur);
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── Dynamic SFX timing from LLM ──────────────────────────────────
             // LLM sets sfx_at_sec to the peak moment (e.g. stat reveal at 8s).
             // 0.0 = play at clip start (default); >0 = delay to peak moment.
@@ -434,6 +919,73 @@ impl<'a> EditService<'a> {
             }
             if moment.sfx_duration_sec > 0.0 {
                 audio_clone.sfx_duration_sec = moment.sfx_duration_sec.clamp(0.5, 5.0);
+            }
+
+            // ── Asset cues (timestamped, from moment.asset_cues) ─────────────
+            // Audio catalog entries → mixed SFX punch-ins; video entries → meme PiP
+            // cutaways overlaid in rotating corners.
+            if !moment.asset_cues.is_empty() {
+                let clip_dur = end - start;
+                // Consistent reaction-zone corner (NOT rotating) — a meme jumping
+                // corners between pops feels random/uncomfortable. Top-right sits on
+                // the paper margin, clear of the bottom subtitle.
+                let meme_pos = "top_right";
+                let mut cues: Vec<AssetSfxCue> = Vec::new();
+                let mut memes: Vec<super::ffmpeg::MemeCue> = Vec::new();
+                for c in &moment.asset_cues {
+                    let ext = std::path::Path::new(&c.file)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_lowercase())
+                        .unwrap_or_default();
+                    let path = std::path::PathBuf::from(&c.file);
+                    if !path.exists() { continue; }
+                    // Some LLMs emit ABSOLUTE video time instead of clip-relative;
+                    // if it overshoots the clip length, treat it as absolute.
+                    let raw = if c.at_sec > clip_dur { (c.at_sec - start).max(0.0) } else { c.at_sec };
+                    let mut at = raw.clamp(0.0, (clip_dur - 0.3).max(0.0));
+                    // Beat-snap: when BGM beat-sync is on, land the cue on the nearest beat.
+                    if audio_clone.clip_bpm > 0.0 {
+                        let beat = 60.0 / audio_clone.clip_bpm as f64;
+                        if beat > 0.05 {
+                            let snapped = (at / beat).round() * beat;
+                            if snapped > 0.0 && snapped < clip_dur - 0.2 { at = snapped; }
+                        }
+                    }
+                    match ext.as_str() {
+                        "mp3" | "wav" | "aac" | "m4a" | "ogg" | "flac" => {
+                            if cues.len() >= 4 { continue; }
+                            let dur = if c.duration_sec > 0.0 { c.duration_sec } else { 2.0 };
+                            cues.push(AssetSfxCue { path, at_sec: at, duration_sec: dur, volume: 0.80 });
+                        }
+                        "mp4" | "mov" | "webm" | "mkv" | "gif" => {
+                            if memes.len() >= 3 { continue; }
+                            // Reaction memes are SHORT pops (0.8–2s) for punch, not lingering PiP.
+                            let dur = if c.duration_sec > 0.0 { c.duration_sec.clamp(0.8, 2.0) } else { 1.6 };
+                            let pos = meme_pos.to_string();
+                            // Mix the meme's own audio only when the catalog says it has one.
+                            let with_audio = asset_catalog
+                                .as_ref()
+                                .map(|cat| cat.file_has_audio(&c.file))
+                                .unwrap_or(false);
+                            memes.push(super::ffmpeg::MemeCue {
+                                path, at_sec: at, duration_sec: dur, position: pos,
+                                with_audio, audio_volume: 0.90,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if !cues.is_empty() {
+                    info!("       🎚️  Asset SFX cues: {} placed", cues.len());
+                    audio_clone.asset_sfx_cues = cues;
+                }
+                if !memes.is_empty() {
+                    let with_snd = memes.iter().filter(|m| m.with_audio).count();
+                    info!("       🎭 Meme PiP cues: {} placed ({} with audio → narration ducked)",
+                          memes.len(), with_snd);
+                    audio_clone.meme_cues = memes;
+                }
             }
 
             info!(
@@ -471,6 +1023,41 @@ impl<'a> EditService<'a> {
                 "  ✓ encoded  {:.1} MB  ({:.1}s)",
                 out_mb, clip_t0.elapsed().as_secs_f64()
             ));
+
+            // ── Step 2b: Post-roll avatar concat (Phase 5) ──────────────────
+            // Append the avatar reaction segment (if available) after the main clip.
+            if self.config.reaction.enabled {
+                if let Some(ref enrich) = enrich_data {
+                    if let Some(enrichment) = enrich.enrichments.get(i) {
+                        if let Some(ref seg_path) = enrichment.avatar_video_path {
+                            if seg_path.exists() && self.config.reaction.position == "post_roll" {
+                                let concat_tmp = out_path.with_extension("concat_tmp.mp4");
+                                let concat_result = tokio::task::spawn_blocking({
+                                    let main  = out_path.clone();
+                                    let seg   = seg_path.clone();
+                                    let tmp   = concat_tmp.clone();
+                                    let cfg   = self.config.ffmpeg.clone();
+                                    move || concat_post_roll(&main, &seg, &tmp, &cfg)
+                                }).await
+                                .map_err(|e| EditError::FfmpegFailed(e.to_string()))?;
+
+                                match concat_result {
+                                    Ok(()) => {
+                                        // Replace main clip with concatenated version
+                                        std::fs::rename(&concat_tmp, &out_path)
+                                            .map_err(EditError::Io)?;
+                                        info!("       📎 Post-roll appended → {}", out_path.display());
+                                    }
+                                    Err(e) => {
+                                        warn!("post-roll concat failed (clip kept as-is): {e}");
+                                        let _ = std::fs::remove_file(&concat_tmp);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // ── Step 3: Generate Thumbnail ───────────────────────────────────
             let thumb_path = out_path.with_extension("jpg");
@@ -648,6 +1235,341 @@ impl<'a> EditService<'a> {
         Ok(EditResult {
             output_clips,
             completed_at: Utc::now(),
+        })
+    }
+
+    /// Render ONE narrator-driven video: narration = audio spine, footage = B-roll
+    /// on the paper canvas, subtitles from the narration word timings, hook headline
+    /// at the start. The video length equals the narration length.
+    #[allow(clippy::too_many_arguments)]
+    async fn render_narration_video(
+        &self,
+        video_path:    &Path,
+        moments:       &ViralMomentList,
+        layout:        &OutputLayout,
+        audio_opts:    &AudioOptions,
+        enrich_pool:   &[crate::ingest::content_search::ContentResult],
+        image_pool:    &[crate::ingest::content_search::ContentResult],
+        overlay_ytdlp: &str,
+        ffmpeg_dir:    &str,
+        video_dur:     f64,
+        profile_override: Option<&super::profile_card::ProfileCardData>,
+        comment_pool:     &[super::comment_card::CommentData],
+    ) -> Result<ClipOutput, EditError> {
+        use crate::transcribe::model::WordTimestamp;
+
+        // 1) Narration words + duration + hook line.
+        let words_raw = std::fs::read_to_string(self.job.narration_words())
+            .map_err(EditError::Io)?;
+        let words: Vec<WordTimestamp> = serde_json::from_str(&words_raw)
+            .map_err(|e| EditError::FfmpegFailed(format!("narration words: {e}")))?;
+        if words.is_empty() {
+            return Err(EditError::FfmpegFailed("narration has no word timings".into()));
+        }
+        let narr_dur = (words.last().unwrap().end_ms as f64 / 1000.0).max(2.0);
+        let hook = std::fs::read_to_string(self.job.narration_dir().join("hook.txt"))
+            .unwrap_or_default().trim().to_string();
+
+        // 2) Lead-in + B-roll window. The event audio plays LOUD for `lead` secs
+        // (establishes the vibe), then the narrator comes in. Video length =
+        // lead-in + narration (capped to source length).
+        let lead = self.config.narration.lead_in_secs.clamp(0.0, 3.0);
+        let dur  = (narr_dur + lead).min((video_dur - 0.2).max(2.0));
+        let prefer = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0);
+        let start = if prefer + dur <= video_dur { prefer } else { (video_dur - dur).max(0.0) };
+        let end = start + dur;
+
+        // Hook window — the giant headline reads ALONE (no running subtitle). It
+        // spans the lead-in plus the first narration beat.
+        let hook_win = if self.config.hook_title.enabled && !hook.is_empty() {
+            self.config.hook_title.duration_sec.min((narr_dur - 0.2).max(0.0))
+        } else { 0.0 };
+        let hook_dur = if hook_win > 0.0 { (lead + hook_win).min(dur - 0.2) } else { 0.0 };
+
+        // 3) Subtitles from the narration word timings, SHIFTED later by `lead`
+        // (clip_start = -lead). Drop words inside the hook window.
+        let ass_path = self.job.ass_path(0, "narration");
+        let out_path = self.job.clip_path(0, "narration");
+        {
+            let cutoff = (hook_win * 1000.0) as i64;
+            let refs: Vec<&WordTimestamp> =
+                words.iter().filter(|w| w.start_ms >= cutoff).collect();
+            let style = SubtitleStyle::from_str("word_pop");
+            generate_ass(&refs, -lead, &ass_path, &audio_opts.font, &style)?;
+        }
+
+        // Dynamic ducking: the event swells during the lead-in, then ducks under
+        // the narrator (continuous TTS has no usable mid-speech pauses).
+        let leak_windows = if lead > 0.1 {
+            vec![(0.0, (lead - 0.05).max(0.1))]
+        } else { Vec::new() };
+
+        // 4) Build audio/video directives.
+        let mut audio = audio_opts.clone();
+        audio.headline = None;
+        audio.narration = Some(super::ffmpeg::NarrationVoice {
+            mp3: self.job.narration_mp3(),
+            duck_event_vol: self.config.narration.duck_event_vol,
+            leak_vol: self.config.narration.leak_event_vol,
+            leak_windows,
+            lead_in_secs: lead,
+        });
+        if lead > 0.1 {
+            info!("       🔊 Lead-in: event plays loud {:.1}s before narrator", lead);
+        }
+
+        // Hook headline (giant, hook window) from the narration hook line.
+        if hook_dur > 0.0 {
+            let hk = &self.config.hook_title;
+            let spec = super::hook_title::HookTitleSpec {
+                text: hook.clone(),
+                duration_sec: hook_dur,
+                palette: hk.palette.clone(), font: hk.font.clone(),
+                fontsize: hk.fontsize, outline_px: hk.outline_px,
+                margin_v: hk.margin_v, animate: hk.animate,
+            };
+            let hook_ass = ass_path.with_extension("hook.ass");
+            if super::hook_title::generate_hook_ass(&spec, &hook_ass).is_ok() {
+                audio.hook_title_ass = Some(hook_ass);
+            }
+        }
+
+        // Paper canvas + MONTAGE: cut to relevant enrichment footage cards at
+        // intervals so the video keeps changing (Animelorian). Between cards the
+        // main event B-roll shows on the paper.
+        let anim = &self.config.animelorian;
+        if anim.enabled {
+            audio.animelorian = Some(super::ffmpeg::AnimelorianRender {
+                paper_bg: anim.paper_bg.clone(),
+                footage_scale_pct: anim.footage_scale_pct,
+                card_y_offset: 0,
+            });
+            let has_vid = !enrich_pool.is_empty();
+            let has_img = !image_pool.is_empty();
+            let overlay_cookie = self.overlay_cookie();
+            if has_vid || has_img {
+                let seg = anim.montage_segment_secs.clamp(2.5, 6.0);
+                let mut fcards = Vec::new();
+                let mut icards = Vec::new();
+
+                // (a) Card WINDOWS (clip-time start + duration). One card per "card beat";
+                // between them the main event B-roll shows on the paper canvas.
+                let mut windows: Vec<(f64, f64)> = Vec::new();
+                {
+                    let mut t = hook_dur.max(0.3) + seg;
+                    while t + 1.0 < dur && windows.len() < 4 {
+                        let card_dur = seg.min(dur - t - 0.2);
+                        if card_dur >= 1.0 { windows.push((t, card_dur)); }
+                        t += 2.0 * seg; // main beat + card beat
+                    }
+                }
+
+                // (b) Combined candidate pool (video + image), each with its `description`.
+                enum Kind { Video, Image }
+                struct Cand { kind: Kind, idx: usize, desc: String }
+                let footage_desc = |c: &crate::ingest::content_search::ContentResult| -> String {
+                    if !c.description.trim().is_empty() { c.description.trim().to_string() }
+                    else if !c.title.trim().is_empty() { c.title.trim().to_string() }
+                    else if !c.snippet.trim().is_empty() { c.snippet.trim().to_string() }
+                    else { c.query.trim().to_string() }
+                };
+                let mut cands: Vec<Cand> = Vec::new();
+                for (i, c) in enrich_pool.iter().enumerate() { cands.push(Cand { kind: Kind::Video, idx: i, desc: footage_desc(c) }); }
+                for (i, c) in image_pool.iter().enumerate()  { cands.push(Cand { kind: Kind::Image, idx: i, desc: footage_desc(c) }); }
+
+                // (c) Assign a candidate to each window. PREFERRED: embedding-match the
+                // window's narration text to the footage `description` (cosine). FALLBACK
+                // (no embed provider / no descriptions): round-robin alternating video/image.
+                let cfg = crate::rag::embed::EmbedConfig::from_app_config(self.config);
+                let any_desc = cands.iter().any(|c| !c.desc.trim().is_empty());
+                let mut assignment: Vec<Option<usize>> = vec![None; windows.len()];
+                if cfg.is_valid() && any_desc && !cands.is_empty() {
+                    let client = reqwest::Client::new();
+                    let mut cand_emb: Vec<Option<Vec<f32>>> = Vec::with_capacity(cands.len());
+                    for c in &cands {
+                        cand_emb.push(if c.desc.trim().is_empty() { None }
+                            else { crate::rag::embed::embed_text_with_config(&c.desc, &cfg, &client).await });
+                    }
+                    let floor = self.config.overlay.placement_min_similarity;
+                    let mut used = vec![false; cands.len()];
+                    let mut skipped = 0usize;
+                    for (wi, &(wt, wdur)) in windows.iter().enumerate() {
+                        let wtext = narration_window_text(&words, wt - lead, wt + wdur - lead);
+                        let wemb = if wtext.trim().is_empty() { None }
+                            else { crate::rag::embed::embed_text_with_config(&wtext, &cfg, &client).await };
+                        let mut best: Option<(usize, f32)> = None;
+                        for (ci, ce) in cand_emb.iter().enumerate() {
+                            if used[ci] { continue; }
+                            let score = match (&wemb, ce) { (Some(a), Some(b)) => cosine(a, b), _ => -1.0 };
+                            if best.map(|(_, s)| score > s).unwrap_or(true) { best = Some((ci, score)); }
+                        }
+                        // RELEVANCE FLOOR: only place footage when the best match clears the floor.
+                        // Below it, leave the slot empty → the main clip shows instead of forcing a
+                        // weakly-related cutaway (the "out-of-context b-roll" problem).
+                        if let Some((ci, score)) = best {
+                            if score >= floor { used[ci] = true; assignment[wi] = Some(ci); }
+                            else { skipped += 1; }
+                        }
+                    }
+                    info!(
+                        "       🧠 Footage placement: embedding-matched ke narasi ({} window{})",
+                        windows.len(),
+                        if skipped > 0 { format!(", {skipped} di-skip <floor {floor:.2} → main clip") } else { String::new() }
+                    );
+                } else {
+                    let vids: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| matches!(c.kind, Kind::Video)).map(|(i, _)| i).collect();
+                    let imgs: Vec<usize> = cands.iter().enumerate().filter(|(_, c)| matches!(c.kind, Kind::Image)).map(|(i, _)| i).collect();
+                    let (mut vi, mut ii) = (0usize, 0usize);
+                    for (beat, slot) in assignment.iter_mut().enumerate() {
+                        let use_image = if has_vid && has_img { beat % 2 == 1 } else { has_img };
+                        let ci = if use_image && !imgs.is_empty() { let x = imgs[ii % imgs.len()]; ii += 1; x }
+                            else if !vids.is_empty() { let x = vids[vi % vids.len()]; vi += 1; x }
+                            else if !imgs.is_empty() { let x = imgs[ii % imgs.len()]; ii += 1; x }
+                            else { break; };
+                        *slot = Some(ci);
+                    }
+                }
+
+                // (d) Render the assignment → cues.
+                for (wi, &(wt, wdur)) in windows.iter().enumerate() {
+                    let Some(ci) = assignment[wi] else { continue; };
+                    match cands[ci].kind {
+                        Kind::Image => {
+                            let cand = &image_pool[cands[ci].idx];
+                            icards.push(super::ffmpeg::ImageCardCue {
+                                path: std::path::PathBuf::from(&cand.image_path),
+                                at_sec: wt, duration_sec: wdur, scale_pct: anim.footage_scale_pct,
+                            });
+                        }
+                        Kind::Video => {
+                            let cand = &enrich_pool[cands[ci].idx];
+                            if let Some(spec) = super::overlay::fetch_overlay_from_url(
+                                &cand.url, wt, wdur, &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
+                                overlay_cookie.as_ref(),
+                            ).await {
+                                fcards.push(super::ffmpeg::FootageCardCue {
+                                    path: spec.path, at_sec: wt, duration_sec: wdur, scale_pct: anim.footage_scale_pct,
+                                });
+                            }
+                        }
+                    }
+                }
+                info!(
+                    "       🎬 Montage: {} footage + {} image card(s) over {:.0}s",
+                    fcards.len(), icards.len(), dur
+                );
+                audio.footage_cards = fcards;
+                audio.image_cards = icards;
+            }
+        }
+
+        // ── Beat-2 profile card (real OpenClaw data overrides LLM guess) ─────
+        // In the single narrated arc the card appears once, just after the hook.
+        let first_moment = moments.moments.first();
+        let has_llm_char = first_moment.map(|m| !m.character_name.trim().is_empty()).unwrap_or(false);
+        let has_real_profile = profile_override
+            .map(|p| !p.name.trim().is_empty() || !p.handle.trim().is_empty())
+            .unwrap_or(false);
+        if self.config.profile_card.enabled && (has_llm_char || has_real_profile) {
+            let pc = &self.config.profile_card;
+            let at  = (hook_dur + 0.3).clamp(0.0, (dur - 0.5).max(0.0));
+            let pdur = pc.duration_sec.min(dur - at).max(0.5);
+            let mut name   = first_moment.map(|m| m.character_name.trim().to_string()).unwrap_or_default();
+            let mut handle = first_moment.map(|m| m.character_handle.trim().to_string()).unwrap_or_default();
+            let mut stats  = first_moment.map(|m| m.character_stats.trim().to_string()).unwrap_or_default();
+            let mut avatar_path = String::new();
+            let mut image_path = String::new();
+            if let Some(p) = profile_override {
+                if !p.name.trim().is_empty()   { name   = p.name.trim().to_string(); }
+                if !p.handle.trim().is_empty() { handle = p.handle.trim().to_string(); }
+                if !p.stats.trim().is_empty()  { stats  = p.stats.trim().to_string(); }
+                avatar_path = p.avatar_path.trim().to_string();
+                image_path  = p.image_path.trim().to_string();
+            }
+            let card = super::profile_card::ProfileCard {
+                name: name.clone(), handle: handle.clone(), stats,
+                accent: pc.accent.clone(), font: pc.font.clone(),
+                at_sec: at, duration_sec: pdur, position: pc.position.clone(),
+                name_above_head: pc.name_above_head, show_card: pc.show_card,
+                avatar_path: avatar_path.clone(),
+                image_path: image_path.clone(),
+            };
+            if !avatar_path.is_empty() && !card.has_crop() {
+                if let Some((bx, by, bsz)) = card.avatar_rect(1080, 1920) {
+                    audio.image_badges.push(super::ffmpeg::ImageBadgeCue {
+                        path: std::path::PathBuf::from(&avatar_path),
+                        x: bx, y: by, size: bsz, at_sec: at, duration_sec: pdur,
+                    });
+                }
+            }
+            audio.profile_card = Some(card);
+            info!("       🪪 Profile card: \"{}\"{}{} at t={:.1}s", name,
+                  if handle.is_empty() { String::new() } else { format!(" @{handle}") },
+                  if avatar_path.is_empty() { "" } else { " +photo" }, at);
+        }
+
+        // ── Reaction beat: real viral comment cards (OpenClaw) ───────────────
+        // Show the top comments (by likes) spaced across the reaction portion of
+        // the arc, each in its own time window + a notification SFX on entrance.
+        if !comment_pool.is_empty() {
+            let mut ranked: Vec<&super::comment_card::CommentData> = comment_pool.iter().collect();
+            ranked.sort_by(|a, b| b.likes.cmp(&a.likes));
+            let n = ranked.len().min(3);
+            let reaction_start = (dur * 0.40).max(hook_dur + 0.5);
+            let avail = (dur - reaction_start - 0.3).max(0.0);
+            if avail >= 1.0 && n > 0 {
+                let span = avail / n as f64;
+                let pc = &self.config.profile_card;
+                let notif = std::path::Path::new(&self.config.assets.sfx_dir).join("notification.mp3");
+                for (k, c) in ranked.iter().take(n).enumerate() {
+                    let at  = reaction_start + k as f64 * span;
+                    let cdur = 3.5_f64.min(span - 0.4).max(1.0).min(dur - at);
+                    if cdur < 1.0 { continue; }
+                    let card = super::comment_card::CommentCard {
+                        author: c.author.clone(), text: c.text.clone(), likes: c.likes,
+                        avatar_path: c.avatar_path.clone(),
+                        image_path: c.image_path.clone(),
+                        accent: pc.accent.clone(), font: pc.font.clone(),
+                        at_sec: at, duration_sec: cdur,
+                    };
+                    // Skip the avatar badge when a real crop is pasted (avatar is in it).
+                    if !card.has_crop() && !c.avatar_path.trim().is_empty() {
+                        let (bx, by, bsz) = card.avatar_rect(1080, 1920);
+                        audio.image_badges.push(super::ffmpeg::ImageBadgeCue {
+                            path: std::path::PathBuf::from(c.avatar_path.trim()),
+                            x: bx, y: by, size: bsz, at_sec: at, duration_sec: cdur,
+                        });
+                    }
+                    if notif.exists() {
+                        audio.asset_sfx_cues.push(super::ffmpeg::AssetSfxCue {
+                            path: notif.clone(), at_sec: at, duration_sec: 1.2, volume: 0.8,
+                        });
+                    }
+                    audio.comment_cards.push(card);
+                }
+                info!("       💬 Comment cards: {} placed in reaction beat", audio.comment_cards.len());
+            }
+        }
+
+        info!("🎬 Narrator-driven video: {:.1}s | B-roll [{:.1}–{:.1}s] | hook \"{}\"",
+              dur, start, end, hook);
+
+        // 5) Encode (blocking ffmpeg).
+        super::ffmpeg::encode_clip_direct(
+            video_path, start, end, &ass_path, layout, &out_path,
+            &self.config.ffmpeg, None, &audio,
+        )?;
+
+        let thumb = out_path.with_extension("jpg");
+        let _ = super::ffmpeg::generate_thumbnail(&out_path, &thumb, 1.0);
+
+        Ok(ClipOutput {
+            clip_index: 0,
+            title: if hook.is_empty() { "Narrated".into() } else { hook },
+            path: out_path,
+            thumb_path: thumb.exists().then_some(thumb),
+            duration_secs: dur,
+            layout: layout.to_string(),
         })
     }
 }

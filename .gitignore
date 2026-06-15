@@ -4,10 +4,16 @@
 # ── Build / runtime output ───────────────────────────────────────────────────────
 output/
 models/
+news_cache/
+
+# ── Python (Playwright news search) ──────────────────────────────────────────────
+__pycache__/
+*.pyc
 
 # ── Secrets & environment ────────────────────────────────────────────────────────
 .env
 *.env.local
+data/cookies.txt
 
 # ── Media / binary artifacts ────────────────────────────────────────────────────
 *.mp4
@@ -28,3 +34,20 @@ test/*/target/
 
 # ── Sensitive data ───────────────────────────────────────────────────────────────
 vidbee/
+config.toml
+style_profiles/
+logs/
+downloads/
+.understand-anything/
+
+# ── Fontconfig cache + raw font download dump (hanya .ttf yang dipakai) ──────────
+assets/fonts/.fc-cache/
+assets/fonts/Montserrat-ExtraBold/
+
+# ── Dev / runtime scratch ───────────────────────────────────────────────────────
+test/
+*.log
+*.jpg
+check_log.txt
+build_*.txt
+plans/*.txt

@@ -8,5 +8,5 @@ pub mod embed;
 pub mod store;
 pub mod vocab;
 
-pub use store::{RagStore, SimilarMoment};
+pub use store::{NarrationRef, RagStore, SimilarMoment};
 pub use vocab::{VocabCache, SharedVocabCache};

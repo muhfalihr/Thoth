@@ -13,10 +13,10 @@ use crate::util::progress::{spinner, stage_done};
 
 use super::error::AnalyzeError;
 use super::prompt::{chunk_system_prompt, retry_system_prompt, system_prompt_with_trends, user_prompt};
-use super::trending::{extract_keywords, fetch_trending_with_keywords, TrendingContext};
+use super::trending::{extract_keywords, extract_keywords_llm, fetch_trending_with_keywords, TrendingContext};
 use crate::rag::embed::{context_to_embed_text, embed_text, embed_text_with_config, moment_to_embed_text, EmbedConfig};
 use crate::rag::{RagStore, SimilarMoment};
-use super::provider::{ClaudeProvider, GeminiProvider, GroqProvider, LlmProvider, OllamaProvider, OpenAiCompatProvider, OpenAiProvider, VllmProvider};
+use super::provider::LlmProvider;
 use super::schema::{ViralMoment, ViralMomentList};
 use super::vision::{
     build_enriched_transcript, cleanup_frames, describe_video_frames,
@@ -92,29 +92,57 @@ impl<'a> AnalyzeService<'a> {
         );
 
         // ── Build focus keyword list ──────────────────────────────────────────
-        // Priority: user-specified > auto-extracted from transcript > trending
+        // Priority:
+        //   1. User CLI keywords (--keywords) — explicit overrides
+        //   2. LLM-extracted keywords from transcript (primary auto method)
+        //   3. Frequency-based fallback (if LLM fails)
         let full_transcript_text: String = transcript.segments
             .iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
-        let auto_keywords = extract_keywords("Video", &full_transcript_text);
 
-        // Combine user keywords + auto keywords, deduplicated, user keywords first
+        // ── Try LLM-based keyword extraction first ────────────────────────────
+        let compact_for_kw = transcript.to_compact_prompt_lines();
+        let pb_kw = spinner("Extracting focus keywords from transcript (LLM)…");
+        let llm_keywords = extract_keywords_llm(
+            provider.as_ref(),
+            video_title,
+            video_channel,
+            &compact_for_kw,
+            12,
+        ).await;
+        pb_kw.finish_and_clear();
+
+        // ── Frequency-based fallback (when LLM returns nothing) ───────────────
+        let auto_keywords = if llm_keywords.is_empty() {
+            warn!("LLM keyword extraction returned empty — falling back to frequency-based");
+            extract_keywords(video_title, &full_transcript_text)
+        } else {
+            Vec::new()  // not needed when LLM succeeded
+        };
+
+        let effective_auto = if llm_keywords.is_empty() { &auto_keywords } else { &llm_keywords };
+
+        // ── Merge: user CLI overrides first, then LLM/auto, deduplicated ─────
         let mut focus_keywords: Vec<String> = user_keywords
             .iter()
             .map(|k| k.to_lowercase())
             .collect();
-        for kw in &auto_keywords {
-            if !focus_keywords.iter().any(|k| k == kw) {
-                focus_keywords.push(kw.clone());
+        for kw in effective_auto {
+            let lower = kw.to_lowercase();
+            if !focus_keywords.iter().any(|k| k == &lower) {
+                focus_keywords.push(lower);
             }
         }
 
         if !user_keywords.is_empty() {
-            info!("user-specified keywords: {}", user_keywords.join(", "));
+            info!("  🔑 CLI override keywords  : {}", user_keywords.join(", "));
         }
-        if !auto_keywords.is_empty() {
-            info!("auto-extracted keywords: {}", auto_keywords.join(", "));
+        if !llm_keywords.is_empty() {
+            info!("  🤖 LLM-extracted keywords : {}", llm_keywords.join(", "));
+        } else if !auto_keywords.is_empty() {
+            info!("  📊 Freq-based keywords    : {}", auto_keywords.join(", "));
         }
-        info!("total focus keywords: {}", focus_keywords.join(", "));
+        info!("  📌 Total focus keywords   : {} → [{}]",
+              focus_keywords.len(), focus_keywords.join(", "));
 
         // ── Fetch real-time trending context (regional + keyword-specific) ────
         let pb_trend = spinner(&format!(
@@ -264,6 +292,21 @@ impl<'a> AnalyzeService<'a> {
             compact_lines
         };
 
+        // ── Asset catalog (timestamped SFX & meme cues) ──────────────────────
+        // Loaded once; fed to the LLM so it can fill the `asset_cues` field.
+        // Missing/invalid catalog ⇒ empty section ⇒ LLM emits no cues (graceful).
+        let asset_catalog = super::asset_catalog::AssetCatalog::load(
+            &self.config.assets.catalog_path,
+        );
+        let asset_section = asset_catalog
+            .as_ref()
+            .map(|c| c.to_prompt_section())
+            .unwrap_or_default();
+        let asset_valid: std::collections::HashSet<String> = asset_catalog
+            .as_ref()
+            .map(|c| c.valid_files())
+            .unwrap_or_default();
+
         // Compact system prompt (~400 tokens) + trend context + compact transcript + user header
         let compact_sys_len   = chunk_system_prompt(max_clips).len() + trend_ctx.len();
         let compact_total_est = ((compact_sys_len + compact_lines.len() + 600) as f64
@@ -287,7 +330,7 @@ impl<'a> AnalyzeService<'a> {
             } else {
                 info!("transcript is large — using chunked analysis");
             }
-            self.analyze_in_chunks(&*provider, &transcript, candidate_count, &trend_ctx, &focus_keywords, outro_start_sec)
+            self.analyze_in_chunks(&*provider, &transcript, candidate_count, &trend_ctx, &focus_keywords, outro_start_sec, &asset_section)
                 .await?
         } else {
             // Single pass — build system prompt with RAG + trends injected
@@ -298,6 +341,9 @@ impl<'a> AnalyzeService<'a> {
                 }
                 if !trend_ctx.is_empty() {
                     s = format!("{s}\n\n{trend_ctx}\nUse these trends to prioritise relevant moments.");
+                }
+                if !asset_section.is_empty() {
+                    s = format!("{s}{asset_section}");
                 }
                 s
             };
@@ -328,6 +374,28 @@ impl<'a> AnalyzeService<'a> {
 
         // ── Drop moments that start in the intro section ──────────────────────
         let mut moments = moments;
+
+        // ── Validate asset_cues against the catalog (drop unknown files, clamp timing) ──
+        if !asset_valid.is_empty() {
+            let mut kept = 0usize;
+            let mut dropped = 0usize;
+            for m in &mut moments.moments {
+                let clip_dur = (m.end_sec - m.start_sec).max(0.0);
+                let before = m.asset_cues.len();
+                m.asset_cues.retain(|c| asset_valid.contains(&c.file));
+                for c in &mut m.asset_cues {
+                    if c.at_sec < 0.0 { c.at_sec = 0.0; }
+                    if clip_dur > 0.0 && c.at_sec > clip_dur { c.at_sec = (clip_dur - 0.5).max(0.0); }
+                    if c.duration_sec <= 0.0 { c.duration_sec = 2.0; }
+                }
+                dropped += before - m.asset_cues.len();
+                kept += m.asset_cues.len();
+            }
+            if kept > 0 || dropped > 0 {
+                info!("  🎚️  Asset cues: {kept} placed, {dropped} dropped (unknown file)");
+            }
+        }
+
         if intro_end_sec > 1.0 {
             let before = moments.moments.len();
             moments.moments.retain(|m| {
@@ -530,6 +598,17 @@ impl<'a> AnalyzeService<'a> {
             .await
             .map_err(AnalyzeError::Io)?;
 
+        // Persist the vision model's per-frame descriptions so the narration stage
+        // can ground its script in what's ON SCREEN — essential for raw b-roll whose
+        // spoken transcript is near-empty. Best-effort (purely additive).
+        if !vis_descriptions.is_empty() {
+            if let Ok(j) = serde_json::to_string_pretty(&vis_descriptions) {
+                let _ = tokio::fs::write(self.job.video_descriptions_path(), j).await;
+                info!("  🎬 Persisted {} visual description(s) → narration context",
+                      vis_descriptions.len());
+            }
+        }
+
         stage_done("Analyze", t0.elapsed());
 
         Ok(AnalyzeResult {
@@ -549,6 +628,7 @@ impl<'a> AnalyzeService<'a> {
         trend_ctx: &str,
         focus_keywords: &[String],
         outro_start_sec: f64,  // 0.0 = no outro; >0 = stop chunks at this timestamp
+        asset_section: &str,   // annotated asset catalog block ("" = no catalog)
     ) -> Result<ViralMomentList, AnalyzeError> {
         let overlap_secs = 30.0;
         let total_duration = transcript.duration_ms as f64 / 1000.0;
@@ -626,11 +706,11 @@ impl<'a> AnalyzeService<'a> {
             // Inject trending context only into the first chunk (saves tokens on subsequent chunks).
             let sys = if start == 0.0 && !trend_ctx.is_empty() {
                 format!(
-                    "{}\n\n{trend_ctx}\nUse these trends to prioritise relevant moments.",
+                    "{}\n\n{trend_ctx}\nUse these trends to prioritise relevant moments.{asset_section}",
                     chunk_system_prompt(clips_per_chunk)
                 )
             } else {
-                chunk_system_prompt(clips_per_chunk)
+                format!("{}{asset_section}", chunk_system_prompt(clips_per_chunk))
             };
             let usr = user_prompt_with_focus("Video Segment", end - start, &chunk_text, clips_per_chunk, focus_keywords);
 
@@ -659,7 +739,7 @@ impl<'a> AnalyzeService<'a> {
                             let chunk2 = build_scored_transcript(&raw2, focus_keywords);
                             let max_chars = (transcript_budget as f64 * 3.5) as usize;
                             let chunk2 = trim_to_char_limit(&chunk2, max_chars);
-                            let sys2 = chunk_system_prompt(clips_per_chunk);
+                            let sys2 = format!("{}{asset_section}", chunk_system_prompt(clips_per_chunk));
                             let usr2 = user_prompt_with_focus("Video Segment", end2 - start, &chunk2, clips_per_chunk, focus_keywords);
                             // Swap and retry immediately (no sleep needed for 413)
                             match provider.chat_completion(&sys2, &usr2).await {
@@ -915,122 +995,7 @@ impl<'a> AnalyzeService<'a> {
     }
 
     fn build_provider(&self, name: &str) -> Result<Box<dyn LlmProvider>, AnalyzeError> {
-        match name {
-            "openai" => {
-                if self.config.llm.openai_api_key.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "openai".to_owned(),
-                        message: "CLIPPER_OPENAI_API_KEY is not set".to_owned(),
-                    });
-                }
-                Ok(Box::new(OpenAiProvider::new(
-                    self.config.llm.openai_api_key.clone(),
-                    self.config.llm.openai_model.clone(),
-                )))
-            }
-            "claude" => {
-                if self.config.llm.claude_api_key.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "claude".to_owned(),
-                        message: "CLIPPER_CLAUDE_API_KEY is not set.\n\
-                                  Get your key at: https://console.anthropic.com/".to_owned(),
-                    });
-                }
-                Ok(Box::new(ClaudeProvider::new(
-                    self.config.llm.claude_api_key.clone(),
-                    self.config.llm.claude_model.clone(),
-                )))
-            }
-            "gemini" => {
-                if self.config.llm.gemini_api_key.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "gemini".to_owned(),
-                        message: "CLIPPER_GEMINI_API_KEY is not set.\n\
-                                  Get your free key at: https://aistudio.google.com/apikey".to_owned(),
-                    });
-                }
-                Ok(Box::new(GeminiProvider::new(
-                    self.config.llm.gemini_api_key.clone(),
-                    self.config.llm.gemini_model.clone(),
-                )))
-            }
-
-
-            "vllm" => {
-                if self.config.llm.vllm_base_url.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "vllm".to_owned(),
-                        message:  "vllm_base_url is not set in config.toml.\n\
-                                   Example: vllm_base_url = \"http://localhost:8000\"".to_owned(),
-                    });
-                }
-                Ok(Box::new(VllmProvider::new(
-                    self.config.llm.vllm_base_url.clone(),
-                    self.config.llm.vllm_model.clone(),
-                    self.config.llm.vllm_api_key.clone(),
-                )))
-            }
-            "ollama" => Ok(Box::new(OllamaProvider::new(
-                self.config.llm.ollama_base_url.clone(),
-                self.config.llm.ollama_model.clone(),
-            ))),
-            "novita" => {
-                if self.config.llm.novita_api_key.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "novita".to_owned(),
-                        message: "CLIPPER_NOVITA_API_KEY is not set.\n\
-                                  Get key: https://novita.ai/settings#key-management".to_owned(),
-                    });
-                }
-                let base_url = if self.config.llm.novita_base_url.is_empty() {
-                    "https://api.novita.ai/openai".to_owned()
-                } else {
-                    self.config.llm.novita_base_url.clone()
-                };
-                Ok(Box::new(OpenAiCompatProvider::new(
-                    base_url,
-                    self.config.llm.novita_api_key.clone(),
-                    self.config.llm.novita_model.clone(),
-                    "novita".into(),
-                )))
-            }
-            "together" => {
-                if self.config.llm.together_api_key.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "together".to_owned(),
-                        message: "CLIPPER_TOGETHER_API_KEY is not set.".to_owned(),
-                    });
-                }
-                Ok(Box::new(super::provider::openai_compat::together(
-                    self.config.llm.together_api_key.clone(),
-                    self.config.llm.together_model.clone(),
-                )))
-            }
-            "fireworks" => {
-                if self.config.llm.fireworks_api_key.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "fireworks".to_owned(),
-                        message: "CLIPPER_FIREWORKS_API_KEY is not set.".to_owned(),
-                    });
-                }
-                Ok(Box::new(super::provider::openai_compat::fireworks(
-                    self.config.llm.fireworks_api_key.clone(),
-                    self.config.llm.fireworks_model.clone(),
-                )))
-            }
-            _ => {
-                if self.config.llm.groq_api_key.is_empty() {
-                    return Err(AnalyzeError::ApiError {
-                        provider: "groq".to_owned(),
-                        message: "CLIPPER_GROQ_API_KEY is not set".to_owned(),
-                    });
-                }
-                Ok(Box::new(GroqProvider::new(
-                    self.config.llm.groq_api_key.clone(),
-                    self.config.llm.groq_model.clone(),
-                )))
-            }
-        }
+        super::provider::build_llm_provider(self.config, name)
     }
 }
 

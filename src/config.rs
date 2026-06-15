@@ -18,7 +18,474 @@ pub struct AppConfig {
     pub overlay:   OverlayConfig,
     pub styles:    StylesConfig,
     pub vector_db: VectorDbConfig,
+    /// News enrichment (Stage 4): keyword extraction + internet search + screenshot.
+    #[serde(default)]
+    pub news:      NewsConfig,
+    /// Reaction generation (Stage 4): LLM script + TTS voice synthesis + avatar (Phase 4-6).
+    #[serde(default)]
+    pub reaction:  ReactionConfig,
+    /// Giant multi-colour hook title (0–3 s scroll-stopper) — opt-in.
+    #[serde(default)]
+    pub hook_title: HookTitleConfig,
+    /// Beat-2 character intro: profile card + giant name above the head — opt-in.
+    #[serde(default)]
+    pub profile_card: ProfileCardConfig,
+    /// Beat-3 number callouts: big figure + pointing arrow — opt-in.
+    #[serde(default)]
+    pub callout: CalloutConfig,
+    /// Twitter/X integration: credentials + search config.
+    #[serde(default)]
+    pub twitter: TwitterConfig,
+    /// Multi-platform content search (YouTube/TikTok/Twitter/IG/News).
+    #[serde(default)]
+    pub content_search: ContentSearchConfig,
+    /// Animelorian composite mode: crumpled-paper canvas + footage cards + montage.
+    #[serde(default)]
+    pub animelorian: AnimelorianConfig,
+    /// Narrator-driven video: one TTS narration becomes the audio spine + pacing.
+    #[serde(default)]
+    pub narration: NarrationConfig,
 }
+
+/// Narrator-driven mode. A single continuous narrator script (gossip-commentator
+/// style) is synthesized to a voiceover (ElevenLabs → Edge fallback) and becomes
+/// the video's audio SPINE: the edit is built around it, event audio ducked,
+/// subtitles synced to the narration words. Opt-in. TTS provider/voice come from
+/// `[reaction.tts]` (reused). When `enabled=false` the legacy event-audio edit runs.
+#[derive(Debug, Deserialize, Clone)]
+pub struct NarrationConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Target spoken length in seconds (LLM writes ~3 words/sec to fit).
+    #[serde(default = "default_narr_target")]
+    pub target_secs: u32,
+    /// Narration language (BCP-47: "id" | "en").
+    #[serde(default = "default_narr_lang")]
+    pub language: String,
+    /// Event (footage) audio volume while the narrator speaks (0.0–1.0).
+    #[serde(default = "default_narr_duck")]
+    pub duck_event_vol: f32,
+    /// Event volume during narrator PAUSES — the event "breathes through" here
+    /// (dynamic ducking). Should be > duck_event_vol.
+    #[serde(default = "default_narr_leak")]
+    pub leak_event_vol: f32,
+    /// Lead-in seconds where the event audio plays LOUD before the narrator comes
+    /// in (establishes the scene/vibe), then ducks. 0 = no lead-in.
+    #[serde(default = "default_narr_leadin")]
+    pub lead_in_secs: f64,
+    /// Max extra YouTube videos from enrichment pool to fetch subtitles from
+    /// and include as context for the narrator LLM. 0 = main video only.
+    #[serde(default = "default_narr_enrich_src")]
+    pub max_enrichment_sources: u32,
+    /// Retrieve proven narration STRUCTURES from the `narration_structures`
+    /// Supabase table (built by `scripts/analyze_narration_structure.py`) and
+    /// inject them as a reference block into the narrator prompt — so the script
+    /// copies arcs/hooks/lessons that worked instead of hallucinating. Requires
+    /// `CLIPPER_SUPABASE_URL` + a valid embed provider; degrades silently if
+    /// unavailable. Independent of `[vector_db] enabled` (which is moments-RAG).
+    #[serde(default = "default_narr_struct_rag")]
+    pub structure_rag: bool,
+    /// How many reference structures to retrieve + inject (default 4).
+    #[serde(default = "default_narr_struct_rag_count")]
+    pub structure_rag_count: u32,
+    /// Minimum cosine similarity (0..1) to include a reference. Default 0.0 =
+    /// always take the top-N closest (the corpus is curated good examples, so
+    /// structural guidance matters more than strict topical match).
+    #[serde(default = "default_narr_struct_rag_minsim")]
+    pub structure_rag_min_similarity: f32,
+    /// LLM model for the NARRATION script ONLY, overriding the active provider's
+    /// `[llm]` model. Empty = use the `[llm]` model. Lets you use a creative model
+    /// (e.g. deepseek-v4-flash — natural Indonesian prose) for narration while
+    /// analyze keeps a model that's reliable at structured JSON extraction. The
+    /// provider stays the one from `--provider`; only the model id changes.
+    #[serde(default)]
+    pub model: String,
+}
+
+impl Default for NarrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target_secs: default_narr_target(),
+            language: default_narr_lang(),
+            duck_event_vol: default_narr_duck(),
+            leak_event_vol: default_narr_leak(),
+            lead_in_secs: default_narr_leadin(),
+            max_enrichment_sources: default_narr_enrich_src(),
+            structure_rag: default_narr_struct_rag(),
+            structure_rag_count: default_narr_struct_rag_count(),
+            structure_rag_min_similarity: default_narr_struct_rag_minsim(),
+            model: String::new(),
+        }
+    }
+}
+
+fn default_narr_target() -> u32    { 45 }
+fn default_narr_lang()   -> String { "id".to_owned() }
+fn default_narr_duck()   -> f32    { 0.12 }
+fn default_narr_leak()   -> f32    { 0.45 }
+fn default_narr_leadin()      -> f64 { 1.6 }
+fn default_narr_enrich_src()  -> u32 { 3 }
+fn default_narr_struct_rag()        -> bool { true }
+fn default_narr_struct_rag_count()  -> u32  { 4 }
+fn default_narr_struct_rag_minsim() -> f32  { 0.0 }
+
+/// Animelorian "reaction montage" style — the signature look of the reference
+/// channel. Instead of a full-frame clip, content sits as a centred footage CARD
+/// on a crumpled black-paper canvas, and the video cuts between the main footage
+/// and relevant enrichment footage (a montage). The hook (first clip) stays
+/// full-frame and immersive. Opt-in; everything degrades to the legacy look when
+/// `enabled = false`.
+///
+/// ```toml
+/// [animelorian]
+/// enabled            = true
+/// paper_bg           = "assets/ui/Crumpled-Black-Paper-Stop-Motion-Anim.mp4"
+/// footage_scale_pct  = 88
+/// hook_fullscreen    = true
+/// montage            = true
+/// montage_segment_secs = 4.0
+/// placement_variation  = true
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct AnimelorianConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_anim_paper")]
+    pub paper_bg: PathBuf,
+    #[serde(default = "default_anim_scale")]
+    pub footage_scale_pct: u32,
+    #[serde(default = "default_anim_hook_fs")]
+    pub hook_fullscreen: bool,
+    #[serde(default = "default_anim_montage")]
+    pub montage: bool,
+    #[serde(default = "default_anim_seg")]
+    pub montage_segment_secs: f64,
+    #[serde(default = "default_anim_variation")]
+    pub placement_variation: bool,
+    /// Max DISTINCT footage cards shown per content clip (montage density). 1 = the
+    /// single legacy cut; 2+ tiles extra relevant clips from the OpenClaw footage
+    /// pool across the clip so the video keeps changing footage. Each extra cut is
+    /// one more download, so keep it modest (2–3).
+    #[serde(default = "default_anim_max_cuts")]
+    pub montage_max_cuts: u32,
+}
+
+impl Default for AnimelorianConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            paper_bg: default_anim_paper(),
+            footage_scale_pct: default_anim_scale(),
+            hook_fullscreen: default_anim_hook_fs(),
+            montage: default_anim_montage(),
+            montage_segment_secs: default_anim_seg(),
+            placement_variation: default_anim_variation(),
+            montage_max_cuts: default_anim_max_cuts(),
+        }
+    }
+}
+
+fn default_anim_paper()     -> PathBuf { PathBuf::from("assets/ui/Crumpled-Black-Paper-Stop-Motion-Anim.mp4") }
+fn default_anim_scale()     -> u32     { 88 }
+fn default_anim_hook_fs()   -> bool    { true }
+fn default_anim_montage()   -> bool    { true }
+fn default_anim_seg()       -> f64     { 4.0 }
+fn default_anim_variation() -> bool    { true }
+fn default_anim_max_cuts()  -> u32     { 2 }
+
+/// Multi-platform content search — drives `scripts/social_search.py` to find a
+/// MAIN clippable video plus MULTIPLE relevant clips/screenshots for enrichment.
+/// Used by `clipper run --query` and the trending auto-mode.
+///
+/// ```toml
+/// [content_search]
+/// enabled          = true
+/// conda_env        = "clipper-news"
+/// python_path      = "python"
+/// script           = "scripts/social_search.py"
+/// platforms        = "youtube,instagram,twitter,news"  # tiktok bot-blocked, opt-in only
+/// engine           = "auto"      # auto | playwright | scrapling
+/// max_per_platform = 6
+/// timeout_secs     = 30
+/// region           = "ID"
+/// lang             = "id"
+/// min_dur_sec      = 60
+/// max_dur_sec      = 1200
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct ContentSearchConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_cs_conda")]
+    pub conda_env: String,
+    #[serde(default = "default_cs_python")]
+    pub python_path: String,
+    #[serde(default = "default_cs_script")]
+    pub script: String,
+    #[serde(default = "default_cs_platforms")]
+    pub platforms: String,
+    #[serde(default = "default_cs_engine")]
+    pub engine: String,
+    #[serde(default = "default_cs_max")]
+    pub max_per_platform: usize,
+    #[serde(default = "default_cs_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_cs_region")]
+    pub region: String,
+    #[serde(default = "default_cs_lang")]
+    pub lang: String,
+    #[serde(default = "default_cs_min_dur")]
+    pub min_dur_sec: u64,
+    #[serde(default = "default_cs_max_dur")]
+    pub max_dur_sec: u64,
+    /// Expand the raw query into multiple LLM-generated search keywords before
+    /// searching, casting a wider net for relevant footage (e.g. "kata asbun
+    /// ghufron" → "ghufron viral", "ghufron ceramah", "MUI Malang ghufron").
+    /// Builds a richer enrichment pool for narrator-driven rage-bait narration.
+    #[serde(default = "default_cs_expand")]
+    pub expand_keywords: bool,
+}
+
+impl Default for ContentSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            conda_env: default_cs_conda(),
+            python_path: default_cs_python(),
+            script: default_cs_script(),
+            platforms: default_cs_platforms(),
+            engine: default_cs_engine(),
+            max_per_platform: default_cs_max(),
+            timeout_secs: default_cs_timeout(),
+            region: default_cs_region(),
+            lang: default_cs_lang(),
+            min_dur_sec: default_cs_min_dur(),
+            max_dur_sec: default_cs_max_dur(),
+            expand_keywords: default_cs_expand(),
+        }
+    }
+}
+
+fn default_cs_conda()     -> String { "clipper-news".to_owned() }
+fn default_cs_python()    -> String { "python".to_owned() }
+fn default_cs_script()    -> String { "scripts/social_search.py".to_owned() }
+// TikTok dropped from defaults: its search/hashtag endpoints are bot-blocked
+// (EmptyResponseException) without paid residential proxies — verified manually
+// and with the TikTokApi library. Still selectable via `platforms = "...,tiktok"`.
+fn default_cs_platforms() -> String { "youtube,instagram,twitter,news".to_owned() }
+fn default_cs_engine()    -> String { "auto".to_owned() }
+fn default_cs_max()       -> usize  { 6 }
+fn default_cs_timeout()   -> u64    { 30 }
+fn default_cs_region()    -> String { "ID".to_owned() }
+fn default_cs_lang()      -> String { "id".to_owned() }
+fn default_cs_min_dur()   -> u64    { 60 }
+fn default_cs_max_dur()   -> u64    { 10800 }  // up to 3h — long-form is clippable
+fn default_cs_expand()    -> bool   { true }   // LLM keyword expansion before search
+
+/// Twitter/X integration — used when `clipper run` is invoked without a URL or
+/// `--query`, causing the pipeline to auto-pick the top trending topic from X.
+///
+/// ```toml
+/// [twitter]
+/// cookies_file        = "data/cookies.txt"     # Netscape format (Firefox/Chrome export)
+/// max_trends          = 5                       # how many trends to retrieve
+/// youtube_search_max  = 8                       # yt-dlp search candidates per trend
+/// youtube_min_dur_sec = 60                      # ignore videos shorter than this
+/// youtube_max_dur_sec = 1200                    # ignore videos longer than this
+/// bearer_token        = ""                      # override public token if needed
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct TwitterConfig {
+    /// Netscape cookies.txt exported from your browser for x.com.
+    #[serde(default = "default_twitter_cookies")]
+    pub cookies_file: std::path::PathBuf,
+    /// How many trending topics to fetch.
+    #[serde(default = "default_twitter_max_trends")]
+    pub max_trends: usize,
+    /// yt-dlp candidates per query.
+    #[serde(default = "default_twitter_yt_max")]
+    pub youtube_search_max: usize,
+    /// Minimum video duration (seconds) for YouTube search results.
+    #[serde(default = "default_twitter_min_dur")]
+    pub youtube_min_dur_sec: u64,
+    /// Maximum video duration (seconds) for YouTube search results.
+    #[serde(default = "default_twitter_max_dur")]
+    pub youtube_max_dur_sec: u64,
+    /// Override the public bearer token (leave empty to use built-in).
+    #[serde(default)]
+    pub bearer_token: String,
+}
+
+impl Default for TwitterConfig {
+    fn default() -> Self {
+        Self {
+            cookies_file:       default_twitter_cookies(),
+            max_trends:         default_twitter_max_trends(),
+            youtube_search_max: default_twitter_yt_max(),
+            youtube_min_dur_sec: default_twitter_min_dur(),
+            youtube_max_dur_sec: default_twitter_max_dur(),
+            bearer_token:       String::new(),
+        }
+    }
+}
+
+fn default_twitter_cookies()    -> std::path::PathBuf { std::path::PathBuf::from("data/cookies.txt") }
+fn default_twitter_max_trends() -> usize { 5 }
+fn default_twitter_yt_max()     -> usize { 8 }
+fn default_twitter_min_dur()    -> u64   { 60 }
+fn default_twitter_max_dur()    -> u64   { 1200 }
+
+/// Beat-3 number callouts (figure box + arrow). Opt-in. The LLM fills the
+/// `callouts` array per moment (text, timing, position, direction); this config
+/// only controls global styling and the on/off switch.
+///
+/// ```toml
+/// [callout]
+/// enabled      = true
+/// accent       = "#FF3B5C"
+/// font         = "Arial Bold"
+/// max_per_clip = 3
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct CalloutConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_callout_accent")]
+    pub accent: String,
+    #[serde(default = "default_callout_font")]
+    pub font: String,
+    #[serde(default = "default_callout_max")]
+    pub max_per_clip: usize,
+}
+
+impl Default for CalloutConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            accent: default_callout_accent(),
+            font: default_callout_font(),
+            max_per_clip: default_callout_max(),
+        }
+    }
+}
+
+fn default_callout_accent() -> String { "#FF3B5C".to_owned() }
+fn default_callout_font()   -> String { "Arial Bold".to_owned() }
+fn default_callout_max()    -> usize  { 3 }
+
+/// Beat-2 character intro overlay (profile card + name above the head). Opt-in.
+/// Driven by the LLM's `character_name`/`character_handle`/`character_stats`.
+///
+/// ```toml
+/// [profile_card]
+/// enabled         = true
+/// at_sec          = 3.0      # appears this many seconds into the clip
+/// duration_sec    = 3.0
+/// position        = "lower"  # center | upper | lower
+/// accent          = "#FF3B5C"
+/// font            = "Arial Bold"
+/// name_above_head = true
+/// show_card       = true
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProfileCardConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_profile_at")]
+    pub at_sec: f64,
+    #[serde(default = "default_profile_dur")]
+    pub duration_sec: f64,
+    #[serde(default = "default_profile_position")]
+    pub position: String,
+    #[serde(default = "default_profile_accent")]
+    pub accent: String,
+    #[serde(default = "default_profile_font")]
+    pub font: String,
+    #[serde(default)] // default false — the giant name banner above the head is distracting
+    pub name_above_head: bool,
+    #[serde(default = "default_true")]
+    pub show_card: bool,
+}
+
+impl Default for ProfileCardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            at_sec: default_profile_at(),
+            duration_sec: default_profile_dur(),
+            position: default_profile_position(),
+            accent: default_profile_accent(),
+            font: default_profile_font(),
+            name_above_head: false,
+            show_card: true,
+        }
+    }
+}
+
+fn default_profile_at()       -> f64    { 3.0 }
+fn default_profile_dur()      -> f64    { 3.0 }
+fn default_profile_position() -> String { "lower".to_owned() }
+fn default_profile_accent()   -> String { "#FF3B5C".to_owned() }
+fn default_profile_font()     -> String { "Arial Bold".to_owned() }
+
+/// Giant multi-colour per-word hook title shown in the upper third for the first
+/// few seconds — the signature Indonesian reaction-news look. Opt-in (`enabled`).
+///
+/// ```toml
+/// [hook_title]
+/// enabled     = true
+/// duration_sec = 3.0
+/// palette     = ["#3DDC4A", "#FFE34D", "#3FC1FF", "#FFFFFF"]
+/// font        = "Montserrat ExtraBold"   # ASS family name
+/// fontsize    = 100
+/// outline_px  = 6
+/// margin_v    = 360                       # distance from top (alignment 8)
+/// animate     = true                      # pop scale-in bounce
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct HookTitleConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_hook_duration")]
+    pub duration_sec: f64,
+    #[serde(default = "default_hook_palette")]
+    pub palette: Vec<String>,
+    #[serde(default = "default_hook_font")]
+    pub font: String,
+    #[serde(default = "default_hook_fontsize")]
+    pub fontsize: u32,
+    #[serde(default = "default_hook_outline")]
+    pub outline_px: u32,
+    #[serde(default = "default_hook_marginv")]
+    pub margin_v: u32,
+    #[serde(default = "default_true")]
+    pub animate: bool,
+}
+
+impl Default for HookTitleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            duration_sec: default_hook_duration(),
+            palette: default_hook_palette(),
+            font: default_hook_font(),
+            fontsize: default_hook_fontsize(),
+            outline_px: default_hook_outline(),
+            margin_v: default_hook_marginv(),
+            animate: true,
+        }
+    }
+}
+
+fn default_hook_duration() -> f64 { 3.0 }
+fn default_hook_palette() -> Vec<String> {
+    vec!["#3DDC4A".into(), "#FFE34D".into(), "#3FC1FF".into(), "#FFFFFF".into()]
+}
+fn default_hook_font()     -> String { "Montserrat ExtraBold".to_owned() }
+fn default_hook_fontsize() -> u32    { 100 }
+fn default_hook_outline()  -> u32    { 6 }
+fn default_hook_marginv()  -> u32    { 360 }
 
 /// GPU-accelerated processing configuration.
 ///
@@ -297,10 +764,17 @@ pub struct AssetsConfig {
     ///   - BGM volume is ducked (−60%) during the speech portion of the clip
     ///     and restored for the opening/closing seconds
     pub beat_sync: bool,
+
+    /// Annotated asset catalog produced by `scripts/annotate_assets.py`.
+    /// When present, the analyze stage feeds it to the LLM so it can place
+    /// timestamped `asset_cues` (SFX + meme videos). Missing file = feature off.
+    #[serde(default = "default_asset_catalog")]
+    pub catalog_path: PathBuf,
 }
 
-fn default_sfx_dir() -> PathBuf { PathBuf::from("sfx") }
-fn default_bgm_dir() -> PathBuf { PathBuf::from("bgm") }
+fn default_sfx_dir() -> PathBuf { PathBuf::from("assets/sfx") }
+fn default_bgm_dir() -> PathBuf { PathBuf::from("assets/bgm") }
+fn default_asset_catalog() -> PathBuf { PathBuf::from("assets/asset_catalog.json") }
 fn default_embed_provider() -> String { "gemini".to_owned() }
 fn default_true() -> bool { true }
 
@@ -404,7 +878,14 @@ pub struct OverlayConfig {
     /// Falls back to yt-dlp search automatically if scraping fails.
     #[serde(default = "default_true")]
     pub scraper_enabled: bool,
+    /// Minimum cosine similarity (footage `description` ↔ narration-window text) required to PLACE a
+    /// footage cutaway/image-card in a montage window. Below this, the slot is left empty so the main
+    /// clip shows instead of forcing a weakly-related (often off-topic) cutaway. 0.0 disables the floor.
+    #[serde(default = "default_placement_min_similarity")]
+    pub placement_min_similarity: f32,
 }
+
+fn default_placement_min_similarity() -> f32 { 0.46 }
 
 // ── Vision config ─────────────────────────────────────────────────────────────
 
@@ -504,6 +985,446 @@ pub struct VisionConfig {
     pub scene_threshold: f32,
 }
 
+// ── News enrichment config (Stage 4) ──────────────────────────────────────────
+
+/// Configuration for the News enrichment stage.
+///
+/// When `enabled = true`, the pipeline (Stage 4) extracts search keywords from
+/// each viral moment's transcript window via the LLM, searches the internet for
+/// relevant Indonesian news, optionally screenshots the article pages, and makes
+/// the results available to the edit stage as visual context overlays.
+///
+/// **Keyword source:** keywords are extracted from the RAW transcript text spoken
+/// during the moment — NOT from the LLM-paraphrased `title`/`reason` fields. The
+/// transcript reflects what was actually said, which yields more accurate news hits.
+///
+/// Internet search is performed by an external Python + Playwright script
+/// (`search_script`) so no paid search API key is required. A `serper` provider
+/// is also supported as a fallback when `SERPER_API_KEY` is configured.
+#[derive(Debug, Deserialize, Clone)]
+pub struct NewsConfig {
+    /// Enable the News enrichment stage (default: false — opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Search backend: "playwright" (default, Python script, no key) | "serper".
+    #[serde(default = "default_news_provider")]
+    pub provider: String,
+
+    /// Conda environment name for running Python scripts.
+    ///
+    /// When non-empty, scripts are run via `conda run -n <conda_env> python <script>`.
+    /// When empty, `python_path` is used directly.
+    /// Default: "clipper-news" (created by scripts/setup_clipper_news.bat).
+    #[serde(default = "default_conda_env")]
+    pub conda_env: String,
+
+    /// Python interpreter used when `conda_env` is empty.
+    #[serde(default = "default_python_path")]
+    pub python_path: String,
+
+    /// Path to the Playwright news search script.
+    #[serde(default = "default_news_search_script")]
+    pub search_script: PathBuf,
+
+    /// Path to the Playwright screenshot script.
+    #[serde(default = "default_news_screenshot_script")]
+    pub screenshot_script: PathBuf,
+
+    /// Serper.dev API key (provider = "serper"). Loaded from env: CLIPPER_SERPER_API_KEY.
+    #[serde(skip)]
+    pub serper_api_key: String,
+
+    /// Maximum number of news articles kept per moment (after ranking).
+    #[serde(default = "default_news_max_results")]
+    pub max_results_per_moment: usize,
+
+    /// Maximum number of search keywords to extract per moment.
+    #[serde(default = "default_news_max_keywords")]
+    pub max_keywords: usize,
+
+    /// Minimum relevance score (0.0–1.0) for an article to be kept.
+    #[serde(default = "default_news_relevance")]
+    pub relevance_threshold: f32,
+
+    /// Drop articles older than this many days (0 = no age filter).
+    #[serde(default = "default_news_max_age")]
+    pub max_age_days: u32,
+
+    /// Google region/country code for the search (e.g. "ID").
+    #[serde(default = "default_news_region")]
+    pub region: String,
+
+    /// Search UI language code (e.g. "id").
+    #[serde(default = "default_news_language")]
+    pub language: String,
+
+    /// Headless browser timeout in seconds for search + screenshot.
+    #[serde(default = "default_news_timeout")]
+    pub screenshot_timeout_secs: u64,
+
+    /// Screenshot capture width in pixels (before 9:16 formatting).
+    #[serde(default = "default_news_ss_width")]
+    pub screenshot_width_px: u32,
+
+    /// How long (seconds) the news screenshot is shown inside a clip.
+    #[serde(default = "default_news_display_dur")]
+    pub display_duration_secs: f64,
+
+    /// When (seconds from clip start) the news screenshot appears.
+    #[serde(default = "default_news_display_start")]
+    pub display_start_sec: f64,
+
+    /// Preferred news domains, ranked higher (empty = no preference).
+    #[serde(default)]
+    pub preferred_sources: Vec<String>,
+
+    /// Directory (relative to job root) for caching news screenshots.
+    #[serde(default = "default_news_cache_dir")]
+    pub cache_dir: PathBuf,
+
+    /// Path to a Netscape-format cookies.txt file exported from Firefox/Chrome.
+    ///
+    /// When set, cookies are injected into the Playwright browser context before
+    /// every request, bypassing bot detection and paywalls on sites like Kumparan.
+    ///
+    /// Export via "Get cookies.txt LOCALLY" extension (Firefox/Chrome).
+    /// Treat as a secret — never commit to git.
+    #[serde(default)]
+    pub cookies_file: PathBuf,
+}
+
+fn default_news_provider()          -> String  { "playwright".to_owned() }
+fn default_conda_env()              -> String  { "clipper-news".to_owned() }
+fn default_python_path()            -> String  { "python".to_owned() }
+fn default_news_search_script()     -> PathBuf { PathBuf::from("scripts/news_search.py") }
+fn default_news_screenshot_script() -> PathBuf { PathBuf::from("scripts/news_screenshot.py") }
+fn default_news_max_results()   -> usize   { 3 }
+fn default_news_max_keywords()  -> usize   { 5 }
+fn default_news_relevance()     -> f32     { 0.5 }
+fn default_news_max_age()       -> u32     { 14 }
+fn default_news_region()        -> String  { "ID".to_owned() }
+fn default_news_language()      -> String  { "id".to_owned() }
+fn default_news_timeout()       -> u64     { 20 }
+fn default_news_ss_width()      -> u32     { 1200 }
+fn default_news_display_dur()   -> f64     { 4.0 }
+fn default_news_display_start() -> f64     { 2.0 }
+fn default_news_cache_dir()     -> PathBuf { PathBuf::from("news_cache") }
+
+impl Default for NewsConfig {
+    fn default() -> Self {
+        Self {
+            enabled:                false,
+            provider:               default_news_provider(),
+            conda_env:              default_conda_env(),
+            python_path:            default_python_path(),
+            search_script:          default_news_search_script(),
+            screenshot_script:      default_news_screenshot_script(),
+            serper_api_key:         String::new(),
+            max_results_per_moment: default_news_max_results(),
+            max_keywords:           default_news_max_keywords(),
+            relevance_threshold:    default_news_relevance(),
+            max_age_days:           default_news_max_age(),
+            region:                 default_news_region(),
+            language:               default_news_language(),
+            screenshot_timeout_secs: default_news_timeout(),
+            screenshot_width_px:    default_news_ss_width(),
+            display_duration_secs:  default_news_display_dur(),
+            display_start_sec:      default_news_display_start(),
+            preferred_sources:      Vec::new(),
+            cache_dir:              default_news_cache_dir(),
+            cookies_file:           PathBuf::new(),
+        }
+    }
+}
+
+// ── Reaction / TTS / Avatar config (Stage 4 Phase 4-6) ────────────────────────
+
+/// TTS provider configuration.
+///
+/// Supported providers:
+///   - `"edge"`       — Microsoft Edge TTS (free, no key, good Indonesian)
+///   - `"minimax"`    — MiniMax Speech 2.8 HD Sync (high quality, requires API key)
+///   - `"fish_audio"` — Fish Audio S2 Pro (very natural, requires API key)
+///   - `"openai"`     — OpenAI TTS (good quality, uses llm.openai_api_key)
+///   - `"elevenlabs"` — ElevenLabs (best quality, highest cost)
+///   - `"none"`       — Disable TTS (avatar segment will have no audio)
+#[derive(Debug, Deserialize, Clone)]
+pub struct TtsConfig {
+    /// Active TTS provider (see doc above).
+    #[serde(default = "default_tts_provider")]
+    pub provider: String,
+
+    // ── Edge TTS (free) ───────────────────────────────────────────────────────
+    /// Microsoft Edge TTS voice. Indonesian: "id-ID-ArdiNeural" (M) | "id-ID-GadisNeural" (F)
+    #[serde(default = "default_edge_voice")]
+    pub edge_voice: String,
+
+    // ── MiniMax Speech 2.8 HD Sync ────────────────────────────────────────────
+    /// MiniMax TTS model. Recommended: "speech-02-hd" (HD quality, synchronous).
+    /// Other options: "speech-02-turbo" (faster), "speech-2.6-hd", "speech-2.6-turbo"
+    #[serde(default = "default_minimax_model")]
+    pub minimax_model: String,
+
+    /// MiniMax voice ID. See https://platform.minimaxi.com/document/voice-list
+    /// Indonesian voices: "Indonesian_Female_XiuLan" | "Indonesian_Male_Ardi"
+    /// General (works for Indonesian): "Friendly_Person" | "Energetic_Female"
+    #[serde(default = "default_minimax_voice_id")]
+    pub minimax_voice_id: String,
+
+    /// MiniMax speech speed (0.5–2.0, default 1.0). Slightly faster (1.1) for
+    /// energetic reaction content.
+    #[serde(default = "default_minimax_speed")]
+    pub minimax_speed: f32,
+
+    /// MiniMax emotion hint: "happy" | "excited" | "neutral" | "sad" | "angry"
+    #[serde(default = "default_minimax_emotion")]
+    pub minimax_emotion: String,
+
+    /// MiniMax Group ID — from the API Dashboard. Required in the API URL.
+    /// Loaded from env: CLIPPER_MINIMAX_GROUP_ID
+    #[serde(skip)]
+    pub minimax_group_id: String,
+
+    /// MiniMax API key. Loaded from env: CLIPPER_MINIMAX_API_KEY
+    #[serde(skip)]
+    pub minimax_api_key: String,
+
+    // ── Fish Audio S2 Pro ─────────────────────────────────────────────────────
+    /// Fish Audio model. "s2-pro" (S2 Pro, highest quality) | "s1" (S1, faster).
+    #[serde(default = "default_fish_audio_model")]
+    pub fish_audio_model: String,
+
+    /// Fish Audio voice reference ID (optional).
+    /// Use a preset voice ID from Fish Audio's voice library, or leave empty
+    /// to use the default voice. For voice cloning, use your uploaded voice ID.
+    /// Example Indonesian preset: "4b58a3082e7f4ef7b8726dad6a0e1a0a"
+    #[serde(default)]
+    pub fish_audio_reference_id: String,
+
+    /// Fish Audio API key. Loaded from env: CLIPPER_FISH_AUDIO_API_KEY
+    #[serde(skip)]
+    pub fish_audio_api_key: String,
+
+    // ── ElevenLabs ────────────────────────────────────────────────────────────
+    /// ElevenLabs voice ID. From CLIPPER_ELEVENLABS_API_KEY.
+    #[serde(default)]
+    pub elevenlabs_voice_id: String,
+    /// ElevenLabs model (default: eleven_multilingual_v2).
+    #[serde(default = "default_elevenlabs_model")]
+    pub elevenlabs_model: String,
+    #[serde(skip)]
+    pub elevenlabs_api_key: String,
+
+    // ── OpenAI TTS ────────────────────────────────────────────────────────────
+    /// OpenAI TTS voice. Uses llm.openai_api_key.
+    #[serde(default = "default_openai_tts_voice")]
+    pub openai_voice: String,
+    /// OpenAI TTS model (default: tts-1-hd).
+    #[serde(default = "default_openai_tts_model")]
+    pub openai_model: String,
+}
+
+/// Avatar mode for the reaction segment.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AvatarMode {
+    /// No avatar — voice-over only.
+    None,
+    /// Static PNG displayed in a PiP corner (no lip-sync).
+    StaticImage,
+    /// SadTalker — local GPU talking head, 1 photo + audio → lip-synced video.
+    /// Requires SadTalker installed (scripts/setup_sadtalker.bat).
+    SadTalker,
+    /// D-ID talking avatar API.
+    Did,
+    /// HeyGen talking avatar API.
+    Heygen,
+}
+
+impl Default for AvatarMode {
+    fn default() -> Self { AvatarMode::None }
+}
+
+/// Avatar configuration.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AvatarConfig {
+    /// Avatar rendering mode.
+    #[serde(default)]
+    pub mode: AvatarMode,
+
+    /// Path to the avatar PNG image (StaticImage and SadTalker modes).
+    /// For SadTalker: a clear front-facing portrait photo works best.
+    #[serde(default)]
+    pub image_path: PathBuf,
+
+    // ── SadTalker (local GPU talking avatar) ─────────────────────────────────
+
+    /// Path to the SadTalker repository root (cloned via setup_sadtalker.bat).
+    /// Example: "C:/tools/SadTalker"
+    #[serde(default = "default_sadtalker_dir")]
+    pub sadtalker_dir: PathBuf,
+
+    /// Conda environment name for SadTalker (created by setup_sadtalker.bat).
+    #[serde(default = "default_sadtalker_env")]
+    pub sadtalker_env: String,
+
+    /// Face image resolution for SadTalker: 256 (faster) or 512 (higher quality).
+    #[serde(default = "default_sadtalker_size")]
+    pub sadtalker_size: u32,
+
+    /// Enable "still mode" — reduces head movement for a more static talking head.
+    #[serde(default)]
+    pub sadtalker_still: bool,
+
+    /// Path to the SadTalker wrapper script.
+    #[serde(default = "default_sadtalker_script")]
+    pub sadtalker_script: PathBuf,
+
+    // ── D-ID ─────────────────────────────────────────────────────────────────
+
+    /// D-ID presenter ID.
+    #[serde(default)]
+    pub did_presenter_id: String,
+    #[serde(skip)]
+    pub did_api_key: String,
+
+    // ── HeyGen ───────────────────────────────────────────────────────────────
+
+    /// HeyGen avatar ID.
+    #[serde(default)]
+    pub heygen_avatar_id: String,
+    #[serde(skip)]
+    pub heygen_api_key: String,
+}
+
+fn default_sadtalker_dir()    -> PathBuf { PathBuf::from("tools/SadTalker") }
+fn default_sadtalker_env()    -> String  { "clipper-sadtalker".to_owned() }
+fn default_sadtalker_size()   -> u32     { 256 }
+fn default_sadtalker_script() -> PathBuf { PathBuf::from("scripts/sadtalker_generate.py") }
+
+impl Default for AvatarConfig {
+    fn default() -> Self {
+        Self {
+            mode:              AvatarMode::None,
+            image_path:        PathBuf::new(),
+            sadtalker_dir:     default_sadtalker_dir(),
+            sadtalker_env:     default_sadtalker_env(),
+            sadtalker_size:    default_sadtalker_size(),
+            sadtalker_still:   false,
+            sadtalker_script:  default_sadtalker_script(),
+            did_presenter_id:  String::new(),
+            did_api_key:       String::new(),
+            heygen_avatar_id:  String::new(),
+            heygen_api_key:    String::new(),
+        }
+    }
+}
+
+/// Reaction module configuration (Stage 4 Phase 4-6).
+#[derive(Debug, Deserialize, Clone)]
+pub struct ReactionConfig {
+    /// Enable reaction script generation + TTS synthesis (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Where to insert the reaction segment in the final clip.
+    /// "post_roll" (default) | "pre_roll" | "pip_corner"
+    #[serde(default = "default_reaction_position")]
+    pub position: String,
+
+    /// PiP corner position when position = "pip_corner".
+    #[serde(default = "default_pip_position")]
+    pub pip_position: String,
+
+    /// PiP scale as % of frame width (pip_corner mode).
+    #[serde(default = "default_pip_scale")]
+    pub pip_scale_pct: u32,
+
+    /// Maximum reaction duration in seconds (LLM will generate script to fit).
+    #[serde(default = "default_max_reaction_secs")]
+    pub max_reaction_secs: u32,
+
+    /// Script language (BCP-47 code: "id" = Indonesian, "en" = English).
+    #[serde(default = "default_reaction_language")]
+    pub language: String,
+
+    /// Reaction tone style.
+    /// "auto" = LLM picks based on viral_type | "energetic" | "informative" | "shocked" | "casual"
+    #[serde(default = "default_script_style")]
+    pub script_style: String,
+
+    /// TTS configuration.
+    #[serde(default)]
+    pub tts: TtsConfig,
+
+    /// Avatar configuration.
+    #[serde(default)]
+    pub avatar: AvatarConfig,
+
+    /// Path to the TTS Python script (routed through news.conda_env).
+    #[serde(default = "default_tts_script")]
+    pub tts_script: PathBuf,
+}
+
+fn default_tts_provider()         -> String  { "edge".to_owned() }
+fn default_edge_voice()           -> String  { "id-ID-ArdiNeural".to_owned() }
+fn default_minimax_model()        -> String  { "speech-02-hd".to_owned() }
+fn default_minimax_voice_id()     -> String  { "Friendly_Person".to_owned() }
+fn default_minimax_speed()        -> f32     { 1.0 }
+fn default_minimax_emotion()      -> String  { "happy".to_owned() }
+fn default_fish_audio_model()     -> String  { "s2-pro".to_owned() }
+fn default_elevenlabs_model()     -> String  { "eleven_multilingual_v2".to_owned() }
+fn default_openai_tts_voice()     -> String  { "nova".to_owned() }
+fn default_openai_tts_model()     -> String  { "tts-1-hd".to_owned() }
+fn default_reaction_position()  -> String  { "post_roll".to_owned() }
+fn default_pip_position()       -> String  { "bottom_right".to_owned() }
+fn default_pip_scale()          -> u32     { 30 }
+fn default_max_reaction_secs()  -> u32     { 25 }
+fn default_reaction_language()  -> String  { "id".to_owned() }
+fn default_script_style()       -> String  { "auto".to_owned() }
+fn default_tts_script()         -> PathBuf { PathBuf::from("scripts/tts_generate.py") }
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            provider:              default_tts_provider(),
+            edge_voice:            default_edge_voice(),
+            minimax_model:         default_minimax_model(),
+            minimax_voice_id:      default_minimax_voice_id(),
+            minimax_speed:         default_minimax_speed(),
+            minimax_emotion:       default_minimax_emotion(),
+            minimax_group_id:      String::new(),
+            minimax_api_key:       String::new(),
+            fish_audio_model:      default_fish_audio_model(),
+            fish_audio_reference_id: String::new(),
+            fish_audio_api_key:    String::new(),
+            elevenlabs_voice_id:   String::new(),
+            elevenlabs_model:      default_elevenlabs_model(),
+            elevenlabs_api_key:    String::new(),
+            openai_voice:          default_openai_tts_voice(),
+            openai_model:          default_openai_tts_model(),
+        }
+    }
+}
+
+impl Default for ReactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled:           false,
+            position:          default_reaction_position(),
+            pip_position:      default_pip_position(),
+            pip_scale_pct:     default_pip_scale(),
+            max_reaction_secs: default_max_reaction_secs(),
+            language:          default_reaction_language(),
+            script_style:      default_script_style(),
+            tts:               TtsConfig::default(),
+            avatar:            AvatarConfig::default(),
+            tts_script:        default_tts_script(),
+        }
+    }
+}
+
 impl AssetsConfig {
     /// Resolve a SFX vibe label to an absolute path, if the file exists.
     /// Returns `None` if the vibe is "none", unmapped, or the file is missing.
@@ -569,9 +1490,10 @@ impl AppConfig {
                 "ingest.format",
                 "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             )?
-            .set_default("assets.sfx_dir", "sfx")?
-            .set_default("assets.bgm_dir", "bgm")?
+            .set_default("assets.sfx_dir", "assets/sfx")?
+            .set_default("assets.bgm_dir", "assets/bgm")?
             .set_default("assets.beat_sync", false)?
+            .set_default("assets.catalog_path", "assets/asset_catalog.json")?
             .set_default("vision.enabled", false)?
             .set_default("vision.provider", "gemini")?
             .set_default("vision.frames_per_moment", 3)?
@@ -594,6 +1516,7 @@ impl AppConfig {
             .set_default("overlay.max_duration", 8.0)?
             .set_default("overlay.fallback_to_youtube", true)?
             .set_default("overlay.max_variants", 3)?
+            .set_default("overlay.placement_min_similarity", 0.46f64)?
             .set_default("styles.default_profile", "auto")?
             .set_default("vector_db.enabled", false)?
             .set_default("vector_db.retrieval_count", 3i64)?
@@ -622,6 +1545,16 @@ impl AppConfig {
         app.vector_db.supabase_url = std::env::var("CLIPPER_SUPABASE_URL").unwrap_or_default();
         // Embedding API key — khusus untuk RAG embedding, opsional
         app.vector_db.embed_api_key = std::env::var("CLIPPER_EMBED_API_KEY").unwrap_or_default();
+        // News search: Serper.dev API key (only needed when news.provider = "serper")
+        app.news.serper_api_key = std::env::var("CLIPPER_SERPER_API_KEY").unwrap_or_default();
+        // Reaction TTS API keys
+        app.reaction.tts.elevenlabs_api_key     = std::env::var("CLIPPER_ELEVENLABS_API_KEY").unwrap_or_default();
+        app.reaction.tts.minimax_api_key        = std::env::var("CLIPPER_MINIMAX_API_KEY").unwrap_or_default();
+        app.reaction.tts.minimax_group_id       = std::env::var("CLIPPER_MINIMAX_GROUP_ID").unwrap_or_default();
+        app.reaction.tts.fish_audio_api_key     = std::env::var("CLIPPER_FISH_AUDIO_API_KEY").unwrap_or_default();
+        // Reaction Avatar API keys
+        app.reaction.avatar.did_api_key    = std::env::var("CLIPPER_DID_API_KEY").unwrap_or_default();
+        app.reaction.avatar.heygen_api_key = std::env::var("CLIPPER_HEYGEN_API_KEY").unwrap_or_default();
         
         // Priority for language: env var > config file
         if let Ok(lang) = std::env::var("CLIPPER_WHISPER_LANGUAGE") {

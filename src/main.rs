@@ -12,9 +12,11 @@ mod config;
 mod edit;
 mod gpu;
 mod ingest;
+mod narration;
+mod news;
 mod pipeline;
+mod reaction;
 mod rag;
-mod scraper;
 mod transcribe;
 mod util;
 
@@ -88,6 +90,41 @@ fn build_audio_opts(
         social_icon_max_size,
         ..Default::default()
     }
+}
+
+/// Download an image URL to `stem` (extension chosen from the response), returning
+/// the saved path. Returns `None` on any failure — avatars are purely cosmetic, so
+/// a miss must never abort the run (the card falls back to a drawn initial tile).
+async fn download_image_to(
+    client: &reqwest::Client,
+    url: &str,
+    stem: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let ext = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| {
+            if ct.contains("png") { "png" }
+            else if ct.contains("webp") { "webp" }
+            else { "jpg" }
+        })
+        .unwrap_or("jpg");
+    let bytes = resp.bytes().await.ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let dest = stem.with_extension(ext);
+    std::fs::write(&dest, &bytes).ok()?;
+    Some(dest)
 }
 
 async fn download_ffmpeg_with_progress() -> Result<()> {
@@ -249,6 +286,35 @@ async fn main() -> Result<()> {
         unsafe { std::env::set_var("FFMPEG_PATH", abs_path) };
     }
 
+    // Ensure fontconfig has a config so FFmpeg drawtext `font=` works on Windows.
+    // The bundled/local ffmpeg.exe ships no default fonts.conf; without one, any
+    // drawtext using a font family (headline panel, hook/profile/callout overlays)
+    // fails to initialise fontconfig and aborts the encode. We write a minimal
+    // config pointing at the system + project fonts, only when the user hasn't set
+    // their own. Gated to Windows so we never override a working Linux/macOS setup.
+    #[cfg(windows)]
+    {
+        if std::env::var_os("FONTCONFIG_FILE").is_none()
+            && std::env::var_os("FONTCONFIG_PATH").is_none()
+        {
+            let conf = std::path::Path::new("assets/fonts/fonts.conf");
+            let body = "<?xml version=\"1.0\"?>\n\
+                        <!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n\
+                        <fontconfig>\n\
+                        \x20 <dir>C:/Windows/Fonts</dir>\n\
+                        \x20 <dir>assets/fonts</dir>\n\
+                        \x20 <cachedir>assets/fonts/.fc-cache</cachedir>\n\
+                        </fontconfig>\n";
+            match std::fs::write(conf, body).and_then(|_| std::fs::canonicalize(conf)) {
+                Ok(abs) => {
+                    unsafe { std::env::set_var("FONTCONFIG_FILE", abs.to_string_lossy().to_string()) };
+                    tracing::info!("fontconfig: {}", conf.display());
+                }
+                Err(e) => tracing::warn!("could not set up fontconfig ({e}); drawtext fonts may fail"),
+            }
+        }
+    }
+
     // Check for yt-dlp
     if which::which(&config.ingest.ytdlp_path).is_err() {
         anyhow::bail!(
@@ -364,10 +430,180 @@ async fn main() -> Result<()> {
                 println!("  Focus keywords: {}", args.keywords.join(", "));
             }
 
+            // ── Resolve the main video URL ────────────────────────────────────
+            // Content discovery is handled upstream by OpenClaw. CLIPPER accepts
+            // either a direct --url (single-video default) or an OpenClaw content
+            // set via --content (main video + footage pool). It does not search.
+            let resolved_url: String = if let Some(ref u) = args.url {
+                u.clone()
+            } else if let Some(ref content_path) = args.content {
+                let set = ingest::content_search::load_content_set(content_path)?;
+
+                // A non-video MAIN still needs a downloadable URL for Stage 1 ingest;
+                // its cropped screenshot can't drive transcription. Surface it so the
+                // operator knows the image won't be used as the main (footage images
+                // ARE rendered as cards — see edit::enrichment::load_image_pool).
+                if !set.main_image_path.trim().is_empty() {
+                    tracing::warn!(
+                        "main.image_path set ({}) but the main is ingested from main.url — \
+                         the main screenshot is not used as a clip source (footage images are)",
+                        set.main_image_path
+                    );
+                }
+
+                // Count non-video footage posts that carry a usable crop screenshot —
+                // these become static image cards in the edit stage.
+                let image_posts = set.footage.iter()
+                    .filter(|f| !f.is_video && !f.image_path.trim().is_empty())
+                    .count();
+                if image_posts > 0 {
+                    tracing::info!("🖼️  {image_posts} non-video footage post(s) with cropped screenshots → image cards");
+                }
+
+                // Write the footage pool where the edit/narration stages read it
+                // (mirrors the old enrichment-pool location, base dir == output_dir).
+                let _ = std::fs::create_dir_all(&args.output_dir);
+                let enrich_path = args
+                    .output_dir
+                    .join(edit::enrichment::ENRICHMENT_FILE);
+                match serde_json::to_string_pretty(&set.footage) {
+                    Ok(j) => {
+                        if let Err(e) = std::fs::write(&enrich_path, j) {
+                            tracing::warn!("could not write footage pool {}: {e}", enrich_path.display());
+                        }
+                    }
+                    Err(e) => tracing::warn!("could not serialize footage pool: {e}"),
+                }
+
+                // ── Main video textual context (narration grounding) ─────────
+                // Title + platform caption of the MAIN video. The narration stage
+                // reads this so the script is grounded in the real topic even when
+                // the spoken transcript is empty (raw b-roll with no voiceover) —
+                // see PipelineRunner::generate_narration. Comments are added below.
+                if !set.figures.is_empty() {
+                    let names = set.figures.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
+                    tracing::info!("👤 OpenClaw figures: {names} → narration grounding");
+                }
+                if !set.main_title.trim().is_empty() || !set.main_description.trim().is_empty() || !set.figures.is_empty() {
+                    let ctx = ingest::content_search::MainContext {
+                        title: set.main_title.trim().to_string(),
+                        description: set.main_description.trim().to_string(),
+                        figures: set.figures.clone(),
+                    };
+                    let dest = args.output_dir.join(ingest::content_search::MAIN_CONTEXT_FILE);
+                    match serde_json::to_string_pretty(&ctx) {
+                        Ok(j) => {
+                            if let Err(e) = std::fs::write(&dest, j) {
+                                tracing::warn!("could not write main-context sidecar {}: {e}", dest.display());
+                            } else {
+                                tracing::info!("📝 OpenClaw main context: title+description → narration grounding");
+                            }
+                        }
+                        Err(e) => tracing::warn!("could not serialize main-context sidecar: {e}"),
+                    }
+                }
+
+                // ── Real subject profile (Beat-2 card) ────────────────────────
+                // OpenClaw supplies the factual handle/follower count + avatar URL.
+                // Download the avatar locally and persist a sidecar the edit stage
+                // reads to OVERRIDE the LLM's guessed character_* fields.
+                let img_client = reqwest::Client::new();
+                // Clear any sidecar left over from a previous run first — otherwise a
+                // content-set without `profile` would silently reuse the PREVIOUS run's
+                // profile card (wrong subject).
+                let _ = std::fs::remove_file(args.output_dir.join(edit::profile_card::PROFILE_FILE));
+                if let Some(p) = &set.profile {
+                    let avatar_path = download_image_to(
+                        &img_client,
+                        &p.avatar_url,
+                        &args.output_dir.join("profile_avatar"),
+                    )
+                    .await
+                    .map(|pb| pb.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                    let data = edit::profile_card::ProfileCardData {
+                        name: p.name.trim().to_string(),
+                        handle: p.handle.trim().trim_start_matches('@').to_string(),
+                        stats: p.followers.trim().to_string(),
+                        avatar_path,
+                        image_path: p.image_path.trim().to_string(),
+                    };
+                    let dest = args.output_dir.join(edit::profile_card::PROFILE_FILE);
+                    match serde_json::to_string_pretty(&data) {
+                        Ok(j) => {
+                            if let Err(e) = std::fs::write(&dest, j) {
+                                tracing::warn!("could not write profile sidecar {}: {e}", dest.display());
+                            } else {
+                                tracing::info!("🪪 OpenClaw profile: @{} ({})", data.handle, data.stats);
+                            }
+                        }
+                        Err(e) => tracing::warn!("could not serialize profile sidecar: {e}"),
+                    }
+                }
+
+                // ── Real viral comments (reaction beat) ───────────────────────
+                // Always clear any sidecar left over from a previous run first — otherwise
+                // a content-set with an empty `comments[]` would silently reuse the PREVIOUS
+                // run's comment cards (wrong topic) since the edit stage just reads whatever
+                // file is on disk.
+                let comments_dest = args.output_dir.join(edit::comment_card::COMMENTS_FILE);
+                let _ = std::fs::remove_file(&comments_dest);
+                if !set.comments.is_empty() {
+                    let mut pool: Vec<edit::comment_card::CommentData> = Vec::new();
+                    for (idx, c) in set.comments.iter().enumerate() {
+                        if c.author.trim().is_empty() || c.text.trim().is_empty() {
+                            continue;
+                        }
+                        let avatar_path = download_image_to(
+                            &img_client,
+                            &c.avatar_url,
+                            &args.output_dir.join(format!("comment_avatar_{idx}")),
+                        )
+                        .await
+                        .map(|pb| pb.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                        pool.push(edit::comment_card::CommentData {
+                            author: c.author.trim().to_string(),
+                            text: c.text.trim().to_string(),
+                            likes: c.likes,
+                            avatar_path,
+                            // Crop is a local PNG already produced by OpenClaw — pass the
+                            // path straight through (no download). Empty = drawn card.
+                            image_path: c.image_path.trim().to_string(),
+                        });
+                    }
+                    if !pool.is_empty() {
+                        match serde_json::to_string_pretty(&pool) {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&comments_dest, j) {
+                                    tracing::warn!("could not write comments sidecar {}: {e}", comments_dest.display());
+                                } else {
+                                    tracing::info!("💬 OpenClaw comments: {} card(s)", pool.len());
+                                }
+                            }
+                            Err(e) => tracing::warn!("could not serialize comments sidecar: {e}"),
+                        }
+                    }
+                }
+
+                tracing::info!(
+                    "📦 OpenClaw content set: main={} — {} footage item(s) → {}",
+                    set.main_url,
+                    set.footage.len(),
+                    enrich_path.display()
+                );
+                set.main_url
+            } else {
+                anyhow::bail!(
+                    "no input supplied — provide a single video with --url <URL>, \
+                     or an OpenClaw content set with --content <set.json>"
+                );
+            };
+
             let runner = PipelineRunner::new(&config);
             let clips = runner
                 .run(
-                    &args.url,
+                    &resolved_url,
                     &args.output_dir,
                     &args.provider,
                     &args.model,

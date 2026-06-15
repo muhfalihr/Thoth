@@ -8,6 +8,7 @@ use crate::ingest::service::IngestResult;
 use crate::transcribe::service::TranscribeResult;
 use crate::analyze::service::AnalyzeResult;
 use crate::edit::service::EditResult;
+use crate::news::model::EnrichResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineState {
@@ -23,6 +24,9 @@ pub struct StageResults {
     pub ingest: Option<IngestResult>,
     pub transcribe: Option<TranscribeResult>,
     pub analyze: Option<AnalyzeResult>,
+    /// Stage 4: news + reaction enrichment (None when disabled or not yet run).
+    #[serde(default)]
+    pub enrich: Option<EnrichResult>,
     pub edit: Option<EditResult>,
 }
 

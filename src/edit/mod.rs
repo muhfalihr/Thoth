@@ -1,18 +1,27 @@
+pub mod callout;
 pub mod color;
+pub mod comment_card;
+pub mod enrichment;
 pub mod error;
 pub mod ffmpeg;
 pub mod fonts;
+pub mod hook_title;
 pub mod intro;
+pub mod keyframe;
 pub mod layout;
 pub mod overlay;
+pub mod profile_card;
 pub mod service;
 pub mod sfx;
+pub mod speed;
 pub mod subtitle;
 pub mod transition;
 
 pub use color::ColorGrading;
-pub use ffmpeg::{AudioOptions, ClipStyle, HeadlineOverlay, SocialIcon};
+pub use ffmpeg::{AudioOptions, ClipStyle, HeadlineOverlay, ImageOverlaySpec, SocialIcon, concat_post_roll};
 pub use fonts::FontConfig;
+pub use keyframe::{ClipAnimation, Easing, KeyframeTrack, Keyframe};
 pub use layout::OutputLayout;
 pub use service::{EditResult, EditService};
+pub use speed::{SpeedCurve, SpeedPoint, SpeedPreset};
 pub use transition::{ClipSpec, Transition, concat_with_transitions, transition_sequence_from_vibes};

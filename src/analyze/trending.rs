@@ -151,10 +151,148 @@ pub async fn fetch_trending(region: &str) -> TrendingContext {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Keyword extraction
+// Keyword extraction — LLM-based (primary) + frequency-based (fallback)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Extract important keywords from the video transcript using an LLM.
+///
+/// This is the **primary** keyword extraction method. It is semantically aware:
+/// it identifies people, organisations, controversies, and newsworthy topics
+/// rather than just counting word frequencies.
+///
+/// Returns up to `max_keywords` deduplicated keywords. Falls back to an empty
+/// Vec on error — callers should then fall back to `extract_keywords()`.
+///
+/// The transcript is sampled to stay within reasonable token limits (≤ 3 000 chars).
+pub async fn extract_keywords_llm(
+    provider:      &dyn crate::analyze::provider::LlmProvider,
+    title:         &str,
+    channel:       &str,
+    transcript_compact: &str,   // compact `[sec] text` lines from to_compact_prompt_lines()
+    max_keywords:  usize,
+) -> Vec<String> {
+    let preview = sample_transcript(transcript_compact, 3_000);
+    if preview.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let system = "Kamu adalah editor media sosial Indonesia yang berpengalaman. \
+                  Tugasmu: membaca transcript video dan mengidentifikasi keyword terpenting. \
+                  Balas HANYA dengan JSON array, tanpa penjelasan apapun.";
+
+    let user = format!(
+        "Video: \"{title}\" oleh \"{channel}\"\n\n\
+         Transcript (cuplikan):\n{preview}\n\n\
+         Identifikasi {max} keyword/frasa kunci terpenting dari video ini.\n\n\
+         Kriteria keyword yang baik:\n\
+         - Nama tokoh / pejabat / publik figur yang disebut\n\
+         - Institusi / lembaga / perusahaan penting\n\
+         - Topik utama yang dibahas (isu, kebijakan, peristiwa)\n\
+         - Pernyataan kontroversial atau mengejutkan\n\
+         - Angka / statistik penting (\"90% kasus\", \"Rp 17.000\")\n\
+         - Konteks waktu/tempat jika relevan\n\n\
+         Hindari: kata umum, stop words, kata yang terlalu luas (\"Indonesia\", \"video\")\n\n\
+         Format: JSON array berisi string, dari yang paling penting:\n\
+         [\"keyword 1\", \"keyword 2\", \"keyword 3\"]",
+        title   = title,
+        channel = channel,
+        preview = preview,
+        max     = max_keywords,
+    );
+
+    let raw = match provider.chat_completion(system, &user).await {
+        Ok(r)  => r,
+        Err(e) => {
+            tracing::warn!("LLM keyword extraction failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    parse_keyword_json(&raw, max_keywords)
+}
+
+/// Sample the compact transcript to at most `max_chars` characters.
+///
+/// Samples uniformly across the whole transcript so short/long videos are
+/// represented fairly — we don't just take the beginning.
+fn sample_transcript(compact: &str, max_chars: usize) -> String {
+    if compact.len() <= max_chars {
+        return compact.to_owned();
+    }
+    let lines: Vec<&str> = compact.lines().collect();
+    let total = lines.len();
+    if total == 0 { return String::new(); }
+
+    // Take every N-th line to cover the whole transcript
+    let step = (total as f64 / (max_chars / 60) as f64).ceil() as usize;
+    let step = step.max(1);
+    let sampled: String = lines
+        .iter()
+        .step_by(step)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Hard-truncate if still over budget
+    if sampled.len() > max_chars {
+        sampled[..max_chars].rsplit_once('\n').map(|(l, _)| l).unwrap_or(&sampled[..max_chars]).to_owned()
+    } else {
+        sampled
+    }
+}
+
+/// Parse the LLM response into a clean deduplicated keyword list.
+/// Tolerates: JSON arrays, code fences, numbered lists.
+fn parse_keyword_json(raw: &str, max: usize) -> Vec<String> {
+    let cleaned = {
+        let t = raw.trim();
+        if let Some(rest) = t.strip_prefix("```") {
+            let inner = rest.splitn(2, '\n').nth(1).unwrap_or(rest);
+            inner.trim_end().trim_end_matches("```").trim()
+        } else {
+            t
+        }
+    };
+
+    // Try JSON array first
+    if let (Some(s), Some(e)) = (cleaned.find('['), cleaned.rfind(']')) {
+        if e > s {
+            if let Ok(arr) = serde_json::from_str::<Vec<String>>(&cleaned[s..=e]) {
+                return normalize_keywords(arr, max);
+            }
+        }
+    }
+
+    // Fallback: numbered / bulleted lines
+    let lines = cleaned
+        .lines()
+        .map(|l| l.trim()
+            .trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '.' | ')' | '-' | '*' | '•' | ' '))
+            .trim_matches(|c: char| c == '"' || c == '\'')
+        )
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_owned())
+        .collect();
+    normalize_keywords(lines, max)
+}
+
+fn normalize_keywords(items: Vec<String>, max: usize) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out  = Vec::new();
+    for kw in items {
+        let k = kw.trim().trim_matches(|c: char| c == '"' || c == '\'').to_owned();
+        if k.is_empty() || k.len() < 3 { continue; }
+        let key = k.to_lowercase();
+        if seen.insert(key) { out.push(k); }
+        if out.len() >= max { break; }
+    }
+    out
+}
+
 /// Extract meaningful keywords from a video title and transcript text.
+///
+/// **Fallback method** (frequency-based). Use `extract_keywords_llm()` as the
+/// primary method and call this only when the LLM call fails or is unavailable.
 ///
 /// Strategy:
 /// 1. Collect proper nouns (capitalised mid-sentence) — names, places, brands
@@ -402,4 +540,58 @@ fn url_encode(s: &str) -> String {
         ' ' => "+".to_owned(),
         _   => format!("%{:02X}", c as u32),
     }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_json_array() {
+        let raw = r#"["Prabowo dollar", "rupiah melemah", "ekonomi rakyat desa"]"#;
+        let kw = parse_keyword_json(raw, 10);
+        assert_eq!(kw.len(), 3);
+        assert_eq!(kw[0], "Prabowo dollar");
+    }
+
+    #[test]
+    fn parse_fenced_json() {
+        let raw = "```json\n[\"keyword A\", \"keyword B\"]\n```";
+        let kw = parse_keyword_json(raw, 10);
+        assert_eq!(kw, vec!["keyword A", "keyword B"]);
+    }
+
+    #[test]
+    fn parse_numbered_list_fallback() {
+        let raw = "1. Prabowo desa\n2. Dollar AS\n3. Rupiah melemah";
+        let kw = parse_keyword_json(raw, 10);
+        assert_eq!(kw, vec!["Prabowo desa", "Dollar AS", "Rupiah melemah"]);
+    }
+
+    #[test]
+    fn respects_max_keywords() {
+        let raw = r#"["prabowo", "dollar", "rupiah", "inflasi", "desa", "ekonomi", "rakyat", "jakarta", "anggaran", "korupsi", "nilai tukar"]"#;
+        let kw = parse_keyword_json(raw, 5);
+        assert_eq!(kw.len(), 5);
+    }
+
+    #[test]
+    fn deduplicates_case_insensitive() {
+        let raw = r#"["prabowo", "Prabowo", "PRABOWO", "dollar"]"#;
+        let kw = parse_keyword_json(raw, 10);
+        assert_eq!(kw.len(), 2);
+    }
+
+    #[test]
+    fn sample_transcript_short_unchanged() {
+        let t = "[1] hello world\n[2] foo bar";
+        assert_eq!(sample_transcript(t, 1000), t);
+    }
+
+    #[test]
+    fn sample_transcript_long_truncated() {
+        let long = (0..200).map(|i| format!("[{}] kata-kata panjang sekali\n", i)).collect::<String>();
+        let result = sample_transcript(&long, 500);
+        assert!(result.len() <= 550, "sampled len {} > 550", result.len());
+    }
 }

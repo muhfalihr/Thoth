@@ -731,7 +731,7 @@ fn parse_description_batch(raw: &str, timestamps: &[f64]) -> Option<Vec<VideoDes
 // ── Full-video description (Priority 1: combined audio-visual prompt) ────────
 
 /// A visual description of a single video frame at a known timestamp.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VideoDescription {
     /// Timestamp of the frame in the video (seconds from start).
     pub timestamp_sec: f64,

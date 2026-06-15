@@ -140,6 +140,18 @@ impl YtDlpArgs {
         self
     }
 
+    /// Download only the first `secs` seconds of the video (FFmpeg-backed).
+    ///
+    /// Unlike [`max_duration`] this does NOT reject long videos — it grabs just the
+    /// opening slice. Ideal for pulling a short cutaway out of a full-length clip
+    /// (e.g. an enrichment video) quickly without downloading the whole thing.
+    pub fn download_first_secs(mut self, secs: u64) -> Self {
+        self.push2("--download-sections", format!("*0-{secs}"));
+        // `--download-sections` needs a real (non-streaming) downloader.
+        self.push2("--downloader", "ffmpeg");
+        self
+    }
+
     /// Suppress all output (for background / overlay downloads).
     pub fn quiet(mut self) -> Self {
         self.args.push("--quiet".to_owned());

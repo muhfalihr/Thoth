@@ -1,7 +1,8 @@
 # PLAN: Reaction + News-Inject Pipeline
-> Status: DRAFT — belum diimplementasi  
+> Status: **Phase 1 IMPLEMENTED ✅** (keyword extraction + internet search) · Phase 2-6 belum  
 > Dibuat: 2026-05-31  
 > Revisi: 2026-05-31 (koreksi alur keyword extraction dari transcript)  
+> Implementasi: 2026-05-31 (Phase 1 — internet search via Python Playwright, bukan Serper berbayar)  
 > Prioritas: High (kelanjutan roadmap CLIPPER)
 >
 > **Context:** Dokumen ini adalah rencana Phase berikutnya. Pipeline dasar sudah selesai:
@@ -1178,34 +1179,50 @@ for (i, moment) in moments.iter().enumerate() {
 
 ## 10. Implementasi Bertahap
 
-### Phase 1 — Keyword Extraction + News Search (tanpa screenshot)
+### Phase 1 — Keyword Extraction + News Search (tanpa screenshot) — ✅ SELESAI (2026-05-31)
 **Estimasi: 2-3 hari**
 
 Ini adalah fondasi segalanya — keyword berasal dari transcript.
 
-- `src/news/model.rs` — structs (NewsItem, MomentEnrichment dengan `transcript_window` + `extracted_keywords`)
-- `src/news/keyword.rs` — LLM keyword extractor dari transcript window
-- `src/news/search.rs` — Serper API: search per keyword, aggregate, dedup, score
-- `src/pipeline/state.rs` — tambah EnrichResult ke StageResults
-- `src/pipeline/mod.rs` — Stage 4 skeleton dengan transcript loading
-- `config.rs` — NewsConfig struct
-- `config.toml` — section `[news]`
-- Test: jalankan pipeline → `enrich.json` berisi `extracted_keywords` dan `news[]` per moment
+- ✅ `src/news/model.rs` — structs `NewsItem`, `MomentEnrichment` (`transcript_window` + `extracted_keywords`), `EnrichResult`, `RawSearchResult`
+- ✅ `src/news/keyword.rs` — LLM keyword extractor dari transcript window + parser toleran (JSON/code-fence/line fallback) + dedup; 4 unit test
+- ✅ `src/news/search.rs` — **Playwright (default) + Serper (fallback)**; batched query per moment (1 browser), aggregate, `dedup_by_url`, `score_relevance` (overlap·0.6 + freshness·0.25 + source·0.15), `within_max_age`; 3 unit test
+- ✅ `scripts/news_search.py` — Python + Playwright (Bing News + fallback Google), output JSON envelope, graceful degrade jika playwright tidak terinstall
+- ✅ `src/news/service.rs` — `EnrichService` orchestrasi Stage 4 (sequential per moment, simpan `enrich.json`)
+- ✅ `src/pipeline/state.rs` — `EnrichResult` ditambahkan ke `StageResults` (serde default, resumable)
+- ✅ `src/pipeline/mod.rs` — Stage 4 wired (gated `news.enabled`, best-effort, tidak menggagalkan pipeline), renumber 1/5..5/5
+- ✅ `src/config.rs` — `NewsConfig` struct + default + load Serper key dari env
+- ✅ `config.toml` + `config.toml.example` — section `[news]`
+- ✅ `src/analyze/provider/mod.rs` — `build_llm_provider()` di-extract jadi free function (dipakai analyze + news)
+- ✅ Build: `cargo check` zero error; 7 unit test news lulus
+
+> **Keputusan desain (per arahan user):** internet search memakai **Python + Playwright**
+> (tanpa API key berbayar) sebagai default, bukan Serper. Serper tetap tersedia sebagai
+> fallback bila `CLIPPER_SERPER_API_KEY` diset dan `provider = "serper"`.
 
 **Output:** `enrich.json` dengan keywords dari transcript + berita yang ditemukan. Belum ada screenshot.
 
-**Validasi:** Periksa apakah keywords mencerminkan isi transcript, bukan metadata LLM.
+**Validasi runtime (perlu dijalankan dengan video nyata):** set `[news] enabled = true`,
+pastikan `pip install playwright && python -m playwright install chromium`, lalu jalankan
+pipeline dan periksa `enrich.json` — keywords harus mencerminkan isi transcript, bukan metadata LLM.
 
-### Phase 2 — Headless Screenshot + Formatting
+### Phase 2 — Headless Screenshot + Formatting — ✅ SELESAI (2026-05-31)
 **Estimasi: 2-3 hari**
 
-- `src/news/scraper.rs` — Chrome subprocess wrapper
-- Cookie/popup cleanup JS injection sebelum screenshot
-- `src/news/formatter.rs` — format ke 9:16 pillar-box + caption source/date
-- Detection Chrome binary (Windows path fallback chain)
-- Test: screenshot muncul di `enrich/news/moment_N/screenshot_0_formatted.png`
+- ✅ `environment.yml` + `scripts/setup_clipper_news.bat` — conda env `clipper-news` (Python 3.11 + Playwright + Chromium); jalankan sekali sebelum pakai
+- ✅ `conda_env` field di `NewsConfig` (default: "clipper-news"); `screenshot_script` field; helper `util::python_command()` yang route otomatis ke `conda run -n env python` atau `python` langsung
+- ✅ `scripts/news_screenshot.py` — Playwright headless, inject JS cleanup popup/cookie, screenshot, extract title + lead paragraph, output JSON envelope
+- ✅ `src/news/scraper.rs` — subprocess wrapper, parsing JSON, `ScreenshotResult`, graceful degrade kalau script tidak ada / browser gagal
+- ✅ `src/news/formatter.rs` — FFmpeg `filter_complex`: blur background 1080×1920 + scale screenshot overlay + `drawtext` source/date/headline; `escape_text`, `truncate_text`; 4 unit test
+- ✅ Wired di `EnrichService`: screenshot → format → simpan path ke `NewsItem.screenshot_path` + `.formatted_screenshot_path`
+- ✅ Build: `cargo check` zero error; 11 unit test lulus
 
-**Output:** screenshot 9:16 tersedia dengan overlay caption berita.
+> **Keputusan desain:** Screenshot menggunakan **Playwright dari conda env** (bukan Chrome binary discovery).
+> Ini lebih konsisten di Windows — Playwright install Chromium sendiri ke `~/.cache/ms-playwright`,
+> tidak bergantung path Chrome sistem yang variatif. Conda env juga memastikan Python + versi
+> Playwright yang terprediksi.
+
+**Output:** `enrich/news/moment_N/news_J.png` (raw) + `news_J_formatted.png` (9:16 + caption).
 
 ### Phase 3 — News Screenshot di Video
 **Estimasi: 1-2 hari**
@@ -1375,14 +1392,15 @@ Setelah implementasi, tambahkan baris ini ke BLUEPRINT.md:
 
 | Komponen | Status | File |
 |---|---|---|
-| **News Search Module** | ❌ 0% | `src/news/search.rs` |
-| **Headless Browser Screenshot** | ❌ 0% | `src/news/scraper.rs` |
-| **News Screenshot Overlay** | ❌ 0% | `src/news/formatter.rs`, `src/edit/ffmpeg.rs` |
-| **Reaction Script Generator** | ❌ 0% | `src/reaction/script.rs` |
-| **TTS Voice Synthesis** | ❌ 0% | `src/reaction/tts.rs` |
-| **Static Avatar Insert** | ❌ 0% | `src/reaction/avatar.rs` |
-| **D-ID Talking Avatar** | ❌ 0% | `src/reaction/avatar.rs` |
-| **EnrichService (Stage 4)** | ❌ 0% | `src/pipeline/mod.rs` |
+| **Keyword Extraction (dari transcript)** | ✅ Done | `src/news/keyword.rs` |
+| **News Search Module (Playwright/Serper)** | ✅ Done | `src/news/search.rs`, `scripts/news_search.py` |
+| **EnrichService (Stage 4)** | ✅ Done | `src/news/service.rs`, `src/pipeline/mod.rs` |
+| **Headless Browser Screenshot** | ❌ 0% | `src/news/scraper.rs` (Phase 2) |
+| **News Screenshot Overlay** | ❌ 0% | `src/news/formatter.rs`, `src/edit/ffmpeg.rs` (Phase 3) |
+| **Reaction Script Generator** | ❌ 0% | `src/reaction/script.rs` (Phase 4) |
+| **TTS Voice Synthesis** | ❌ 0% | `src/reaction/tts.rs` (Phase 4) |
+| **Static Avatar Insert** | ❌ 0% | `src/reaction/avatar.rs` (Phase 5) |
+| **D-ID Talking Avatar** | ❌ 0% | `src/reaction/avatar.rs` (Phase 6) |
 
 ---
 

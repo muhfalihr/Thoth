@@ -267,8 +267,8 @@ gpu_transition = "blink"          # blink | dissolve | fade | wipe_left | zoom_i
 ### `[assets]` — SFX & BGM
 ```toml
 [assets]
-sfx_dir   = "sfx"
-bgm_dir   = "bgm"
+sfx_dir   = "assets/sfx"
+bgm_dir   = "assets/bgm"
 beat_sync = true   # snap SFX ke downbeat + duck BGM saat speech
 
 [assets.sfx]

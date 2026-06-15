@@ -13,7 +13,7 @@ use tracing::{info, warn};
 /// Font configuration passed to all text-rendering parts of the pipeline.
 #[derive(Debug, Clone)]
 pub struct FontConfig {
-    /// Directory that contains the font files. Default: `"fonts/"`.
+    /// Directory that contains the font files. Default: `"assets/fonts/"`.
     pub fonts_dir:    PathBuf,
     /// Bold font filename (headline text + subtitle). Default: `"Poppins-Bold.ttf"`.
     pub bold_font:    String,
@@ -27,7 +27,7 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
-            fonts_dir:    PathBuf::from("fonts"),
+            fonts_dir:    PathBuf::from("assets/fonts"),
             bold_font:    "Poppins-Bold.ttf".to_owned(),
             regular_font: "Poppins-Regular.ttf".to_owned(),
             family_name:  "Poppins".to_owned(),

@@ -42,6 +42,45 @@ impl JobContext {
         self.root().join("clips")
     }
 
+    // ── Stage 4: Enrich (news + reaction) ──────────────────────────────────────
+
+    /// Root directory for all enrichment artifacts.
+    pub fn enrich_dir(&self) -> PathBuf {
+        self.root().join("enrich")
+    }
+
+    /// Aggregated enrichment data for all moments.
+    pub fn enrich_path(&self) -> PathBuf {
+        self.enrich_dir().join("enrich.json")
+    }
+
+    /// Per-moment news artifacts (screenshots, metadata).
+    pub fn news_dir(&self, index: usize) -> PathBuf {
+        self.enrich_dir().join("news").join(format!("moment_{index}"))
+    }
+
+    /// Per-moment reaction artifacts (script, voice, avatar).
+    pub fn reaction_dir(&self, index: usize) -> PathBuf {
+        self.enrich_dir().join("reaction").join(format!("moment_{index}"))
+    }
+
+    // ── Narration (narrator-driven spine) ──────────────────────────────────────
+
+    /// Directory for narration artifacts (voiceover + word timings).
+    pub fn narration_dir(&self) -> PathBuf {
+        self.root().join("narration")
+    }
+
+    /// Narrator voiceover MP3 (the audio spine).
+    pub fn narration_mp3(&self) -> PathBuf {
+        self.narration_dir().join("narration.mp3")
+    }
+
+    /// Narration per-word timings JSON (for synced subtitles).
+    pub fn narration_words(&self) -> PathBuf {
+        self.narration_dir().join("narration_words.json")
+    }
+
     pub fn state_path(&self) -> PathBuf {
         self.root().join("state.json")
     }
@@ -52,6 +91,13 @@ impl JobContext {
 
     pub fn moments_path(&self) -> PathBuf {
         self.analyze_dir().join("moments.json")
+    }
+
+    /// Per-frame visual descriptions from the vision model (Stage 3 `describe_video`).
+    /// Persisted so the narration stage can ground its script in what is ON SCREEN
+    /// when the spoken transcript is near-empty (raw b-roll).
+    pub fn video_descriptions_path(&self) -> PathBuf {
+        self.analyze_dir().join("video_descriptions.json")
     }
 
     pub fn clip_path(&self, index: usize, slug: &str) -> PathBuf {

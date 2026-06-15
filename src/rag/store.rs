@@ -43,6 +43,51 @@ impl SimilarMoment {
     }
 }
 
+/// A proven narration STRUCTURE retrieved from `narration_structures` (built by
+/// `scripts/analyze_narration_structure.py`). Used as a reference exemplar so the
+/// narrator LLM can copy arcs/hooks/lessons that worked.
+#[derive(Debug, Clone)]
+pub struct NarrationRef {
+    pub narration_style:  String,
+    pub narrator_posture: String,
+    pub hook_format:      String,
+    pub arc:              Vec<String>,
+    pub hook_text:        String,
+    pub quality_score:    f64,
+    pub what_makes_it_work: String,
+    pub lessons:          Vec<String>,
+    pub similarity:       f32,
+}
+
+impl NarrationRef {
+    /// Format as one reference entry for the narrator prompt.
+    fn to_prompt_line(&self, rank: usize) -> String {
+        let mut s = format!(
+            "{rank}. [{} · {} · hook: {} · quality {:.1}/10]",
+            if self.narration_style.is_empty() { "?" } else { &self.narration_style },
+            if self.narrator_posture.is_empty() { "?" } else { &self.narrator_posture },
+            if self.hook_format.is_empty() { "?" } else { &self.hook_format },
+            self.quality_score,
+        );
+        if !self.arc.is_empty() {
+            s.push_str(&format!("\n   Arc: {}", self.arc.join(" → ")));
+        }
+        if !self.hook_text.trim().is_empty() {
+            s.push_str(&format!("\n   Contoh hook: \"{}\"", self.hook_text.trim()));
+        }
+        if !self.what_makes_it_work.trim().is_empty() {
+            s.push_str(&format!("\n   Kenapa berhasil: {}", self.what_makes_it_work.trim()));
+        }
+        if !self.lessons.is_empty() {
+            let l = self.lessons.iter().take(3)
+                .map(|x| x.trim()).filter(|x| !x.is_empty())
+                .collect::<Vec<_>>().join("; ");
+            if !l.is_empty() { s.push_str(&format!("\n   Pelajaran: {l}")); }
+        }
+        s
+    }
+}
+
 // ── RagStore ──────────────────────────────────────────────────────────────────
 
 pub struct RagStore {
@@ -207,6 +252,74 @@ impl RagStore {
         moments.iter()
             .enumerate()
             .map(|(i, m)| m.to_prompt_line(i + 1))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// Retrieve the top-N most similar proven narration structures from the
+    /// `narration_structures` table (cosine similarity on the analysis embedding).
+    pub async fn retrieve_narration_structures(
+        &self,
+        query_embedding: &[f32],
+        limit:           i64,
+        min_similarity:  f32,
+    ) -> Result<Vec<NarrationRef>> {
+        if query_embedding.is_empty() {
+            return Ok(Vec::new());
+        }
+        let vec = Vector::from(query_embedding.to_vec());
+
+        let rows = sqlx::query_as::<_, (
+            Option<String>, Option<String>, Option<String>, Option<Vec<String>>,
+            Option<String>, Option<f64>, Option<String>, Option<String>, Option<f64>,
+        )>(
+            "SELECT \
+                narration_style, narrator_posture, hook_format, arc_template, \
+                hook_text, quality_score, \
+                analysis->>'what_makes_it_work' AS wmiw, \
+                analysis->>'lessons_for_generation' AS lessons, \
+                CAST(1.0 - (embedding <=> $1::halfvec) AS FLOAT8) AS similarity \
+            FROM narration_structures \
+            WHERE embedding IS NOT NULL \
+              AND (1.0 - (embedding <=> $1::halfvec)) >= $2 \
+            ORDER BY embedding <=> $1::halfvec \
+            LIMIT $3"
+        )
+        .bind(vec)
+        .bind(min_similarity as f64)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to query narration structures")?;
+
+        let refs = rows.into_iter().map(|(style, posture, hookfmt, arc, hook, q, wmiw, lessons, sim)| {
+            // `lessons` is the JSON-array text from `analysis->>'lessons_for_generation'`.
+            let lessons_vec: Vec<String> = lessons
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .unwrap_or_default();
+            NarrationRef {
+                narration_style:  style.unwrap_or_default(),
+                narrator_posture: posture.unwrap_or_default(),
+                hook_format:      hookfmt.unwrap_or_default(),
+                arc:              arc.unwrap_or_default(),
+                hook_text:        hook.unwrap_or_default(),
+                quality_score:    q.unwrap_or(0.0),
+                what_makes_it_work: wmiw.unwrap_or_default(),
+                lessons:          lessons_vec,
+                similarity:       sim.unwrap_or(0.0) as f32,
+            }
+        }).collect::<Vec<_>>();
+
+        debug!("rag: retrieved {} narration structure(s)", refs.len());
+        Ok(refs)
+    }
+
+    /// Format retrieved narration structures as a reference block for the prompt.
+    pub fn format_narration_refs(refs: &[NarrationRef]) -> String {
+        if refs.is_empty() { return String::new(); }
+        refs.iter()
+            .enumerate()
+            .map(|(i, r)| r.to_prompt_line(i + 1))
             .collect::<Vec<_>>()
             .join("\n\n")
     }
