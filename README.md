@@ -1,6 +1,8 @@
-# CLIPPER — AI-Powered Short-Form Video Strategist
+# 🪶 Thoth — AI-Powered Short-Form Video Strategist
 
-CLIPPER adalah CLI tool berbasis Rust yang mengotomasi pembuatan video short-form (TikTok, Reels, Shorts) dari konten long-form **atau** dari content-set hasil sourcing multi-platform (OpenClaw). Pipeline end-to-end: download → transkripsi → analisis AI → enrichment (narator/berita) → edit video dengan GPU acceleration. Mendukung dua mode: **clip-mode** (potong momen viral dari satu video) dan **narrator-driven** (satu naskah komentator jadi tulang punggung, b-roll + kartu reaksi-berita dirakit mengelilinginya).
+> *Dinamai dari **Thoth**, dewa Mesir berkepala ibis — penjaga tulisan, kebijaksanaan, dan juru bicara para dewa. Sebuah tool yang **menulis, menarasikan, dan menyebarkan** cerita.*
+
+**Thoth** adalah CLI tool berbasis Rust yang mengotomasi pembuatan video short-form (TikTok, Reels, Shorts) dari konten long-form **atau** dari content-set hasil sourcing multi-platform (OpenClaw). Pipeline end-to-end: download → transkripsi → analisis AI → enrichment (narator/berita) → edit video dengan GPU acceleration. Mendukung dua mode: **clip-mode** (potong momen viral dari satu video) dan **narrator-driven** (satu naskah komentator jadi tulang punggung, b-roll + kartu reaksi-berita dirakit mengelilinginya).
 
 ---
 
@@ -55,7 +57,7 @@ Gaya konten reaksi-berita Indonesia, dirakit dari data faktual (OpenClaw):
 - **Callout** (`[callout]`) — angka penting + panah penunjuk
 
 ### Content Sourcing (OpenClaw + multi-platform)
-- **`clipper run --content set.json`** — terima content-set eksternal `{main, footage, comments, figures, profile}` hasil sourcing OpenClaw (Telegram agent), termasuk crop screenshot komentar & kartu profil.
+- **`thoth run --content set.json`** — terima content-set eksternal `{main, footage, comments, figures, profile}` hasil sourcing OpenClaw (Telegram agent), termasuk crop screenshot komentar & kartu profil.
 - **`[content_search]`** — cari MAIN video + pool enrichment lintas YouTube/Instagram/Twitter/News (Playwright/Scrapling) saat `--query` / auto-trending.
 
 ### News Enrichment (`[news]`, opt-in)
@@ -179,15 +181,17 @@ RevealLeft, SqueezeH, SmoothLeft
 
 ## CLI Commands
 
+> 🪶 **Brand: Thoth.** Nama internal masih `clipper` untuk sekarang — binary, crate (`clipper::`), prefix env (`CLIPPER_`), dan folder output (`.clipper/`). Rename binary opsional via `Cargo.toml` (`[[bin]] name = "thoth"`); contoh di bawah memakai `thoth`.
+
 ### `run` — Pipeline Utama
 ```bash
-clipper run <URL_ATAU_PATH> [OPTIONS]
+thoth run <URL_ATAU_PATH> [OPTIONS]
 
 # Contoh
-clipper run "https://youtu.be/xxxx"
-clipper run ./video.mp4 --max-clips 5 --layout vertical
-clipper run "https://youtu.be/xxxx" --style-profile tiktok_id_2025
-clipper run "https://youtu.be/xxxx" --provider claude --layout square
+thoth run "https://youtu.be/xxxx"
+thoth run ./video.mp4 --max-clips 5 --layout vertical
+thoth run "https://youtu.be/xxxx" --style-profile tiktok_id_2025
+thoth run "https://youtu.be/xxxx" --provider claude --layout square
 ```
 
 **Options:**
@@ -209,21 +213,21 @@ clipper run "https://youtu.be/xxxx" --provider claude --layout square
 ### `trend-analyze` — Auto-generate Style Profile
 ```bash
 # Analisis 10 video trending → generate style profile ke config.toml
-clipper trend-analyze --count 10 --output tiktok_id_latest
+thoth trend-analyze --count 10 --output tiktok_id_latest
 ```
 
 ### `vocab` — Knowledge Management
 ```bash
-clipper vocab seed defaults          # isi DB dengan default viral keywords
-clipper vocab list tone_funny        # list kata dalam kategori
-clipper vocab add energy_high "hype" # tambah kata manual
-clipper vocab review                 # review candidate words interaktif
-clipper vocab stats                  # DB status + word counts
+thoth vocab seed defaults          # isi DB dengan default viral keywords
+thoth vocab list tone_funny        # list kata dalam kategori
+thoth vocab add energy_high "hype" # tambah kata manual
+thoth vocab review                 # review candidate words interaktif
+thoth vocab stats                  # DB status + word counts
 ```
 
 ### `thumbnail` — Regenerate Thumbnails
 ```bash
-clipper thumbnail --job-id <ID>
+thoth thumbnail --job-id <ID>
 ```
 
 ---
@@ -556,5 +560,5 @@ cargo build --release --features local-whisper,cuda
 
 ## License
 
-Copyright (c) 2026 CLIPPER. **All Rights Reserved.**  
+Copyright (c) 2026 Thoth. **All Rights Reserved.**  
 Proprietary software. Unauthorized use strictly prohibited.

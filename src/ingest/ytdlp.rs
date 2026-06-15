@@ -393,7 +393,7 @@ async fn temp_copy_chromium_cookies(browser: &str) -> Option<PathBuf> {
             let src = local.join(rel);
             if src.exists() {
                 let tmp = std::env::temp_dir()
-                    .join(format!("clipper_cookies_{browser}_{}.db", std::process::id()));
+                    .join(format!("thoth_cookies_{browser}_{}.db", std::process::id()));
                 if tokio::fs::copy(&src, &tmp).await.is_ok() {
                     return Some(tmp);
                 }

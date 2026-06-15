@@ -749,7 +749,7 @@ impl<'a> EditService<'a> {
                 };
 
                 // (Footage comes ONLY from the OpenClaw enrichment pool above. The old
-                // query-based auto-search overlay was removed — CLIPPER no longer invents
+                // query-based auto-search overlay was removed — Thoth no longer invents
                 // footage; if the pool is empty/undownloadable the overlay is simply skipped.)
 
                 // Set overlay style.

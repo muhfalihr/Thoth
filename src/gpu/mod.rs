@@ -12,8 +12,8 @@
 //! ## Usage
 //!
 //! ```rust
-//! use clipper::gpu::{GpuProcessor, ClipJob, ColorParams};
-//! use clipper::edit::transition::Transition;
+//! use thoth::gpu::{GpuProcessor, ClipJob, ColorParams};
+//! use thoth::edit::transition::Transition;
 //!
 //! let gpu = GpuProcessor::new().await?;
 //!

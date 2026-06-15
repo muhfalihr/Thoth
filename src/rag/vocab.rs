@@ -2,7 +2,7 @@
 ///
 /// Replaces all 8 hardcoded static word arrays in the codebase with a single
 /// in-memory cache backed by Supabase. The cache refreshes every `ttl_secs`
-/// seconds (default 1 hour) so new words added via `clipper vocab add` or
+/// seconds (default 1 hour) so new words added via `thoth vocab add` or
 /// auto-discovery take effect without restarting the service.
 ///
 /// Falls back to hardcoded defaults if Supabase is unavailable.
@@ -203,7 +203,7 @@ impl VocabCache {
         .await;
     }
 
-    /// List words in a category (for `clipper vocab list`).
+    /// List words in a category (for `thoth vocab list`).
     pub async fn list_category(pool: &PgPool, category: &str) -> Result<Vec<(String, Option<String>, String, f64)>> {
         let rows = sqlx::query_as::<_, (String, Option<String>, String, f64)>(
             "SELECT word, subcategory, language, weight FROM word_lists
@@ -411,7 +411,7 @@ pub async fn seed_from_url(
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
-        .user_agent("clipper-vocab/1.0")
+        .user_agent("thoth-vocab/1.0")
         .build()
         .unwrap_or_default();
 

@@ -3,7 +3,7 @@
 //! Content discovery (multi-platform search) is no longer done inside CLIPPER —
 //! it is handled upstream by OpenClaw (the "Ella" agent), which curates the main
 //! clippable video plus a pool of relevant footage and hands them to CLIPPER via
-//! `clipper run --content <set.json>`.
+//! `thoth run --content <set.json>`.
 //!
 //! This module keeps:
 //!   - [`ContentResult`]: the normalized footage-pool item consumed by the edit
@@ -163,7 +163,7 @@ pub struct Figure {
     pub description: String,
 }
 
-/// The OpenClaw content set passed via `clipper run --content <set.json>`:
+/// The OpenClaw content set passed via `thoth run --content <set.json>`:
 /// one main video to clip + a footage pool for cutaways/narration enrichment +
 /// (optionally) the subject's real profile and scraped viral comments.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -373,7 +373,7 @@ mod tests {
     }
     fn tempfile_like() -> TmpFile {
         let mut p = std::env::temp_dir();
-        p.push(format!("clipper_cset_{}.json", uuid::Uuid::new_v4()));
+        p.push(format!("thoth_cset_{}.json", uuid::Uuid::new_v4()));
         let f = std::fs::File::create(&p).unwrap();
         TmpFile(p, f)
     }

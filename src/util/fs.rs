@@ -8,9 +8,9 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Return the job-specific working directory: `<base>/.clipper/<job_id>`
+/// Return the job-specific working directory: `<base>/.thoth/<job_id>`
 pub fn job_dir(base: &Path, job_id: &str) -> PathBuf {
-    base.join(".clipper").join(job_id)
+    base.join(".thoth").join(job_id)
 }
 
 /// Slugify a string for use in file names.

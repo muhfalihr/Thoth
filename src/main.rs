@@ -1,8 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
 /*
- * CLIPPER - AI-Powered Short-Form Video Strategist
- * Copyright (c) 2026 CLIPPER. All Rights Reserved.
+ * Thoth - AI-Powered Short-Form Video Strategist
+ * Copyright (c) 2026 Thoth. All Rights Reserved.
  * This software is PROPRIETARY. Unauthorized use is strictly prohibited.
  */
 
@@ -224,7 +224,7 @@ fn move_ffmpeg_to_root(dest_dir: &str) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Immediate feedback to verify if the process even starts
-    println!("[BOOT] Clipper process started. Initializing...");
+    println!("[BOOT] Thoth process started. Initializing...");
 
     // Load .env file if present
     dotenvy::dotenv().ok();
@@ -232,13 +232,13 @@ async fn main() -> Result<()> {
     // Structured logging — level from RUST_LOG, default info
     fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("clipper=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("thoth=info")),
         )
         .with_target(false)
         .compact()
         .init();
 
-    tracing::info!("Clipper starting...");
+    tracing::info!("Thoth starting...");
 
     let cli = Cli::parse();
     tracing::debug!("CLI arguments parsed: {:?}", cli);
@@ -737,7 +737,7 @@ async fn main() -> Result<()> {
                     let pool = pool.context("Supabase connection required")?;
                     let words = VocabCache::list_category(&pool, &category).await?;
                     if words.is_empty() {
-                        println!("(empty — run 'clipper vocab seed' first)");
+                        println!("(empty — run 'thoth vocab seed' first)");
                     } else {
                         println!("Category: {category} ({} words)", words.len());
                         for (word, sub, lang, weight) in &words {

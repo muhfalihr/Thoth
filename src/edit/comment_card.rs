@@ -367,7 +367,7 @@ mod tests {
         // A card whose image_path points at an existing file pastes the crop instead of
         // drawing the synthetic panel → build_comment_filter yields nothing.
         let mut c = card();
-        let tmp = std::env::temp_dir().join("clipper_comment_crop_test.png");
+        let tmp = std::env::temp_dir().join("thoth_comment_crop_test.png");
         std::fs::write(&tmp, b"x").unwrap();
         c.image_path = tmp.to_string_lossy().to_string();
         assert!(c.has_crop());

@@ -138,7 +138,7 @@ impl FontConfig {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .user_agent("clipper/1.0")
+            .user_agent("thoth/1.0")
             .build()
             .unwrap_or_default();
 

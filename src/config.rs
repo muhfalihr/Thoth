@@ -196,7 +196,7 @@ fn default_anim_max_cuts()  -> u32     { 2 }
 
 /// Multi-platform content search — drives `scripts/social_search.py` to find a
 /// MAIN clippable video plus MULTIPLE relevant clips/screenshots for enrichment.
-/// Used by `clipper run --query` and the trending auto-mode.
+/// Used by `thoth run --query` and the trending auto-mode.
 ///
 /// ```toml
 /// [content_search]
@@ -283,7 +283,7 @@ fn default_cs_min_dur()   -> u64    { 60 }
 fn default_cs_max_dur()   -> u64    { 10800 }  // up to 3h — long-form is clippable
 fn default_cs_expand()    -> bool   { true }   // LLM keyword expansion before search
 
-/// Twitter/X integration — used when `clipper run` is invoked without a URL or
+/// Twitter/X integration — used when `thoth run` is invoked without a URL or
 /// `--query`, causing the pipeline to auto-pick the top trending topic from X.
 ///
 /// ```toml

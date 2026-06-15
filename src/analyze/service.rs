@@ -47,7 +47,7 @@ impl<'a> AnalyzeService<'a> {
     ///
     /// `video_path` — pass `Some` to enable visual frame analysis when
     /// `[vision] enabled = true` in config. Pass `None` to skip (e.g., standalone
-    /// `clipper analyze` without a video file).
+    /// `thoth analyze` without a video file).
     pub async fn run(
         &self,
         transcript_path: &Path,

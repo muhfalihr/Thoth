@@ -155,7 +155,7 @@ mod tests {
         assert!(!is_image_card(&vid("twitter", "u", false, "match")));
         // Non-video pointing at a real temp file → card.
         let mut p = std::env::temp_dir();
-        p.push(format!("clipper_imgcard_{}.png", uuid::Uuid::new_v4()));
+        p.push(format!("thoth_imgcard_{}.png", uuid::Uuid::new_v4()));
         std::fs::write(&p, b"x").unwrap();
         let mut r = vid("twitter", "u", false, "match");
         r.image_path = p.to_string_lossy().to_string();

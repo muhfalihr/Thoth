@@ -6,7 +6,7 @@
 /// can be saved to `config.toml` and used with `--style-profile`.
 ///
 /// Usage:
-///   `clipper trend-analyze "https://www.tiktok.com/tag/suratirta" --sample 5 --provider gemini --output-profile tiktok_id_health`
+///   `thoth trend-analyze "https://www.tiktok.com/tag/suratirta" --sample 5 --provider gemini --output-profile tiktok_id_health`
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

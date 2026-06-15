@@ -246,7 +246,7 @@ impl<'a> VisualAnalyzer<'a> {
         // Use a generous 600s timeout to avoid false connection errors.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
-            .user_agent("clipper/1.0")
+            .user_agent("thoth/1.0")
             .build()
             .unwrap_or_default();
         Self { config, llm_config, client }

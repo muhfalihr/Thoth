@@ -20,9 +20,9 @@ pub enum ClipStyleArg {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "clipper",
+    name = "thoth",
     version,
-    about = "GPU-accelerated viral video clipping and editing from YouTube URLs",
+    about = "Thoth — AI short-form video strategist: source, narrate, and edit viral clips",
     long_about = None
 )]
 pub struct Cli {
@@ -210,15 +210,15 @@ pub struct EditArgs {
 #[derive(Parser, Debug)]
 pub struct RunArgs {
     /// Single video URL to clip (default mode). Takes precedence over --content.
-    /// Example: clipper run --url https://youtu.be/abc
+    /// Example: thoth run --url https://youtu.be/abc
     pub url: Option<String>,
 
     /// OpenClaw content set (JSON) supplying the main video + footage pool.
-    /// Content discovery is handled upstream by OpenClaw; CLIPPER no longer
+    /// Content discovery is handled upstream by OpenClaw; Thoth no longer
     /// searches. The file shape is:
     ///   { "main": { "url": "...", ... }, "footage": [ { "platform": "...", "url": "..." }, ... ] }
     /// The footage list is written to <output_dir>/content_enrichment.json for the
-    /// edit/narration stages. Example: clipper run --content set.json
+    /// edit/narration stages. Example: thoth run --content set.json
     #[arg(long)]
     pub content: Option<PathBuf>,
 
@@ -348,7 +348,7 @@ pub struct TrendAnalyzeArgs {
     pub output_dir: PathBuf,
 }
 
-/// Arguments for `clipper vocab` subcommands.
+/// Arguments for `thoth vocab` subcommands.
 #[derive(Parser, Debug)]
 pub struct VocabArgs {
     #[command(subcommand)]
@@ -387,7 +387,7 @@ pub enum VocabCommand {
     ///   openslr-stopwords — Indonesian stop words (~758 words)
     ///
     /// Or use --url to download from any direct file URL:
-    ///   clipper vocab seed --url https://example.com/words.txt --category tone_funny
+    ///   thoth vocab seed --url https://example.com/words.txt --category tone_funny
     ///
     /// Supported formats (auto-detected by extension or content):
     ///   .txt  — one word/phrase per line

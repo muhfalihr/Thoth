@@ -1,11 +1,11 @@
 [package]
-name        = "clipper"
+name        = "thoth"
 version     = "0.1.0"
 edition     = "2024"
-description = "GPU-accelerated viral video clipping and editing from YouTube URLs"
+description = "Thoth — AI short-form video strategist: source, narrate, and edit viral clips"
 
 [[bin]]
-name = "clipper"
+name = "thoth"
 path = "src/main.rs"
 
 [features]
