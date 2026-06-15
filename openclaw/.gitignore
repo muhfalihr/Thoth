@@ -1,0 +1,11 @@
+# JANGAN pernah commit kredensial (kalaupun tak sengaja tersalin dari workspace)
+.novita_key
+.groq_key
+api_key.txt
+*.key
+
+# Artefak runtime (module ini source-of-truth KODE saja; runtime jalan di ~/.openclaw/workspace)
+output/
+crops/
+*.mp4
+*.png

@@ -42,7 +42,7 @@ gemini_model = "gemini-2.0-flash"
 # Cloud inference dengan ratusan model open-source.
 # Key: https://novita.ai  →  CLIPPER_NOVITA_API_KEY
 novita_base_url = "https://api.novita.ai/openai"
-novita_model    = "openai/gpt-oss-120b"
+novita_model    = "qwen/qwen-2.5-72b-instruct"   # ANALYZE: andal utk ekstraksi JSON terstruktur (deepseek-v4-flash balik kosong di analyze). Narasi pakai [narration] model.
 # novita_model  = "deepseek/deepseek-v3-0324"
 # novita_model  = "qwen/qwen3-235b-a22b"
 # novita_model  = "meta-llama/llama-3.3-70b-instruct"
@@ -155,7 +155,7 @@ scene_threshold = 0.3     # 0.0 = sangat sensitif, 1.0 = hard cut only
 # Setup:    Jalankan SQL di BLUEPRINT.md untuk buat tabel + index.
 # ─────────────────────────────────────────────────────────────────────────────
 [vector_db]
-enabled              = true
+enabled              = false
 retrieval_count      = 3      # past moments yang di-retrieve per analisis
 similarity_threshold = 0.65   # cosine similarity cutoff (0=semua, 1=identik)
 
@@ -199,6 +199,8 @@ clip_style     = "flash"
 sfx_vibe       = "impact"
 bgm_vibe       = "upbeat"
 overlay_style  = "sticker"
+color_mood     = "vibrant"
+gpu_transition = "blink"
 
 [styles.profiles.yt_edu]
 description    = "YouTube Shorts educational: clean, minimal, professional"
@@ -207,6 +209,8 @@ clip_style     = "fade"
 sfx_vibe       = "ding"
 bgm_vibe       = "lofi"
 overlay_style  = "pip"
+color_mood     = "bright"
+gpu_transition = "dissolve"
 
 [styles.profiles.drama]
 description    = "Drama/controversy: word-pop subtitles, flash cuts, cinematic BGM"
@@ -215,6 +219,8 @@ clip_style     = "flash"
 sfx_vibe       = "impact"
 bgm_vibe       = "cinematic"
 overlay_style  = "fullscreen"
+color_mood     = "cinematic"
+gpu_transition = "fade_grays"
 
 [styles.profiles.inspirational]
 description    = "Inspirational: smooth transitions, clean subtitles, inspirational BGM"
@@ -223,6 +229,28 @@ clip_style     = "smooth"
 sfx_vibe       = "whoosh"
 bgm_vibe       = "inspirational"
 overlay_style  = "pip"
+color_mood     = "warm"
+gpu_transition = "smooth_left"
+
+[styles.profiles.cinematic_film]
+description    = "Sinematik: teal-orange grade, vignette, wipe transitions"
+subtitle_style = "minimal_white"
+clip_style     = "smooth"
+sfx_vibe       = "whoosh"
+bgm_vibe       = "cinematic"
+overlay_style  = "pip"
+color_mood     = "teal_orange"
+gpu_transition = "wipe_left"
+
+[styles.profiles.night_drama]
+description    = "Konten malam/gelap: dark grade, circle transitions, impact sfx"
+subtitle_style = "capcut_bold"
+clip_style     = "fade"
+sfx_vibe       = "impact"
+bgm_vibe       = "cinematic"
+overlay_style  = "fullscreen"
+color_mood     = "night"
+gpu_transition = "circle_open"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INGEST — Video download
@@ -230,6 +258,26 @@ overlay_style  = "pip"
 [ingest]
 ytdlp_path = "yt-dlp"
 format     = "bestvideo+bestaudio/best"   # works for YouTube, TikTok, dll.
+
+# ── Resilience (SKILL.md §1A) ─────────────────────────────────────────────────
+# retries / fragment_retries: jumlah retry HTTP request & per-fragment HLS/DASH.
+# retry_sleep: jeda antar retry dalam detik (mencegah 429 rate-limit).
+# socket_timeout: batas waktu koneksi/DNS dalam detik.
+retries          = 30   # default: 30
+fragment_retries = 30   # default: 30
+retry_sleep      = 2    # default: 2
+socket_timeout   = 30   # default: 30
+
+# ── Cookie authentication (SKILL.md §3A) ──────────────────────────────────────
+# Diperlukan untuk video age-gated atau private.  Prioritas: cookie_file > cookie_browser.
+#
+# cookie_browser: nama browser untuk ekstraksi live cookies.
+#   Nilai: firefox | chrome | edge | brave | vivaldi | opera
+#   Catatan: Firefox lebih aman di Windows — Chromium DB bisa terkunci saat browser berjalan.
+# cookie_file: path ke file Netscape cookies.txt.
+#   Ekspor dengan ekstensi "Get cookies.txt LOCALLY" (lokal only — hindari versi cloud-sync).
+cookie_browser = "firefox"   # "" = disabled
+cookie_file    = ""   # "" = disabled
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OVERLAY — TikTok/YouTube Shorts meme insert (opt-in)
@@ -243,7 +291,13 @@ ytdlp_path          = "yt-dlp"         # kosong = inherit dari ingest.ytdlp_path
 cache_dir           = "overlay_cache"  # clip di-cache berdasarkan query hash
 max_duration        = 8.0              # max detik yang di-download per overlay
 fallback_to_youtube = true             # fallback ke YouTube Shorts jika TikTok gagal
-max_variants        = 3               # N variant per query, rotate by clip index
+max_variants        = 3                # N variant per query, rotate by clip index
+scraper_enabled     = true             # stealth scraper resolves direct URLs sebelum yt-dlp
+                                       # hasil di-rank by view count → yt-dlp download langsung
+                                       # 3-5× lebih cepat, fallback otomatis ke yt-dlp search
+placement_min_similarity = 0.46        # ambang cosine (footage desc ↔ teks narasi window) utk MENEMPATKAN
+                                       # footage di montase. Di bawah ini → window pakai MAIN clip (jangan
+                                       # maksa b-roll lemah/off-topik). 0.0 = matikan floor.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ASSETS — SFX & BGM auto-selection
@@ -259,8 +313,12 @@ max_variants        = 3               # N variant per query, rotate by clip inde
 #   --bgm ./bgm/custom.mp3   (override LLM choice untuk semua clip)
 # ─────────────────────────────────────────────────────────────────────────────
 [assets]
-sfx_dir   = "sfx"
-bgm_dir   = "bgm"
+sfx_dir   = "assets/sfx"
+bgm_dir   = "assets/bgm"
+# Katalog aset ter-anotasi (dibuat oleh scripts/annotate_assets.py). Saat ada,
+# stage analyze memberi tahu LLM agar mengisi `asset_cues` (SFX + meme ber-timestamp).
+# File hilang = fitur mati otomatis (graceful).
+catalog_path = "assets/asset_catalog.json"
 # Beat sync: SFX snap ke downbeat BGM + duck BGM saat ada suara.
 # BPM dibaca dari metadata audio; fallback: lofi=85, upbeat=128, cinematic=100, inspirational=110
 beat_sync = true
@@ -278,3 +336,368 @@ upbeat        = "upbeat-pop.mp3"
 cinematic     = "epic-cinematic.mp3"
 inspirational = "inspiring-piano.mp3"
 none          = ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOOK TITLE — Judul raksasa multi-warna (scroll-stopper 0–3 detik)
+# ─────────────────────────────────────────────────────────────────────────────
+# Menampilkan headline klip sebagai teks BESAR bertumpuk, tiap kata warna beda,
+# di sepertiga atas layar dengan animasi pop — gaya reaction-news Indonesia.
+# Butuh font display di assets/fonts (Montserrat-ExtraBold.ttf sudah ada).
+[hook_title]
+enabled      = true                        # opt-in
+duration_sec = 3.0
+palette      = ["#3DDC4A", "#FFE34D", "#3FC1FF", "#FFFFFF"]
+font         = "Montserrat ExtraBold"       # nama family ASS (file di assets/fonts)
+fontsize     = 100
+outline_px   = 6
+margin_v     = 360                          # jarak dari atas (alignment 8)
+animate      = true                         # pop scale-in bounce
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PROFILE CARD — Beat-2: intro tokoh (kartu profil + nama besar di atas kepala)
+# ─────────────────────────────────────────────────────────────────────────────
+# Digerakkan oleh character_name/character_handle/character_stats dari LLM.
+# Kartu (avatar inisial + nama + @handle + stats) muncul di at_sec; nama raksasa
+# tampil di atas kepala. Stats hanya tampil bila LLM menemukannya di transcript.
+[profile_card]
+enabled         = true                       # opt-in
+at_sec          = 3.0                         # muncul detik ke- (Beat-2)
+duration_sec    = 3.0
+position        = "lower"                     # center | upper | lower
+accent          = "#FF3B5C"
+font            = "Arial Bold"                # family drawtext (fontconfig)
+name_above_head = false                      # banner nama raksasa di atas kepala — matikan (mengganggu)
+show_card       = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CALLOUT — Beat-3: angka penting + panah penunjuk
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM mengisi array `callouts` per moment (angka berat/harga/jumlah + timing +
+# posisi + arah panah). Config ini hanya styling global + on/off.
+[callout]
+enabled      = true                          # opt-in
+accent       = "#FF3B5C"
+font         = "Arial Bold"
+max_per_clip = 3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TWITTER/X INTEGRATION — Trending topics → YouTube search → auto pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+# Digunakan saat `clipper run` dipanggil tanpa URL atau --query:
+#   1. Ambil trending dari Twitter/X ExplorePage API
+#   2. Pakai trend teratas sebagai query YouTube (via yt-dlp)
+#   3. Ambil video terbaik → jalankan pipeline
+#
+# Auth: baca cookies dari cookies_file (Netscape format — export dari Firefox/Chrome).
+# CSRF token diambil otomatis dari cookie ct0. Tidak ada hardcoded credentials.
+[twitter]
+cookies_file        = "data/cookies.txt"    # Netscape format (export dari browser)
+max_trends          = 5                     # jumlah trending topics yang diambil
+youtube_search_max  = 8                     # kandidat yt-dlp per query
+youtube_min_dur_sec = 60                    # abaikan video < N detik
+youtube_max_dur_sec = 10800                  # abaikan video > N detik
+bearer_token        = ""                    # kosong = pakai public bearer token
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONTENT SEARCH — Multi-platform (YouTube/TikTok/Twitter/Instagram/News)
+# ─────────────────────────────────────────────────────────────────────────────
+# Dipakai saat `clipper run --query` atau auto-trending. Mencari konten relevan
+# LEBIH DARI satu platform: pilih MAIN video (untuk di-clip) + kumpulkan kandidat
+# enrichment (clip/screenshot lain) → disimpan ke <output>/content_enrichment.json.
+#
+# Engine:
+#   playwright — Chromium + cookies + webdriver masking (default, sudah terpasang)
+#   scrapling  — Scrapling StealthyFetcher (Camoufox, undetected) utk TikTok/IG
+#                ⚠ butuh: pip install scrapling && scrapling install  (download camoufox)
+#   auto       — pakai scrapling utk tiktok/instagram bila tersedia, else playwright
+#
+# Cookies: pakai twitter.cookies_file (data/cookies.txt). TikTok/Twitter/IG butuh
+# cookies login yang valid; YouTube & News jalan tanpa login.
+[content_search]
+enabled          = true                     # opt-in (true = aktifkan multi-platform)
+conda_env        = "clipper-news"
+python_path      = "python"
+script           = "scripts/social_search.py"
+# TikTok di-hide dari default: search/hashtag-nya bot-blocked (EmptyResponse)
+# tanpa proxy residential berbayar. Tambah ",tiktok" manual jika punya proxy.
+platforms        = "youtube,instagram,twitter,news"
+engine           = "auto"                   # auto | playwright | scrapling
+max_per_platform = 6
+timeout_secs     = 30
+region           = "ID"
+lang             = "id"
+min_dur_sec      = 60                        # main video minimal (detik)
+max_dur_sec      = 10800                     # main video maksimal (3 jam)
+# Analisis query → keyword pencarian ganda via LLM sebelum search. Contoh:
+# "kata asbun ghufron al maqoli" → ["ghufron viral","ghufron ceramah","MUI ghufron",..]
+# Memperluas jangkauan footage + memperkaya enrichment pool untuk narasi rage-bait.
+expand_keywords  = true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Animelorian — Reaction-montage composite style
+# ─────────────────────────────────────────────────────────────────────────────
+# Base = kanvas kertas hitam kusut; footage kejadian (main + hasil search) di-
+# composite sebagai KARTU di tengah, dan video memotong antar footage (montase).
+# Hook (clip pertama) tetap full-frame immersive. Opt-in; enabled=false = look lama.
+[animelorian]
+enabled              = true
+paper_bg             = "assets/ui/Paper-Grid-Background.mp4"   # primary background (grid graph-paper); Crumpled = transisi/secondary
+footage_scale_pct    = 88            # lebar kartu footage = % dari 1080 (margin kertas atas/bawah)
+hook_fullscreen      = true          # clip-0 (hook) tetap full-frame
+montage              = true          # intercut footage enrichment sbg kartu (enable-window)
+montage_segment_secs = 4.0           # irama ganti footage (detik)
+placement_variation  = true          # variasi posisi/skala/tilt ringan per beat
+montage_max_cuts     = 2             # footage berbeda per clip (densitas montase); 2–3 = lebih padat
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Narration — narrator-driven spine (TTS jadi tulang punggung alur video)
+# ─────────────────────────────────────────────────────────────────────────────
+# Satu narasi komentator (LLM) → voiceover TTS (ElevenLabs → Edge fallback) jadi
+# audio utama; video dibangun mengelilinginya, audio event di-duck, subtitle dari
+# narasi. Provider/suara TTS dari [reaction.tts]. Opt-in.
+[narration]
+enabled        = true
+# Model KHUSUS narasi (override [llm] model utk skrip narasi saja; provider tetap dari --provider).
+# deepseek-v4-flash = diksi Indonesia paling natural (A/B menang); kosong = pakai [llm] model.
+model          = "deepseek/deepseek-v4-flash"
+target_secs    = 45        # target panjang narasi (detik); LLM tulis ~3 kata/detik
+language       = "id"
+duck_event_vol = 0.12      # volume audio event saat narator bicara (0..1)
+leak_event_vol = 0.45      # volume audio event saat narator JEDA / lead-in (> duck)
+lead_in_secs            = 1.6  # detik audio event main keras sebelum narator masuk (0 = mati)
+max_enrichment_sources  = 3    # max video tambahan (dari pool enrichment) yg subtitle-nya dijadikan konteks narasi LLM
+# RAG struktur narasi: ambil contoh struktur (arc/hook/pelajaran) yg terbukti dari
+# tabel `narration_structures` (diisi scripts/analyze_narration_structure.py) lalu
+# suntikkan sbg referensi ke prompt narator. Butuh CLIPPER_SUPABASE_URL + embed valid.
+# Independen dari [vector_db] enabled (itu RAG momen). Degrade diam bila tak tersedia.
+structure_rag                 = true   # false = matikan referensi struktur
+structure_rag_count           = 4      # berapa contoh struktur di-retrieve
+structure_rag_min_similarity  = 0.0    # 0 = selalu ambil top-N terdekat (korpus = contoh bagus)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU — Accelerated video processing (CapCut-style pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
+# Pipeline: FFmpeg decode → wgpu GPU shaders → FFmpeg encode
+# Requires: NVIDIA/AMD GPU dengan Vulkan atau DirectX 12 support.
+# Jika GPU tidak tersedia, pipeline otomatis fallback ke FFmpeg-only.
+#
+# Fitur color grading (dari reverse engineering CapCut shaders):
+#   - HSL per-channel (Red/Orange/Yellow/Green/Cyan/Blue/Purple/Magenta)
+#   - Log Color Wheels (Shadow/Midtone/Highlight/Offset)
+#   - Bezier Curves (Luma/R/G/B)
+#   - Sharpen (unsharp mask 3×3 Laplacian)
+#   - Vignette
+#   - 3D LUT (.cube file)
+#   - Temperature/Tint, Brightness/Contrast, Saturation, Whites/Blacks
+#
+# Transition effects (GPU-native, 21 jenis):
+#   fade | blink | dissolve | wipe_left | wipe_right | wipe_up | wipe_down
+#   slide_left | slide_right | zoom_in | circle_open | circle_close
+#   pixelize | radial | hblur | fade_grays | diag_tl
+#   cover_left | reveal_left | squeeze_h | smooth_left
+# ─────────────────────────────────────────────────────────────────────────────
+[gpu]
+# Aktifkan GPU pipeline (default: false — safe fallback ke FFmpeg-only)
+enabled             = true
+
+# Apply color grading ke setiap clip secara independen
+color_grading       = false
+
+# Gunakan GPU-native transitions antar clip (lebih halus dari xfade)
+# Memerlukan frame-by-frame decode/encode — lebih lambat tapi kualitas lebih baik
+gpu_transitions     = true
+
+# Jika true: concat semua clips menjadi satu video final dengan GPU transitions
+# Jika false: setiap clip tetap file terpisah (default TikTok/Reels workflow)
+concat_output       = false
+
+# Color mood default yang diaplikasikan ke semua clips jika ViralMoment.color_mood kosong.
+# Options: cinematic | warm | cool | vibrant | faded | night | bright | teal_orange
+# Kosong = tidak ada color grading default
+default_color_mood  = ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STYLE PROFILES — GPU fields tambahan
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEWS ENRICHMENT (Stage 4) — keyword extraction + internet search + screenshot
+# ─────────────────────────────────────────────────────────────────────────────
+# Keyword pencarian berita BERASAL dari transcript yang diucapkan pada tiap moment
+# (bukan dari title/reason hasil paraphrase LLM). Search dilakukan via Python +
+# Playwright (tanpa API key berbayar). Fallback "serper" tersedia jika punya key.
+[news]
+# Aktifkan/matikan seluruh stage News enrichment
+enabled = false
+
+# Backend pencarian: "playwright" (default, Python, tanpa key) | "serper"
+provider = "playwright"
+
+# Nama conda environment untuk Python scripts (buat dengan scripts\setup_clipper_news.bat).
+# Kosong = pakai python_path langsung tanpa conda.
+conda_env = "clipper-news"
+
+# Interpreter Python (hanya dipakai jika conda_env kosong)
+python_path = "python"
+
+# Path ke script pencarian berita
+search_script = "scripts/news_search.py"
+
+# Path ke script screenshot berita
+screenshot_script = "scripts/news_screenshot.py"
+
+# Jumlah berita maksimum yang disimpan per moment (setelah ranking relevansi)
+max_results_per_moment = 3
+
+# Jumlah keyword maksimum yang diekstrak LLM dari transcript per moment
+max_keywords = 5
+
+# Skor relevansi minimum (0.0–1.0) agar sebuah berita dipertahankan
+relevance_threshold = 0.5
+
+# Buang berita lebih tua dari N hari (0 = tanpa filter usia)
+max_age_days = 14
+
+# Region & bahasa pencarian Google News
+region = "ID"
+language = "id"
+
+# Timeout headless browser (detik) untuk search + screenshot
+screenshot_timeout_secs = 20
+
+# Lebar screenshot (px) sebelum diformat ke 9:16
+screenshot_width_px = 1200
+
+# Berapa detik news screenshot tampil dalam clip
+display_duration_secs = 4.0
+
+# Kapan news screenshot muncul (detik dari awal clip)
+display_start_sec = 2.0
+
+# Sumber berita yang diprioritaskan (kosong = semua). Contoh:
+# preferred_sources = ["kompas.com", "cnnindonesia.com", "detik.com"]
+preferred_sources = []
+
+# Direktori cache screenshot (relatif ke job root)
+cache_dir = "news_cache"
+
+# Path ke file cookies Netscape format (export dari Firefox/Chrome).
+# Digunakan untuk bypass bot detection pada site seperti Kumparan.
+# JANGAN commit file ini ke git — isinya credential sensitif.
+# Export via ekstensi "Get cookies.txt LOCALLY" di Firefox/Chrome.
+cookies_file = "data/cookies.txt"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REACTION MODULE (Stage 4 Phase 4-6) — script + TTS + avatar
+# ─────────────────────────────────────────────────────────────────────────────
+[reaction]
+# Aktifkan/matikan seluruh modul reaction
+enabled = false
+
+# Posisi reaksi di video final: "post_roll" | "pre_roll" | "pip_corner"
+position = "post_roll"
+
+# Pojok PiP untuk mode "pip_corner"
+pip_position = "bottom_right"
+
+# Ukuran PiP sebagai % lebar frame
+pip_scale_pct = 30
+
+# Durasi maksimum reaksi dalam detik
+max_reaction_secs = 25
+
+# Bahasa script reaksi (BCP-47: "id" = Indonesia, "en" = English)
+language = "id"
+
+# Gaya script: "auto" | "energetic" | "informative" | "shocked" | "casual"
+script_style = "auto"
+
+# Path ke TTS Python script (dijalankan via conda env news)
+tts_script = "scripts/tts_generate.py"
+
+# ── TTS ──────────────────────────────────────────────────────────────────────
+[reaction.tts]
+# Provider aktif:
+#   "edge"       — gratis, tidak butuh API key (kualitas cukup)
+#   "minimax"    — MiniMax Speech 2.8 HD Sync (kualitas tinggi, CLIPPER_MINIMAX_API_KEY)
+#   "fish_audio" — Fish Audio S2 Pro (sangat natural, CLIPPER_FISH_AUDIO_API_KEY)
+#   "openai"     — OpenAI TTS (CLIPPER_OPENAI_API_KEY)
+#   "elevenlabs" — ElevenLabs (kualitas terbaik, termahal)
+#   "none"       — nonaktifkan TTS
+provider = "elevenlabs"
+
+# ── Edge TTS (gratis) ─────────────────────────────────────────────────────────
+# Indonesia: "id-ID-ArdiNeural" (pria) | "id-ID-GadisNeural" (wanita)
+edge_voice = "id-ID-ArdiNeural"
+
+# ── MiniMax Speech 2.8 HD Sync ────────────────────────────────────────────────
+# Key: CLIPPER_MINIMAX_API_KEY + CLIPPER_MINIMAX_GROUP_ID (dari API dashboard)
+#
+# Model:
+#   "speech-02-hd"    — Speech 2.8 HD  ✅ direkomendasikan
+#   "speech-02-turbo" — Speech 2.8 Turbo (lebih cepat, kualitas sedikit lebih rendah)
+#   "speech-2.6-hd"   — generasi sebelumnya
+minimax_model = "speech-02-hd"
+
+# Voice ID — lihat https://platform.minimaxi.com/document/voice-list
+# Pilihan Indonesia yang tersedia:
+#   "Indonesian_Female_XiuLan" — perempuan natural
+#   "Indonesian_Male_Ardi"     — pria natural (baru di Speech 2.6+)
+# Pilihan umum (multilingual, bagus untuk Indonesia):
+#   "Friendly_Person"   — netral, energik
+#   "Energetic_Female"  — perempuan antusias
+#   "Calm_Woman"        — perempuan tenang
+#   "Podcast_Male"      — pria konten kreator
+minimax_voice_id = "Friendly_Person"
+
+# Kecepatan bicara (0.5–2.0, default 1.0). 1.1 cocok untuk reaction energik
+minimax_speed = 1.1
+
+# Emosi: "happy" | "excited" | "neutral" | "sad" | "angry" | "fearful" | "disgusted" | "surprised"
+minimax_emotion = "excited"
+
+# ── Fish Audio S2 Pro ─────────────────────────────────────────────────────────
+# Key: CLIPPER_FISH_AUDIO_API_KEY
+#
+# Model: "s2-pro" (S2 Pro, kualitas tertinggi) | "s1" (lebih cepat)
+fish_audio_model = "s2-pro"
+
+# Reference ID voice (opsional) — ID dari Fish Audio voice library atau hasil voice clone.
+# Kosong = gunakan default voice Fish Audio.
+# Contoh Indonesian voices di Fish Audio: cari di https://fish.audio/zh-CN/
+fish_audio_reference_id = ""
+
+# ── ElevenLabs ────────────────────────────────────────────────────────────────
+# Key: CLIPPER_ELEVENLABS_API_KEY
+elevenlabs_voice_id = "plgKUYgnlZ1DCNh54DwJ"
+elevenlabs_model = "eleven_multilingual_v2"
+
+# ── OpenAI TTS ────────────────────────────────────────────────────────────────
+# Pakai CLIPPER_OPENAI_API_KEY
+openai_voice = "nova"
+openai_model = "tts-1-hd"
+
+# ── Avatar ────────────────────────────────────────────────────────────────────
+[reaction.avatar]
+# Mode: "none" (default) | "static_image" | "did" | "heygen"
+mode = "none"
+
+# Path ke gambar avatar PNG (mode = "static_image")
+image_path = "assets/avatar.png"
+sadtalker_dir = "tools/SadTalker"
+sadtalker_env = "clipper-sadtalker"
+sadtalker_size = 256
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SADTALKER — Local GPU talking avatar (Phase 6)
+# ─────────────────────────────────────────────────────────────────────────────
+# Setup: jalankan scripts\setup_sadtalker.bat (clone + install + download model)
+# Aktifkan dengan: [reaction.avatar] mode = "sad_talker"
+#
+# Ubah [reaction.avatar] di atas menjadi:
+#   mode          = "sad_talker"
+#   image_path    = "assets/avatar.png"  # foto portrait wajah kamu
+#   sadtalker_dir = "tools/SadTalker"    # path ke repo SadTalker
+#   sadtalker_env = "clipper-sadtalker"  # conda env yang dibuat setup_sadtalker.bat
+#   sadtalker_size  = 256    # 256 = cepat, 512 = kualitas lebih tinggi
+#   sadtalker_still = false  # true = minimal head movement

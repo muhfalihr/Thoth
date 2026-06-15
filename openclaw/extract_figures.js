@@ -1,0 +1,89 @@
+// extract_figures.js — identify the FIGURE(S) a topic is about (person / organization / community)
+// from the main title + description/caption + headline, and write them into the content-set as
+// `figures[]`. CLIPPER can use this for a subject intro card and to ground the narration.
+//
+//   module: const { figuresFrom } = require('./extract_figures');
+//           await figuresFrom({ title, description, caption, headline })  → [{name,type,role,description}]
+//   CLI (content-set): node extract_figures.js <content_set.json>     → sets set.figures, writes file
+//   CLI (test):        node extract_figures.js --title "..." --desc "..." [--caption] [--headline]
+//
+// Returns [] when there is no specific notable figure (e.g. an ordinary anonymous person). Uses
+// Novita (.novita_key); model via CLIPPER_LLM_MODEL (default 235b — discrimination needs a strong model).
+
+const fs = require('fs');
+const path = require('path');
+
+const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
+const MODEL = process.env.CLIPPER_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
+const TYPES = ['person', 'organization', 'community'];
+
+const PROMPT = ({ title, description, caption, headline }) => `Dari teks topik di bawah, identifikasi TOKOH UTAMA yang sedang DIBICARAKAN: ORANG (nama tokoh),
+ORGANISASI, atau KOMUNITAS yang spesifik & dikenal publik.
+
+ATURAN:
+- Hanya yang BENAR-BENAR jadi subjek pembahasan (bukan sekadar disebut sekilas / lokasi / brand b-roll).
+- JANGAN masukkan akun pengunggah/kurator (mis. akun reels/berita) kecuali dia memang subjeknya.
+- Kalau TIDAK ada tokoh/organisasi/komunitas spesifik (mis. cerita tentang orang biasa anonim), kembalikan [].
+- "type" salah satu: ${TYPES.join(' | ')}.
+
+TEKS:
+[JUDUL]: ${(title || '').slice(0, 200) || '(kosong)'}
+[DESKRIPSI/CAPTION]: ${((description || '') + ' ' + (caption || '')).trim().slice(0, 600) || '(kosong)'}
+[HEADLINE]: ${(headline || '').slice(0, 200) || '(kosong)'}
+
+Keluarkan HANYA JSON valid: {"figures":[{"name":"","type":"","role":"jabatan/peran singkat","description":"1 kalimat konteks"}]}`;
+
+async function figuresFrom({ title = '', description = '', caption = '', headline = '', key = KEY, model = MODEL } = {}) {
+  if (!key) return [];
+  if (!(title || description || caption || headline)) return [];
+  let txt = '';
+  try {
+    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({ model, max_tokens: 500, temperature: 0, messages: [{ role: 'user', content: PROMPT({ title, description, caption, headline }) }] }),
+    });
+    if (!resp.ok) return [];
+    const d = await resp.json();
+    txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+  } catch (e) { return []; }
+  const m = txt.match(/\{[\s\S]*\}/); if (!m) return [];
+  let o; try { o = JSON.parse(m[0]); } catch (e) { return []; }
+  return (Array.isArray(o.figures) ? o.figures : [])
+    .map(f => ({
+      name: String(f.name || '').trim(),
+      type: TYPES.includes(String(f.type || '').toLowerCase()) ? String(f.type).toLowerCase() : 'person',
+      role: String(f.role || '').trim(),
+      description: String(f.description || '').trim(),
+    }))
+    .filter(f => f.name)
+    .slice(0, 5);
+}
+
+module.exports = { figuresFrom };
+
+// ---- CLI ----
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  const get = n => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : ''; };
+  const FILE = args.find((a, i) => !a.startsWith('--') && !['--title', '--desc', '--caption', '--headline'].includes(args[i - 1]));
+  (async () => {
+    if (FILE) {
+      if (!fs.existsSync(FILE)) { console.log('❌ File tak ada:', FILE); process.exit(1); }
+      const set = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+      const main = set.main || {};
+      // Include footage descriptions — named subjects (people/orgs) often appear there even when the
+      // main caption is a teaser. Comments too (sometimes name the subject).
+      const footageDesc = (set.footage || []).map(f => f.description).filter(Boolean).slice(0, 12).join(' | ');
+      const desc = ((main.description || '') + ' ' + footageDesc).trim();
+      const figures = await figuresFrom({ title: main.title || '', description: desc });
+      set.figures = figures;
+      fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+      console.log(`figures (${figures.length}): ${figures.map(f => `${f.name} [${f.type}]`).join(', ') || '(tak ada tokoh spesifik)'}`);
+      console.log('📄 ' + FILE);
+    } else {
+      const input = { title: get('--title'), description: get('--desc'), caption: get('--caption'), headline: get('--headline') };
+      if (!input.title && !input.description && !input.caption && !input.headline) { console.log('Usage: node extract_figures.js <content_set.json> | --title "..." --desc "..."'); process.exit(1); }
+      console.log(JSON.stringify(await figuresFrom(input), null, 2));
+    }
+  })();
+}
