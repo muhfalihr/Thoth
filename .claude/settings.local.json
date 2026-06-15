@@ -5,7 +5,12 @@
       "Bash(Out-Null)",
       "PowerShell(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mfr\\\\Documents\\\\MyTools\\\\CLIPPER\\\\models\")",
       "WebFetch(domain:docs.rs)",
-      "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\mfr\\\\Documents\\\\MyTools\\\\CLIPPER\\\\src\\\\analyze\\\\prompt.rs' -Pattern 'user_prompt_with_focus' | head -20\")"
+      "Bash(powershell -Command \"Select-String -Path 'C:\\\\Users\\\\mfr\\\\Documents\\\\MyTools\\\\CLIPPER\\\\src\\\\analyze\\\\prompt.rs' -Pattern 'user_prompt_with_focus' | head -20\")",
+      "mcp__codegraph__codegraph_files",
+      "Bash(rtk grep *)",
+      "Bash(Get-Content *)",
+      "Bash(graphify update *)",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }

@@ -1,27 +1,34 @@
 # CLIPPER — AI-Powered Short-Form Video Strategist
 
-CLIPPER adalah CLI tool berbasis Rust yang mengotomasi pembuatan video short-form (TikTok, Reels, Shorts) dari konten long-form. Pipeline end-to-end: download → transkripsi → analisis AI → edit video dengan GPU acceleration.
+CLIPPER adalah CLI tool berbasis Rust yang mengotomasi pembuatan video short-form (TikTok, Reels, Shorts) dari konten long-form **atau** dari content-set hasil sourcing multi-platform (OpenClaw). Pipeline end-to-end: download → transkripsi → analisis AI → enrichment (narator/berita) → edit video dengan GPU acceleration. Mendukung dua mode: **clip-mode** (potong momen viral dari satu video) dan **narrator-driven** (satu naskah komentator jadi tulang punggung, b-roll + kartu reaksi-berita dirakit mengelilinginya).
 
 ---
 
 ## Arsitektur Pipeline
 
 ```
-URL / File
+URL / File / --content set.json (OpenClaw: main + footage + comments + figures)
     │
     ▼ Stage 1: INGEST
-    yt-dlp → video.mp4 + metadata
+    yt-dlp → video.mp4 + metadata   (TikTok/IG/CDN .mp4 didukung)
     │
     ▼ Stage 2: TRANSCRIBE
     Whisper (CUDA/CPU) → transcript.json (word-level timestamps)
     │
     ▼ Stage 3: ANALYZE
     LLM (multi-provider) → moments.json
-    Vision LLM → visual scores per frame
+    Vision LLM → visual scores + describe_video per frame
     RAG/pgvector → inject past viral patterns
     │
-    ▼ Stage 4: EDIT
-    FFmpeg encode (subtitle + SFX + BGM + overlay)
+    ▼ Stage 4: ENRICH  (opt-in)
+    Narrator-driven: 1 naskah LLM → TTS voiceover (spine) + RAG struktur narasi
+    News: keyword → Google News (Playwright) → screenshot cards
+    Reaction: script + TTS + avatar (opsional)
+    │
+    ▼ Stage 5: EDIT
+    FFmpeg encode (subtitle + SFX + BGM + overlay + cards)
+    ├── Reaction-news overlays (hook title, profile card, comment cards, callout)
+    ├── Animelorian montage (kanvas kertas + footage cards)
     ├── GPU Color Grading (wgpu — CapCut shaders)
     └── GPU Transitions (wgpu — 21 efek)
 ```
@@ -36,6 +43,29 @@ URL / File
 - **RAG memory**: Supabase pgvector — belajar dari viral moments sebelumnya
 - **Beat detection**: BPM dari BGM → snap transisi ke downbeat
 - **Trend awareness**: Google Trends + keyword scoring
+
+### Narrator-Driven Spine (`[narration]`)
+Satu naskah komentator (LLM) → **voiceover TTS** (ElevenLabs / MiniMax / Fish Audio / Edge) jadi audio utama. Video dibangun mengelilingi narasi: footage di-placement by embedding-similarity ke window narasi, audio event di-duck, subtitle diturunkan dari narasi. Di-*ground* ke `main.title/description` + komentar + deskripsi visual, dan ke korpus **struktur narasi terbukti** (Narration Structure RAG). Degrade ke clip-mode bila narasi tak tersedia.
+
+### Reaction-News Overlays
+Gaya konten reaksi-berita Indonesia, dirakit dari data faktual (OpenClaw):
+- **Hook title** (`[hook_title]`) — judul raksasa multi-warna 0–3 dtk (scroll-stopper)
+- **Profile card** (`[profile_card]`) — kartu profil **crop asli** dari sumber sosmed (bukan sintetis)
+- **Comment cards** — screenshot **komentar viral asli** (author/text/likes) di reaction beat
+- **Callout** (`[callout]`) — angka penting + panah penunjuk
+
+### Content Sourcing (OpenClaw + multi-platform)
+- **`clipper run --content set.json`** — terima content-set eksternal `{main, footage, comments, figures, profile}` hasil sourcing OpenClaw (Telegram agent), termasuk crop screenshot komentar & kartu profil.
+- **`[content_search]`** — cari MAIN video + pool enrichment lintas YouTube/Instagram/Twitter/News (Playwright/Scrapling) saat `--query` / auto-trending.
+
+### News Enrichment (`[news]`, opt-in)
+Keyword dari transcript per-momen → Google News (Playwright, tanpa API key) → screenshot kartu berita yang relevan disisipkan ke clip.
+
+### Reaction Module (`[reaction]`, opt-in)
+Script reaksi + TTS + avatar opsional (static image / **SadTalker** lokal GPU / D-ID / HeyGen), ditempel post-roll / pre-roll / PiP.
+
+### Animelorian Montage (`[animelorian]`)
+Base kanvas kertas grid; footage (main + hasil search) di-composite sebagai **kartu di tengah** dan dipotong antar-footage (montase) — hook tetap full-frame.
 
 ### Subtitle Styles (4 mode)
 | Style | Deskripsi |
@@ -171,7 +201,10 @@ clipper run "https://youtu.be/xxxx" --provider claude --layout square
 | `--sfx` | — | Override SFX file (path absolut) |
 | `--bgm` | — | Override BGM file (path absolut) |
 | `--focus` | — | Keyword prioritas, comma-separated |
+| `--content FILE` | — | Content-set JSON (OpenClaw): `{main, footage, comments, figures}` → mode narrator-driven |
 | `--resume JOB_ID` | — | Lanjutkan job yang gagal |
+
+> **Narrator-driven**: jalankan dengan `--content set.json` (atau aktifkan `[narration]`) untuk membangun video di sekitar voiceover narator. Gunakan `--provider novita` untuk narasi (default `groq` kena rate-limit → fallback clip-mode).
 
 ### `trend-analyze` — Auto-generate Style Profile
 ```bash
@@ -305,6 +338,75 @@ embed_provider       = "novita"
 embed_model          = "qwen/qwen3-embedding-8b"
 ```
 
+### `[narration]` — Narrator-Driven Spine
+```toml
+[narration]
+enabled        = true
+model          = "deepseek/deepseek-v4-flash"  # model khusus naskah narasi (provider dari --provider)
+target_secs    = 45        # target panjang narasi (~3 kata/detik)
+language       = "id"
+duck_event_vol = 0.12      # volume audio event saat narator bicara
+leak_event_vol = 0.45      # volume saat narator jeda
+lead_in_secs   = 1.6       # audio event main keras dulu sebelum narator
+structure_rag  = true      # RAG struktur narasi (Supabase narration_structures)
+```
+
+### `[content_search]` — Multi-platform Sourcing
+```toml
+[content_search]
+enabled          = true
+script           = "scripts/social_search.py"
+platforms        = "youtube,instagram,twitter,news"   # tiktok perlu proxy residential
+engine           = "auto"            # auto | playwright | scrapling
+max_per_platform = 6
+expand_keywords  = true              # LLM expand query → keyword ganda
+```
+
+### Reaction-News Overlays — `[hook_title]` / `[profile_card]` / `[callout]`
+```toml
+[hook_title]
+enabled = true                       # judul raksasa multi-warna (scroll-stopper)
+palette = ["#3DDC4A", "#FFE34D", "#3FC1FF", "#FFFFFF"]
+
+[profile_card]
+enabled         = true
+position        = "lower"            # center | upper | lower
+name_above_head = false              # banner nama raksasa (default OFF — mengganggu)
+# Crop kartu profil ASLI dipakai bila content-set memberi profile.image_path
+
+[callout]
+enabled      = true                  # angka penting + panah
+max_per_clip = 3
+```
+
+### `[animelorian]` — Montage Composite
+```toml
+[animelorian]
+enabled              = true
+paper_bg             = "assets/ui/Paper-Grid-Background.mp4"
+footage_scale_pct    = 88            # lebar kartu footage
+montage              = true          # intercut footage sebagai kartu
+montage_max_cuts     = 2
+```
+
+### `[news]` / `[reaction]` — Enrichment (opt-in)
+```toml
+[news]
+enabled       = false                # keyword → Google News (Playwright) → screenshot cards
+provider      = "playwright"
+conda_env     = "clipper-news"       # buat: scripts/setup_clipper_news.bat
+
+[reaction]
+enabled  = false                     # script reaksi + TTS + avatar
+position = "post_roll"               # post_roll | pre_roll | pip_corner
+[reaction.tts]
+provider = "elevenlabs"              # edge | minimax | fish_audio | openai | elevenlabs | none
+[reaction.avatar]
+mode = "none"                        # none | static_image | sad_talker | did | heygen
+```
+
+> Daftar lengkap semua opsi: lihat **`config.toml.example`** (template tersinkron, tanpa secret).
+
 ---
 
 ## Environment Variables (`.env`)
@@ -337,11 +439,18 @@ output/
     ├── transcribe/
     │   └── transcript.json     ← word-level timestamps
     ├── analyze/
-    │   └── moments.json        ← ViralMoment[] dengan color_mood, gpu_transition
+    │   ├── moments.json            ← ViralMoment[] dengan color_mood, gpu_transition
+    │   └── video_descriptions.json ← describe_video per-frame (vision)
+    ├── narration/
+    │   └── narration.mp3           ← voiceover TTS (mode narrator-driven)
     └── clips/
-        ├── clip_001_<slug>.mp4
-        ├── clip_001_<slug>.jpg ← thumbnail
-        └── final_concat.mp4   ← jika gpu.concat_output = true
+        ├── clip_000_narration.mp4  ← narrator-driven, atau
+        ├── clip_001_<slug>.mp4     ← clip-mode
+        ├── clip_001_<slug>.jpg     ← thumbnail
+        └── final_concat.mp4        ← jika gpu.concat_output = true
+
+# Sidecar di output/ (dari --content / content_search):
+#   content_enrichment.json · content_context.json · content_comments.json · content_profile.json
 ```
 
 ---
