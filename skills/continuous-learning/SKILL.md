@@ -25,7 +25,7 @@ Sebuah **instinct** = satu pelajaran atomik (bukan dokumen besar), dengan:
 - **Confidence** — `low` (1x amatan) · `medium` (2–3x) · `high` (terverifikasi berulang)
 
 ### Di mana disimpan (project-scoped → promosi)
-1. **Memory Thoth** (`C:\Users\mfr\.claude\projects\C--Users-mfr-Documents-MyTools-Thoth\memory\`)
+1. **Memory Thoth** (`C:\Users\mfr\.claude\projects\C--Users-mfr-Documents-MyTools-CLIPPER\memory\`)
    — untuk pelajaran lintas-sesi. Satu file = satu instinct, tulis pointer di `MEMORY.md`.
 2. **Promosi ke aturan permanen** kalau confidence `high` & berlaku umum:
    - Konvensi pipeline → `CLAUDE.md` / skill `thoth-pipeline`
