@@ -319,6 +319,11 @@ bgm_dir   = "assets/bgm"
 # stage analyze memberi tahu LLM agar mengisi `asset_cues` (SFX + meme ber-timestamp).
 # File hilang = fitur mati otomatis (graceful).
 catalog_path = "assets/asset_catalog.json"
+# Mode narasi: LLM menempatkan MEME reaksi (video PiP) di beat narasi yang cocok
+# dengan ekspresi/emosi yang diucapkan (kaget, sedih, facepalm, ketawa, dll).
+memes_in_narration  = true
+narration_max_memes = 3                      # maksimum meme per video narasi
+meme_fullscreen     = true                   # meme tampil FULL-LAYAR (cutaway) — bukan PiP kecil di pojok; subtitle tetap di atas
 # Beat sync: SFX snap ke downbeat BGM + duck BGM saat ada suara.
 # BPM dibaca dari metadata audio; fallback: lofi=85, upbeat=128, cinematic=100, inspirational=110
 beat_sync = true
@@ -340,18 +345,62 @@ none          = ""
 # ─────────────────────────────────────────────────────────────────────────────
 # HOOK TITLE — Judul raksasa multi-warna (scroll-stopper 0–3 detik)
 # ─────────────────────────────────────────────────────────────────────────────
-# Menampilkan headline klip sebagai teks BESAR bertumpuk, tiap kata warna beda,
-# di sepertiga atas layar dengan animasi pop — gaya reaction-news Indonesia.
-# Butuh font display di assets/fonts (Montserrat-ExtraBold.ttf sudah ada).
+# Headline raksasa bertumpuk di area BAWAH-TENGAH, warna selang-seling per-baris
+# dengan garis hitam tebal + drop-shadow + animasi pop — gaya cover viral.
+# Renderer default = "python" (Pillow → PNG) untuk kualitas stroke/shadow terbaik;
+# fallback otomatis ke "ass" (libass) bila Python/Pillow tidak tersedia.
+# Renderer python butuh: python + Pillow terpasang, dan scripts/render_headline.py.
 [hook_title]
 enabled      = true                        # opt-in
 duration_sec = 3.0
-palette      = ["#3DDC4A", "#FFE34D", "#3FC1FF", "#FFFFFF"]
-font         = "Montserrat ExtraBold"       # nama family ASS (file di assets/fonts)
-fontsize     = 100
-outline_px   = 6
-margin_v     = 360                          # jarak dari atas (alignment 8)
-animate      = true                         # pop scale-in bounce
+engine       = "python"                    # "python" = render PNG via Pillow (terbaik) | "ass" = libass (legacy)
+# Warna di-cycle per-baris. Lebih dari putih/kuning → variasi (kuning + cyan aksen).
+palette      = ["#FFFFFF", "#FFE100", "#FFFFFF", "#3FC1FF", "#FFFFFF"]
+color_mode   = "per_line"                  # "per_line" = warna per-baris | "per_word" = per-kata (legacy)
+font         = "Montserrat ExtraBold"       # nama family ASS (dipakai renderer "ass")
+font_file    = "assets/fonts/Montserrat-ExtraBold.ttf"  # file font (dipakai renderer "python")
+fontsize     = 110
+stroke_width = 13                          # tebal garis hitam (renderer python)
+outline_px   = 8                           # tebal garis hitam (renderer ass)
+text_align   = "left"                       # "left" (rata kiri, gaya template) | "center"
+margin_l     = 56                           # margin kiri (px) saat text_align = "left"
+line_spacing = 1.0                          # jarak antar baris = kelipatan ukuran font (≈1.0 = rapat)
+align        = 2                           # 2 = bawah-tengah (ASS numpad) → blok bawah-tengah
+margin_v     = 380                          # jarak dari BAWAH frame ke bawah blok teks
+shadow_dy    = 12                          # offset drop-shadow ke bawah (px, renderer python)
+shadow_blur  = 10.0                        # blur drop-shadow (px, renderer python)
+shadow_alpha = 170                         # opacity drop-shadow 0–255 (renderer python)
+animate      = true                         # pop / fade-in
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COVER — Cover/thumbnail AI full-screen di awal klip (sebelum cut ke footage)
+# ─────────────────────────────────────────────────────────────────────────────
+# Di hook window: tampil cover full-screen = background AI (Novita FLUX.1 schnell)
+# + cutout subjek (rembg) + teks headline → lalu dissolve ke footage. Reuse key
+# THOTH_NOVITA_API_KEY + scripts/render_cover.py. Best-effort: kalau Python/Novita/
+# rembg gagal → otomatis fallback ke hook_title biasa.
+# Butuh: python + Pillow + rembg (pip install rembg onnxruntime) + THOTH_NOVITA_API_KEY.
+# Saat cover aktif, hook_title disuppress (teks sudah ada di cover).
+[cover]
+enabled       = true
+duration_sec  = 3.0
+# "auto"   = coba cutout orang ASLI dari frame; kalau terlalu gelap/blur/kecil utk
+#            terbaca (mis. footage tampak-belakang malam) → otomatis generate subjek
+#            AI penuh selayar. REKOMENDASI: real subject saat bagus, AI saat jelek.
+# "ai"     = SELALU FLUX generate subjek dominan PENUH SELAYAR (subjek sintetis).
+# "cutout" = SELALU cutout orang ASLI (butuh frame jelas/terang menghadap kamera).
+subject_mode  = "auto"
+subject       = true                       # (mode cutout) cutout orang dari frame video via rembg
+rembg_model   = "u2net_human_seg"          # u2net_human_seg | birefnet-portrait | u2net
+subject_scale = 1.02                        # (mode cutout) tinggi subjek = fraksi tinggi kanvas (≥1.0 = penuh selayar)
+darken        = 0.32                        # gradient gelap untuk kontras teks (0–1)
+bg_width      = 864                          # ukuran generate FLUX (≈9:16), di-upscale ke kanvas
+bg_height     = 1536
+steps         = 4                            # FLUX schnell: 4 langkah ideal
+prompt_translate = true                     # LLM (Novita) ubah headline → prompt scene Inggris (background lebih relevan)
+subject_at_sec = 1.0                        # ambil frame subjek di detik ke-N dari awal klip
+# Background = ENVIRONMENT saja (tanpa orang) supaya subjek cutout jadi fokus utama:
+prompt_suffix = "empty scene with no people, dramatic cinematic poster background, moody dark lighting, high contrast, bokeh, depth of field, viral youtube thumbnail backdrop, photorealistic, no people, no person, no human figures, no text, no watermark, no caption"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROFILE CARD — Beat-2: intro tokoh (kartu profil + nama besar di atas kepala)

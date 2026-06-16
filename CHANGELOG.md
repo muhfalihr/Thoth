@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-06-16
+
+### Added
+- **AI Cover / Thumbnail intro** (`[cover]`): a full-screen cover is shown for the hook window, then dissolves (Ken-Burns + fade) into the footage. It composites an **AI background** (Novita FLUX.1 schnell, themed to the topic) + a **subject cutout** (rembg) + the **headline text**.
+  - `subject_mode = "auto" | "ai" | "cutout"`: **auto** uses the real cut-out subject when the source frame reads clearly (brightness/sharpness/coverage gate) and otherwise generates an AI subject; **ai** always lets FLUX generate a dominant full-screen subject; **cutout** always cuts the real person from a video frame.
+  - **Vision-grounded recreation**: the configured vision model (`qwen3-vl`) describes the *actual* frame in detail, and FLUX recreates that real event as an HD illustration (instead of guessing from the headline).
+  - **English prompt translation**: the (Indonesian) headline is converted by the LLM into a vivid English scene prompt for stronger, on-topic backgrounds.
+- **Pillow hook-title renderer** (`scripts/render_headline.py`, `[hook_title] engine = "python"`): high-fidelity PNG headline — thick uniform stroke, drop shadow, supersampled AA — replacing libass. **Left-aligned, tight line spacing, per-line colour cycling, lower-middle placement** (Montserrat ExtraBold), matching the viral-cover template. Auto-falls back to the ASS renderer when Python/Pillow is unavailable.
+- **LLM-matched reaction memes in narrator mode** (`[assets] memes_in_narration`): the LLM places catalog memes at the narration beats whose spoken emotion matches each meme (shock / facepalm / sad / confused / applause …), spread out with a minimum gap. Shown **full-screen** cutaway (`[assets] meme_fullscreen`, whole meme over a blurred fill) **under** the subtitle, with the meme's own audio ducking the narration.
+- New Python scripts `scripts/render_cover.py`, `scripts/render_headline.py`; new Rust modules `src/edit/cover.rs`, `src/edit/headline_png.rs`.
+- New runtime deps for the cover cutout: **Pillow + rembg + onnxruntime** (reuses the existing `THOTH_NOVITA_API_KEY`).
+- New config: `[cover]` (whole section), `[hook_title]` (`engine`, `palette`, `color_mode`, `align`, `text_align`, `margin_l`, `margin_v`, `line_spacing`, `stroke_width`, `font_file`, `shadow_*`), `[assets]` (`memes_in_narration`, `narration_max_memes`, `meme_fullscreen`).
+
+### Changed
+- **Subtitles are now the absolute topmost layer** — burned *after* every footage / image / meme / crop overlay, so captions can never be covered by a cutaway.
+- **Hook title** default look reworked to the viral-cover template: lower-middle block, per-line white/gold(+accent), thick black stroke + drop shadow, left-aligned and tightly stacked.
+- **Reaction memes** now default to a **full-screen cutaway** (was a small corner PiP).
+
+### Fixed
+- Subtitle was being covered by footage/cards at some timestamps (now always on top).
+- Meme / asset-video cues never appeared in narrator-driven mode — the cue wiring lived only in the legacy per-clip path; the narration path now selects and places them too.
+- Windows `[Errno 22]` MAX_PATH overflow on long CDN `.mp4` URLs (yt-dlp output template bounded to `%(id).64s`).
+
 ## [0.3.0] - 2026-06-15
 
 ### Added

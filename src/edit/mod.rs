@@ -1,10 +1,12 @@
 pub mod callout;
 pub mod color;
 pub mod comment_card;
+pub mod cover;
 pub mod enrichment;
 pub mod error;
 pub mod ffmpeg;
 pub mod fonts;
+pub mod headline_png;
 pub mod hook_title;
 pub mod intro;
 pub mod keyframe;

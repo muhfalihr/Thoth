@@ -26,8 +26,17 @@ pub struct HookTitleSpec {
     pub fontsize: u32,
     /// Outline thickness in px.
     pub outline_px: u32,
-    /// Distance from the TOP of the frame (alignment 8). ~360 = upper third.
+    /// ASS numpad alignment (1–9). `8` = top-centre, `2` = bottom-centre,
+    /// `5` = middle-centre. The template look uses `2` (lower-middle block).
+    pub align: u32,
+    /// Vertical margin in px. Its anchor depends on `align`:
+    ///   • align 7/8/9 (top)    → distance from the TOP of the frame
+    ///   • align 1/2/3 (bottom) → distance from the BOTTOM of the frame
+    ///   • align 4/5/6 (middle) → ignored (vertically centred)
     pub margin_v: u32,
+    /// Colour each whole LINE with one palette entry (alternating), instead of
+    /// cycling the palette per WORD. The template uses per-line white/yellow.
+    pub per_line_color: bool,
     /// Apply the scale-bounce pop-in animation.
     pub animate: bool,
 }
@@ -53,13 +62,15 @@ pub fn generate_hook_ass(spec: &HookTitleSpec, output_path: &Path) -> Result<(),
                   OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, \
                   ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, \
                   Alignment, MarginL, MarginR, MarginV, Encoding\n");
-    // Alignment 8 = top-centre; thick black outline + soft shadow for punch.
+    // Alignment is configurable (8 = top-centre, 2 = bottom-centre / lower-middle);
+    // thick black outline + soft shadow for punch.
     ass.push_str(&format!(
         "Style: Hook,{font},{size},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,\
-         -1,0,0,0,100,100,0,0,1,{outline},4,8,60,60,{mv},1\n\n",
+         -1,0,0,0,100,100,0,0,1,{outline},4,{align},60,60,{mv},1\n\n",
         font = spec.font,
         size = spec.fontsize,
         outline = spec.outline_px,
+        align = spec.align.clamp(1, 9),
         mv = spec.margin_v,
     ));
 
@@ -84,28 +95,39 @@ fn build_dialogue_text(spec: &HookTitleSpec) -> String {
         return String::new();
     }
 
-    let lines = wrap_words(&words, 12, 4);
+    // Tighter, taller stack (≈1–3 words per line, up to 5 lines) for the viral
+    // cover look where each line is short and punchy.
+    let lines = wrap_words(&words, 12, 5);
     let palette: Vec<String> = if spec.palette.is_empty() {
         vec!["#FFFFFF".to_string()]
     } else {
         spec.palette.clone()
     };
 
-    // Build coloured lines, cycling the palette across ALL words (not per line)
-    // so adjacent words always differ.
-    let mut wi = 0usize;
     let mut rendered_lines: Vec<String> = Vec::new();
-    for line in &lines {
-        let mut s = String::new();
-        for (j, w) in line.iter().enumerate() {
-            if j > 0 {
-                s.push(' ');
-            }
-            let col = hex_to_ass_color(&palette[wi % palette.len()]);
-            s.push_str(&format!("{{\\c{col}}}{w}"));
-            wi += 1;
+    if spec.per_line_color {
+        // Colour each whole LINE with one palette entry, alternating per line —
+        // the template look (e.g. white / yellow / white / yellow …).
+        for (li, line) in lines.iter().enumerate() {
+            let col = hex_to_ass_color(&palette[li % palette.len()]);
+            rendered_lines.push(format!("{{\\c{col}}}{}", line.join(" ")));
         }
-        rendered_lines.push(s);
+    } else {
+        // Legacy: cycle the palette across ALL words (not per line) so adjacent
+        // words always differ.
+        let mut wi = 0usize;
+        for line in &lines {
+            let mut s = String::new();
+            for (j, w) in line.iter().enumerate() {
+                if j > 0 {
+                    s.push(' ');
+                }
+                let col = hex_to_ass_color(&palette[wi % palette.len()]);
+                s.push_str(&format!("{{\\c{col}}}{w}"));
+                wi += 1;
+            }
+            rendered_lines.push(s);
+        }
     }
     let colored = rendered_lines.join("\\N");
 
@@ -183,7 +205,9 @@ mod tests {
             font: "Montserrat ExtraBold".into(),
             fontsize: 100,
             outline_px: 6,
+            align: 8,
             margin_v: 360,
+            per_line_color: false,
             animate: true,
         }
     }
@@ -216,5 +240,33 @@ mod tests {
     fn braces_are_stripped() {
         let t = build_dialogue_text(&spec("a {evil} b"));
         assert!(!t.contains("evil}"));
+    }
+
+    #[test]
+    fn per_line_color_alternates_whole_lines() {
+        let mut s = spec("orang ini nyerobot dua kali berpikir streamer gede");
+        s.palette = vec!["#FFFFFF".into(), "#FFD60A".into()]; // white, gold
+        s.per_line_color = true;
+        let t = build_dialogue_text(&s);
+        // Line 0 starts white, line 1 gold — one colour tag per LINE, not per word.
+        let white = hex_to_ass_color("#FFFFFF"); // &HFFFFFF&
+        let gold  = hex_to_ass_color("#FFD60A"); // &H0AD6FF&
+        assert!(t.contains(&format!("{{\\c{white}}}ORANG INI")), "line0 white whole-line: {t}");
+        assert!(t.contains(&format!("\\N{{\\c{gold}}}")), "line1 starts with gold tag: {t}");
+        // No second colour tag inside a line (per-line, not per-word).
+        let first_line = t.split("\\N").nth(1).unwrap_or("");
+        assert_eq!(first_line.matches("\\c").count(), 1, "exactly one colour tag per line: {first_line}");
+    }
+
+    #[test]
+    fn align_is_written_into_style() {
+        let mut s = spec("halo dunia");
+        s.align = 2;
+        let path = std::env::temp_dir().join("thoth_hook_align_test.ass");
+        generate_hook_ass(&s, &path).unwrap();
+        let ass = std::fs::read_to_string(&path).unwrap();
+        // Alignment field (…,Outline,Shadow,Alignment,…) = 2 (bottom-centre).
+        assert!(ass.contains(",4,2,60,60,"), "alignment 2 in style line: {ass}");
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -27,6 +27,10 @@ pub struct AppConfig {
     /// Giant multi-colour hook title (0–3 s scroll-stopper) — opt-in.
     #[serde(default)]
     pub hook_title: HookTitleConfig,
+    /// AI cover/thumbnail intro (full-screen AI bg + subject cutout + headline)
+    /// shown for the hook window before cutting to footage — opt-in.
+    #[serde(default)]
+    pub cover: CoverConfig,
     /// Beat-2 character intro: profile card + giant name above the head — opt-in.
     #[serde(default)]
     pub profile_card: ProfileCardConfig,
@@ -457,10 +461,49 @@ pub struct HookTitleConfig {
     pub fontsize: u32,
     #[serde(default = "default_hook_outline")]
     pub outline_px: u32,
+    /// ASS numpad alignment (1–9). 8 = top-centre, 2 = bottom-centre (lower-middle),
+    /// 5 = middle-centre. Default 2 = the viral-template lower-middle block.
+    #[serde(default = "default_hook_align")]
+    pub align: u32,
     #[serde(default = "default_hook_marginv")]
     pub margin_v: u32,
+    /// "per_line" = colour each whole line, alternating through the palette
+    /// (white/yellow template look). "per_word" = legacy per-word rainbow cycle.
+    #[serde(default = "default_hook_color_mode")]
+    pub color_mode: String,
     #[serde(default = "default_true")]
     pub animate: bool,
+
+    // ── PNG renderer (Pillow) — higher fidelity than libass ───────────────────
+    /// "python" = render the headline as a PNG via scripts/render_headline.py
+    /// (Pillow: thick stroke, drop-shadow, crisp AA) then overlay it. "ass" =
+    /// legacy libass burn. Falls back to "ass" automatically if Python fails.
+    #[serde(default = "default_hook_engine")]
+    pub engine: String,
+    /// TTF/OTF file for the PNG renderer (Pillow needs a file, not a family name).
+    #[serde(default = "default_hook_font_file")]
+    pub font_file: String,
+    /// Black stroke thickness in px (PNG renderer).
+    #[serde(default = "default_hook_stroke")]
+    pub stroke_width: u32,
+    /// Text alignment for the PNG renderer: "left" (template look) | "center".
+    #[serde(default = "default_hook_text_align")]
+    pub text_align: String,
+    /// Left margin in px when `text_align = "left"`.
+    #[serde(default = "default_hook_margin_l")]
+    pub margin_l: u32,
+    /// Line spacing as a multiple of the font size (≈1.0 = tight stacked look).
+    #[serde(default = "default_hook_line_spacing")]
+    pub line_spacing: f32,
+    /// Drop-shadow vertical offset in px (PNG renderer). 0 = no shadow.
+    #[serde(default = "default_hook_shadow_dy")]
+    pub shadow_dy: i32,
+    /// Drop-shadow gaussian blur radius in px (PNG renderer).
+    #[serde(default = "default_hook_shadow_blur")]
+    pub shadow_blur: f32,
+    /// Drop-shadow opacity 0–255 (PNG renderer). 0 = no shadow.
+    #[serde(default = "default_hook_shadow_alpha")]
+    pub shadow_alpha: u32,
 }
 
 impl Default for HookTitleConfig {
@@ -472,20 +515,136 @@ impl Default for HookTitleConfig {
             font: default_hook_font(),
             fontsize: default_hook_fontsize(),
             outline_px: default_hook_outline(),
+            align: default_hook_align(),
             margin_v: default_hook_marginv(),
+            color_mode: default_hook_color_mode(),
             animate: true,
+            engine: default_hook_engine(),
+            font_file: default_hook_font_file(),
+            stroke_width: default_hook_stroke(),
+            text_align: default_hook_text_align(),
+            margin_l: default_hook_margin_l(),
+            line_spacing: default_hook_line_spacing(),
+            shadow_dy: default_hook_shadow_dy(),
+            shadow_blur: default_hook_shadow_blur(),
+            shadow_alpha: default_hook_shadow_alpha(),
         }
     }
 }
 
 fn default_hook_duration() -> f64 { 3.0 }
+// Viral-template palette: white + golden-yellow, alternated per line.
 fn default_hook_palette() -> Vec<String> {
-    vec!["#3DDC4A".into(), "#FFE34D".into(), "#3FC1FF".into(), "#FFFFFF".into()]
+    vec!["#FFFFFF".into(), "#FFD60A".into()]
 }
-fn default_hook_font()     -> String { "Montserrat ExtraBold".to_owned() }
-fn default_hook_fontsize() -> u32    { 100 }
-fn default_hook_outline()  -> u32    { 6 }
-fn default_hook_marginv()  -> u32    { 360 }
+fn default_hook_font()       -> String { "Montserrat ExtraBold".to_owned() }
+fn default_hook_fontsize()   -> u32    { 100 }
+fn default_hook_outline()    -> u32    { 8 }
+fn default_hook_align()      -> u32    { 2 }     // bottom-centre → lower-middle block
+fn default_hook_marginv()    -> u32    { 380 }   // distance from the BOTTOM (align 2)
+fn default_hook_color_mode() -> String { "per_line".to_owned() }
+fn default_hook_engine()     -> String { "python".to_owned() }
+fn default_hook_font_file()  -> String { "assets/fonts/Montserrat-ExtraBold.ttf".to_owned() }
+fn default_hook_stroke()     -> u32    { 13 }
+fn default_hook_shadow_dy()  -> i32    { 12 }
+fn default_hook_shadow_blur()-> f32    { 10.0 }
+fn default_hook_shadow_alpha()-> u32   { 170 }
+fn default_hook_text_align() -> String { "left".to_owned() }
+fn default_hook_margin_l()   -> u32    { 56 }
+fn default_hook_line_spacing()-> f32   { 1.0 }
+
+/// AI cover/thumbnail intro. At the hook window (clip start) a full-screen cover
+/// is shown — AI background (Novita FLUX.1 schnell) + subject cutout (rembg) +
+/// the headline text — then it dissolves into the footage. Reuses the Novita key
+/// (`THOTH_NOVITA_API_KEY`) and `scripts/render_cover.py`. Opt-in; best-effort
+/// (degrades to the normal hook title if Python/Novita/rembg fail).
+///
+/// ```toml
+/// [cover]
+/// enabled       = true
+/// duration_sec  = 3.0
+/// subject       = true            # cut out the person via rembg
+/// prompt_suffix = "dramatic cinematic ..., no text, no watermark"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct CoverConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_cover_duration")]
+    pub duration_sec: f64,
+    /// Cut out the subject (person) from a video frame and paste it over the bg.
+    /// Only used when `subject_mode = "cutout"`.
+    #[serde(default = "default_true")]
+    pub subject: bool,
+    /// "auto" = use the real cutout when it reads clearly, else generate an AI
+    /// subject (recommended). "cutout" = always cut the real subject from a video
+    /// frame (needs a clear/bright frame). "ai" = always let FLUX generate a
+    /// dominant full-screen subject (template-like, but synthetic).
+    #[serde(default = "default_cover_subject_mode")]
+    pub subject_mode: String,
+    /// rembg model: "u2net_human_seg" (people) | "birefnet-portrait" | "u2net".
+    #[serde(default = "default_cover_rembg")]
+    pub rembg_model: String,
+    /// Subject height as a fraction of the canvas height.
+    #[serde(default = "default_cover_subject_scale")]
+    pub subject_scale: f32,
+    /// Dark-gradient strength (0–1) applied over the bg for text contrast.
+    #[serde(default = "default_cover_darken")]
+    pub darken: f32,
+    /// FLUX generation size (upscaled+cropped to the canvas). Keep ≈9:16.
+    #[serde(default = "default_cover_bg_w")]
+    pub bg_width: u32,
+    #[serde(default = "default_cover_bg_h")]
+    pub bg_height: u32,
+    /// FLUX inference steps (schnell: 4 is ideal).
+    #[serde(default = "default_cover_steps")]
+    pub steps: u32,
+    /// Appended to the headline to steer the background style. English works best.
+    #[serde(default = "default_cover_prompt_suffix")]
+    pub prompt_suffix: String,
+    /// Ask the LLM (Novita chat) to convert the headline into a vivid ENGLISH
+    /// scene prompt before generating the background. Off → use the raw headline.
+    #[serde(default = "default_true")]
+    pub prompt_translate: bool,
+    /// Seconds at the clip's start to grab the subject frame from (0 = first frame).
+    #[serde(default = "default_cover_subject_at")]
+    pub subject_at_sec: f64,
+}
+
+impl Default for CoverConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            duration_sec: default_cover_duration(),
+            subject: true,
+            subject_mode: default_cover_subject_mode(),
+            rembg_model: default_cover_rembg(),
+            subject_scale: default_cover_subject_scale(),
+            darken: default_cover_darken(),
+            bg_width: default_cover_bg_w(),
+            bg_height: default_cover_bg_h(),
+            steps: default_cover_steps(),
+            prompt_suffix: default_cover_prompt_suffix(),
+            prompt_translate: true,
+            subject_at_sec: default_cover_subject_at(),
+        }
+    }
+}
+
+fn default_cover_duration()      -> f64 { 3.0 }
+fn default_cover_rembg()         -> String { "u2net_human_seg".to_owned() }
+fn default_cover_subject_mode()  -> String { "auto".to_owned() }
+fn default_cover_subject_scale() -> f32 { 1.02 }  // fill full height → subject dominates
+fn default_cover_darken()        -> f32 { 0.32 }
+fn default_cover_bg_w()          -> u32 { 864 }
+fn default_cover_bg_h()          -> u32 { 1536 }
+fn default_cover_steps()         -> u32 { 4 }
+fn default_cover_subject_at()    -> f64 { 1.0 }
+fn default_cover_prompt_suffix() -> String {
+    "empty scene with no people, dramatic cinematic poster background, moody dark lighting, \
+     high contrast, bokeh, depth of field, viral youtube thumbnail backdrop, photorealistic, \
+     no people, no person, no human figures, no text, no watermark, no caption".to_owned()
+}
 
 /// GPU-accelerated processing configuration.
 ///
@@ -770,7 +929,21 @@ pub struct AssetsConfig {
     /// timestamped `asset_cues` (SFX + meme videos). Missing file = feature off.
     #[serde(default = "default_asset_catalog")]
     pub catalog_path: PathBuf,
+
+    /// In narrator-driven mode, let the LLM place reaction memes (video PiP) at
+    /// narration beats matching the spoken emotion. Default true.
+    #[serde(default = "default_true")]
+    pub memes_in_narration: bool,
+    /// Max reaction memes per narrated video.
+    #[serde(default = "default_narration_max_memes")]
+    pub narration_max_memes: u32,
+    /// Show reaction memes FULL-SCREEN (cutaway, whole meme over a blurred fill)
+    /// instead of a small corner PiP. The subtitle still burns on top. Default true.
+    #[serde(default = "default_true")]
+    pub meme_fullscreen: bool,
 }
+
+fn default_narration_max_memes() -> u32 { 3 }
 
 fn default_sfx_dir() -> PathBuf { PathBuf::from("assets/sfx") }
 fn default_bgm_dir() -> PathBuf { PathBuf::from("assets/bgm") }

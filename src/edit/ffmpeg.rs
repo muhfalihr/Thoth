@@ -183,6 +183,10 @@ pub struct MemeCue {
     pub with_audio: bool,
     /// Playback volume for the meme audio when `with_audio` (0.0–1.5). Default 0.9.
     pub audio_volume: f32,
+    /// When true, the meme is shown FULL-SCREEN (whole meme centred over a blurred
+    /// fill of itself) as a cutaway, instead of a small corner PiP. The subtitle is
+    /// still burned on top. When false, the legacy corner PiP is used.
+    pub fullscreen: bool,
 }
 
 /// The panel is tall enough (560 px for 1080×1920) to visually cover the subtitle
@@ -209,6 +213,16 @@ pub struct SocialIcon {
     pub path: PathBuf,
     /// Display size in pixels (width = height).  Validated: 16–128 px.
     pub size: u32,
+}
+
+/// Pre-rendered hook-title PNG (full-frame RGBA) + how long to show it.
+/// Overlaid at 0,0 with a fade in/out over `[0, duration_sec]`.
+#[derive(Debug, Clone)]
+pub struct HeadlineImage {
+    /// Path to the full-frame transparent PNG.
+    pub path: PathBuf,
+    /// Seconds to display (from clip start).
+    pub duration_sec: f64,
 }
 
 /// Per-clip Animelorian render directive. When `Some`, the clip is composited on
@@ -383,6 +397,17 @@ pub struct AudioOptions {
     /// subtitles pass over the first few seconds. `None` = disabled.
     pub hook_title_ass: Option<PathBuf>,
 
+    /// Pre-rendered hook-title PNG (Pillow, higher fidelity than ASS) overlaid
+    /// full-frame for its `duration_sec`. Takes precedence over `hook_title_ass`
+    /// when set. `None` = use ASS (or no hook). See `headline_png`.
+    pub hook_title_png: Option<HeadlineImage>,
+
+    /// AI cover/thumbnail intro (full-screen AI bg + subject cutout + headline),
+    /// shown OPAQUE for `duration_sec` then dissolved to footage. When set it is
+    /// the topmost layer for the hook window and the hook-title is suppressed
+    /// (the cover already carries the text). See `cover`.
+    pub cover: Option<HeadlineImage>,
+
     /// Beat-2 character intro (profile card + name above head). `None` = disabled.
     pub profile_card: Option<super::profile_card::ProfileCard>,
 
@@ -456,23 +481,43 @@ fn build_delayed_audio_filter(
     )
 }
 
-/// Build the video-filter fragment overlaying one meme PiP onto the running chain.
+/// Build the video-filter fragment overlaying one meme onto the running chain.
 ///
 /// `input_idx` = ffmpeg input number of the meme, `in_label`/`out_label` are the
 /// bare graph labels (without brackets) for the video stream in/out. The meme is
-/// trimmed, shifted to appear at `at_sec`, scaled to a corner PiP with a thin white
-/// border, and overlaid only during `[at_sec, at_sec+duration_sec]`.
+/// trimmed and shifted to appear at `at_sec`, then either:
+///   • `fullscreen` → the WHOLE meme is centred over a blurred fill of itself so it
+///     covers the entire frame (a cutaway). The subtitle is burned later, on top.
+///   • otherwise    → a small corner PiP with a thin white border (legacy).
+/// Overlaid only during `[at_sec, at_sec+duration_sec]`.
 fn build_meme_overlay_filter(
     input_idx: usize,
     k: usize,
     meme: &MemeCue,
     clip_w: u32,
+    clip_h: u32,
     in_label: &str,
     out_label: &str,
 ) -> String {
     let at  = meme.at_sec.max(0.0);
     let dur = meme.duration_sec.clamp(0.5, 6.0);
     let end = at + dur;
+
+    if meme.fullscreen {
+        // Whole meme (force_original_aspect_ratio=decrease) centred over a blurred,
+        // cover-scaled copy of itself → full-frame, no black bars, nothing cropped.
+        return format!(
+            "[{input_idx}:v]trim=duration={dur:.3},setpts=PTS-STARTPTS+{at:.3}/TB,\
+             split=2[mbg{k}][mfg{k}];\
+             [mbg{k}]scale={clip_w}:{clip_h}:force_original_aspect_ratio=increase,\
+             crop={clip_w}:{clip_h},gblur=sigma=24[mb{k}];\
+             [mfg{k}]scale={clip_w}:{clip_h}:force_original_aspect_ratio=decrease[mf{k}];\
+             [mb{k}][mf{k}]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[mm{k}];\
+             [{in_label}][mm{k}]overlay=x=0:y=0:\
+             enable='between(t,{at:.3},{end:.3})'[{out_label}]"
+        );
+    }
+
     let pip_w = ((clip_w as f64) * 0.42) as u32;
     let m = 40; // corner margin in px
     let (xe, ye) = match meme.position.as_str() {
@@ -604,6 +649,65 @@ fn build_profile_image_overlay(
     )
 }
 
+/// Build the video-filter fragment overlaying the full-frame hook-title PNG
+/// (Pillow-rendered) at 0,0, faded in/out over `[0, duration_sec]`.
+///
+/// The PNG is already canvas-sized with the text baked at the right position, so
+/// the overlay needs no geometry — only an alpha fade and the enable window. A
+/// short scale "pop" (110%→100%) gives the same scroll-stopper bounce the ASS
+/// path had, anchored at the frame centre.
+fn build_headline_png_overlay(
+    input_idx: usize,
+    hl: &HeadlineImage,
+    in_label: &str,
+    out_label: &str,
+) -> String {
+    let dur      = hl.duration_sec.max(0.4);
+    let fade_in  = 0.18_f64.min(dur / 3.0);
+    let fade_out = 0.30_f64.min(dur / 3.0);
+    let out_st   = (dur - fade_out).max(0.0);
+    format!(
+        "[{input_idx}:v]format=rgba,setsar=1,\
+         fade=t=in:st=0:d={fade_in:.3}:alpha=1,\
+         fade=t=out:st={out_st:.3}:d={fade_out:.3}:alpha=1[hlp];\
+         [{in_label}][hlp]overlay=x=0:y=0:eof_action=pass:\
+         enable='between(t,0,{dur:.3})'[{out_label}]"
+    )
+}
+
+/// Build the video-filter fragment overlaying the OPAQUE full-screen AI cover at
+/// 0,0 for `[0, duration_sec]`, then dissolving to the footage.
+///
+/// The cover is shown solid from frame 0 (no fade-in — it IS the opening frame),
+/// with a slow Ken-Burns zoom for life, and an alpha fade-out over the last ~0.4s
+/// so it cross-dissolves into the running footage underneath. Placed as the
+/// ABSOLUTE topmost layer (after the subtitle burn) so it hides everything during
+/// the hook window.
+fn build_cover_overlay(
+    input_idx: usize,
+    cov: &HeadlineImage,
+    canvas_w: u32,
+    canvas_h: u32,
+    in_label: &str,
+    out_label: &str,
+) -> String {
+    let dur      = cov.duration_sec.max(0.4);
+    let fade_out = 0.40_f64.min(dur / 3.0);
+    let out_st   = (dur - fade_out).max(0.0);
+    // Slow zoom-in (Ken Burns): 100% → ~108% across the cover window. zoompan runs
+    // at 25 fps over `dur` frames, scaling back to the canvas each frame.
+    let frames   = ((dur * 25.0).round() as i64).max(1);
+    format!(
+        "[{input_idx}:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,\
+         crop={canvas_w}:{canvas_h},\
+         zoompan=z='min(zoom+0.0009,1.08)':d={frames}:s={canvas_w}x{canvas_h}:fps=25,\
+         format=rgba,setsar=1,\
+         fade=t=out:st={out_st:.3}:d={fade_out:.3}:alpha=1[cov];\
+         [{in_label}][cov]overlay=x=0:y=0:eof_action=pass:\
+         enable='between(t,0,{dur:.3})'[{out_label}]"
+    )
+}
+
 /// Seek, reframe, burn subtitles, and encode — single pass with **perfect subtitle sync**.
 ///
 /// ## The subtitle-sync problem
@@ -705,7 +809,11 @@ pub fn encode_clip_direct(
         &audio.callouts,
         &audio.comment_cards,
         anim_arg,
+        true,   // defer subtitle burn → re-applied LAST as the topmost layer
     );
+    // Subtitle + hook burn-in, applied as the ABSOLUTE topmost layer so footage
+    // cards / image cards / meme PiPs / crops never cover the captions.
+    let sub_suffix = subtitle_burn_suffix(ass_path, audio.hook_title_ass.as_deref(), &audio.font);
     let (vcodec, extra_args) = build_encoder(cfg);
 
     const FADE_DUR: f64 = 0.5;
@@ -806,6 +914,8 @@ pub fn encode_clip_direct(
             || !audio.image_cards.is_empty()
             || audio.comment_cards.iter().any(|c| c.has_crop())
             || audio.profile_card.as_ref().map(|p| p.has_crop()).unwrap_or(false)
+            || audio.hook_title_png.is_some()
+            || audio.cover.is_some()
         {
             // Input index calculations
             let sfx_idx     = if has_sfx { Some(1usize) } else { None };
@@ -898,7 +1008,7 @@ pub fn encode_clip_direct(
                 for (k, m) in meme_cues.iter().enumerate() {
                     let out = if k == last { "outv".to_string() } else { format!("vm{}", k + 1) };
                     s.push(';');
-                    s.push_str(&build_meme_overlay_filter(meme_base_idx + k, k, m, clip_w, &cur, &out));
+                    s.push_str(&build_meme_overlay_filter(meme_base_idx + k, k, m, clip_w, clip_h, &cur, &out));
                     cur = out;
                 }
                 s
@@ -958,6 +1068,43 @@ pub fn encode_clip_direct(
                 let mut s = video_filter_str.replacen("[outv]", "[pf_in]", 1);
                 s.push(';');
                 s.push_str(&build_profile_image_overlay(pf_base_idx, pf, clip_w, clip_h, "pf_in", "outv"));
+                s
+            } else {
+                video_filter_str
+            };
+
+            // ── Hook-title PNG (Pillow) — full-frame overlay with fade ─────────
+            // Appended AFTER the profile crop (last input) so its index is
+            // pf_base_idx + (profile crop present). Fades in/out over its window.
+            let hl_png_idx = pf_base_idx + pf_card.is_some() as usize;
+            let video_filter_str = if let Some(hl) = &audio.hook_title_png {
+                let mut s = video_filter_str.replacen("[outv]", "[hlp_in]", 1);
+                s.push(';');
+                s.push_str(&build_headline_png_overlay(hl_png_idx, hl, "hlp_in", "outv"));
+                s
+            } else {
+                video_filter_str
+            };
+
+            // ── Subtitles ON TOP of everything ────────────────────────────────
+            // Burn the captions (+ hook title) as the FINAL pass, after every
+            // overlay above, so footage / image / meme / crop cutaways can never
+            // cover them. Rename the chain's single final [outv] → [sub_in] and
+            // feed it through the subtitle filter to a fresh [outv].
+            let video_filter_str = {
+                let mut s = video_filter_str.replacen("[outv]", "[sub_in]", 1);
+                s.push_str(&format!(";[sub_in]{sub_suffix}[outv]"));
+                s
+            };
+
+            // ── AI cover intro — ABSOLUTE topmost (even above subtitles) ───────
+            // Opaque full-screen for the hook window, then dissolves to footage.
+            // Input is appended after the hook-title PNG → cover_idx follows it.
+            let cover_idx = hl_png_idx + audio.hook_title_png.is_some() as usize;
+            let video_filter_str = if let Some(cov) = &audio.cover {
+                let mut s = video_filter_str.replacen("[outv]", "[cov_in]", 1);
+                s.push(';');
+                s.push_str(&build_cover_overlay(cover_idx, cov, clip_w, clip_h, "cov_in", "outv"));
                 s
             } else {
                 video_filter_str
@@ -1040,6 +1187,17 @@ pub fn encode_clip_direct(
             // `pf_base_idx`. `-loop 1` turns the crop PNG into a samplable video stream.
             if let Some(pf) = audio.profile_card.as_ref().filter(|p| p.has_crop() && p.at_sec < duration) {
                 a.extend(["-loop".into(), "1".into(), "-i".into(), pf.image_path.clone()]);
+            }
+            // Hook-title PNG — appended after the profile crop so it matches `hl_png_idx`.
+            // `-loop 1` turns the still PNG into a video stream for the overlay.
+            if let Some(hl) = &audio.hook_title_png {
+                a.extend(["-loop".into(), "1".into(),
+                          "-i".into(), hl.path.to_string_lossy().to_string()]);
+            }
+            // AI cover PNG — appended ABSOLUTELY LAST so it matches `cover_idx`.
+            if let Some(cov) = &audio.cover {
+                a.extend(["-loop".into(), "1".into(),
+                          "-i".into(), cov.path.to_string_lossy().to_string()]);
             }
 
             // Build audio filter chain
@@ -1186,11 +1344,12 @@ pub fn encode_clip_direct(
                 "-c:v".into(), vcodec]);
             a
         } else {
-            // Plain — no audio effects, fastest path
+            // Plain — no audio effects, fastest path. Subtitles are still burned
+            // last (topmost) for consistency with the overlay path.
             vec!["-y".into(),
                 "-ss".into(), format!("{fast_seek:.3}"),
                 "-i".into(), source.to_string_lossy().to_string(),
-                "-vf".into(), main_vf,
+                "-vf".into(), format!("{main_vf},{sub_suffix}"),
                 "-af".into(), main_af,
                 "-t".into(), format!("{duration:.3}"),
                 "-c:v".into(), vcodec]
@@ -1208,6 +1367,27 @@ pub fn encode_clip_direct(
 
     debug!("encode_clip_direct: ffmpeg {}", args.join(" "));
     run_ffmpeg(&args)
+}
+
+/// Build the subtitle (+ hook title) burn-in filter chain, with NO leading comma.
+///
+/// Returns e.g. `subtitles='clip.ass':fontsdir=…,subtitles='clip.hook.ass':fontsdir=…`.
+/// Applied as the ABSOLUTE topmost layer by [`encode_clip_direct`] — after every
+/// footage / image / meme / crop overlay — so captions are never covered. The hook
+/// pass (if any) follows the main pass so the giant title stays on top of the body
+/// subtitles, exactly as before the layering fix.
+fn subtitle_burn_suffix(ass_path: &Path, hook_ass: Option<&Path>, font: &FontConfig) -> String {
+    let ass_str = ass_path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .replace(':', "\\:");
+    let fontsdir_opt = font.fontsdir_opt();
+    let mut s = format!("subtitles='{ass_str}'{fontsdir_opt}");
+    if let Some(p) = hook_ass {
+        let h = p.to_string_lossy().replace('\\', "/").replace(':', "\\:");
+        s.push_str(&format!(",subtitles='{h}'{fontsdir_opt}"));
+    }
+    s
 }
 
 /// Build the video filtergraph string.
@@ -1235,22 +1415,33 @@ fn build_video_filter(
     // Animelorian composite: (render directive, paper-bg input index). When set,
     // vertical clips render the footage as a centred card on the paper canvas.
     anim:     Option<(&AnimelorianRender, usize)>,
+    // When true, the subtitle + hook burn-in is OMITTED here so the caller can
+    // re-apply it as the ABSOLUTE topmost layer — after every footage / image /
+    // meme / crop overlay. This keeps captions always readable on top of cutaways.
+    // See `subtitle_burn_suffix` and `encode_clip_direct`.
+    defer_subs: bool,
 ) -> String {
-    let ass_str = ass_path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .replace(':', "\\:");
-    // Include fontsdir so FFmpeg finds the custom font for ASS subtitles
-    let fontsdir_opt = font.fontsdir_opt();
-    let subtitle_filter = format!("subtitles='{ass_str}'{fontsdir_opt}");
-
-    // Second subtitles pass for the giant multi-colour hook title (drawn on top).
-    let hook_filter = hook_ass
-        .map(|p| {
-            let s = p.to_string_lossy().replace('\\', "/").replace(':', "\\:");
-            format!(",subtitles='{s}'{fontsdir_opt}")
-        })
-        .unwrap_or_default();
+    // Subtitle + hook fragment (`subs`) is comma-LEADING-or-empty, matching the
+    // convention of every other effect fragment (headline/profile/callout/comment/
+    // post). When deferred it is empty and the caller burns it last instead.
+    let subs = if defer_subs {
+        String::new()
+    } else {
+        let ass_str = ass_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace(':', "\\:");
+        // Include fontsdir so FFmpeg finds the custom font for ASS subtitles
+        let fontsdir_opt = font.fontsdir_opt();
+        // Second subtitles pass for the giant multi-colour hook title (on top).
+        let hook = hook_ass
+            .map(|p| {
+                let s = p.to_string_lossy().replace('\\', "/").replace(':', "\\:");
+                format!(",subtitles='{s}'{fontsdir_opt}")
+            })
+            .unwrap_or_default();
+        format!(",subtitles='{ass_str}'{fontsdir_opt}{hook}")
+    };
 
     let duration = end_sec - start_sec;
     let trim = format!("trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS");
@@ -1278,6 +1469,9 @@ fn build_video_filter(
             if out_fx.is_empty() { String::new() } else { format!(",{}", out_fx) },
         ),
     };
+    // Leading-comma forms of the transition filters, for the Horizontal/Square
+    // templates where every post-scale fragment carries its own leading comma.
+    let in_fx_lead = if in_fx.is_empty() { String::new() } else { format!(",{in_fx}") };
 
     // ── Headline overlay ──────────────────────────────────────────────────────
     // Pass the clip style so the panel entrance/exit animation matches the video.
@@ -1321,7 +1515,7 @@ fn build_video_filter(
                  {pre_filter}\
                  scale={cardw}:-2,setsar=1[fg];\
                  [{paper_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[bg];\
-                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1,{subtitle_filter}{hook_filter}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
+                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Vertical => {
@@ -1331,22 +1525,22 @@ fn build_video_filter(
                  split=2[main][blur];\
                  [blur]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=20[bg];\
                  [main]scale=-2:1080,setsar=1[fg];\
-                 [bg][fg]overlay=(W-w)/2:(H-h)/2,{subtitle_filter}{hook_filter}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
+                 [bg][fg]overlay=(W-w)/2:(H-h)/2{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Horizontal => {
             format!(
                 "{trim},\
                  scale=1920:1080:force_original_aspect_ratio=decrease,\
-                 pad=1920:1080:(ow-iw)/2:(oh-ih)/2,\
-                 {pre_filter}{subtitle_filter}{hook_filter}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
+                 pad=1920:1080:(ow-iw)/2:(oh-ih)/2\
+                 {in_fx_lead}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
             )
         }
         OutputLayout::Square => {
             format!(
                 "{trim},\
-                 crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080,\
-                 {pre_filter}{subtitle_filter}{hook_filter}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
+                 crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080\
+                 {in_fx_lead}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
             )
         }
     }
@@ -2030,7 +2224,7 @@ mod tests {
 
     fn meme(at: f64, dur: f64, pos: &str) -> MemeCue {
         MemeCue { path: PathBuf::from("assets/meme/x.mp4"), at_sec: at, duration_sec: dur,
-                  position: pos.into(), with_audio: false, audio_volume: 0.9 }
+                  position: pos.into(), with_audio: false, audio_volume: 0.9, fullscreen: false }
     }
 
     #[test]
@@ -2044,7 +2238,7 @@ mod tests {
 
     #[test]
     fn meme_filter_shifts_scales_and_gates() {
-        let f = build_meme_overlay_filter(4, 0, &meme(10.0, 2.5, "bottom_right"), 1080, "vm_in", "outv");
+        let f = build_meme_overlay_filter(4, 0, &meme(10.0, 2.5, "bottom_right"), 1080, 1920, "vm_in", "outv");
         assert!(f.contains("[4:v]trim=duration=2.500"));
         assert!(f.contains("setpts=PTS-STARTPTS+10.000/TB"));
         assert!(f.contains("scale=453:-2"));               // 1080 * 0.42
@@ -2054,10 +2248,24 @@ mod tests {
     }
 
     #[test]
+    fn meme_fullscreen_covers_frame_no_corner() {
+        let mut m = meme(5.0, 2.0, "top_right");
+        m.fullscreen = true;
+        let f = build_meme_overlay_filter(3, 0, &m, 1080, 1920, "vm_in", "outv");
+        assert!(f.contains("setpts=PTS-STARTPTS+5.000/TB"));
+        assert!(f.contains("scale=1080:1920:force_original_aspect_ratio=increase")); // blurred fill
+        assert!(f.contains("force_original_aspect_ratio=decrease"));                 // whole meme
+        assert!(f.contains("[vm_in][mm0]overlay=x=0:y=0"));                          // full-frame
+        assert!(f.contains("enable='between(t,5.000,7.000)'"));
+        assert!(!f.contains("W-w-40"));   // NOT a corner PiP
+        assert!(f.ends_with("[outv]"));
+    }
+
+    #[test]
     fn meme_positions_map_to_corners() {
-        let tl = build_meme_overlay_filter(2, 1, &meme(0.0, 2.0, "top_left"), 1080, "vm1", "vm2");
+        let tl = build_meme_overlay_filter(2, 1, &meme(0.0, 2.0, "top_left"), 1080, 1920, "vm1", "vm2");
         assert!(tl.contains("overlay=x=40:y=40"));
-        let bc = build_meme_overlay_filter(2, 0, &meme(0.0, 2.0, "bottom_center"), 1080, "a", "b");
+        let bc = build_meme_overlay_filter(2, 0, &meme(0.0, 2.0, "bottom_center"), 1080, 1920, "a", "b");
         assert!(bc.contains("overlay=x=(W-w)/2:y=H-h-40"));
     }
 
@@ -2105,7 +2313,7 @@ mod tests {
         let f = build_video_filter(
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
-            Some((&render, 7)),
+            Some((&render, 7)), false,
         );
         assert!(f.contains("[7:v]scale=1080:1920"));         // paper bg from input 7
         assert!(f.contains("crop=1080:1920"));
@@ -2120,9 +2328,52 @@ mod tests {
         let font = FontConfig::default();
         let f = build_video_filter(
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
-            &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
+            &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None, false,
         );
         assert!(f.contains("gblur=sigma=20"));               // legacy blurred-self bg
         assert!(!f.contains("paper"));
+    }
+
+    #[test]
+    fn deferred_subs_omits_subtitle_and_stays_comma_safe() {
+        let font = FontConfig::default();
+        for layout in [OutputLayout::Vertical, OutputLayout::Horizontal, OutputLayout::Square] {
+            let f = build_video_filter(
+                &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
+                &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
+                true, // defer
+            );
+            assert!(!f.contains("subtitles="), "deferred build must NOT burn subtitles: {f}");
+            assert!(!f.contains(",,"), "no empty filter (double comma) allowed: {f}");
+            assert!(!f.contains(",setsar=1,setsar"), "no stray duplication: {f}");
+        }
+    }
+
+    #[test]
+    fn non_deferred_subs_burns_subtitle_comma_safe() {
+        let font = FontConfig::default();
+        for layout in [OutputLayout::Vertical, OutputLayout::Horizontal, OutputLayout::Square] {
+            let f = build_video_filter(
+                &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
+                &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
+                false,
+            );
+            assert!(f.contains("subtitles='x.ass'"), "non-deferred must burn subtitles: {f}");
+            assert!(!f.contains(",,"), "no empty filter (double comma) allowed: {f}");
+        }
+    }
+
+    #[test]
+    fn subtitle_burn_suffix_has_no_leading_comma_and_chains_hook() {
+        let font = FontConfig::default();
+        let plain = subtitle_burn_suffix(std::path::Path::new("c.ass"), None, &font);
+        assert!(plain.starts_with("subtitles="), "suffix must not lead with a comma: {plain}");
+        assert!(!plain.contains(",subtitles="), "no hook expected: {plain}");
+
+        let with_hook = subtitle_burn_suffix(
+            std::path::Path::new("c.ass"), Some(std::path::Path::new("c.hook.ass")), &font);
+        assert!(with_hook.starts_with("subtitles='c.ass'"));
+        // hook pass chains AFTER the body subtitles (stays on top).
+        assert!(with_hook.contains(",subtitles='c.hook.ass'"), "hook must follow body: {with_hook}");
     }
 }

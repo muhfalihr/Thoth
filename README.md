@@ -28,8 +28,11 @@ URL / File / --content set.json (OpenClaw: main + footage + comments + figures)
     Reaction: script + TTS + avatar (opsional)
     │
     ▼ Stage 5: EDIT
-    FFmpeg encode (subtitle + SFX + BGM + overlay + cards)
-    ├── Reaction-news overlays (hook title, profile card, comment cards, callout)
+    FFmpeg encode (subtitle SELALU di layer paling depan)
+    ├── AI Cover intro (FLUX bg + rembg cutout + headline) → dissolve ke footage
+    ├── Hook title PNG (Pillow: stroke tebal + shadow, rata kiri, warna per-baris)
+    ├── Reaction-news overlays (profile card, comment cards, callout)
+    ├── Reaction memes FULL-SCREEN (LLM-match ke emosi narasi, di bawah subtitle)
     ├── Animelorian montage (kanvas kertas + footage cards)
     ├── GPU Color Grading (wgpu — CapCut shaders)
     └── GPU Transitions (wgpu — 21 efek)
@@ -49,12 +52,35 @@ URL / File / --content set.json (OpenClaw: main + footage + comments + figures)
 ### Narrator-Driven Spine (`[narration]`)
 Satu naskah komentator (LLM) → **voiceover TTS** (ElevenLabs / MiniMax / Fish Audio / Edge) jadi audio utama. Video dibangun mengelilingi narasi: footage di-placement by embedding-similarity ke window narasi, audio event di-duck, subtitle diturunkan dari narasi. Di-*ground* ke `main.title/description` + komentar + deskripsi visual, dan ke korpus **struktur narasi terbukti** (Narration Structure RAG). Degrade ke clip-mode bila narasi tak tersedia.
 
+### AI Cover / Thumbnail intro (`[cover]`)
+Di detik awal (hook window) ditampilkan **cover full-screen** sebelum cut ke footage — gaya thumbnail viral:
+- **Background AI** — Novita **FLUX.1 schnell** men-generate latar dramatis sesuai topik.
+- **Subjek** — `subject_mode`:
+  - `auto` (default) — cutout orang asli (rembg) bila frame **terbaca jelas** (gate brightness/sharpness/coverage); kalau gelap/blur → generate subjek AI.
+  - `ai` — selalu FLUX generate subjek dominan penuh layar.
+  - `cutout` — selalu cutout orang asli dari frame video.
+- **Vision-grounded** — model vision (`qwen3-vl`) mendeskripsikan frame asli sedetail mungkin → FLUX **merekreasi kejadian nyata** jadi ilustrasi HD (bukan tebakan dari headline).
+- **Prompt Inggris** — headline (Indonesia) diterjemahkan LLM jadi prompt scene Inggris untuk background lebih relevan.
+- Lalu **dissolve** (Ken-Burns + fade) ke footage. Butuh `python` + `Pillow` + `rembg`; gagal → fallback ke hook title biasa.
+
+### Hook Title Renderer (`[hook_title]`)
+Judul raksasa scroll-stopper, dua engine:
+- **`engine = "python"`** (default) — render PNG via Pillow: **stroke hitam tebal + drop-shadow + AA halus**, **rata kiri**, jarak baris rapat, **warna per-baris** (putih/kuning/cyan), Montserrat ExtraBold, area bawah-tengah. Mirip template cover viral.
+- **`engine = "ass"`** — fallback libass (legacy) bila Python tak tersedia.
+- Knob: `palette`, `color_mode`, `text_align`, `margin_l`, `margin_v`, `line_spacing`, `stroke_width`, `font_file`, `shadow_*`.
+
 ### Reaction-News Overlays
 Gaya konten reaksi-berita Indonesia, dirakit dari data faktual (OpenClaw):
-- **Hook title** (`[hook_title]`) — judul raksasa multi-warna 0–3 dtk (scroll-stopper)
 - **Profile card** (`[profile_card]`) — kartu profil **crop asli** dari sumber sosmed (bukan sintetis)
 - **Comment cards** — screenshot **komentar viral asli** (author/text/likes) di reaction beat
 - **Callout** (`[callout]`) — angka penting + panah penunjuk
+- **Subtitle selalu di layer paling depan** — di-burn setelah semua overlay, jadi caption tak pernah tertutup cutaway.
+
+### Reaction Memes (mode narator, `[assets]`)
+Meme reaksi (`assets/meme/`) disisipkan otomatis di mode narator:
+- **LLM-matched** — LLM memilih meme dari katalog & menaruhnya di **beat narasi yang emosinya cocok** (kaget/facepalm/sedih/bingung/tepuk-tangan), tersebar dengan jarak minimum.
+- **Full-screen** (`meme_fullscreen`, default) — meme tampil penuh layar (cutaway, meme utuh di atas blurred-fill) **di bawah subtitle**; audio meme nge-duck narasi.
+- Knob: `memes_in_narration`, `narration_max_memes`, `meme_fullscreen`.
 
 ### Content Sourcing (OpenClaw + multi-platform)
 - **`thoth run --content set.json`** — terima content-set eksternal `{main, footage, comments, figures, profile}` hasil sourcing OpenClaw (Telegram agent), termasuk crop screenshot komentar & kartu profil.
@@ -301,11 +327,15 @@ gpu_transition = "blink"          # blink | dissolve | fade | wipe_left | zoom_i
 | `cinematic_film` | Film look — teal-orange, wipe |
 | `night_drama` | Konten malam/gelap — dark grade, circle |
 
-### `[assets]` — SFX & BGM
+### `[assets]` — SFX, BGM & Reaction Memes
 ```toml
 [assets]
 sfx_dir   = "assets/sfx"
 bgm_dir   = "assets/bgm"
+catalog_path        = "assets/asset_catalog.json"
+memes_in_narration  = true   # LLM taruh meme reaksi di beat narasi yang cocok emosinya
+narration_max_memes = 3      # maksimum meme per video narasi
+meme_fullscreen     = true   # meme FULL-LAYAR (cutaway) di bawah subtitle, bukan PiP pojok
 beat_sync = true   # snap SFX ke downbeat + duck BGM saat speech
 
 [assets.sfx]
@@ -366,11 +396,32 @@ max_per_platform = 6
 expand_keywords  = true              # LLM expand query → keyword ganda
 ```
 
-### Reaction-News Overlays — `[hook_title]` / `[profile_card]` / `[callout]`
+### AI Cover & Hook Title — `[cover]` / `[hook_title]`
 ```toml
+[cover]
+enabled         = true
+duration_sec    = 3.0
+subject_mode    = "auto"          # auto | ai | cutout
+prompt_translate = true           # headline ID → prompt scene Inggris (LLM)
+subject_scale   = 1.02            # (mode cutout) tinggi subjek = fraksi kanvas
+darken          = 0.32            # gradient gelap utk kontras teks
+steps           = 4               # FLUX schnell
+prompt_suffix   = "empty scene with no people, dramatic cinematic ..."
+
 [hook_title]
-enabled = true                       # judul raksasa multi-warna (scroll-stopper)
-palette = ["#3DDC4A", "#FFE34D", "#3FC1FF", "#FFFFFF"]
+enabled      = true
+engine       = "python"           # python (Pillow PNG, terbaik) | ass (libass)
+palette      = ["#FFFFFF", "#FFE100", "#FFFFFF", "#3FC1FF", "#FFFFFF"]  # cycle per baris
+color_mode   = "per_line"
+font_file    = "assets/fonts/Montserrat-ExtraBold.ttf"
+text_align   = "left"             # left (gaya template) | center
+margin_l     = 56                 # margin kiri (px)
+margin_v     = 380                # jarak dari bawah
+line_spacing = 1.0                # ×ukuran font (≈1.0 = rapat)
+stroke_width = 13                 # tebal stroke (engine python)
+shadow_dy    = 12
+shadow_blur  = 10.0
+shadow_alpha = 170
 
 [profile_card]
 enabled         = true
@@ -555,6 +606,11 @@ cargo build --release --features local-whisper,cuda
 - LLVM/Clang (untuk whisper-rs bindgen, jika pakai local-whisper)
 - CUDA Toolkit 12.x (untuk `--features cuda`)
 - GPU dengan Vulkan/DX12 support (untuk `[gpu] enabled = true`)
+- **Python 3.10+ + Pillow + rembg** (untuk AI Cover & hook-title PNG renderer):
+  ```bash
+  python -m pip install Pillow rembg onnxruntime
+  ```
+  `THOTH_NOVITA_API_KEY` dipakai untuk generate background cover (FLUX) + deskripsi vision + pemilihan meme. Tanpa Python/Pillow, hook title fallback ke libass dan cover dilewati (graceful).
 
 ---
 

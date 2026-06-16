@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::analyze::schema::ViralMomentList;
+use crate::analyze::provider::{build_llm_provider, LlmProvider};
 use crate::config::AppConfig;
+use crate::transcribe::model::WordTimestamp;
 use crate::util::beat_detect;
 use crate::pipeline::job::JobContext;
 use crate::transcribe::model::Transcript;
@@ -25,6 +27,288 @@ use crate::news::model::EnrichResult;
 use super::subtitle::{generate_ass, SubtitleStyle};
 use super::transition::Transition;
 use crate::gpu::processor::{ClipJob, GpuProcessor};
+
+/// Build the hook-title overlay, preferring the high-fidelity Pillow PNG renderer
+/// and falling back to the libass renderer. Returns `(png, ass)` — at most one is
+/// `Some`; both `None` only if even the ASS fallback fails.
+///
+/// `ass_path` is the clip's subtitle path; the hook artifacts are siblings
+/// (`*.hook.png` / `*.hook.ass`).
+fn build_hook_overlay(
+    hk: &crate::config::HookTitleConfig,
+    text: &str,
+    duration_sec: f64,
+    layout: &OutputLayout,
+    ass_path: &Path,
+) -> (Option<super::ffmpeg::HeadlineImage>, Option<PathBuf>) {
+    let (w, h) = match layout {
+        OutputLayout::Vertical   => (1080u32, 1920u32),
+        OutputLayout::Horizontal => (1920u32, 1080u32),
+        OutputLayout::Square     => (1080u32, 1080u32),
+    };
+
+    // ── Preferred: Pillow PNG (thick stroke, drop-shadow, crisp AA) ───────────
+    if hk.engine.eq_ignore_ascii_case("python") || hk.engine.eq_ignore_ascii_case("png") {
+        let png_path = ass_path.with_extension("hook.png");
+        let spec = super::headline_png::HeadlinePngSpec {
+            text: text.to_owned(),
+            width: w,
+            height: h,
+            font_path: hk.font_file.clone(),
+            font_size: hk.fontsize,
+            palette: hk.palette.clone(),
+            stroke_width: hk.stroke_width,
+            stroke_color: "#000000".into(),
+            line_spacing: hk.line_spacing,
+            text_align: hk.text_align.clone(),
+            margin_l: hk.margin_l,
+            max_lines: 5,
+            margin_v: hk.margin_v,
+            max_width_ratio: 0.90,
+            uppercase: true,
+            shadow: super::headline_png::HeadlineShadow {
+                dx: 0,
+                dy: hk.shadow_dy,
+                blur: hk.shadow_blur,
+                color: "#000000".into(),
+                alpha: hk.shadow_alpha,
+            },
+            out: png_path.to_string_lossy().to_string(),
+        };
+        let script = Path::new("scripts/render_headline.py");
+        match spec.render(&super::headline_png::python_cmd(), script) {
+            Ok(p) => {
+                info!("       💥 Hook title PNG: \"{}\" ({:.1}s, {} colours, Pillow)",
+                      text, duration_sec, hk.palette.len());
+                return (Some(super::ffmpeg::HeadlineImage { path: p, duration_sec }), None);
+            }
+            Err(e) => warn!("hook title PNG render failed ({e}) — falling back to ASS"),
+        }
+    }
+
+    // ── Fallback: libass ─────────────────────────────────────────────────────
+    let spec = super::hook_title::HookTitleSpec {
+        text: text.to_owned(),
+        duration_sec,
+        palette: hk.palette.clone(),
+        font: hk.font.clone(),
+        fontsize: hk.fontsize,
+        outline_px: hk.outline_px,
+        align: hk.align,
+        margin_v: hk.margin_v,
+        per_line_color: hk.color_mode.eq_ignore_ascii_case("per_line"),
+        animate: hk.animate,
+    };
+    let ass = ass_path.with_extension("hook.ass");
+    match super::hook_title::generate_hook_ass(&spec, &ass) {
+        Ok(()) => {
+            info!("       💥 Hook title: \"{}\" ({:.1}s, {} colours, ASS)",
+                  text, duration_sec, hk.palette.len());
+            (None, Some(ass))
+        }
+        Err(e) => {
+            warn!("hook title generation failed: {e}");
+            (None, None)
+        }
+    }
+}
+
+/// Build the AI cover intro (Novita bg + rembg cutout + headline text) via the
+/// Python script. Reuses the hook-title styling (palette/font/stroke/shadow) so
+/// the cover text matches the rest of the brand. Returns `None` on any failure so
+/// the caller falls back to the normal hook title.
+#[allow(clippy::too_many_arguments)]
+fn build_cover(
+    cfg: &crate::config::CoverConfig,
+    hk: &crate::config::HookTitleConfig,
+    headline: &str,
+    subject_frame: &Path,
+    duration_sec: f64,
+    layout: &OutputLayout,
+    out_base: &Path,
+    chat_model: &str,
+    chat_base_url: &str,
+    vision_model: &str,
+    vision_base_url: &str,
+) -> Option<super::ffmpeg::HeadlineImage> {
+    let (w, h) = match layout {
+        OutputLayout::Vertical   => (1080u32, 1920u32),
+        OutputLayout::Horizontal => (1920u32, 1080u32),
+        OutputLayout::Square     => (1080u32, 1080u32),
+    };
+    let ai_mode = cfg.subject_mode.eq_ignore_ascii_case("ai");
+    let frame_str = if subject_frame.exists() {
+        subject_frame.to_string_lossy().to_string()
+    } else {
+        String::new()
+    };
+    // Cutout source only in cutout/auto modes; describe-frame always (for vision).
+    let subj = if !ai_mode { frame_str.clone() } else { String::new() };
+    let out = out_base.with_extension("cover.png");
+    // Translation needs a chat model + an API key (Novita). Disable if missing.
+    let translate = cfg.prompt_translate
+        && !chat_model.trim().is_empty()
+        && !chat_base_url.trim().is_empty();
+    let spec = super::cover::CoverSpec {
+        prompt: format!("{}. {}", headline.trim(), cfg.prompt_suffix),
+        prompt_suffix: cfg.prompt_suffix.clone(),
+        translate,
+        chat_model: chat_model.to_owned(),
+        chat_base_url: chat_base_url.to_owned(),
+        vision_model: vision_model.to_owned(),
+        vision_base_url: vision_base_url.to_owned(),
+        headline_text: headline.to_owned(),
+        subject_mode: cfg.subject_mode.clone(),
+        subject_frame: subj,
+        describe_frame: frame_str,
+        width: w,
+        height: h,
+        font_path: hk.font_file.clone(),
+        font_size: hk.fontsize,
+        palette: hk.palette.clone(),
+        stroke_width: hk.stroke_width,
+        stroke_color: "#000000".into(),
+        line_spacing: hk.line_spacing,
+        text_align: hk.text_align.clone(),
+        margin_l: hk.margin_l,
+        max_lines: 5,
+        margin_v: hk.margin_v,
+        max_width_ratio: 0.92,
+        uppercase: true,
+        text_shadow: super::headline_png::HeadlineShadow {
+            dx: 0,
+            dy: hk.shadow_dy,
+            blur: hk.shadow_blur,
+            color: "#000000".into(),
+            alpha: hk.shadow_alpha,
+        },
+        model_steps: cfg.steps,
+        model_seed: 0,
+        bg_width: cfg.bg_width,
+        bg_height: cfg.bg_height,
+        rembg_model: cfg.rembg_model.clone(),
+        subject_scale: cfg.subject_scale,
+        darken: cfg.darken,
+        out: out.to_string_lossy().to_string(),
+    };
+    let script = Path::new("scripts/render_cover.py");
+    match spec.render(&super::headline_png::python_cmd(), script) {
+        Ok(p) => {
+            info!("       🖼️  AI cover: \"{}\" ({:.1}s, Novita FLUX + rembg)",
+                  headline, duration_sec);
+            Some(super::ffmpeg::HeadlineImage { path: p, duration_sec })
+        }
+        Err(e) => {
+            warn!("AI cover failed ({e}) — falling back to hook title");
+            None
+        }
+    }
+}
+
+/// LLM-pick reaction memes for the narration, matched to the spoken emotion.
+/// Returns `(file, at_sec)` in NARRATION time (0-based). Best-effort → empty on
+/// any failure (no provider, bad JSON, etc.).
+async fn select_narration_memes(
+    provider: &dyn LlmProvider,
+    catalog: &crate::analyze::asset_catalog::AssetCatalog,
+    words: &[WordTimestamp],
+    narr_dur: f64,
+    max_memes: usize,
+) -> Vec<(String, f64)> {
+    let memes: Vec<&crate::analyze::asset_catalog::AssetEntry> =
+        catalog.assets.iter().filter(|a| a.kind == "video").collect();
+    if memes.is_empty() || words.is_empty() || max_memes == 0 {
+        return Vec::new();
+    }
+
+    let mut catalog_txt = String::new();
+    for m in &memes {
+        catalog_txt.push_str(&format!(
+            "  {} | triggers: {} | {}\n",
+            m.file, m.triggers.join(","), m.meaning
+        ));
+    }
+
+    // Narration with timestamps, chunked ~12 words per line.
+    let mut narr = String::new();
+    let mut chunk = String::new();
+    let mut chunk_start = 0i64;
+    let mut n = 0;
+    for w in words {
+        if chunk.is_empty() {
+            chunk_start = w.start_ms;
+        }
+        chunk.push_str(w.word.trim());
+        chunk.push(' ');
+        n += 1;
+        if n >= 12 {
+            narr.push_str(&format!("[t={:.1}s] {}\n", chunk_start as f64 / 1000.0, chunk.trim()));
+            chunk.clear();
+            n = 0;
+        }
+    }
+    if !chunk.trim().is_empty() {
+        narr.push_str(&format!("[t={:.1}s] {}\n", chunk_start as f64 / 1000.0, chunk.trim()));
+    }
+
+    let system = "You place short REACTION MEMES into a narrated Indonesian video so it \
+feels alive — a meme is the viewer's inner voice popping in at the exact emotional beat. \
+You get the narration (with [t=..s] timestamps) and a catalog of meme video files (each \
+with emotional triggers + meaning). Choose memes and place each at the SECOND where the \
+narrator expresses a matching emotion (shock, sadness, facepalm, laughter, confusion, \
+applause, anger, etc.). Rules: use ONLY files from the catalog; at_sec must be a real \
+moment in the narration; spread them out (>=6s apart); do not overuse. Output STRICT \
+JSON only, no prose: {\"memes\":[{\"file\":\"<catalog file>\",\"at_sec\":<seconds>,\"emotion\":\"<word>\"}]}";
+
+    let user = format!(
+        "MEME CATALOG:\n{catalog_txt}\nNARRATION (total {narr_dur:.0}s):\n{narr}\n\n\
+         Pick up to {max_memes} memes. JSON only."
+    );
+
+    let raw = match provider.chat_completion(system, &user).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("meme selection LLM failed: {e}");
+            return Vec::new();
+        }
+    };
+    let json = match (raw.find('{'), raw.rfind('}')) {
+        (Some(a), Some(b)) if b > a => &raw[a..=b],
+        _ => {
+            warn!("meme selection: no JSON in response");
+            return Vec::new();
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct Pick {
+        file: String,
+        #[serde(default)]
+        at_sec: f64,
+    }
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        #[serde(default)]
+        memes: Vec<Pick>,
+    }
+    let resp: Resp = match serde_json::from_str(json) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("meme selection parse failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    let valid = catalog.valid_files();
+    let mut out = Vec::new();
+    for p in resp.memes {
+        if !valid.contains(&p.file) || !memes.iter().any(|m| m.file == p.file) {
+            continue;
+        }
+        out.push((p.file, p.at_sec.clamp(0.0, (narr_dur - 0.3).max(0.0))));
+    }
+    out
+}
 
 /// Narration text spoken within `[lo_sec, hi_sec]` of NARRATION time (from the word
 /// timings). Used to semantically match a footage cutaway to what the narrator is
@@ -439,27 +723,14 @@ impl<'a> EditService<'a> {
                 };
                 if !text.trim().is_empty() {
                     let clip_dur = end - start;
-                    let spec = super::hook_title::HookTitleSpec {
-                        text,
-                        duration_sec: hk.duration_sec.min(clip_dur - 0.2).max(0.5),
-                        palette: hk.palette.clone(),
-                        font: hk.font.clone(),
-                        fontsize: hk.fontsize,
-                        outline_px: hk.outline_px,
-                        margin_v: hk.margin_v,
-                        animate: hk.animate,
-                    };
-                    let hook_ass_path = ass_path.with_extension("hook.ass");
-                    match super::hook_title::generate_hook_ass(&spec, &hook_ass_path) {
-                        Ok(()) => {
-                            info!("       💥 Hook title: \"{}\" ({:.1}s, {} colours)",
-                                  spec.text, spec.duration_sec, hk.palette.len());
-                            audio_clone.hook_title_ass = Some(hook_ass_path);
-                            // Avoid duplicate text: the giant hook title replaces the
-                            // lower-third headline panel (same words, top vs bottom).
-                            audio_clone.headline = None;
-                        }
-                        Err(e) => warn!("hook title generation failed: {e}"),
+                    let duration_sec = hk.duration_sec.min(clip_dur - 0.2).max(0.5);
+                    let (png, ass) = build_hook_overlay(hk, &text, duration_sec, layout, &ass_path);
+                    if png.is_some() || ass.is_some() {
+                        audio_clone.hook_title_png = png;
+                        audio_clone.hook_title_ass = ass;
+                        // Avoid duplicate text: the giant hook title replaces the
+                        // lower-third headline panel (same words, top vs bottom).
+                        audio_clone.headline = None;
                     }
                 }
             }
@@ -971,6 +1242,7 @@ impl<'a> EditService<'a> {
                             memes.push(super::ffmpeg::MemeCue {
                                 path, at_sec: at, duration_sec: dur, position: pos,
                                 with_audio, audio_volume: 0.90,
+                                fullscreen: self.config.assets.meme_fullscreen,
                             });
                         }
                         _ => {}
@@ -1256,8 +1528,6 @@ impl<'a> EditService<'a> {
         profile_override: Option<&super::profile_card::ProfileCardData>,
         comment_pool:     &[super::comment_card::CommentData],
     ) -> Result<ClipOutput, EditError> {
-        use crate::transcribe::model::WordTimestamp;
-
         // 1) Narration words + duration + hook line.
         let words_raw = std::fs::read_to_string(self.job.narration_words())
             .map_err(EditError::Io)?;
@@ -1319,18 +1589,38 @@ impl<'a> EditService<'a> {
         }
 
         // Hook headline (giant, hook window) from the narration hook line.
-        if hook_dur > 0.0 {
-            let hk = &self.config.hook_title;
-            let spec = super::hook_title::HookTitleSpec {
-                text: hook.clone(),
-                duration_sec: hook_dur,
-                palette: hk.palette.clone(), font: hk.font.clone(),
-                fontsize: hk.fontsize, outline_px: hk.outline_px,
-                margin_v: hk.margin_v, animate: hk.animate,
-            };
-            let hook_ass = ass_path.with_extension("hook.ass");
-            if super::hook_title::generate_hook_ass(&spec, &hook_ass).is_ok() {
-                audio.hook_title_ass = Some(hook_ass);
+        if hook_dur > 0.0 && !hook.trim().is_empty() {
+            // Preferred: full-screen AI cover intro (bg + subject cutout + text)
+            // shown for the cover window, then dissolves to footage. When it
+            // succeeds the cover carries the text, so the hook title is suppressed.
+            let cover_cfg = &self.config.cover;
+            let mut cover_done = false;
+            if cover_cfg.enabled {
+                let subject_frame = ass_path.with_extension("cover_subject.jpg");
+                // Always grab a representative frame: used for the cutout (cutout/
+                // auto modes) AND for the vision description that drives the AI
+                // event recreation (all modes).
+                if cover_cfg.subject {
+                    let at = (start + cover_cfg.subject_at_sec).clamp(start, (end - 0.1).max(start));
+                    let _ = generate_thumbnail(video_path, &subject_frame, at);
+                }
+                let cover_dur = cover_cfg.duration_sec.min(dur - 0.2).max(0.5);
+                if let Some(cov) = build_cover(
+                    cover_cfg, &self.config.hook_title, &hook, &subject_frame,
+                    cover_dur, layout, &ass_path,
+                    &self.config.llm.novita_model, &self.config.llm.novita_base_url,
+                    &self.config.vision.novita_model, &self.config.vision.novita_base_url,
+                ) {
+                    audio.cover = Some(cov);
+                    cover_done = true;
+                }
+            }
+            // Fallback: the giant hook title (PNG or ASS) over the footage.
+            if !cover_done {
+                let hk = &self.config.hook_title;
+                let (png, ass) = build_hook_overlay(hk, &hook, hook_dur, layout, &ass_path);
+                audio.hook_title_png = png;
+                audio.hook_title_ass = ass;
             }
         }
 
@@ -1548,6 +1838,63 @@ impl<'a> EditService<'a> {
                     audio.comment_cards.push(card);
                 }
                 info!("       💬 Comment cards: {} placed in reaction beat", audio.comment_cards.len());
+            }
+        }
+
+        // ── Reaction memes matched to narration emotion (LLM-picked) ─────────
+        // A meme is the viewer's inner voice popping in at the exact emotional
+        // beat. The legacy per-clip path wired this from moment.asset_cues; the
+        // narration path picks them here so memes also appear in narrator mode.
+        if self.config.assets.memes_in_narration && audio.meme_cues.is_empty() {
+            if let Some(cat) =
+                crate::analyze::asset_catalog::AssetCatalog::load(&self.config.assets.catalog_path)
+            {
+                match build_llm_provider(self.config, &self.config.llm.default_provider) {
+                    Ok(provider) => {
+                        let picks = select_narration_memes(
+                            provider.as_ref(), &cat, &words, narr_dur,
+                            self.config.assets.narration_max_memes as usize,
+                        ).await;
+                        // narration-time → clip-time (+lead); enforce min gap + max.
+                        let mut cand: Vec<(f64, String)> = picks.into_iter()
+                            .filter_map(|(file, narr_at)| {
+                                let at = (narr_at + lead).clamp(hook_dur + 0.3, (dur - 0.6).max(0.0));
+                                if at <= hook_dur + 0.2 || at >= dur - 0.5 { None }
+                                else { Some((at, file)) }
+                            })
+                            .collect();
+                        cand.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                        let max = self.config.assets.narration_max_memes as usize;
+                        let mut cues: Vec<super::ffmpeg::MemeCue> = Vec::new();
+                        let mut last = -100.0_f64;
+                        for (at, file) in cand {
+                            if cues.len() >= max { break; }
+                            if at - last < 5.0 { continue; }
+                            let path = std::path::PathBuf::from(&file);
+                            if !path.exists() { continue; }
+                            let cdur = cat.assets.iter().find(|a| a.file == file)
+                                .and_then(|a| a.duration_sec).unwrap_or(1.6)
+                                .clamp(0.8, 2.2).min(dur - at - 0.1);
+                            if cdur < 0.5 { continue; }
+                            cues.push(super::ffmpeg::MemeCue {
+                                path, at_sec: at, duration_sec: cdur,
+                                position: "top_right".into(),
+                                with_audio: cat.file_has_audio(&file), audio_volume: 0.9,
+                                fullscreen: self.config.assets.meme_fullscreen,
+                            });
+                            last = at;
+                        }
+                        if !cues.is_empty() {
+                            let snd = cues.iter().filter(|m| m.with_audio).count();
+                            info!("       🎭 Reaction memes: {} placed (LLM-matched, {} with audio → narration ducked)",
+                                  cues.len(), snd);
+                            audio.meme_cues = cues;
+                        } else {
+                            info!("       🎭 Reaction memes: none placed");
+                        }
+                    }
+                    Err(e) => warn!("meme selection: no LLM provider ({e})"),
+                }
             }
         }
 

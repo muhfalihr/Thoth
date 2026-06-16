@@ -86,6 +86,13 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
 4. **Thoth** terbuild (`build_cuda.bat`) + `config.toml`: `[narration] enabled = true`.
    Default `--provider` CLI sudah **novita** (jangan pakai groq — rate limit 12k TPM bikin narasi
    diam-diam gagal dan video jatuh ke clip-mode).
+5. **Python + Pillow + rembg** (untuk AI Cover & hook-title PNG renderer di Stage EDIT):
+   ```powershell
+   python -m pip install Pillow rembg onnxruntime
+   ```
+   `THOTH_NOVITA_API_KEY` (env Thoth, sudah ada) dipakai juga untuk: generate background cover
+   (FLUX), deskripsi vision frame, dan pemilihan meme. **Tanpa Python/Pillow** → cover dilewati &
+   hook title fallback ke libass (graceful, run tetap jalan).
 
 ---
 
@@ -140,6 +147,16 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 - Baris akhir `🎬 Narrator-driven video: ...` (bukan hanya `Clip N/N` = clip-mode)
 - `🧠 Footage placement: embedding-matched ...` — kalau semua window `di-skip <floor`, lihat tuning di bawah
 - `💬 Comment card(s)` muncul
+- `🖼️ AI cover: "..." (3.0s, Novita FLUX + rembg)` — cover intro ter-generate (kalau Python/Novita
+  gagal akan ada `WARN AI cover failed — falling back to hook title`, run tetap jalan)
+- `💥 Hook title PNG: "..." (Pillow)` — judul render via Pillow (bukan `(ASS)` = fallback libass)
+- `🎭 Reaction memes: N placed (LLM-matched, ...)` + baris `meme cue: <file>.mp4 at t=...` — meme
+  reaksi full-layar tersisip sesuai emosi narasi (butuh `[assets] memes_in_narration = true`)
+
+> **Catatan visual otomatis (Stage EDIT):** cover AI (FLUX + cutout rembg + headline), hook-title
+> PNG (stroke tebal, rata kiri, warna per-baris), dan meme reaksi full-screen kini di-handle otomatis
+> oleh Thoth — OpenClaw cukup menyediakan content-set yang sehat (main + footage + comments). Subtitle
+> selalu di layer paling depan (tak tertutup footage/meme).
 
 ### Step 5 — QC cepat
 
@@ -160,6 +177,12 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 | `--cap` (run_pipeline) | CLI | 12 | Jumlah komentar maksimal. Jangan kecilkan — komentar = bahan narasi. |
 | `--hours` (discover_reels) | CLI | 48 | Window recency topik. |
 | `[narration] target_secs` | Thoth `config.toml` | 45 | Panjang narasi (≈3 kata/detik). |
+| `[cover] subject_mode` | Thoth `config.toml` | `auto` | `auto` (cutout asli kalau jelas, kalau gelap/blur → subjek AI) · `ai` (selalu generate) · `cutout` (selalu orang asli). |
+| `[cover] duration_sec` | Thoth `config.toml` | 3.0 | Lama cover full-screen sebelum dissolve ke footage. |
+| `[hook_title] engine` | Thoth `config.toml` | `python` | `python` (PNG Pillow, terbaik) · `ass` (libass fallback). |
+| `[hook_title] text_align` / `line_spacing` | Thoth `config.toml` | `left` / 1.0 | Rata kiri + jarak baris rapat (gaya template). |
+| `[assets] memes_in_narration` / `meme_fullscreen` | Thoth `config.toml` | true / true | Sisipkan meme reaksi LLM-matched, tampil full-layar. |
+| `[assets] narration_max_memes` | Thoth `config.toml` | 3 | Maksimum meme per video. |
 
 ---
 
