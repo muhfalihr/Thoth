@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Thoth">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE680"/>
+      <stop offset="0.55" stop-color="#FFD60A"/>
+      <stop offset="1" stop-color="#F4A91C"/>
+    </linearGradient>
+  </defs>
+
+  <!-- minimal app-icon badge -->
+  <rect x="6" y="6" width="188" height="188" rx="46" fill="#14181f"/>
+  <rect x="7.5" y="7.5" width="185" height="185" rx="44.5" fill="none" stroke="#FFD60A" stroke-opacity="0.30" stroke-width="2"/>
+
+  <!-- single feather / quill: gold leaf, negative-space vein, nib -->
+  <g transform="translate(100 98) rotate(-14)">
+    <path d="M 0 -66 C 26 -34 28 30 0 62 C -28 30 -26 -34 0 -66 Z" fill="url(#gold)"/>
+    <path d="M 0 -54 L 0 60" stroke="#14181f" stroke-width="6" stroke-linecap="round" fill="none"/>
+    <path d="M 0 62 L 0 86" stroke="url(#gold)" stroke-width="5" stroke-linecap="round" fill="none"/>
+  </g>
+</svg>

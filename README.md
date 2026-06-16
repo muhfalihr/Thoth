@@ -1,4 +1,12 @@
-# 🪶 Thoth — AI-Powered Short-Form Video Strategist
+<p align="center">
+  <img src="assets/logo/thoth-logo.svg" alt="Thoth — AI short-form video strategist" width="520">
+</p>
+
+<p align="center">
+  🚧 <strong>Work in progress</strong> — masih dalam pengembangan aktif (API, config, & perilaku bisa berubah).
+</p>
+
+---
 
 > *Dinamai dari **Thoth**, dewa Mesir berkepala ibis — penjaga tulisan, kebijaksanaan, dan juru bicara para dewa. Sebuah tool yang **menulis, menarasikan, dan menyebarkan** cerita.*
 
