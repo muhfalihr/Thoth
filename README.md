@@ -4,6 +4,8 @@
 
 **Thoth** adalah CLI tool berbasis Rust yang mengotomasi pembuatan video short-form (TikTok, Reels, Shorts) dari konten long-form **atau** dari content-set hasil sourcing multi-platform (OpenClaw). Pipeline end-to-end: download → transkripsi → analisis AI → enrichment (narator/berita) → edit video dengan GPU acceleration. Mendukung dua mode: **clip-mode** (potong momen viral dari satu video) dan **narrator-driven** (satu naskah komentator jadi tulang punggung, b-roll + kartu reaksi-berita dirakit mengelilinginya).
 
+> 📦 **Baru pertama kali setup?** Ikuti **[SETUP.md](SETUP.md)** — panduan lengkap dari prerequisite, toolchain, API key, sampai run pertama (jalur Lite/API & Full/GPU).
+
 ---
 
 ## Arsitektur Pipeline
