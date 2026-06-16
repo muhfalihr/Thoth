@@ -156,9 +156,12 @@ Output: `output\.thoth\<job-id>\clips\*.mp4`.
 
 ## 9. (Opsional) OpenClaw — Content Sourcing Otomatis
 
-Untuk merakit content-set `{main, footage, comments, figures}` dari sosmed secara otomatis,
-lihat **`openclaw/README.md`** (prasyarat Node host + CDP relay, flow `discover_reels` →
-`run_pipeline` → `thoth run --content`).
+Untuk merakit content-set `{main, footage, comments, figures}` dari sosmed secara otomatis:
+- **Setup OpenClaw** (install, Node.js, node host + CDP relay 18792, pairing, key, skill, deploy
+  script): **[openclaw/SETUP.md](openclaw/SETUP.md)**.
+- **Flow harian** (discover_reels → run_pipeline → `thoth run --content`): **[openclaw/README.md](openclaw/README.md)**.
+
+> OpenClaw **opsional** — Thoth tetap jalan via `thoth run --url <link>` tanpanya.
 
 ---
 

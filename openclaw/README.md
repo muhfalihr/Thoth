@@ -9,6 +9,9 @@ via `thoth run --content <set.json>`.
 > `~/.openclaw/workspace` (di sanalah key file `.novita_key`/`.groq_key`, folder `output/`,
 > dan tab browser ter-attach berada). Edit di sini → deploy dengan `node sync.js push`.
 
+> 🔧 **Setup pertama kali (install OpenClaw, node host + relay 18792, pairing, key, skill, deploy):**
+> baca **[SETUP.md](SETUP.md)** dulu. Dokumen ini (README) fokus ke *flow* sourcing harian.
+
 ---
 
 ## 1. Arsitektur & Peta File
