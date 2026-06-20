@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-06-20
+
+### Added
+- **Per-platform profile-card crop** (`openclaw/profile_crop.js`): the real platform profile (avatar + name + @handle + stats + bio) is screenshotted and pasted as the on-screen card instead of a synthetic one. **Instagram** done (handle via `profile.handle` or yt-dlp `%(channel)s` for bare reel URLs); X/Twitter layout works but its avatar is gated off (`THOTH_PROFILE_X=1`) pending an occluded-tab rendering fix; TikTok keeps its existing dedicated cropper.
+- **Cover face-swap for subject likeness** (`[cover] face_swap`): in AI mode the real subject's face is swapped onto the AI subject via Novita `merge-face`, using an **internet reference photo** (Wikipedia portrait by `character_name`, else the video frame) so the cover resembles the actual person.
+- **OpenRouter cover backend** (`[cover] image_engine = "openrouter"`, `image_model`): generate the cover with an image-output model that natively preserves the subject's identity from reference photos (default `google/gemini-2.5-flash-image`; alternatives `openai/gpt-5-image`, `openai/gpt-5-image-mini`, `google/gemini-3-pro-image`). Needs `THOTH_OPENROUTER_API_KEY`; falls back to FLUX + face-swap if unavailable.
+- **Cover topic grounding + medium-shot framing**: the FLUX/scene prompt now uses a detailed topic description (moment title + reason) — not just the headline — and frames people/objects as a medium shot, subject in the upper two-thirds with the lower third kept clear for the headline.
+- **Recency-decay topic ranking** (opt-in, env `THOTH_REEL_HALFLIFE_H`) in `discover_reels`: score `views × 0.5^(age/half-life)` so fast-rising reels outrank older high-view ones.
+- **Optional yt-dlp cookies for IG audio** (env `THOTH_YTDLP_COOKIES`) so the voiceover topic fallback can fetch login-walled reels.
+- **OpenClaw RUNBOOK + one-shot runner**: `openclaw/RUNBOOK.md` (manual flow) and `run_full.ps1` (discover → pipeline → validate → render, with build_footage-empty fallback).
+
+### Changed
+- **Narration default model → `deepseek/deepseek-v3.1`** (chat, non-reasoning) for reliable JSON; reasoning models (deepseek-v4-flash/pro, *-thinking, *-r1) truncate JSON.
+- **On-screen text has NO punctuation** (hook title **and** burned subtitles) while the spoken narration keeps its punctuation — `strip_punctuation()` applied to displayed text only.
+- TikTok source-video ranking now uses the on-screen **vision headline + scene** (the activity), candidate **cover+caption** combined, a wider candidate pool, and a stronger overlay-text vision read — so it picks the right activity, not just the right subject/place.
+- TikTok profile read waits up to ~45 s (was 16 s) with progressive-scroll retries (slow tab).
+
+### Fixed
+- **`scrape_comments.js` overwrote the content-set** (lost description + footage) when the main URL was a resolved TikTok CDN URL — now merges by page-url / source_url / video-id.
+- **`discover_reels` cross-account bleed** (other accounts' reels under the requested handle) + garbage topics (watermark/empty) + silent views=0; added owner-handle filter, `cleanTopic()`, and warnings.
+- **Long scripts losing all output on SIGKILL** — `discover_reels` now checkpoints incrementally.
+- **`crop_post.js` (X) "rect post tak valid"** — retry the rect read and re-tag after SPA re-render.
+- **Narrator clip far shorter than the narration** — video length now equals the narration (B-roll looped via `-stream_loop` instead of truncating the voiceover).
+- **`normalizeLikes` misparsed thousands** (`3.261` → 3) — fixed thousands-vs-decimal handling, correcting view/like ranking.
+- **`trace_source` curated-aggregator replacement** built its query from the caption only — now composes it from caption + vision (headline/scene) via the LLM; IG covers can now read the on-screen headline (vision).
+- **Narration failed on truncated JSON** (reasoning model) — the reply is now salvaged (hook + narration extracted from raw text) instead of falling back to clip-mode.
+- Cover subject was a blurry low-res cutout covered by text — low-res cutouts now route to an AI HD recreation that includes the subject, framed clear of the headline.
+- Meme cue log said `(top_right)` even when full-screen — now logs `(full-screen)`.
+
 ## [0.4.0] - 2026-06-16
 
 ### Added
