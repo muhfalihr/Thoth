@@ -18,7 +18,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { connect, sleep } = require('./cdp');
 const { tiktokOembed, youtubeOembed, matchesTopic } = require('./verify');
-const { resolveSource } = require('./resolve_source');
+const { resolveSource, composeSearchQuery } = require('./resolve_source');
 const { threadsVideoSrc, downloadThreads } = require('./threads_video');
 const { igProfileReels } = require('./ig_profile');
 const { tiktokProfileVideos, cropTiktokProfile } = require('./tiktok_profile');
@@ -26,6 +26,7 @@ const { rankBySimilarity } = require('./embed');
 const { tiktokDirectUrl, downloadTiktok } = require('./tiktok_video');
 const { outPath } = require('./paths');
 const { isCuratedAggregator } = require('./aggregators');
+const { cropProfile } = require('./profile_crop');
 
 const args = process.argv.slice(2);
 const getFlag = n => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
@@ -48,9 +49,21 @@ async function captionOf(main) {
   if (main.platform === 'youtube') { const m = await youtubeOembed(main.url); return m && m.title || ''; }
   return '';
 }
+// Cover image of an IG reel = its og:image (the generated cover frame, which carries the on-screen
+// HEADLINE overlay). oEmbed doesn't cover IG, so read it from the page over CDP (logged-in tab).
+async function igCoverImage(url) {
+  let c; try { c = await connect({ match: 'instagram.com', requireMatch: true }); } catch (e) { return ''; }
+  try {
+    try { await c.cmd('Page.bringToFront'); } catch (e) {}
+    await c.navigate(url, 6000); await sleep(2500);
+    const og = await c.evaluate(`(document.querySelector('meta[property="og:image"]')||{}).content || ''`);
+    return og || '';
+  } catch (e) { return ''; } finally { try { c.close(); } catch (e) {} }
+}
 async function coverOf(main) {
   if (main.platform === 'tiktok') { const m = await tiktokOembed(main.url); return m && m.thumbnail || ''; }
   if (main.platform === 'youtube') { const m = await youtubeOembed(main.url); return m && m.thumbnail || ''; }
+  if (main.platform === 'instagram') { return await igCoverImage(main.url); }
   return '';
 }
 
@@ -84,13 +97,14 @@ async function visionCover(imgUrl, key, model) {
   let ct = 'image/jpeg', b64;
   try { const ir = await fetch(imgUrl); if (!ir.ok) return ''; ct = ir.headers.get('content-type') || ct; b64 = Buffer.from(await ir.arrayBuffer()).toString('base64'); }
   catch (_) { return ''; }
-  const prompt = `Deskripsikan dalam 1 kalimat APA yang terjadi di cover video ini: scene, objek, aksi
-(mis. "mobil damkar melaju malam hari di jalan ramai di belakang sebuah mobil pribadi"). Sebutkan juga
-teks overlay bila ada. Bahasa Indonesia, ringkas, tanpa tanda kutip.`;
+  const prompt = `Lihat cover video ini. WAJIB & PALING PENTING: baca SEMUA teks overlay/judul di cover
+APA ADANYA (itu sinyal topik paling menentukan untuk membedakan klip mirip). Lalu deskripsikan singkat
+AKSI/kegiatan spesifik yang terjadi (apa yang sedang dilakukan), objek, dan lokasi — bukan cuma siapa
+orangnya. Format: "<teks overlay>. <aksi/scene singkat>". Bahasa Indonesia, tanpa tanda kutip.`;
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({ model, max_tokens: 120, temperature: 0, messages: [{ role: 'user', content: [
+      body: JSON.stringify({ model, max_tokens: 160, temperature: 0, messages: [{ role: 'user', content: [
         { type: 'text', text: prompt }, { type: 'image_url', image_url: { url: `data:${ct};base64,${b64}` } }] }] }),
     });
     if (!resp.ok) return '';
@@ -203,12 +217,16 @@ async function findOriginalTiktok(username, topicText = '', keywords = []) {
   // SCENE (vision). Bound vision cost to a pool: top-by-views (reposted-viral clip is high-views) ∪
   // top-by-caption-sim, then rank cover↔story. Best-effort: a flooder creator has many near-identical
   // covers, so flag low-confidence when the top picks are visually clustered.
-  const byViews = vids.slice().sort((a, b) => b.views - a.views).slice(0, 12);
-  const byCap = capRanked.slice(0, 6);
+  // Wider pool = better recall so the RIGHT clip (lower-views / generic-caption) isn't excluded before
+  // vision ranking even gets to see it.
+  const byViews = vids.slice().sort((a, b) => b.views - a.views).slice(0, 16);
+  const byCap = capRanked.slice(0, 8);
   const pool = [...new Map([...byViews, ...byCap].map(v => [v.url, v])).values()];
   console.log(`    [tiktok] profil @${username}: ${vids.length} video → vision-cover ${pool.length} kandidat…`);
   for (const v of pool) { v.cover = await visionCover(v.thumbnail, key, MODEL); }
-  const ranked = await rankBySimilarity(topic, pool, v => v.cover || v.caption || '');
+  // Rank by cover SCENE+overlay (vision) AND caption together — the cover's overlay text + the caption
+  // carry the specific ACTIVITY that separates near-identical clips of the same subject/place.
+  const ranked = await rankBySimilarity(topic, pool, v => [v.cover, v.caption].filter(Boolean).join('. '));
   if (!ranked.some(r => r.sim > 0)) return null;
   const top = ranked[0], second = ranked[1] || { sim: 0 };
   if ((top.sim || 0) < ON_FLOOR) { console.log(`    [tiktok] cover terbaik sim=${(top.sim || 0).toFixed(3)}<${ON_FLOOR} → tak cukup yakin, batal.`); return null; }
@@ -307,7 +325,11 @@ async function findStoryVideo(keywords, storyText, opts = {}) {
   const credited = normHandle(opts.credited || '');
   const repost = normHandle(opts.repostHandle || '');
   const kws = (keywords || []).map(s => String(s).trim()).filter(Boolean);
-  const query = (kws.slice(0, 2).join(' ') || (storyText || '').split(/\s+/).slice(0, 4).join(' ')).trim();
+  // An explicit LLM-composed query (opts.query) wins — it folds in vision (headline/scene) so it's far
+  // more specific than joining loose keywords or the first words of a vague caption.
+  const query = ((opts.query || '').trim()
+    || kws.slice(0, 2).join(' ')
+    || (storyText || '').split(/\s+/).slice(0, 4).join(' ')).trim();
   if (!query) return null;
   const all = searchAll(query, kws[0] || query.split(/\s+/)[0]);
   const seen = new Set();
@@ -380,17 +402,22 @@ async function setMainTo(set, orig, username) {
   console.log('='.repeat(60));
   console.log('main:', main.platform, main.url);
 
+  // Vision/text signals — hoisted so the [5] curated-aggregator enforce can reuse them to compose a
+  // search query (caption alone is often vague; vision describes what the clip actually shows).
+  let caption = '', headline = '', scene = '';
   let username = '', platHint = '', keywords = [];
   if (FORCE_USER) {
     username = cleanUser(FORCE_USER);
     console.log(`[force] username=@${username}`);
   } else {
-    const caption = await captionOf(main);
+    caption = await captionOf(main);
     const cover = await coverOf(main);
-    const headline = cover ? await visionHeadline(cover, novitaKey(), MODEL) : '';
+    headline = cover ? await visionHeadline(cover, novitaKey(), MODEL) : '';
+    scene = cover ? await visionCover(cover, novitaKey(), MODEL) : '';
     console.log(`[1] caption: ${(caption || '(kosong)').slice(0, 60)}`);
     console.log(`[2] headline(vision): ${(headline || '(kosong)').slice(0, 70)}`);
-    const res = await resolveSource({ description: main.description || main.title || '', caption, headline });
+    console.log(`[2b] scene(vision): ${(scene || '(kosong)').slice(0, 70)}`);
+    const res = await resolveSource({ description: main.description || main.title || '', caption, headline: [headline, scene].filter(Boolean).join(' — ') });
     console.log(`[3] LLM → source: ${res.source ? '@' + res.source.account + (res.source.platform ? '/' + res.source.platform : '') : 'null'} | keywords: ${res.keywords.join(', ') || '-'}`);
     if (res.source && res.source.account) { username = cleanUser(res.source.account); platHint = res.source.platform || ''; }
     keywords = res.keywords || [];
@@ -418,6 +445,13 @@ async function setMainTo(set, orig, username) {
   // --keywords flag / first-word topic only when no LLM keywords exist.
   const searchTopic = (keywords && keywords.length) ? keywords.slice(0, 2).join(' ') : topic;
 
+  // Rich story context for SOURCE-VIDEO RANKING (not just by-handle search). A creator posts many clips
+  // about the same person/place; what discriminates the RIGHT one is the ACTIVITY, which lives in the
+  // on-screen HEADLINE + SCENE (vision) — far more specific than title/desc/keywords (often empty or
+  // just subject+location). Feed all signals so ranking favours the matching activity, not just subject.
+  const storyCtx = [headline, scene, main.title, main.description, (keywords || []).join(', ')]
+    .map(s => (s || '').trim()).filter(Boolean).join('. ').trim();
+
   if (username && platHint === 'threads') {
     // Threads PAGE tak bisa yt-dlp, TAPI <video>.src (fbcdn) bisa. Cari post sumber → ekstrak URL
     // video CDN-nya → jadikan main (yt-dlp bisa download URL mp4 langsung itu).
@@ -444,8 +478,7 @@ async function setMainTo(set, orig, username) {
     // Original is on Instagram → grab the creator's own reel (downloadable via cookies) instead of
     // the curator's repost. is_video:true (IG reel is a video).
     console.log(`[4] sumber Instagram @${username} → cari reel SPESIFIK (match konten) dari profil…`);
-    const topicText = `${main.title || ''} ${main.description || ''}`.trim();
-    const orig = await findOriginalInstagram(username, keywords.length ? keywords : KEYWORDS, topicText);
+    const orig = await findOriginalInstagram(username, keywords.length ? keywords : KEYWORDS, storyCtx);
     if (orig && orig.url !== main.url) {
       const oldUrl = main.url;
       set.main.url = orig.url; set.main.platform = 'instagram'; set.main.is_video = true;
@@ -468,7 +501,7 @@ async function setMainTo(set, orig, username) {
     }
   } else if (username) {
     console.log(`[4] cari ASLI "@${username}"${platHint ? ' (' + platHint + ')' : ''} + "${searchTopic}"…`);
-    const storyText = `${main.title || ''}. ${main.description || ''}`.trim();
+    const storyText = storyCtx;
     let orig = null;
     if (platHint === 'youtube') orig = await findOriginalYouTube(username, searchTopic);
     else if (platHint === 'tiktok') {
@@ -512,7 +545,7 @@ async function setMainTo(set, orig, username) {
     set.main.source_keywords = keywords;
     if (!VIDEO.has(main.platform) || main.is_video === false) {
       console.log(`[4] main bukan video TikTok/YT → cari video sumber by keyword (prioritas non-agregator): "${keywords.join(' ')}"…`);
-      const orig = await findStoryVideo(keywords, `${main.title || ''}. ${main.description || ''}`.trim(), { credited: '', repostHandle: urlHandle(main.url) });
+      const orig = await findStoryVideo(keywords, storyCtx, { credited: '', repostHandle: urlHandle(main.url) });
       if (orig) { await setMainTo(set, orig, ''); set.main.source_via = 'keywords'; console.log(`    ✅ GANTI main → ${orig.platform} ${orig.url}`); }
       else console.log('    ⚠️ video non-agregator tak ketemu dari keywords → keywords disimpan, main dibiarkan.');
     } else {
@@ -532,7 +565,14 @@ async function setMainTo(set, orig, username) {
     if (curated) {
       console.log(`[5] main masih dari akun kurator @${curated} (ig_accounts) → WAJIB ganti ke sumber non-agregator…`);
       const kws = keywords.length ? keywords : KEYWORDS;
-      const repl = await findStoryVideo(kws, `${set.main.title || ''}. ${set.main.description || ''}`.trim(), { credited: username, repostHandle: curated });
+      // Build the search query from caption + VISION (headline/scene) via LLM — for curator reels the
+      // caption is often vague/motivational, so vision (what's actually on screen) yields a far more
+      // specific query than caption/keywords alone. Falls back to keywords inside findStoryVideo.
+      let q = await composeSearchQuery({
+        description: set.main.description || set.main.title || '', caption, headline, scene,
+      });
+      if (q) console.log(`    🔎 query(LLM caption+vision): "${q}"`);
+      const repl = await findStoryVideo(kws, storyCtx || `${set.main.title || ''}. ${set.main.description || ''}`.trim(), { credited: username, repostHandle: curated, query: q });
       if (repl) {
         const oldUrl = set.main.url;
         await setMainTo(set, repl, username || set.main.source_traced || '');
@@ -543,6 +583,27 @@ async function setMainTo(set, orig, username) {
       }
     }
   }
+
+  // ── Real PROFILE-CARD crop (any platform) → Thoth pastes it instead of the synthetic card.
+  // TikTok already cropped in its branch above (image_path set → skipped here); this covers IG and,
+  // as more platforms land in profile_crop.js, X/FB/YT too. Best-effort: failure keeps synthetic card.
+  try {
+    set.main.profile = set.main.profile || {};
+    const haveCrop = set.main.profile.image_path && fs.existsSync(set.main.profile.image_path);
+    if (!haveCrop) {
+      const handle = cleanUser(set.main.profile.handle || urlHandle(set.main.url)
+        || urlHandle(set.main.source_url || '') || set.main.source_traced || '');
+      const png = outPath(`profile_${handle || set.main.platform || 'main'}.png`);
+      const cropped = await cropProfile(set.main.platform, handle, png, { url: set.main.source_url || set.main.url });
+      if (cropped) {
+        set.main.profile.image_path = cropped;
+        if (handle && !set.main.profile.handle) set.main.profile.handle = handle;
+        console.log(`    🪪 crop kartu profil ${set.main.platform} @${handle || '?'} → ${cropped}`);
+      } else {
+        console.log(`    ℹ️ crop profil ${set.main.platform} gagal/belum didukung → kartu sintetis.`);
+      }
+    }
+  } catch (e) {}
 
   fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
   console.log('-'.repeat(60));

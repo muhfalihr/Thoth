@@ -79,7 +79,39 @@ async function resolveSource({ description = '', caption = '', headline = '', ke
   return { source, keywords, reason: String(o.reason || '').slice(0, 120) };
 }
 
-module.exports = { resolveSource };
+// Compose ONE search query (3-7 words) to find the ORIGINAL source video of the same event.
+// Unlike resolveSource (which extracts an account + loose keywords), this returns a ready-to-search
+// phrase and LEANS ON VISION (on-screen headline + scene description) because a curator reel's caption
+// is often vague/motivational and doesn't describe the actual incident. Used by trace_source when a
+// curated-aggregator main must be replaced by a non-aggregator source.
+async function composeSearchQuery({ description = '', caption = '', headline = '', scene = '', key = KEY, model = MODEL } = {}) {
+  if (!key) return '';
+  if (!(description || caption || headline || scene)) return '';
+  const prompt = `Dari sinyal sebuah video repost/kurator di bawah, buat SATU query pencarian paling efektif
+untuk menemukan VIDEO SUMBER ASLI (berita/eyewitness) dari PERISTIWA yang sama.
+ATURAN:
+- Query = 3-7 kata: entitas/peristiwa PALING spesifik (nama orang/tempat/lembaga/objek + kejadian).
+- UTAMAKAN info dari [HEADLINE on-screen] & [DESKRIPSI VISUAL] (apa yang TERLIHAT) — [CAPTION] sering
+  generik/motivasional dan tak menggambarkan isi spesifik.
+- DILARANG kata generik: video, viral, detik-detik, sebuah, aksi, momen, terbaru, terkini.
+- Bahasa Indonesia. Keluarkan HANYA query-nya (tanpa tanda kutip, tanpa penjelasan).
+[DESKRIPSI]: ${(description || '').slice(0, 500) || '(kosong)'}
+[CAPTION]: ${(caption || '').slice(0, 300) || '(kosong)'}
+[HEADLINE on-screen]: ${(headline || '').slice(0, 300) || '(kosong)'}
+[DESKRIPSI VISUAL]: ${(scene || '').slice(0, 300) || '(kosong)'}`;
+  try {
+    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({ model, max_tokens: 60, temperature: 0, messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!resp.ok) return '';
+    const d = await resp.json();
+    let q = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    return q.replace(/^["'\s]+|["'\s]+$/g, '').replace(/\s+/g, ' ').slice(0, 120);
+  } catch (e) { return ''; }
+}
+
+module.exports = { resolveSource, composeSearchQuery };
 
 // ---- CLI ----
 if (require.main === module) {

@@ -35,9 +35,33 @@ const HOURS = parseInt(getFlag('--hours', '48'), 10);
 const OUT = getFlag('--out', null);
 const MODEL = process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct';
 
+// Recency-decay ranking (OPT-IN): score = views * 0.5^(ageHours / halfLife). Views are cumulative,
+// so a pure-views sort favours OLDER reels; decay rewards reels that gathered views FAST (fresher).
+// Gate via env THOTH_REEL_HALFLIFE_H (hours). 0/unset = legacy ranking (pure views, recency only as
+// gate + tie-break). half-life ≈ window/2 is a sensible default if you turn it on.
+const HALFLIFE_H = parseFloat(process.env.THOTH_REEL_HALFLIFE_H || '0');
+const DECAY_ON = HALFLIFE_H > 0;
+function ageHoursOf(r) {
+  const ts = r && r.time ? Date.parse(r.time) : NaN;
+  return isNaN(ts) ? NaN : Math.max(0, (Date.now() - ts) / 3600000);
+}
+// Ranking score. Decay off → raw views. Decay on → views * 0.5^(age/halfLife); unknown age = no
+// penalty (factor 1) so a missing timestamp never silently buries a high-views reel.
+function scoreOf(r) {
+  const v = (r && r.views_n) || 0;
+  if (!DECAY_ON) return v;
+  const ah = ageHoursOf(r);
+  return v * (isNaN(ah) ? 1 : Math.pow(0.5, ah / HALFLIFE_H));
+}
+const rankCmp = (a, b) => (scoreOf(b) - scoreOf(a)) || (Date.parse(b.time || 0) - Date.parse(a.time || 0));
+
 const NOVITA_KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
 const GROQ_KEY = process.env.GROQ_API_KEY || (() => { const f = path.join(__dirname, '.groq_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
 const YTDLP = process.env.YTDLP || 'yt-dlp';
+// Optional browser to pull cookies from so yt-dlp can fetch login-walled IG audio (voiceout
+// fallback). e.g. THOTH_YTDLP_COOKIES=firefox | chrome | brave | edge. Unset = no audio for IG
+// (vision hook stays the primary topic source — see Bug 5).
+const YTDLP_COOKIES = (process.env.THOTH_YTDLP_COOKIES || '').trim();
 
 // Read the on-screen HOOK/headline text from a reel's opening frame (base64 PNG) via Novita vision.
 async function visionHook(b64, key, model) {
@@ -57,15 +81,22 @@ async function visionHook(b64, key, model) {
   } catch (e) { return ''; }
 }
 
-// AUDIO FALLBACK (guarded): topic from the voiceover. Only runs if GROQ_KEY is set. Downloads audio
-// via yt-dlp (IG reel) → Groq Whisper → first ~2 sentences (the topic is usually stated up front).
+// AUDIO FALLBACK (best-effort): topic from the voiceover. The on-screen hook (vision) is the PRIMARY
+// source; this only runs when the hook is too short, and a failure NEVER kills the entry (Bug 5). IG
+// reels are login-walled → yt-dlp can't fetch their audio without cookies, so we pre-skip IG cleanly
+// unless THOTH_YTDLP_COOKIES points yt-dlp at a logged-in browser (avoids a doomed ~minute download
+// per hookless reel and the noisy "Command failed: yt-dlp …" message that looked like a crash).
 async function audioTopic(reelUrl) {
-  if (!GROQ_KEY) return { text: '', note: 'audio-skip (no GROQ key)' };
+  if (!GROQ_KEY) return { text: '', note: 'audio-off (no GROQ key)' };
+  if (/instagram\.com/i.test(reelUrl) && !YTDLP_COOKIES) {
+    return { text: '', note: 'audio-skip (IG login-wall — set THOTH_YTDLP_COOKIES=firefox/brave)' };
+  }
   const tmp = path.join(require('os').tmpdir(), 'reel_' + Date.now());
+  const cookieArg = YTDLP_COOKIES ? ` --cookies-from-browser ${YTDLP_COOKIES}` : '';
   try {
-    execSync(`"${YTDLP}" -x --audio-format mp3 -o "${tmp}.%(ext)s" "${reelUrl}"`, { stdio: 'pipe', timeout: 60000 });
+    execSync(`"${YTDLP}" -x --audio-format mp3 --no-warnings --no-playlist${cookieArg} -o "${tmp}.%(ext)s" "${reelUrl}"`, { stdio: 'pipe', timeout: 45000 });
     const mp3 = tmp + '.mp3';
-    if (!fs.existsSync(mp3)) return { text: '', note: 'audio-skip (download gagal — cookie IG?)' };
+    if (!fs.existsSync(mp3)) return { text: '', note: 'audio-skip (yt-dlp tak hasilkan audio)' };
     // Groq Whisper transcription (multipart)
     const buf = fs.readFileSync(mp3);
     const fd = new FormData();
@@ -77,18 +108,50 @@ async function audioTopic(reelUrl) {
     if (!r.ok) return { text: '', note: 'audio-skip (Groq ' + r.status + ')' };
     const t = (await r.text()).trim();
     return { text: t.split(/(?<=[.!?])\s/).slice(0, 2).join(' ').slice(0, 200), note: 'audio' };
-  } catch (e) { return { text: '', note: 'audio-skip (' + String(e.message || e).slice(0, 40) + ')' }; }
+  } catch (e) {
+    // yt-dlp failed (IG login-wall is the usual cause). Keep it clean + best-effort — don't leak the
+    // raw command, don't kill the reel (vision hook already carried the topic where it could).
+    const err = String((e && (e.stderr || e.message)) || e);
+    const why = /sign ?in|log ?in|cookies|private|rate.?limit|429/i.test(err) ? 'login-wall/akses'
+      : /timed out|ETIMEDOUT|timeout/i.test(err) ? 'timeout'
+      : 'yt-dlp gagal';
+    return { text: '', note: `audio-skip (${why}${YTDLP_COOKIES ? '' : ' — set THOTH_YTDLP_COOKIES'})` };
+  }
+}
+
+// A reel belongs to `handle` only if its href path is `/<handle>/reel/...` or a bare
+// canonical `/reel/<code>/` (grid links are usually bare). Anchors that EXPLICITLY name a
+// DIFFERENT account (`/<other>/reel/...`) are IG "Suggested"/related leaks — the root cause of
+// cross-account bleed (e.g. indozone.id reels showing up under jktlogy). Those are dropped.
+// Reject junk the vision model returns when there is no real hook overlay: its meta-answer
+// ("Tak ada teks overlay di atas video."), or a watermark/domain it OCR'd off the footage
+// (e.g. "WWW.INDOZONE.ID", "indozone.id"). These were being recorded as topics.
+function cleanTopic(t) {
+  t = (t || '').trim();
+  if (!t) return '';
+  if (/\b(tak ada|tidak ada|tanpa)\b.*\bteks\b|no (text|overlay)/i.test(t)) return '';
+  const words = t.split(/\s+/);
+  if (words.length <= 2 && /(^www\.)|([\w-]+\.(id|com|net|tv|co|org)\b\.?$)/i.test(t)) return '';
+  return t;
 }
 
 async function reelsOf(client, handle) {
   await client.navigate(`https://www.instagram.com/${handle}/reels/`, 6000);
   await sleep(3000);
   const raw = await client.evaluate(`(() => {
+    const HANDLE = ${JSON.stringify(handle)}.toLowerCase();
     const seen = new Set(); const out = [];
     document.querySelectorAll('a[href*="/reel/"]').forEach(a => {
-      const href = a.getAttribute('href'); if (!href || seen.has(href)) return; seen.add(href);
+      let href = a.getAttribute('href'); if (!href) return;
+      const u = new URL(href, location.origin);
+      const m = u.pathname.match(/^\\/(?:([\\w.]+)\\/)?reel\\/([\\w-]+)/);
+      if (!m) return;
+      const owner = (m[1] || '').toLowerCase();        // '' = bare /reel/<code> (own grid)
+      if (owner && owner !== HANDLE) return;            // cross-account leak → drop
+      const code = m[2];
+      if (seen.has(code)) return; seen.add(code);
       const sp = Array.from(a.querySelectorAll('span')).map(s => (s.innerText || '').trim()).find(t => /^[\\d.,]+\\s*[KMrbjt]*$/i.test(t));
-      out.push({ url: new URL(href, location.origin).href, views: sp || '' });
+      out.push({ url: u.href, views: sp || '' });
     });
     return JSON.stringify(out);
   })()`);
@@ -118,6 +181,7 @@ run(async () => {
   console.log('  Discover Reels (topik dari akun kurator IG)');
   console.log('='.repeat(60));
   console.log('Akun:', ACCOUNTS.join(', '), '| max/akun:', MAX_PER, '| window:', HOURS + 'h');
+  console.log('Ranking:', DECAY_ON ? `recency-decay (half-life ${HALFLIFE_H}h)` : 'views (set THOTH_REEL_HALFLIFE_H untuk recency-decay)');
   if (!GROQ_KEY) console.log('ℹ️  audio-fallback OFF (belum ada GROQ key) — pakai hook-frame vision saja.');
 
   const client = await connect({ match: 'instagram.com', requireMatch: true });
@@ -126,30 +190,47 @@ run(async () => {
 
   const cutoff = Date.now() - HOURS * 3600 * 1000;
   const found = [];
+  // Checkpoint to disk after every reel/account so a SIGKILL from the runner's process timeout
+  // (Bug 3) doesn't throw away everything scraped so far — partial progress stays usable, mirroring
+  // run_pipeline's per-stage writes. Sorted on each flush so the file is always rank-ordered.
+  const out = OUT || outPath('reel_topics.json');
+  const ranking = DECAY_ON ? `recency-decay (half-life ${HALFLIFE_H}h)` : 'views';
+  const writeRanked = (partial) => {
+    const ranked = found.slice().sort(rankCmp)
+      .map(r => DECAY_ON ? { ...r, score: Math.round(scoreOf(r)) } : r);
+    try { fs.writeFileSync(out, JSON.stringify({ fetched_at: new Date().toISOString(), accounts: ACCOUNTS, hours: HOURS, ranking, partial, reels: ranked }, null, 2), 'utf8'); } catch (e) {}
+  };
+  const flush = () => writeRanked(true);
   for (const h of ACCOUNTS) {
     process.stdout.write(`\n• @${h}: ambil reels ... `);
     let reels = [];
     try { reels = await reelsOf(client, h); console.log(`${reels.length} reel`); }
     catch (e) { console.log(`⚠️ ${String(e.message || e).slice(0, 50)}`); continue; }
+    if (!reels.length) { console.log(`    ⚠️  grid kosong/virtualized (atau semua leak antar-akun di-drop) — skip akun ini`); continue; }
+    let acctViews = 0;
     for (const r of reels) {
       let fr; try { fr = await reelFrame(client, r.url); } catch (e) { continue; }
       const ts = fr.time ? Date.parse(fr.time) : NaN;
       if (!isNaN(ts) && ts < cutoff) { console.log(`    ⏹  reel >${HOURS}h → stop akun ini`); break; } // newest-first
-      let topic = await visionHook(fr.frameB64, NOVITA_KEY, MODEL);
+      let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
       let via = 'hook';
-      if (topic.length < 8) { const a = await audioTopic(r.url); if (a.text) { topic = a.text; via = a.note; } else via = a.note; }
+      if (topic.length < 8) { const a = await audioTopic(r.url); const at = cleanTopic(a.text); if (at) { topic = at; via = a.note; } else via = a.note; }
       const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
-      found.push({ account: h, url: r.url, views: r.views, views_n: normalizeLikes(r.views), time: fr.time, age: ageH, topic, via });
+      const vn = normalizeLikes(r.views); if (vn > 0) acctViews++;
+      found.push({ account: h, url: r.url, views: r.views, views_n: vn, time: fr.time, age: ageH, topic, via });
       console.log(`    [${ageH}, ${r.views || '?'} views, ${via}] ${topic || '(tak terbaca)'}`);
+      flush(); // checkpoint after each reel
     }
+    if (reels.length && acctViews === 0) console.log(`    ⚠️  views 0 untuk semua reel @${h} (grid view-count tak render) — ranking pakai recency saja`);
+    flush(); // checkpoint after each account
   }
   client.close();
 
-  found.sort((a, b) => (b.views_n - a.views_n) || (Date.parse(b.time || 0) - Date.parse(a.time || 0)));
-  const out = OUT || outPath('reel_topics.json');
-  fs.writeFileSync(out, JSON.stringify({ fetched_at: new Date().toISOString(), accounts: ACCOUNTS, hours: HOURS, reels: found }, null, 2), 'utf8');
+  found.sort(rankCmp);
+  writeRanked(false); // final: drop the partial flag now that the run completed cleanly
   console.log('\n' + '-'.repeat(60));
-  console.log('PERINGKAT (views):');
-  found.slice(0, 10).forEach((r, i) => console.log(`  ${i + 1}. [@${r.account}, ${r.views || '?'} views, ${r.age}] ${r.topic || '(tak terbaca)'}`));
+  console.log(`PERINGKAT (${ranking}):`);
+  found.slice(0, 10).forEach((r, i) => console.log(
+    `  ${i + 1}. [@${r.account}, ${r.views || '?'} views, ${r.age}${DECAY_ON ? `, score ${Math.round(scoreOf(r))}` : ''}] ${r.topic || '(tak terbaca)'}`));
   console.log(`📄 ${out}`);
 });

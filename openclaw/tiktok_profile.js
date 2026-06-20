@@ -14,7 +14,7 @@ const { tiktokOembed } = require('./verify');
 
 // TikTok often serves a "Please wait..." anti-bot interstitial that resolves to the real page after a
 // few seconds. Poll until the profile grid/header is present (or timeout). Returns true when ready.
-async function waitProfileReady(c, maxMs = 16000) {
+async function waitProfileReady(c, maxMs = 45000) {
   const step = 1000;
   for (let waited = 0; waited <= maxMs; waited += step) {
     const ok = await c.evaluate(`String(!!document.querySelector('a[href*="/video/"]') || !!document.querySelector('[data-e2e="user-avatar"]'))`);
@@ -41,11 +41,9 @@ async function tiktokProfileVideos(username, { max = 12, captions = true, client
   if (!c) { c = await connect({ match: 'tiktok.com', requireMatch: true }); own = true; }
   try {
     try { await c.cmd('Page.bringToFront'); } catch (e) {}
-    await c.navigate('https://www.tiktok.com/@' + u, 7000);
-    await waitProfileReady(c); // ride out the "Please wait..." interstitial
-    try { await c.scroll(1600); } catch (e) {}
-    await sleep(1400);
-    const raw = await c.evaluate(`(() => {
+    await c.navigate('https://www.tiktok.com/@' + u, 9000);
+    await waitProfileReady(c, 45000); // ride out the "Please wait..." interstitial + a slow tab (up to 45s)
+    const evalGrid = `(() => {
       const seen = new Set(); const out = [];
       document.querySelectorAll('a[href*="/video/"]').forEach(a => {
         const href = a.getAttribute('href') || '';
@@ -57,8 +55,15 @@ async function tiktokProfileVideos(username, { max = 12, captions = true, client
         out.push({ url, v: (vEl && vEl.innerText || '').trim() });
       });
       return JSON.stringify(out.slice(0, 40));
-    })()`);
-    let items = []; try { items = JSON.parse(raw || '[]'); } catch (e) {}
+    })()`;
+    // The grid lazy-loads — read with progressive scroll + retries so a slow tab still yields videos.
+    let items = [];
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try { await c.scroll(1200 * (attempt + 1)); } catch (e) {}
+      await sleep(1500);
+      try { items = JSON.parse(await c.evaluate(evalGrid) || '[]'); } catch (e) { items = []; }
+      if (items.length) break;
+    }
     // Keep only THIS creator's own videos (the profile grid is theirs; guard against stray links).
     const mine = new RegExp('/@' + u.replace(/[.]/g, '\\.') + '/video/', 'i');
     items = items.filter(it => mine.test(it.url))

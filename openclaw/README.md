@@ -103,6 +103,14 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
 
 Semua perintah dijalankan dari `~/.openclaw/workspace`:
 
+> ⚠️ **`discover_reels.js` & `run_pipeline.js` itu LONG-RUNNING** (vision + whisper + multi-search,
+> bisa >2 menit). Kalau dijalankan sinkron, runtime OpenClaw bisa `SIGKILL` di tengah jalan.
+> **Jalankan via background session + poll** (bukan satu call sinkron):
+> jalankan dengan `run_in_background`, lalu `process poll/log` sampai selesai. Keduanya **checkpoint
+> ke disk** (`run_pipeline` per-stage; `discover_reels` per-reel dengan flag `"partial": true`),
+> jadi kalaupun ke-kill, output yang sudah jadi tetap kepakai — cek file-nya sebelum rerun.
+> Untuk meringankan: `discover_reels` boleh 1–2 akun per call, `run_pipeline` turunkan `--per/--max`.
+
 ### Step 1 — Discovery topik dari akun IG terkurasi
 
 ```bash
@@ -179,6 +187,7 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 | `--per` / `--max` (run_pipeline) | CLI | 2 / 4 | Footage per objek / objek maksimal. |
 | `--cap` (run_pipeline) | CLI | 12 | Jumlah komentar maksimal. Jangan kecilkan — komentar = bahan narasi. |
 | `--hours` (discover_reels) | CLI | 48 | Window recency topik. |
+| `THOTH_REEL_HALFLIFE_H` | env saat `discover_reels` | 0 (off) | Ranking topik. 0 = pure-views (recency cuma gate+tiebreak). >0 = skor `views × 0.5^(umur/half-life)` → reel yg cepat viral (fresh) naik. Coba ~24 (≈window/2). |
 | `[narration] target_secs` | Thoth `config.toml` | 45 | Panjang narasi (≈3 kata/detik). |
 | `[cover] subject_mode` | Thoth `config.toml` | `auto` | `auto` (cutout asli kalau jelas, kalau gelap/blur → subjek AI) · `ai` (selalu generate) · `cutout` (selalu orang asli). |
 | `[cover] duration_sec` | Thoth `config.toml` | 3.0 | Lama cover full-screen sebelum dissolve ke footage. |
@@ -194,6 +203,7 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 | Gejala | Akar | Fix |
 |---|---|---|
 | `ECONNREFUSED 127.0.0.1:18792` di semua script | Node host mati (sering hilang setelah update OpenClaw) | `openclaw node status` → kalau stopped: `openclaw node start`. Kalau task hilang: `openclaw node install` lalu `start`. Kalau minta pairing: `openclaw devices list` → `openclaw devices approve <id>` → start ulang. Klik extension TIDAK menolong kalau node host mati. |
+| `Process exited with signal SIGKILL` saat discover_reels/run_pipeline | Step long-running ke-kill timeout runtime sebelum selesai | Jalankan via **background + poll** (lihat box di §3), jangan sinkron. Output partial sudah ke-checkpoint: cek `reel_topics.json` (`"partial": true`) / `thoth_content_set.json` — sering sudah cukup dipakai tanpa rerun penuh. Kalau perlu rerun, kecilkan beban (akun/`--per`/`--max` lebih sedikit). |
 | `tab X belum ter-attach relay (skip)` | Tab platform itu tak terbuka/ter-attach | Buka tab login platform tsb di Brave, biarkan terbuka. |
 | discover_reels: akun "kosong" | Grid reels IG virtualized tak render via CDP (akun besar/verified) | Known issue (≈4/10 akun). Pakai akun lain di daftar; atau buka profilnya manual di tab IG lalu rerun. |
 | Narasi hambar / generik | `comments[] = 0` di content-set | Jalankan `node collect_comments.js <set.json> --extra <url_post_rame>`. |

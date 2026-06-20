@@ -181,8 +181,22 @@ async function main() {
   if (fs.existsSync(OUT_JSON)) {
     try {
       const prev = JSON.parse(fs.readFileSync(OUT_JSON, 'utf8'));
-      if (prev && !Array.isArray(prev) && prev.main && prev.main.url === TARGET_URL) {
-        prev.comments = results; // keep existing main/footage, refresh comments only
+      // "Same main" check is loose on purpose: run_pipeline/trace_source rewrites
+      // main.url to the resolved TikTok CDN URL while keeping the original page URL
+      // in main.source_url. scrape_comments is invoked with the PAGE url, so a strict
+      // main.url===TARGET_URL never matched → we used to clobber description+footage.
+      // Match on page-url, CDN-url, source_url, OR same video id.
+      const targetVid = extractVideoId(TARGET_URL);
+      const sameMain = prev && !Array.isArray(prev) && prev.main && (
+        prev.main.url === TARGET_URL ||
+        prev.main.source_url === TARGET_URL ||
+        (targetVid !== 'unknown' && (
+          extractVideoId(prev.main.url || '') === targetVid ||
+          extractVideoId(prev.main.source_url || '') === targetVid
+        ))
+      );
+      if (sameMain) {
+        prev.comments = results; // keep existing main/footage/description, refresh comments only
         contentSet = prev;
       }
     } catch (e) {}

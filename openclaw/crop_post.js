@@ -105,9 +105,6 @@ async function cropPost({ url, out, pad = 8, navWaitMs = 6000, tries = 12, log =
 
     const dpr = (await client.evaluate('window.devicePixelRatio')) || 1;
 
-    // Caption/text of the post (for relevance gating by the caller) — we're already on it.
-    const text = await client.evaluate(`(() => { const el = document.querySelector('[data-crop-post="1"]'); return el ? (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300) : ''; })()`);
-
     // Scroll the element just below the sticky top bar, then read its VIEWPORT rect (+ scroll/size).
     const place = async () => {
       await client.evaluate(`(() => { const el = document.querySelector('[data-crop-post="1"]'); if (el) { const top = el.getBoundingClientRect().top + window.scrollY; window.scrollTo(0, Math.max(0, top - 64)); } })()`);
@@ -115,8 +112,21 @@ async function cropPost({ url, out, pad = 8, navWaitMs = 6000, tries = 12, log =
       const rj = await client.evaluate(`(() => { const el = document.querySelector('[data-crop-post="1"]'); if (!el) return ''; const r = el.getBoundingClientRect(); return JSON.stringify({x:r.x,y:r.y,w:r.width,h:r.height,sx:window.scrollX,sy:window.scrollY,ih:window.innerHeight}); })()`);
       try { return JSON.parse(rj); } catch (e) { return null; }
     };
+    // Retry reading the rect until it's a real, laid-out box. Two transient causes this guards:
+    //  (a) the tweet/post isn't fully rendered yet → height ~0 on the first read;
+    //  (b) X/IG are aggressive SPAs that re-render after we tagged → our data-crop-post attribute
+    //      gets wiped → place() finds nothing. We re-tag (re-run `find`) before each retry.
     let m = await place();
-    if (!m || m.w <= 30 || m.h <= 12) return { ok: false, platform, reason: 'rect post tak valid' };
+    for (let t = 0; t < tries && (!m || m.w <= 30 || m.h <= 12); t++) {
+      await client.evaluate(`(() => { if (!document.querySelector('[data-crop-post="1"]')) { const el = ${cfg.find}; if (el) el.setAttribute('data-crop-post','1'); } })()`);
+      await sleep(800);
+      m = await place();
+    }
+    if (!m || m.w <= 30 || m.h <= 12) return { ok: false, platform, reason: 'rect post tak valid (element 0-size setelah retry — login-wall / age-gate / re-render?)' };
+
+    // Caption/text of the post (for relevance gating by the caller). Read AFTER the rect is valid
+    // so a mid-flight SPA re-render (which we re-tagged through) doesn't leave this empty.
+    const text = await client.evaluate(`(() => { const el = document.querySelector('[data-crop-post="1"]'); return el ? (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 300) : ''; })()`);
 
     // Capture strategy:
     //  - FITS in viewport → plain screenshot (NO clip/beyondViewport) + local ffmpeg crop. WYSIWYG:

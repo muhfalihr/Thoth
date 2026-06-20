@@ -50,16 +50,31 @@ Keluarkan HANYA JSON array valid, tanpa teks/penjelasan lain:
 [{"user":"","text":"","likes":0,"box":[x1,y1,x2,y2]}]`;
 }
 
-// Parse "1.2K" / "3,4rb" / 109 / "1.2 jt" → integer.
+// Parse "1.2K" / "3,4rb" / 109 / "1.2 jt" / "3,261" / "3.261" → integer.
+//
+// The separator means different things depending on whether a magnitude suffix is present:
+//   • WITH suffix (k/rb=×1e3, m/jt=×1e6) → the number is a DECIMAL multiplier, so ',' and '.'
+//     are decimal points: "1,2K"=1200, "32.4K"=32400, "1.2 jt"=1_200_000.
+//   • WITHOUT suffix → it's a full integer with GROUPING separators, so ',' and '.' are thousands
+//     separators to be dropped: "3,261"=3261, "3.261"=3261, "1.234.567"=1234567, "409"=409.
+// (The old code blanket-replaced ',' with '.' and treated everything as decimal, so "3.261" became
+//  3 — wrecking ranking of view/like counts shown as plain thousands.)
 function normalizeLikes(v) {
   if (typeof v === 'number') return Math.max(0, Math.round(v));
-  const s = String(v || '').trim().toLowerCase().replace(/,/g, '.');
-  const m = s.match(/([\d.]+)\s*(k|m|rb|jt)?/);
-  if (!m) return 0;
-  let n = parseFloat(m[1]) || 0;
-  if (m[2] === 'k' || m[2] === 'rb') n *= 1e3;
-  else if (m[2] === 'm' || m[2] === 'jt') n *= 1e6;
-  return Math.round(n);
+  const s = String(v || '').trim().toLowerCase();
+  const numMatch = s.match(/\d[\d.,]*/);
+  if (!numMatch) return 0;
+  const num = numMatch[0];
+  const suf = (s.match(/(rb|jt|k|m)/) || [])[1] || ''; // rb/jt before k/m in the alternation
+  let n;
+  if (suf) {
+    n = parseFloat(num.replace(/,/g, '.')) || 0;        // suffix → decimal multiplier
+    if (suf === 'k' || suf === 'rb') n *= 1e3;
+    else n *= 1e6;                                       // m | jt
+  } else {
+    n = parseInt(num.replace(/[.,]/g, ''), 10) || 0;    // no suffix → drop thousands separators
+  }
+  return Math.max(0, Math.round(n));
 }
 
 // Send a (pre-resized) image to the vision model and return parsed comments.

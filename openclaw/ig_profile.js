@@ -26,11 +26,17 @@ async function igProfileReels(username, { max = 8, captions = true, client } = {
     await c.navigate('https://www.instagram.com/' + username + '/reels/', 6000);
     await sleep(3000);
     const raw = await c.evaluate(`(() => {
+      const HANDLE = ${JSON.stringify(username)}.toLowerCase();
       const seen = new Set(); const out = [];
-      Array.from(document.querySelectorAll('a')).forEach(a => {
-        const m = (a.getAttribute('href') || '').match(/\\/reel\\/[\\w-]+/);
-        if (!m || seen.has(m[0])) return; seen.add(m[0]);
-        out.push({ code: m[0].replace('/reel/', ''), v: (a.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 20) });
+      Array.from(document.querySelectorAll('a[href*="/reel/"]')).forEach(a => {
+        const href = a.getAttribute('href') || '';
+        const m = new URL(href, location.origin).pathname.match(/^\\/(?:([\\w.]+)\\/)?reel\\/([\\w-]+)/);
+        if (!m) return;
+        const owner = (m[1] || '').toLowerCase();          // '' = bare /reel/<code> (own grid)
+        if (owner && owner !== HANDLE) return;              // drop IG "Suggested"/other-account leaks
+        const code = m[2];
+        if (seen.has(code)) return; seen.add(code);
+        out.push({ code, v: (a.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 20) });
       });
       return JSON.stringify(out.slice(0, 24));
     })()`);
