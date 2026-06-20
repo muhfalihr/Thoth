@@ -408,6 +408,12 @@ pub struct AudioOptions {
     /// (the cover already carries the text). See `cover`.
     pub cover: Option<HeadlineImage>,
 
+    /// Loop the source video input (`-stream_loop -1`) so a short B-roll fills a
+    /// LONGER timeline. Set in the narrator path when the narration outlasts the
+    /// source clip — otherwise the video would end at the source length while the
+    /// narration audio keeps going (Bug 6). The filtergraph trim bounds the loop.
+    pub loop_source: bool,
+
     /// Beat-2 character intro (profile card + name above head). `None` = disabled.
     pub profile_card: Option<super::profile_card::ProfileCard>,
 
@@ -883,7 +889,8 @@ pub fn encode_clip_direct(
         for m in &meme_cues {
             info!("meme cue: {} at t={:.1}s for {:.1}s ({})",
                   m.path.file_name().unwrap_or_default().to_string_lossy(),
-                  m.at_sec, m.duration_sec, m.position);
+                  m.at_sec, m.duration_sec,
+                  if m.fullscreen { "full-screen" } else { m.position.as_str() });
         }
     }
 
@@ -1110,9 +1117,11 @@ pub fn encode_clip_direct(
                 video_filter_str
             };
 
-            let mut a = vec!["-y".into(),
-                "-ss".into(), format!("{fast_seek:.3}"),
-                "-i".into(), source.to_string_lossy().to_string()];
+            let mut a = vec!["-y".into()];
+            // Loop the B-roll when the narration outlasts the source (Bug 6). Must precede `-i`.
+            if audio.loop_source { a.extend(["-stream_loop".into(), "-1".into()]); }
+            a.extend(["-ss".into(), format!("{fast_seek:.3}"),
+                "-i".into(), source.to_string_lossy().to_string()]);
 
             // Add SFX input (plays once, no loop)
             if let Some(sfx_path) = &audio.sfx_intro {
@@ -1346,13 +1355,16 @@ pub fn encode_clip_direct(
         } else {
             // Plain — no audio effects, fastest path. Subtitles are still burned
             // last (topmost) for consistency with the overlay path.
-            vec!["-y".into(),
+            let mut a = vec!["-y".into()];
+            if audio.loop_source { a.extend(["-stream_loop".into(), "-1".into()]); }
+            a.extend([
                 "-ss".into(), format!("{fast_seek:.3}"),
                 "-i".into(), source.to_string_lossy().to_string(),
                 "-vf".into(), format!("{main_vf},{sub_suffix}"),
                 "-af".into(), main_af,
                 "-t".into(), format!("{duration:.3}"),
-                "-c:v".into(), vcodec]
+                "-c:v".into(), vcodec]);
+            a
         }
     }; // end args
 

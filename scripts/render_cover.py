@@ -62,6 +62,27 @@ def novita_key():
     return None
 
 
+# ── OpenRouter API key (env first, then .env) ─────────────────────────────────
+def openrouter_key():
+    for v in ("THOTH_OPENROUTER_API_KEY", "CLIPPER_OPENROUTER_API_KEY"):
+        k = os.environ.get(v)
+        if k:
+            return k
+    try:
+        for line in open(".env", encoding="utf-8"):
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            n, val = line.split("=", 1)
+            if n.strip() in ("THOTH_OPENROUTER_API_KEY", "CLIPPER_OPENROUTER_API_KEY"):
+                val = val.strip().strip('"').strip("'")
+                if val:
+                    return val
+    except OSError:
+        pass
+    return None
+
+
 # ── Text helpers (mirrors render_headline.py) ─────────────────────────────────
 def hex_to_rgba(h, alpha=255):
     h = h.strip().lstrip("#")
@@ -174,43 +195,50 @@ def translate_to_scene(spec):
     import requests
     base = (spec.get("chat_base_url") or "https://api.novita.ai/openai").rstrip("/")
     headline = (spec.get("headline_text") or "").strip()
-    if not headline:
+    topic = (spec.get("topic_desc") or "").strip()
+    if not headline and not topic:
         return None
     if (spec.get("subject_mode") or "cutout") == "ai":
-        # AI generates the WHOLE cover incl. a dominant full-frame subject.
+        # AI generates the WHOLE cover incl. a dominant MAIN subject (medium shot).
         sys_p = (
-            "You convert a (possibly Indonesian) news/social headline into ONE vivid "
-            "English text-to-image prompt for a VIRAL VERTICAL THUMBNAIL. The image "
-            "MUST have ONE clear MAIN SUBJECT (the person, animal or object central to "
-            "the topic) that DOMINATES and FILLS most of the frame — a dramatic "
-            "close-up or full-body hero shot, centered, facing the camera, with an "
-            "expressive pose/emotion — over a simple dramatic cinematic background. "
-            "Photorealistic, high contrast, moody lighting. Absolutely NO text, "
-            "letters, words, captions, logos or watermarks. Output ONLY the prompt on "
-            "a single line — no quotes, no preamble."
+            "You convert a (possibly Indonesian) news/social TOPIC into ONE vivid English "
+            "text-to-image prompt for a VIRAL VERTICAL THUMBNAIL. Use BOTH the headline AND the "
+            "topic description to capture the real who / what / where / action — do NOT rely on the "
+            "headline alone. The image MUST have ONE clear MAIN SUBJECT central to the topic. "
+            "FRAMING: if the subject is a PERSON, ANIMAL or any OBJECT, render it as a MEDIUM SHOT "
+            "(mid-distance, roughly waist-up for a person), centered, facing the camera, with an "
+            "expressive pose/emotion and some of the scene/context visible around it — NOT an extreme "
+            "close-up and NOT a tiny full-body wide shot. ONLY a BUILDING or large structure may be "
+            "framed wider. Place it over a dramatic cinematic background that matches the topic. "
+            + AI_COMPOSITION + ". "
+            "Photorealistic, high contrast, crisp focus, moody lighting. Absolutely NO text, letters, words, "
+            "captions, logos or watermarks. Output ONLY the prompt on a single line — no quotes, no preamble."
         )
     else:
         # Background backdrop only; a separate cutout subject goes on top.
         sys_p = (
-            "You convert a (possibly Indonesian) news/social headline into ONE vivid "
-            "English text-to-image prompt describing the BACKGROUND ENVIRONMENT for a "
-            "viral video thumbnail about the topic. Describe ONLY the setting / location / "
-            "atmosphere — the place, time of day, weather, dramatic elements, mood and "
+            "You convert a (possibly Indonesian) news/social TOPIC into ONE vivid English "
+            "text-to-image prompt describing the BACKGROUND ENVIRONMENT for a viral video thumbnail. "
+            "Use BOTH the headline AND the topic description to capture the real location / objects / "
+            "atmosphere of the event — do NOT rely on the headline alone. Describe ONLY the setting / "
+            "location / atmosphere — the place, time of day, weather, dramatic elements, mood and "
             "cinematic lighting — in concrete visual terms. "
-            "CRITICAL: the scene is a BACKDROP behind a separate subject that will be "
-            "composited on top, so it must contain absolutely NO people, NO persons, NO "
-            "faces, NO crowds and NO human figures, and NO text/letters/logos/watermarks. "
-            "Empty environment only. Output ONLY the prompt on a single line — no quotes, "
-            "no preamble, no explanation."
+            "CRITICAL: the scene is a BACKDROP behind a separate subject that will be composited on "
+            "top, so it must contain absolutely NO people, NO persons, NO faces, NO crowds and NO "
+            "human figures, and NO text/letters/logos/watermarks. Empty environment only. Output ONLY "
+            "the prompt on a single line — no quotes, no preamble, no explanation."
         )
+    user_msg = f"Headline: {headline or '(none)'}"
+    if topic:
+        user_msg += f"\nTopic description: {topic}"
     try:
         r = requests.post(
             f"{base}/v1/chat/completions",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             json={"model": model,
                   "messages": [{"role": "system", "content": sys_p},
-                               {"role": "user", "content": headline}],
-                  "temperature": 0.7, "max_tokens": 150},
+                               {"role": "user", "content": user_msg}],
+                  "temperature": 0.7, "max_tokens": 180},
             timeout=60)
         if r.status_code != 200:
             sys.stderr.write(f"render_cover: chat {r.status_code}: {r.text[:160]}\n")
@@ -223,11 +251,21 @@ def translate_to_scene(spec):
         return None
 
 
+# Composition shared by every AI prompt: keep the subject sharp & unobstructed in the upper area and
+# leave the lower third clean/darker so the burned headline never covers the subject's face.
+AI_COMPOSITION = (
+    "compose VERTICALLY: place the MAIN SUBJECT in the UPPER TWO-THIRDS with the face and upper body "
+    "fully visible, sharp and UNOBSTRUCTED; keep the LOWER THIRD simpler and darker (uncluttered) so a "
+    "headline text overlay there will not cover the subject"
+)
+
 # Style suffix for the AI-subject / AI-event image (people ARE allowed here).
 AI_EVENT_SUFFIX = (
-    "dramatic cinematic photorealistic HD illustration, ultra detailed, high contrast, "
-    "moody cinematic lighting, viral vertical thumbnail, no text, no letters, no watermark, "
-    "no caption"
+    "dramatic cinematic photorealistic HD illustration, ultra detailed, crisp focus, high contrast, "
+    "moody cinematic lighting, MEDIUM SHOT framing for people animals and objects "
+    "(mid-distance, waist-up for a person, not an extreme close-up, not a tiny full-body wide shot; "
+    "only buildings or large structures may be framed wider), " + AI_COMPOSITION + ", "
+    "viral vertical thumbnail, no text, no letters, no watermark, no caption"
 )
 
 
@@ -253,15 +291,23 @@ def describe_frame(spec, frame_path):
         sys.stderr.write(f"render_cover: frame encode error: {e}\n")
         return None
     headline = (spec.get("headline_text") or "").strip()
+    topic = (spec.get("topic_desc") or "").strip()
     sys_p = (
         "You are describing a real (possibly dark or low-quality) video frame so an "
         "artist can recreate THIS EXACT SCENE as a dramatic, photorealistic HD "
-        "illustration for a viral thumbnail. In ONE vivid English paragraph describe: "
+        "illustration for a viral thumbnail. Use the headline AND topic description as "
+        "context for what the scene is about. In ONE vivid English paragraph describe: "
         "the main subject(s) and exactly what they are DOING, the setting/location, "
         "key objects and vehicles, time of day, weather, mood and cinematic lighting. "
+        "Frame the MAIN SUBJECT (person/animal/object — not a building) as a MEDIUM SHOT "
+        "(mid-distance, waist-up for a person), not an extreme close-up. "
         "Be concrete and faithful to what is actually in the image. Never mention blur, "
         "darkness or low quality. Output ONLY the description — no preamble."
     )
+    ctx = f"Headline context: '{headline}'."
+    if topic:
+        ctx += f" Topic description: {topic}."
+    ctx += " Describe this scene for a faithful dramatic HD recreation."
     try:
         r = requests.post(
             f"{base}/v1/chat/completions",
@@ -270,9 +316,7 @@ def describe_frame(spec, frame_path):
                   "messages": [
                       {"role": "system", "content": sys_p},
                       {"role": "user", "content": [
-                          {"type": "text",
-                           "text": f"Headline context: '{headline}'. Describe this scene "
-                                   f"for a faithful dramatic HD recreation."},
+                          {"type": "text", "text": ctx},
                           {"type": "image_url",
                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                       ]}],
@@ -328,6 +372,94 @@ def cover_fit(img, W, H):
     x = (img.width - W) // 2
     y = (img.height - H) // 2
     return img.crop((x, y, x + W, y + H))
+
+
+def _data_uri(path, max_side=1024):
+    """RGB-JPEG data URI of an image, capped to `max_side` (for sending reference photos to OpenRouter)."""
+    img = Image.open(path).convert("RGB")
+    if max(img.size) > max_side:
+        img.thumbnail((max_side, max_side), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def gen_cover_openrouter(spec, W, H):
+    """Generate the cover via an OpenRouter image-OUTPUT model (e.g. openai/gpt-5-image): feed the REAL
+    reference photos of the subject (internet portrait + video frame) + a scene prompt → an HD cover that
+    NATIVELY preserves the subject's identity. No FLUX text2img + face-swap hack. RGB PIL WxH, or None."""
+    key = openrouter_key()
+    if not key:
+        sys.stderr.write("render_cover: no OpenRouter key (THOTH_OPENROUTER_API_KEY) → skip\n")
+        return None
+    import requests
+    model = (spec.get("image_model") or "openai/gpt-5-image").strip()
+    # Reference photos = the subject "knowledge": internet portrait (by name) + the video frame.
+    refs = []
+    name = (spec.get("subject_name") or "").strip()
+    ref_dl = None
+    if name:
+        ref_dl = fetch_reference_face(name, spec["out"] + ".ref.jpg")
+        if ref_dl:
+            refs.append(ref_dl)
+    frame = spec.get("subject_frame") or spec.get("describe_frame") or ""
+    if frame and os.path.exists(frame):
+        refs.append(frame)
+    scene = (spec.get("prompt") or spec.get("headline_text") or "").strip()
+    prompt = (
+        "Create a viral vertical 9:16 news/social media thumbnail image. "
+        + ("The MAIN SUBJECT must look EXACTLY like the same person shown in the reference photo(s) — "
+           "preserve their real face and identity. " if refs else "")
+        + f"Scene and context: {scene}. "
+        "Render the subject as a MEDIUM SHOT (mid-distance, roughly waist-up for a person), expressive, "
+        "facing the camera, placed in the UPPER TWO-THIRDS with the face sharp and unobstructed; keep the "
+        "LOWER THIRD simpler and darker for a caption overlay. Photorealistic, dramatic cinematic lighting, "
+        "high contrast, ultra detailed, crisp focus. Absolutely NO text, letters, words, captions, logos or watermarks."
+    )
+    content = [{"type": "text", "text": prompt}]
+    for p in refs:
+        try:
+            content.append({"type": "image_url", "image_url": {"url": _data_uri(p)}})
+        except Exception:
+            pass
+    body = {"model": model, "messages": [{"role": "user", "content": content}], "modalities": ["image", "text"]}
+    try:
+        t = time.time()
+        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                                   "HTTP-Referer": "https://github.com/thoth", "X-Title": "Thoth"},
+                          json=body, timeout=180)
+    finally:
+        try:
+            if ref_dl and os.path.exists(ref_dl):
+                os.remove(ref_dl)
+        except OSError:
+            pass
+    try:
+        if r.status_code != 200:
+            sys.stderr.write(f"render_cover: openrouter {r.status_code}: {r.text[:200]}\n")
+            return None
+        msg = r.json()["choices"][0]["message"]
+        url = None
+        imgs = msg.get("images") or []
+        if imgs:
+            url = (imgs[0].get("image_url") or {}).get("url") or imgs[0].get("url")
+        if not url:
+            c = msg.get("content")
+            if isinstance(c, str) and ("data:image" in c or c.strip().startswith("http")):
+                url = c.strip()
+        if not url:
+            sys.stderr.write(f"render_cover: openrouter no image in response: {str(msg)[:160]}\n")
+            return None
+        if url.startswith("data:"):
+            im = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
+        else:
+            im = Image.open(io.BytesIO(requests.get(url, timeout=60).content))
+        sys.stderr.write(f"render_cover: openrouter cover ({model}) in {time.time()-t:.1f}s\n")
+        return cover_fit(im, W, H)
+    except Exception as e:
+        sys.stderr.write(f"render_cover: openrouter parse error: {e}\n")
+        return None
 
 
 def gen_background(spec, W, H):
@@ -438,7 +570,9 @@ def make_cutout(spec, W, H):
         cut = cut.crop(bbox)
         cov, bright, sharp = _cutout_quality(cut)
         frac = ((bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / float(src.width * src.height)
-        quality = {"coverage": frac, "brightness": bright, "sharpness": sharp}
+        # native_h = the subject's REAL pixel height before we upscale it to the frame. A small native
+        # height means pasting it would upscale → blur, so "auto" should prefer an AI HD recreation.
+        quality = {"coverage": frac, "brightness": bright, "sharpness": sharp, "native_h": cut.height}
         scale = float(spec.get("subject_scale", 1.0))
         target_h = int(H * scale)
         s = target_h / cut.height
@@ -453,13 +587,25 @@ def make_cutout(spec, W, H):
 
 
 def cutout_is_good(quality, spec):
-    """Gate for "auto" mode: reject dark/blurry/tiny cutouts that won't read as a
-    clear subject (e.g. the firefighter back-view: brightness≈15, sharpness≈3)."""
+    """Gate for "auto" mode: reject cutouts that won't make a CLEAN HD subject — dark/blurry/tiny
+    (e.g. firefighter back-view: brightness≈15, sharpness≈3) OR LOW-RESOLUTION (would upscale a lot →
+    blurry, like a 600px person stretched to 1920). Rejected → "auto" uses an AI HD recreation that
+    INCLUDES the subject instead of pasting a blurry real cutout."""
     if not quality:
         return False
-    return (quality["coverage"] >= float(spec.get("auto_min_coverage", 0.02))
+    if not (quality["coverage"] >= float(spec.get("auto_min_coverage", 0.02))
             and quality["brightness"] >= float(spec.get("auto_min_brightness", 40.0))
-            and quality["sharpness"] >= float(spec.get("auto_min_sharpness", 12.0)))
+            and quality["sharpness"] >= float(spec.get("auto_min_sharpness", 12.0))):
+        return False
+    # Resolution gate: how much would we upscale the subject to fill the frame?
+    native_h = float(quality.get("native_h", 0) or 0)
+    if native_h > 0:
+        target_h = float(spec.get("height", 1920)) * float(spec.get("subject_scale", 1.0))
+        if target_h / native_h > float(spec.get("auto_max_upscale", 1.5)):
+            sys.stderr.write(f"render_cover: cutout low-res (native {int(native_h)}px → upscale "
+                             f"{target_h/native_h:.1f}× > {float(spec.get('auto_max_upscale',1.5))}) → AI subject\n")
+            return False
+    return True
 
 
 def paste_subject(canvas, cut, W, H):
@@ -480,6 +626,112 @@ def paste_subject(canvas, cut, W, H):
     canvas.alpha_composite(cut, (x, y))
 
 
+# ── Face likeness: internet reference photo + face swap ───────────────────────
+def fetch_reference_face(name, out_path):
+    """Search the internet for a clean reference photo of the subject so the face-swap matches the
+    REAL person — much better than a blurry/sunglassed video frame. Uses Wikipedia (id → en), which is
+    key-free and reliable for public figures. Returns the saved path, or None."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    try:
+        import requests
+    except Exception:
+        return None
+    ua = {"User-Agent": "ThothBot/1.0 (cover face reference)"}
+    for host in ("id.wikipedia.org", "en.wikipedia.org"):
+        try:
+            s = requests.get(f"https://{host}/w/api.php", headers=ua, timeout=20, params={
+                "action": "query", "list": "search", "srsearch": name, "srlimit": 1, "format": "json"}).json()
+            hits = s.get("query", {}).get("search", [])
+            if not hits:
+                continue
+            title = hits[0]["title"]
+            p = requests.get(f"https://{host}/w/api.php", headers=ua, timeout=20, params={
+                "action": "query", "titles": title, "prop": "pageimages",
+                "piprop": "original|thumbnail", "pithumbsize": 800, "format": "json"}).json()
+            pages = list(p.get("query", {}).get("pages", {}).values())
+            if not pages:
+                continue
+            # Prefer the 800px thumbnail (a face source needs no more, and the original can be a
+            # 100+ MP file that trips PIL's DecompressionBomb guard).
+            src = (pages[0].get("thumbnail") or {}).get("source") or (pages[0].get("original") or {}).get("source")
+            if not src:
+                continue
+            r = requests.get(src, headers=ua, timeout=25)
+            if r.ok and r.content and len(r.content) > 1500:
+                with open(out_path, "wb") as f:
+                    f.write(r.content)
+                sys.stderr.write(f"render_cover: reference face '{name}' ← {host}/{title}\n")
+                return out_path
+        except Exception as e:
+            sys.stderr.write(f"render_cover: wiki {host} error: {e}\n")
+    sys.stderr.write(f"render_cover: no internet reference photo for '{name}'\n")
+    return None
+
+
+def _encode_capped(src, max_side, quality=92):
+    """RGB-JPEG-encode `src` (PIL image or path), capped to `max_side` longest edge → base64. Keeps the
+    payload under Novita merge-face's ~3.75 MB per-image limit (a full-res Wikipedia portrait is bigger)."""
+    img = src if isinstance(src, Image.Image) else Image.open(src)
+    img = img.convert("RGB")
+    if max(img.size) > max_side:
+        img.thumbnail((max_side, max_side), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def merge_face(target_img, face_path):
+    """Swap the face from `face_path` (the real subject) onto `target_img` (the AI cover) via Novita
+    merge-face. Returns the swapped RGB PIL image, or None on failure."""
+    key = novita_key()
+    if not key or not face_path or not os.path.exists(face_path):
+        return None
+    try:
+        import requests
+        tgt_b64 = _encode_capped(target_img, 1920)
+        face_b64 = _encode_capped(face_path, 1024)
+        r = requests.post("https://api.novita.ai/v3/merge-face",
+                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                          json={"image_file": tgt_b64, "face_image_file": face_b64}, timeout=120)
+        if r.status_code != 200:
+            sys.stderr.write(f"render_cover: merge-face {r.status_code}: {r.text[:160]}\n")
+            return None
+        img_b64 = r.json().get("image_file")
+        if not img_b64:
+            return None
+        return Image.open(io.BytesIO(base64.b64decode(img_b64))).convert("RGB")
+    except Exception as e:
+        sys.stderr.write(f"render_cover: merge-face error: {e}\n")
+        return None
+
+
+def apply_face_swap(spec, bg, W, H):
+    """If enabled & in AI mode, swap the REAL subject's face onto the AI-generated subject so it looks
+    like the actual person. Face source: internet reference photo (by name) > the video frame."""
+    if not spec.get("face_swap", True) or bg is None:
+        return bg
+    ref = spec["out"] + ".faceref.jpg"
+    face_src = fetch_reference_face(spec.get("subject_name"), ref)
+    if not face_src:
+        sf = spec.get("subject_frame") or spec.get("describe_frame") or ""
+        if sf and os.path.exists(sf):
+            face_src = sf
+    if not face_src:
+        return bg
+    swapped = merge_face(bg, face_src)
+    try:
+        if os.path.exists(ref):
+            os.remove(ref)
+    except OSError:
+        pass
+    if swapped is not None:
+        sys.stderr.write("render_cover: face-swapped REAL subject onto AI cover\n")
+        return cover_fit(swapped, W, H)
+    return bg
+
+
 def main():
     if len(sys.argv) < 2:
         sys.stderr.write("render_cover: missing spec.json\n")
@@ -492,9 +744,14 @@ def main():
     # "cutout" → always paste the real cutout. "ai" → FLUX makes the subject.
     # "auto"   → try the cutout; if it's too dark/blurry/small to read as a clear
     #            subject, generate an AI subject instead (no red-blob covers).
+    engine = (spec.get("image_engine") or "flux").lower()
     mode = (spec.get("subject_mode") or "cutout").lower()
     cut = None
-    if mode in ("cutout", "auto"):
+    if engine == "openrouter":
+        # An image-OUTPUT model generates the WHOLE cover (scene + subject) and natively preserves the
+        # subject's identity from reference photos → no cutout, no face-swap. Treat as AI mode.
+        mode = "ai"
+    elif mode in ("cutout", "auto"):
         cut, quality = make_cutout(spec, W, H)
         if mode == "auto":
             if cut is not None and cutout_is_good(quality, spec):
@@ -510,7 +767,16 @@ def main():
 
     spec["prompt"] = build_prompt(spec)
 
-    bg = gen_background(spec, W, H)
+    bg = None
+    if engine == "openrouter":
+        bg = gen_cover_openrouter(spec, W, H)  # identity-preserving, no face-swap needed
+        if bg is None:
+            sys.stderr.write("render_cover: openrouter failed → fallback FLUX + face-swap\n")
+    if bg is None:
+        bg = gen_background(spec, W, H)
+        # FLUX renders a generic face → swap the REAL subject's face on for likeness (internet ref photo).
+        if mode == "ai" and bg is not None:
+            bg = apply_face_swap(spec, bg, W, H)
     if bg is None:
         bg = fallback_background(spec, W, H)
     bg = darken_for_text(bg, W, H, float(spec.get("darken", 0.30)))

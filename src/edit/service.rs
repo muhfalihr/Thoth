@@ -122,6 +122,8 @@ fn build_cover(
     cfg: &crate::config::CoverConfig,
     hk: &crate::config::HookTitleConfig,
     headline: &str,
+    topic_desc: &str,
+    subject_name: &str,
     subject_frame: &Path,
     duration_sec: f64,
     layout: &OutputLayout,
@@ -149,8 +151,16 @@ fn build_cover(
     let translate = cfg.prompt_translate
         && !chat_model.trim().is_empty()
         && !chat_base_url.trim().is_empty();
+    // Fallback FLUX prompt (when LLM translation is off/fails) — fold in the topic description so even
+    // the fallback reflects the actual event, not just the headline.
+    let topic_short: String = topic_desc.chars().take(300).collect();
+    let fallback_prompt = if topic_short.trim().is_empty() {
+        format!("{}. {}", headline.trim(), cfg.prompt_suffix)
+    } else {
+        format!("{}. {}. {}", headline.trim(), topic_short.trim(), cfg.prompt_suffix)
+    };
     let spec = super::cover::CoverSpec {
-        prompt: format!("{}. {}", headline.trim(), cfg.prompt_suffix),
+        prompt: fallback_prompt,
         prompt_suffix: cfg.prompt_suffix.clone(),
         translate,
         chat_model: chat_model.to_owned(),
@@ -158,6 +168,11 @@ fn build_cover(
         vision_model: vision_model.to_owned(),
         vision_base_url: vision_base_url.to_owned(),
         headline_text: headline.to_owned(),
+        topic_desc: topic_desc.to_owned(),
+        subject_name: subject_name.to_owned(),
+        face_swap: cfg.face_swap,
+        image_engine: cfg.image_engine.clone(),
+        image_model: cfg.image_model.clone(),
         subject_mode: cfg.subject_mode.clone(),
         subject_frame: subj,
         describe_frame: frame_str,
@@ -1541,13 +1556,21 @@ impl<'a> EditService<'a> {
             .unwrap_or_default().trim().to_string();
 
         // 2) Lead-in + B-roll window. The event audio plays LOUD for `lead` secs
-        // (establishes the vibe), then the narrator comes in. Video length =
-        // lead-in + narration (capped to source length).
+        // (establishes the vibe), then the narrator comes in. The narration is the
+        // audio SPINE, so the video length = lead-in + narration — NOT capped to the
+        // source length. When the narration outlasts the source B-roll, loop the
+        // source to fill the timeline (Bug 6: a ~48s narration was being truncated to
+        // a ~10s source clip because `dur` was `.min(video_dur)`).
         let lead = self.config.narration.lead_in_secs.clamp(0.0, 3.0);
-        let dur  = (narr_dur + lead).min((video_dur - 0.2).max(2.0));
-        let prefer = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0);
-        let start = if prefer + dur <= video_dur { prefer } else { (video_dur - dur).max(0.0) };
-        let end = start + dur;
+        let dur  = narr_dur + lead;
+        let loop_source = dur > video_dur - 0.2;
+        let (start, end) = if loop_source {
+            (0.0, dur) // play B-roll from the top, looped (-stream_loop) to cover the narration
+        } else {
+            let prefer = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0);
+            let start = if prefer + dur <= video_dur { prefer } else { (video_dur - dur).max(0.0) };
+            (start, start + dur)
+        };
 
         // Hook window — the giant headline reads ALONE (no running subtitle). It
         // spans the lead-in plus the first narration beat.
@@ -1557,13 +1580,21 @@ impl<'a> EditService<'a> {
         let hook_dur = if hook_win > 0.0 { (lead + hook_win).min(dur - 0.2) } else { 0.0 };
 
         // 3) Subtitles from the narration word timings, SHIFTED later by `lead`
-        // (clip_start = -lead). Drop words inside the hook window.
+        // (clip_start = -lead). Drop words inside the hook window. The DISPLAYED captions are
+        // stripped of punctuation (the spoken narration audio keeps it) — same per-word timings,
+        // tokens that become empty (e.g. a standalone "—") are dropped.
         let ass_path = self.job.ass_path(0, "narration");
         let out_path = self.job.clip_path(0, "narration");
         {
             let cutoff = (hook_win * 1000.0) as i64;
-            let refs: Vec<&WordTimestamp> =
-                words.iter().filter(|w| w.start_ms >= cutoff).collect();
+            let sub_words: Vec<WordTimestamp> = words.iter()
+                .filter(|w| w.start_ms >= cutoff)
+                .filter_map(|w| {
+                    let t = crate::narration::strip_punctuation(&w.word);
+                    if t.is_empty() { None } else { Some(WordTimestamp { word: t, ..w.clone() }) }
+                })
+                .collect();
+            let refs: Vec<&WordTimestamp> = sub_words.iter().collect();
             let style = SubtitleStyle::from_str("word_pop");
             generate_ass(&refs, -lead, &ass_path, &audio_opts.font, &style)?;
         }
@@ -1576,6 +1607,7 @@ impl<'a> EditService<'a> {
 
         // 4) Build audio/video directives.
         let mut audio = audio_opts.clone();
+        audio.loop_source = loop_source; // loop short B-roll to fill the narration (Bug 6)
         audio.headline = None;
         audio.narration = Some(super::ffmpeg::NarrationVoice {
             mp3: self.job.narration_mp3(),
@@ -1605,8 +1637,21 @@ impl<'a> EditService<'a> {
                     let _ = generate_thumbnail(video_path, &subject_frame, at);
                 }
                 let cover_dur = cover_cfg.duration_sec.min(dur - 0.2).max(0.5);
+                // Detailed topic description (beyond the short hook) → grounds the AI scene in what the
+                // content is actually about. First moment's title + reason describe the event.
+                let topic_desc = moments.moments.first().map(|m| {
+                    let mut s = m.title.trim().to_string();
+                    if !m.reason.trim().is_empty() {
+                        if !s.is_empty() { s.push_str(". "); }
+                        s.push_str(m.reason.trim());
+                    }
+                    s
+                }).unwrap_or_default();
+                // Subject name → internet reference-photo lookup for a faithful face-swap.
+                let subject_name = moments.moments.first()
+                    .map(|m| m.character_name.trim().to_string()).unwrap_or_default();
                 if let Some(cov) = build_cover(
-                    cover_cfg, &self.config.hook_title, &hook, &subject_frame,
+                    cover_cfg, &self.config.hook_title, &hook, &topic_desc, &subject_name, &subject_frame,
                     cover_dur, layout, &ass_path,
                     &self.config.llm.novita_model, &self.config.llm.novita_base_url,
                     &self.config.vision.novita_model, &self.config.vision.novita_base_url,
@@ -1898,8 +1943,10 @@ impl<'a> EditService<'a> {
             }
         }
 
-        info!("🎬 Narrator-driven video: {:.1}s | B-roll [{:.1}–{:.1}s] | hook \"{}\"",
-              dur, start, end, hook);
+        info!("🎬 Narrator-driven video: {:.1}s | B-roll [{:.1}–{:.1}s]{} | hook \"{}\"",
+              dur, start, end,
+              if loop_source { format!(" (looped from {video_dur:.0}s source)") } else { String::new() },
+              hook);
 
         // 5) Encode (blocking ffmpeg).
         super::ffmpeg::encode_clip_direct(

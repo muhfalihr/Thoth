@@ -39,6 +39,30 @@ heran, atau pengen share. Lo bukan reporter, bukan motivator, bukan ceramah. Lo 
 orang yang sinis, skeptis, heran — yang nge-judge kejadian aneh sambil ngakak sendiri. \
 Sopan tapi TAJAM. Output HANYA JSON, gaada teks lain.";
 
+/// Strip ALL punctuation from on-screen text (hook title AND burned subtitles) — they must be clean
+/// text with no `— , . " ' ? ! : ; …` etc. (the model/transcript add them). Removed chars become
+/// spaces so adjoining words don't merge ("bisa-bisanya" → "bisa bisanya"), then whitespace is
+/// collapsed. Letters/digits/emoji are kept. NOTE: this is for the DISPLAYED text only — the spoken
+/// narration script/audio keeps its punctuation.
+pub fn strip_punctuation(s: &str) -> String {
+    let strip = |c: char| {
+        c.is_ascii_punctuation() // , . " ' ? ! : ; - ( ) [ ] { } / \ | * # ~ < > @ & % $ ^ + = _ `
+            || matches!(c,
+                '—' | '–' | '‐' | '‑' | '‒' | '−' | '―'        // dashes
+                | '“' | '”' | '„' | '‟' | '«' | '»'            // double quotes
+                | '‘' | '’' | '‚' | '‛' | '`'                  // single quotes / apostrophes
+                | '…' | '·' | '•' | '¿' | '¡' | '‼' | '⁉' | '⁈') // misc punctuation
+    };
+    s.chars().map(|c| if strip(c) { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Hook title sanitizer (alias of [`strip_punctuation`]).
+fn sanitize_hook(s: &str) -> String { strip_punctuation(s) }
+
 /// Generate the continuous narrator script + hook line from the event transcript.
 async fn generate_script(
     provider: &dyn LlmProvider,
@@ -114,7 +138,7 @@ async fn generate_script(
          Itu rage-bait. (Ingat: JANGAN tiru kalimatnya — tiru POLA-nya saja.)\n\n\
          Panjang sekitar {words} kata (≈{secs} detik dibaca). Natural buat diucapin.\n\n\
          Output JSON:\n\
-         {{\"hook\": \"hook penasaran ≤12 kata buat judul\", \
+         {{\"hook\": \"hook penasaran ≤12 kata buat judul — WAJIB tanpa tanda baca apa pun (tanpa titik, koma, tanda tanya, tanda seru, titik dua, tanda hubung, em-dash, kutip, elipsis); huruf dan angka saja\", \
          \"narration\": \"naskah react gaul menerus...\"}}",
         src = source_text.chars().take(3500).collect::<String>().trim(),
         lang = language, words = words, secs = target_secs,
@@ -124,44 +148,78 @@ async fn generate_script(
     let raw = provider.chat_completion(SYSTEM, &user).await
         .map_err(|e| format!("LLM narration: {e}"))?;
 
-    let cleaned = strip_fences(&raw);
-    let json = cleaned.find('{').and_then(|s| cleaned.rfind('}').map(|e| &cleaned[s..=e]))
-        .unwrap_or(cleaned.trim());
-    let val: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| format!("parse narration JSON: {e}: {json}"))?;
-    let obj = val.as_object()
-        .ok_or_else(|| format!("narration JSON not an object: {json}"))?;
+    let (narration, hook_raw) = parse_narration_reply(&raw)?;
+    Ok((narration, sanitize_hook(&hook_raw)))
+}
 
-    let hook = obj.get("hook").and_then(|v| v.as_str())
-        .or_else(|| obj.get("title").and_then(|v| v.as_str()))
-        .unwrap_or("").trim().to_string();
+/// Read a JSON string value for `key` from `text`, TOLERANT of truncation (a reasoning model can get
+/// cut off before the closing quote/brace) and of surrounding prose. UTF-8 safe. Returns the unescaped
+/// value, or None. Used to salvage a narration when strict JSON parsing fails.
+fn json_str_field(text: &str, key: &str) -> Option<String> {
+    let pat = format!("\"{key}\"");
+    let after_key = &text[text.find(&pat)? + pat.len()..];
+    let after_colon = &after_key[after_key.find(':')? + 1..];
+    let body = &after_colon[after_colon.find('"')? + 1..];
+    let mut out = String::new();
+    let mut esc = false;
+    for ch in body.chars() {
+        if esc {
+            out.push(match ch { 'n' => '\n', 't' => '\t', 'r' => '\r', '"' => '"', '\\' => '\\', '/' => '/', o => o });
+            esc = false;
+        } else if ch == '\\' { esc = true; }
+        else if ch == '"' { break; }   // end of the string value (absent if truncated → take all)
+        else { out.push(ch); }
+    }
+    let s = out.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
 
-    // The model is wildly inconsistent with the narration key (narration / naration / narrating /
-    // narrator / narasi / script / naskah / …). Rather than chase every spelling with serde aliases
-    // (whack-a-mole — each run invents a new one), pick it robustly: prefer a string field whose KEY
-    // looks like a narration key; otherwise fall back to the LONGEST string value that isn't the hook
-    // (the script is always the longest field). This makes parsing key-name-agnostic.
+/// Pull (narration, hook) from a (possibly truncated / reasoning-prefixed) LLM reply.
+/// 1) Strict JSON — key-agnostic narration pick (model uses narration/naration/narrator/… randomly).
+/// 2) Salvage — when JSON is invalid (e.g. cut off before `}` because the model spent the token budget
+///    "thinking"), pull the quoted "hook" + narration string values directly; the values themselves are
+///    usually complete even when the closing brace is missing.
+fn parse_narration_reply(raw: &str) -> Result<(String, String), String> {
+    let cleaned = strip_fences(raw);
     let key_like = |k: &str| {
         let k = k.to_ascii_lowercase();
         k.contains("narr") || k.contains("nara") || k == "script" || k == "naskah"
             || k == "text" || k == "body" || k == "voiceover" || k == "vo"
     };
-    let narration = obj.iter()
-        .filter(|(k, v)| k.as_str() != "hook" && v.is_string())
-        .find(|(k, _)| key_like(k))
-        .and_then(|(_, v)| v.as_str())
-        .or_else(|| obj.iter()
-            .filter(|(k, _)| k.as_str() != "hook")
-            .filter_map(|(_, v)| v.as_str())
-            .max_by_key(|s| s.len()))
-        .unwrap_or("")
-        .trim()
-        .to_string();
 
-    if narration.split_whitespace().count() < 8 {
-        return Err(format!("narration too short / not found: {json}"));
+    // 1) Strict JSON.
+    let json = cleaned.find('{').and_then(|s| cleaned.rfind('}').map(|e| &cleaned[s..=e]))
+        .unwrap_or(cleaned.trim());
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json) {
+        if let Some(obj) = val.as_object() {
+            let hook = obj.get("hook").and_then(|v| v.as_str())
+                .or_else(|| obj.get("title").and_then(|v| v.as_str())).unwrap_or("").trim().to_string();
+            let narration = obj.iter()
+                .filter(|(k, v)| k.as_str() != "hook" && v.is_string())
+                .find(|(k, _)| key_like(k))
+                .and_then(|(_, v)| v.as_str())
+                .or_else(|| obj.iter().filter(|(k, _)| k.as_str() != "hook")
+                    .filter_map(|(_, v)| v.as_str()).max_by_key(|s| s.len()))
+                .unwrap_or("").trim().to_string();
+            if narration.split_whitespace().count() >= 8 {
+                return Ok((narration, hook));
+            }
+        }
     }
-    Ok((narration, hook))
+
+    // 2) Salvage from truncated/prose-wrapped output.
+    let hook = json_str_field(&cleaned, "hook")
+        .or_else(|| json_str_field(&cleaned, "title")).unwrap_or_default();
+    let narration = ["narration", "naration", "narrating", "narrator", "narasi",
+                     "script", "naskah", "text", "body", "voiceover"]
+        .iter()
+        .find_map(|k| json_str_field(&cleaned, k).filter(|s| s.split_whitespace().count() >= 8))
+        .unwrap_or_default();
+    if narration.split_whitespace().count() >= 8 {
+        tracing::warn!("narration JSON invalid (truncated?) — salvaged hook+narration from raw text");
+        return Ok((narration, hook));
+    }
+    Err(format!("narration parse/salvage failed: {}", cleaned.chars().take(200).collect::<String>()))
 }
 
 /// Full narration pipeline: LLM script → TTS (timed) → [`Narration`].
@@ -199,4 +257,44 @@ fn strip_fences(raw: &str) -> &str {
         return rest.trim_end().trim_end_matches("```").trim();
     }
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_hook;
+
+    #[test]
+    fn strips_all_punctuation_from_hook() {
+        // em-dash, comma, period, quotes, question/exclamation, colon, ellipsis → gone; words kept.
+        assert_eq!(sanitize_hook("Niatnya nolong — eh, malah ditangkap?!"), "Niatnya nolong eh malah ditangkap");
+        assert_eq!(sanitize_hook("\"Gila\", katanya... bisa-bisanya!"), "Gila katanya bisa bisanya");
+        assert_eq!(sanitize_hook("Dua hal: bikin heran"), "Dua hal bikin heran");
+        assert_eq!(sanitize_hook("Siswa SMP 13 tahun tusuk teman"), "Siswa SMP 13 tahun tusuk teman");
+        // curly quotes + collapse whitespace
+        assert_eq!(sanitize_hook("  ‘test’   “quote”  "), "test quote");
+    }
+
+    #[test]
+    fn hook_has_no_punctuation_chars() {
+        let out = sanitize_hook("Apa?! Ini — benar, kok... 'serius'");
+        assert!(!out.chars().any(|c| c.is_ascii_punctuation()), "still has punctuation: {out}");
+    }
+
+    #[test]
+    fn salvages_truncated_narration_json() {
+        // The exact failure mode: reasoning model cut the JSON before the closing brace (no `}`),
+        // but the hook + narration string values are complete.
+        let raw = "{\n  \"hook\": \"Satu masalah MBG yang bikin dahi berkerut\",\n  \"narration\": \"Wapres Gibran baru ngecek MBG di Ende, trus ngeluh makanan dingin dan ayam keras. Pas ditanya petugas, ternyata masaknya dari jam 3 pagi. Netizen sampai bilang, 'Baru bangun tidur?' Pertanyaan saya: kenapa nggak dari awal dipikirkan?\"";
+        let (narr, hook) = super::parse_narration_reply(raw).expect("should salvage");
+        assert!(narr.split_whitespace().count() >= 8, "narration salvaged: {narr}");
+        assert!(narr.contains("Wapres Gibran"));
+        assert_eq!(hook, "Satu masalah MBG yang bikin dahi berkerut");
+    }
+
+    #[test]
+    fn parses_valid_narration_json() {
+        let raw = "```json\n{\"hook\":\"H\",\"narration\":\"satu dua tiga empat lima enam tujuh delapan sembilan\"}\n```";
+        let (narr, _) = super::parse_narration_reply(raw).expect("valid json");
+        assert_eq!(narr.split_whitespace().count(), 9);
+    }
 }

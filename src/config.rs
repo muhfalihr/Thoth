@@ -609,6 +609,18 @@ pub struct CoverConfig {
     /// Seconds at the clip's start to grab the subject frame from (0 = first frame).
     #[serde(default = "default_cover_subject_at")]
     pub subject_at_sec: f64,
+    /// Swap the REAL subject's face onto the AI-generated subject (ai mode) for likeness. Face sourced
+    /// from an internet reference photo (Wikipedia) of `character_name`, else the video frame.
+    #[serde(default = "default_true")]
+    pub face_swap: bool,
+    /// Cover image backend: "flux" (Novita FLUX text2img + face-swap, default) | "openrouter" (an
+    /// image-OUTPUT model like openai/gpt-5-image that natively preserves the subject's identity from
+    /// reference photos — needs THOTH_OPENROUTER_API_KEY; falls back to flux if unavailable).
+    #[serde(default = "default_cover_image_engine")]
+    pub image_engine: String,
+    /// OpenRouter image-output model id (used when image_engine="openrouter").
+    #[serde(default = "default_cover_image_model")]
+    pub image_model: String,
 }
 
 impl Default for CoverConfig {
@@ -627,6 +639,9 @@ impl Default for CoverConfig {
             prompt_suffix: default_cover_prompt_suffix(),
             prompt_translate: true,
             subject_at_sec: default_cover_subject_at(),
+            face_swap: default_true(),
+            image_engine: default_cover_image_engine(),
+            image_model: default_cover_image_model(),
         }
     }
 }
@@ -640,6 +655,8 @@ fn default_cover_bg_w()          -> u32 { 864 }
 fn default_cover_bg_h()          -> u32 { 1536 }
 fn default_cover_steps()         -> u32 { 4 }
 fn default_cover_subject_at()    -> f64 { 1.0 }
+fn default_cover_image_engine()  -> String { "flux".into() }
+fn default_cover_image_model()   -> String { "openai/gpt-5-image".into() }
 fn default_cover_prompt_suffix() -> String {
     "empty scene with no people, dramatic cinematic poster background, moody dark lighting, \
      high contrast, bokeh, depth of field, viral youtube thumbnail backdrop, photorealistic, \

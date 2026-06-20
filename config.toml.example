@@ -399,6 +399,16 @@ bg_height     = 1536
 steps         = 4                            # FLUX schnell: 4 langkah ideal
 prompt_translate = true                     # LLM (Novita) ubah headline → prompt scene Inggris (background lebih relevan)
 subject_at_sec = 1.0                        # ambil frame subjek di detik ke-N dari awal klip
+face_swap     = true                        # mode "ai": tukar WAJAH subjek asli ke gambar AI biar mirip (foto referensi dari internet/Wikipedia by character_name, fallback frame video)
+# Backend gambar cover: "flux" (Novita FLUX text2img + face-swap, default) | "openrouter" (model
+# image-OUTPUT spt openai/gpt-5-image / google/gemini-3-pro-image — pertahankan identitas subjek dari
+# foto referensi secara native, kualitas/kemiripan terbaik). "openrouter" butuh THOTH_OPENROUTER_API_KEY
+# di .env; kalau gagal/tak ada key → otomatis fallback ke flux.
+image_engine  = "flux"
+# Model image-output OpenRouter (saat image_engine="openrouter"). Hemat & kemiripan terbaik:
+# "google/gemini-2.5-flash-image" (~$0.005/cover). Alternatif GPT: "openai/gpt-5-image" (~$0.05-0.10/cover, MAHAL),
+# "openai/gpt-5-image-mini" (~$0.01-0.02), "google/gemini-3-pro-image" (kualitas tinggi, ~$0.03-0.06).
+image_model   = "google/gemini-2.5-flash-image"
 # Background = ENVIRONMENT saja (tanpa orang) supaya subjek cutout jadi fokus utama:
 prompt_suffix = "empty scene with no people, dramatic cinematic poster background, moody dark lighting, high contrast, bokeh, depth of field, viral youtube thumbnail backdrop, photorealistic, no people, no person, no human figures, no text, no watermark, no caption"
 
@@ -507,8 +517,10 @@ montage_max_cuts     = 2             # footage berbeda per clip (densitas montas
 [narration]
 enabled        = true
 # Model KHUSUS narasi (override [llm] model utk skrip narasi saja; provider tetap dari --provider).
-# deepseek-v4-flash = diksi Indonesia paling natural (A/B menang); kosong = pakai [llm] model.
-model          = "deepseek/deepseek-v4-flash"
+# deepseek-v3.1 = chat (non-reasoning): diksi Indonesia bagus + JSON ANDAL. HINDARI model reasoning
+# (deepseek-v4-flash/pro, *-thinking, *-r1, qwq) → boros token & sering memotong JSON (narration failed).
+# Alternatif cepat & andal: qwen/qwen3-235b-a22b-instruct-2507. Kosong = pakai [llm] model.
+model          = "deepseek/deepseek-v3.1"
 target_secs    = 45        # target panjang narasi (detik); LLM tulis ~3 kata/detik
 language       = "id"
 duck_event_vol = 0.12      # volume audio event saat narator bicara (0..1)

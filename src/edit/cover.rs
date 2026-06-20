@@ -33,6 +33,17 @@ pub struct CoverSpec {
     pub vision_base_url: String,
     /// Headline text baked onto the cover.
     pub headline_text: String,
+    /// Detailed description of the topic/event (beyond the short headline) — fed to the LLM so the
+    /// generated scene reflects what the content is actually ABOUT, not just the 12-word hook.
+    pub topic_desc: String,
+    /// Subject's name → internet reference-photo lookup (Wikipedia) for a better face-swap. Empty = skip.
+    pub subject_name: String,
+    /// Swap the real subject's face onto the AI-generated subject (ai mode) for likeness.
+    pub face_swap: bool,
+    /// Image backend: "flux" | "openrouter" (image-output model preserving subject identity).
+    pub image_engine: String,
+    /// OpenRouter image-output model id (when image_engine="openrouter").
+    pub image_model: String,
     /// "cutout" = composite a real subject cutout; "ai" = FLUX generates the
     /// scene; "auto" = cutout when readable, else AI.
     pub subject_mode: String,
