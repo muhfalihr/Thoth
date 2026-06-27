@@ -51,6 +51,7 @@ test/
 check_log.txt
 build_*.txt
 plans/
+RESEARCH_context_enrichment_narration.md
 # Editor
 .vscode/
 
