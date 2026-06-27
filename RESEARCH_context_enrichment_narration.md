@@ -206,8 +206,14 @@ Tak dikenal versi lama → diabaikan (forward-compat, sesuai kontrak yang ada di
 > tampilkan "(per <date>)". Verified: Nadiem → "terdakwa kasus Chromebook menunggu vonis" (sourced
 > detik.com). Gating `THOTH_GROUND=0`. Meme/slang tak di-ground (benar).
 
-**Fase 2b — CKB persistence + slang lexicon.** Supabase tables; bootstrap `kamus-alay` ke
-`slang_lexicon`; L2 cache read/write + TTL. Mengurangi web call & menstabilkan jawaban.
+**Fase 2b — CKB persistence (cache-first).** ✅ SELESAI 2026-06-27
+> `openclaw/ckb.js` — Cultural Knowledge Base **lokal-JSON** (`workspace/ckb.json`): cache entitas/meme
+> ter-resolve lintas-run (TTL entitas 14h, meme 120h). `enrich_context`: cek CKB → cache-hit SKIP
+> web/LLM grounding; tulis hasil resolve balik ke CKB. Verified: run-2 "CKB hit: 3 term, skip grounding".
+> CATATAN: dipilih lokal-JSON (bukan Supabase) karena `THOTH_SUPABASE_URL` = string postgres mentah →
+> klien JS butuh dep `pg` + DDL manual; lokal-JSON memberi nilai sama (persistensi+cache) untuk tool
+> single-machine, tanpa dep/infra. Upgrade Supabase (cross-machine + embedding fuzzy-match) = opsi nanti.
+> Slang `kamus-alay`: DITUNDA — model sudah men-decode slang ID dengan baik di test.
 
 **Fase 3 — Cultural Pulse Harvester (scheduled).** Script + cron harian (§4). Isi `pulse` + entities.
 Per-video makin sering hit lokal. Tambah blok `[Tren Diskursus]` (frasa/meme yang lagi hidup) sebagai

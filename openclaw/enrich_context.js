@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const ckb = require('./ckb');
 
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
 const MODEL = process.env.THOTH_CONTEXT_MODEL || 'deepseek/deepseek-v3.1'; // reasoner teks utk subteks/sentimen ID (current-event di-ground di Fase 2)
@@ -79,6 +80,21 @@ async function enrich(set) {
     .filter(r => r.term && r.summary).slice(0, 8);
   set.references = refs;
 
+  // ── Fase 2b: CKB cache — reuse summaries resolved in PAST runs (cross-video, cache-first). A cached
+  // entity/meme skips the web/LLM grounding below; entities expire (short TTL) so status stays current.
+  const KB = ckb.load();
+  const cached = new Set();
+  refs.forEach(r => {
+    const c = ckb.get(KB, r.term, r.kind);
+    if (c) {
+      r.summary = c.summary;
+      if (c.as_of_date) r.as_of_date = c.as_of_date;
+      if (c.source_url) r.source_url = c.source_url;
+      cached.add(r.term);
+    }
+  });
+  if (cached.size) console.log(`  💾 CKB hit: ${cached.size} term dari cache (skip grounding)`);
+
   // discourse
   const dd = o.discourse || {};
   set.discourse = {
@@ -102,7 +118,7 @@ async function enrich(set) {
   // The model's training cutoff makes status stale (e.g. "Nadiem" still "menteri", not "tersangka 2026").
   // Best-effort: no relay / no headlines → keep the model summary. Disable with THOTH_GROUND=0.
   if (process.env.THOTH_GROUND !== '0' && refs.length) {
-    const groundable = refs.filter(r => ['person', 'org', 'event', 'place'].includes(r.kind));
+    const groundable = refs.filter(r => ['person', 'org', 'event', 'place'].includes(r.kind) && !cached.has(r.term));
     if (groundable.length) {
       try {
         const { groundTerms } = require('./web_grounding');
@@ -125,6 +141,10 @@ async function enrich(set) {
       } catch (e) { console.log('  🌐 grounding skip:', String(e.message || e).slice(0, 60)); }
     }
   }
+
+  // Persist resolved references (entities + memes) so future videos reuse them (cache-first).
+  refs.forEach(r => ckb.put(KB, r.term, r.kind, r));
+  ckb.save(KB);
 
   console.log(`  ✅ ${refs.length} ref, ${tagged} komentar di-decode, stance="${(set.discourse.audience_stance || '').slice(0, 60)}"`);
   return true;
