@@ -199,7 +199,14 @@ Tak dikenal versi lama → diabaikan (forward-compat, sesuai kontrak yang ada di
 - **Verifikasi:** re-run ee7ae8fb → narasi harus ber-frame "warganet menyarankan jangan pulang",
   bukan menyalahkan.
 
-**Fase 2 — CKB persistence + slang lexicon.** Supabase tables; bootstrap `kamus-alay` ke
+**Fase 2a — Web-grounding status terkini.** ✅ SELESAI 2026-06-27
+> `openclaw/web_grounding.js` (`groundTerms` → Google News headlines via CDP, text-only, reuse teknik
+> search_news). `enrich_context.js`: Pass B me-rewrite ringkasan entitas/org/event/place dari headline
+> terbaru + `as_of_date`/`source_url` (anchor tanggal hari ini). Rust `Reference` + blok `[Konteks Budaya]`
+> tampilkan "(per <date>)". Verified: Nadiem → "terdakwa kasus Chromebook menunggu vonis" (sourced
+> detik.com). Gating `THOTH_GROUND=0`. Meme/slang tak di-ground (benar).
+
+**Fase 2b — CKB persistence + slang lexicon.** Supabase tables; bootstrap `kamus-alay` ke
 `slang_lexicon`; L2 cache read/write + TTL. Mengurangi web call & menstabilkan jawaban.
 
 **Fase 3 — Cultural Pulse Harvester (scheduled).** Script + cron harian (§4). Isi `pulse` + entities.

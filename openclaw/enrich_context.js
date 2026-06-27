@@ -98,8 +98,73 @@ async function enrich(set) {
     if (set.comments[origIdx]) { set.comments[origIdx].context = ctx; tagged++; }
   });
 
+  // ── Fase 2a: web-grounding — refresh entity/event summaries to CURRENT status (Google News, CDP).
+  // The model's training cutoff makes status stale (e.g. "Nadiem" still "menteri", not "tersangka 2026").
+  // Best-effort: no relay / no headlines → keep the model summary. Disable with THOTH_GROUND=0.
+  if (process.env.THOTH_GROUND !== '0' && refs.length) {
+    const groundable = refs.filter(r => ['person', 'org', 'event', 'place'].includes(r.kind));
+    if (groundable.length) {
+      try {
+        const { groundTerms } = require('./web_grounding');
+        const hl = await groundTerms(groundable.map(r => r.term), { max: 5 });
+        const withHl = groundable.filter(r => (hl[r.term] || []).length);
+        if (withHl.length) {
+          const upd = await groundSummaries(withHl, hl);
+          let n = 0;
+          upd.forEach(g => {
+            const r = refs.find(x => x.term === g.term);
+            if (!r || !g.summary) return;
+            r.summary = g.summary;
+            if (g.as_of_date) r.as_of_date = g.as_of_date;
+            const first = (hl[r.term] || [])[0];
+            if (first && first.url) r.source_url = first.url;
+            n++;
+          });
+          console.log(`  🌐 grounded ${n}/${withHl.length} entitas via Google News`);
+        } else { console.log('  🌐 grounding: tak ada headline relevan (lewati)'); }
+      } catch (e) { console.log('  🌐 grounding skip:', String(e.message || e).slice(0, 60)); }
+    }
+  }
+
   console.log(`  ✅ ${refs.length} ref, ${tagged} komentar di-decode, stance="${(set.discourse.audience_stance || '').slice(0, 60)}"`);
   return true;
+}
+
+// Pass B: rewrite entity/event summaries using the latest Google-News headlines (current status +
+// as_of_date). Returns [{term, summary, as_of_date}]. Best-effort → [] on any failure.
+async function groundSummaries(refs, headlines) {
+  const blocks = refs.map(r => {
+    const hl = (headlines[r.term] || []).map(h => `- ${h.title}${h.source ? ' (' + h.source + ')' : ''}`).join('\n');
+    return `### ${r.term} [${r.kind}]\nRingkasan lama: ${r.summary}\nHeadline terbaru:\n${hl || '(tak ada)'}`;
+  }).join('\n\n');
+  const today = new Date().toISOString().slice(0, 10);
+  const prompt = `Hari ini: ${today}. Perbarui ringkasan tiap entitas memakai HEADLINE TERBARU di bawah.
+Status bisa berubah (mis. "menteri"→"tersangka"→"divonis"). Tulis 1-2 kalimat FAKTUAL + STATUS TERKINI.
+Sertakan as_of_date (format YYYY-MM atau YYYY-MM-DD; mendekati hari ini karena headline = berita terbaru,
+JANGAN menebak tahun lampau; tak boleh > hari ini). Kalau headline TIDAK relevan dengan entitas,
+pertahankan ringkasan lama apa adanya.
+
+${blocks}
+
+Keluarkan HANYA JSON: {"items":[{"term":"","summary":"","as_of_date":""}]}`;
+  let txt = '';
+  try {
+    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
+      body: JSON.stringify({ model: MODEL, max_tokens: 900, temperature: 0.1,
+        messages: [{ role: 'user', content: prompt }] }),
+    });
+    if (!resp.ok) return [];
+    const d = await resp.json();
+    txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+  } catch (e) { return []; }
+  const m = txt.match(/\{[\s\S]*\}/); if (!m) return [];
+  try {
+    const o = JSON.parse(m[0]);
+    return (Array.isArray(o.items) ? o.items : []).map(x => ({
+      term: String(x.term || '').trim(), summary: String(x.summary || '').trim(), as_of_date: String(x.as_of_date || '').trim(),
+    }));
+  } catch (e) { return []; }
 }
 
 (async () => {

@@ -252,8 +252,10 @@ impl<'a> PipelineRunner<'a> {
                 .filter(|r| !r.term.trim().is_empty() && !r.summary.trim().is_empty())
                 .map(|r| {
                     let kind = r.kind.trim();
-                    if kind.is_empty() { format!("- {}: {}", r.term.trim(), r.summary.trim()) }
-                    else { format!("- {} ({}): {}", r.term.trim(), kind, r.summary.trim()) }
+                    let asof = r.as_of_date.trim();
+                    let tail = if asof.is_empty() { String::new() } else { format!(" (per {asof})") };
+                    if kind.is_empty() { format!("- {}: {}{}", r.term.trim(), r.summary.trim(), tail) }
+                    else { format!("- {} ({}): {}{}", r.term.trim(), kind, r.summary.trim(), tail) }
                 })
                 .collect();
             if !refs.is_empty() {

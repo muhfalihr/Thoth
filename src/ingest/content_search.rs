@@ -163,6 +163,13 @@ pub struct Reference {
     /// 1–2 sentence factual explainer of what it is and why it matters here.
     #[serde(default)]
     pub summary: String,
+    /// As-of date of the summary (e.g. "2026-05") when web-grounded — status changes over time
+    /// (tersangka→divonis). Empty = not grounded / not time-sensitive.
+    #[serde(default)]
+    pub as_of_date: String,
+    /// Source URL backing a web-grounded summary (provenance). Empty = model knowledge only.
+    #[serde(default)]
+    pub source_url: String,
 }
 
 /// The COLLECTIVE audience reading of the comments, synthesized by `enrich_context.js`. Without it
