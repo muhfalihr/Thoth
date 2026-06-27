@@ -35,6 +35,8 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
 | Beat-sync audio-visual | ✅ 100% | `beat_detect.rs` BPM dari metadata; SFX snap ke downbeat; BGM ducking; ClipStyle duration = beat subdivision |
 | Scene boundary detection | ✅ 100% | `detect_scene_boundaries()` via FFmpeg select filter, opt-in via `vision.scene_detection` |
 | **News Enrichment (Stage 4) — Phase 1-6** | ✅ 100% | Keyword extraction + search + screenshot + 9:16 format + video overlay + reaction script (LLM) + TTS (Edge TTS) + static avatar post-roll + SadTalker lip-sync talking avatar (local GPU, tidak butuh API). |
+| **Narration cultural-context enrichment** | ✅ 100% | OpenClaw `enrich_context.js` decode subteks komentar (references entitas/meme/slang + per-comment context + discourse) → blok `[Konteks Budaya]`/`[Maksud Komentar]` di narasi; web-grounding status terkini (Google News via CDP, `web_grounding.js`); CKB cache di **Supabase** (`ckb.js`, fallback lokal-JSON); narator diinstruksi baca sarkasme & tak menyalahkan netizen. `enrich_context.js`/`web_grounding.js`/`ckb.js`, `pipeline/mod.rs`, `narration/mod.rs`, `ingest/content_search.rs` |
+| **Cultural Pulse (trend dari diskursus)** | ✅ 80% | `pulse_harvest.js` (cron harian): scrape komentar feed trending → distilasi term berulang + register gaya bahasa → `ckb_pulse` (recency-decay) → blok `[Tren Diskursus]` + flavor register opsional. Sumber = komentar (discourse), bukan view-index. Pelengkap Priority 6. |
 
 ---
 
@@ -354,6 +356,16 @@ Render Engine (THOTH saat ini):
 | YouTube Trending | Shorts style | yt-dlp scraping |
 | TikTok Creative Center | Sounds, hashtags | Web scraping |
 
+**✅ SEBAGIAN TERIMPLEMENTASI (2026-06-27) — pendekatan DISKURSUS, bukan view-index:**
+Alih-alih menarik index tren platform (TikTok Creative Center dst.) yang dikurasi algoritma, THOTH kini
+memanen tren dari **apa yang warganet TULIS** di feed yang sudah ditemukannya sendiri. `openclaw/pulse_harvest.js`
+(cron harian): scan `reel_topics.json` → scrape komentar berbudget → distilasi LLM term berulang (lintas
+≥N video) + snapshot register gaya bahasa → simpan ke **CKB Supabase** `ckb_pulse` dengan recency-decay
+(`exp(-age/τ)`) + TTL-prune. Disuntik ke narasi sbg `[Tren Diskursus]` (referensi gaya, bukan dipaksakan).
+Detail desain: `RESEARCH_context_enrichment_narration.md` (Fase 3–4).
+**Sisa Priority 6 yang BELUM:** auto-pull style-fingerprint VISUAL dari video trending (frame→vision→
+update `style_profiles/` otomatis) — pulse saat ini fokus DISKURSUS/teks, belum gaya editing visual.
+
 ---
 
 ## News Enrichment Pipeline (Stage 4) — Status per Phase
@@ -529,4 +541,13 @@ output/.THOTH/{job_id}/
   - *Fix 1 — vocab.rs: tambah keyword CTA dual-use ke `outro` defaults: "komen di bawah", "komentar di bawah", "silakan komen", "silakan komentar", "tulis di kolom komentar", "di kolom komentar", "bagikan pengalaman", "ceritakan di kolom". Aman di last-15% scan window. Deteksi kini fire di t=~1961s (segment "oke terima kasih kalau kalian punya pendapat... silakan komen di bawah")*
   - *Fix 2 — service.rs: upgrade outro `retain()` filter dengan overlap check — juga drop clip di mana >25% durasi clip jatuh di zona outro. Ini safety net untuk kasus keyword detection terlambat beberapa detik. Failing case: start=1961, end=1981, outro=1973 → overlap=8s/20s=39%>25% → DROPPED*
   - *Fix 3 — vocab.rs: `seed_defaults()` tidak menyeed category "outro" ke Supabase — diperbaiki*
-*Satu-satunya gap nyata yang tersisa: Priority 6 — Full Adaptive Trend Learning (auto-pull TikTok Creative Center + YouTube Trending, auto-update style_profiles otomatis).*
+*Gap nyata yang tersisa: Priority 6 sisi VISUAL — auto-pull style-fingerprint dari video trending (frame→vision→update `style_profiles/` otomatis). Sisi DISKURSUS Priority 6 sudah dijawab oleh Cultural Pulse Harvester (lihat catatan 2026-06-27).*
+
+*Ditambahkan (2026-06-27) — Narration Cultural-Context Enrichment + Cultural Pulse + model audit:*
+  - *OpenClaw `enrich_context.js`: decode subteks komentar (references entitas/meme/slang + per-comment context + discourse audience_stance) → blok narasi `[Konteks Budaya]`/`[Maksud Komentar]`; narator diinstruksi baca sarkasme & TIDAK menyalahkan netizen (fix kasus: narasi menyalahkan komentar "konoha"/"pak nadim"/"10+6").*
+  - *`web_grounding.js`: refresh status entitas TERKINI via Google News (CDP) — atasi cutoff model (mis. Nadiem "menteri"→"terdakwa kasus Chromebook").*
+  - *`ckb.js`: Cultural Knowledge Base di **Supabase Postgres** (tabel `ckb_entities`/`ckb_memes`/`ckb_pulse`, klien `pg`+SSL, auto-DDL) — cache-first lintas-run & lintas-mesin; fallback lokal-JSON. Setup workspace: `npm install pg` + `.supabase_url`/`CLIPPER_SUPABASE_URL`.*
+  - *`pulse_harvest.js`: trend dari komentar feed (bukan view-index) → `ckb_pulse` + register gaya bahasa → `[Tren Diskursus]` (Priority 6 sisi diskursus).*
+  - *Rust: struct `Reference`/`Discourse` (+`as_of_date`/`source_url`/`trends`) di `content_search.rs`, blok narasi di `pipeline/mod.rs`, prompt di `narration/mod.rs`; `LlmProvider::chat_completion_json` (response_format json_object) utk keandalan JSON analyze/narasi.*
+  - *Model audit: analyze → `deepseek-v3.1`; vision frame-desc → `qwen2.5-vl-72b`; task teks OpenClaw → `deepseek-v3.1`; cover default → `gemini-2.5-flash-image`.*
+  - *Detail penuh: `RESEARCH_context_enrichment_narration.md`.*
