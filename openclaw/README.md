@@ -87,6 +87,10 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
    tambah x.com / facebook.com / google.com sesuai platform yang dipakai. Tab harus DIBIARKAN terbuka.
 3. **Key file di WORKSPACE** (bukan di module ini, tidak di-commit): `.novita_key` (LLM/vision/embedding),
    `.groq_key` (Whisper fallback discovery).
+   - **CKB (Cultural Knowledge Base) — opsional, untuk `enrich_context`/`pulse_harvest`:** Supabase
+     Postgres. Sediakan URL via `.supabase_url` (file di workspace, pola `.novita_key`) atau env
+     `CLIPPER_SUPABASE_URL`, lalu di workspace: `npm install pg`. Tanpa ini, CKB degrade ke cache
+     lokal-JSON (`ckb.json`) — tetap jalan, tapi tidak lintas-mesin.
 4. **Thoth** terbuild (`build_cuda.bat`) + `config.toml`: `[narration] enabled = true`.
    Default `--provider` CLI sudah **novita** (jangan pakai groq — rate limit 12k TPM bikin narasi
    diam-diam gagal dan video jatuh ke clip-mode).

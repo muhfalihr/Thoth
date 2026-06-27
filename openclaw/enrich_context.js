@@ -82,7 +82,7 @@ async function enrich(set) {
 
   // ── Fase 2b: CKB cache — reuse summaries resolved in PAST runs (cross-video, cache-first). A cached
   // entity/meme skips the web/LLM grounding below; entities expire (short TTL) so status stays current.
-  const KB = ckb.load();
+  const KB = await ckb.load();
   const cached = new Set();
   refs.forEach(r => {
     const c = ckb.get(KB, r.term, r.kind);
@@ -144,7 +144,7 @@ async function enrich(set) {
 
   // Persist resolved references (entities + memes) so future videos reuse them (cache-first).
   refs.forEach(r => ckb.put(KB, r.term, r.kind, r));
-  ckb.save(KB);
+  await ckb.save(KB);
 
   // Fase 3b: inject currently-live discourse terms (daily pulse harvest) as a STYLE reference.
   const trends = ckb.topPulse(KB, 8).map(p => p.term);

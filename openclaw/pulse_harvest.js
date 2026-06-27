@@ -104,7 +104,7 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}]}`;
   console.log(`Distilasi: ${terms.length} kandidat istilah`);
 
   // Frequency = # of videos whose corpus contains the term (recurring across content = trending).
-  const KB = ckb.load();
+  const KB = await ckb.load();
   let kept = 0;
   for (const t of terms) {
     const tl = t.term.toLowerCase();
@@ -114,7 +114,7 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}]}`;
     kept++;
   }
   ckb.prunePulse(KB, TTL_DAYS);
-  ckb.save(KB);
+  await ckb.save(KB);
 
   const top = ckb.topPulse(KB, 12);
   console.log('-'.repeat(60));

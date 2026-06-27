@@ -206,13 +206,17 @@ Tak dikenal versi lama → diabaikan (forward-compat, sesuai kontrak yang ada di
 > tampilkan "(per <date>)". Verified: Nadiem → "terdakwa kasus Chromebook menunggu vonis" (sourced
 > detik.com). Gating `THOTH_GROUND=0`. Meme/slang tak di-ground (benar).
 
-**Fase 2b — CKB persistence (cache-first).** ✅ SELESAI 2026-06-27
-> `openclaw/ckb.js` — Cultural Knowledge Base **lokal-JSON** (`workspace/ckb.json`): cache entitas/meme
-> ter-resolve lintas-run (TTL entitas 14h, meme 120h). `enrich_context`: cek CKB → cache-hit SKIP
-> web/LLM grounding; tulis hasil resolve balik ke CKB. Verified: run-2 "CKB hit: 3 term, skip grounding".
-> CATATAN: dipilih lokal-JSON (bukan Supabase) karena `THOTH_SUPABASE_URL` = string postgres mentah →
-> klien JS butuh dep `pg` + DDL manual; lokal-JSON memberi nilai sama (persistensi+cache) untuk tool
-> single-machine, tanpa dep/infra. Upgrade Supabase (cross-machine + embedding fuzzy-match) = opsi nanti.
+**Fase 2b — CKB persistence di SUPABASE.** ✅ SELESAI 2026-06-27
+> `openclaw/ckb.js` — Cultural Knowledge Base di **Supabase Postgres** (klien `pg` + SSL): tabel
+> `ckb_entities` / `ckb_memes` / `ckb_pulse` (auto-`CREATE TABLE IF NOT EXISTS`). Cache entitas/meme
+> ter-resolve lintas-run **dan lintas-mesin** (TTL entitas 14h, meme 120h). `enrich_context`: cek CKB
+> → cache-hit SKIP web/LLM grounding; tulis hasil resolve balik. API: `await load()`/`await save()`
+> (async, flush hanya baris dirty), `get/put/bumpPulse/topPulse` sync in-memory.
+> Koneksi: `CLIPPER_SUPABASE_URL` (atau `THOTH_SUPABASE_URL`) env, file `.supabase_url` (pola
+> `.novita_key`), atau `.env` terdekat. **Degrade** ke lokal-JSON bila URL/pg/koneksi tak ada → tool
+> tetap jalan. Setup workspace: `npm install pg` + sediakan URL.
+> Verified live: cold-run tulis ke Supabase (`backend: supabase`, Nadiem grounded), warm-run "CKB hit:
+> 3 term, skip grounding" baca dari DB.
 > Slang `kamus-alay`: DITUNDA — model sudah men-decode slang ID dengan baik di test.
 
 **Fase 3 — Cultural Pulse Harvester (scheduled).** ✅ SELESAI 2026-06-27
