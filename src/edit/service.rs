@@ -280,7 +280,7 @@ JSON only, no prose: {\"memes\":[{\"file\":\"<catalog file>\",\"at_sec\":<second
          Pick up to {max_memes} memes. JSON only."
     );
 
-    let raw = match provider.chat_completion(system, &user).await {
+    let raw = match provider.chat_completion_json(system, &user).await {
         Ok(r) => r,
         Err(e) => {
             warn!("meme selection LLM failed: {e}");
@@ -387,7 +387,7 @@ silence has value. Output STRICT JSON only, no prose: \
          Pick up to {max_sfx} SFX. JSON only."
     );
 
-    let raw = match provider.chat_completion(system, &user).await {
+    let raw = match provider.chat_completion_json(system, &user).await {
         Ok(r) => r,
         Err(e) => {
             warn!("sfx selection LLM failed: {e}");

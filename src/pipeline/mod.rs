@@ -220,6 +220,9 @@ impl<'a> PipelineRunner<'a> {
         // comments carry the actual topic; feeding only the transcript made the LLM
         // hallucinate an unrelated hook. Order = orientation → facts → sentiment.
         let mut sources: Vec<String> = Vec::new();
+        // Audience-discourse synthesis (enrich_context.js) — pushed AFTER the comments so the
+        // sentiment reading sits next to the raw comments it explains. Captured here, emitted below.
+        let mut discourse_block = String::new();
         if let Some(ctx) = crate::ingest::content_search::load_main_context(&job.base_dir) {
             if !ctx.title.trim().is_empty() {
                 sources.push(format!("[Judul]\n{}", ctx.title.trim()));
@@ -243,18 +246,55 @@ impl<'a> PipelineRunner<'a> {
                     sources.push(format!("[Tokoh]\n{}", lines.join("\n")));
                 }
             }
+            // Resolved cultural references (entities/memes/slang/events) → the narrator sounds
+            // informed about what the audience is referencing instead of naive.
+            let refs: Vec<String> = ctx.references.iter()
+                .filter(|r| !r.term.trim().is_empty() && !r.summary.trim().is_empty())
+                .map(|r| {
+                    let kind = r.kind.trim();
+                    if kind.is_empty() { format!("- {}: {}", r.term.trim(), r.summary.trim()) }
+                    else { format!("- {} ({}): {}", r.term.trim(), kind, r.summary.trim()) }
+                })
+                .collect();
+            if !refs.is_empty() {
+                sources.push(format!("[Konteks Budaya]\n{}", refs.join("\n")));
+            }
+            // Collective audience reading — emitted after the comments block (see below).
+            let d = &ctx.discourse;
+            if !d.audience_stance.trim().is_empty() || !d.narration_guidance.trim().is_empty() {
+                let mut s = String::from("[Maksud Komentar]");
+                if !d.audience_stance.trim().is_empty() {
+                    s.push_str(&format!("\nSikap audiens: {}", d.audience_stance.trim()));
+                }
+                let themes: Vec<&str> = d.themes.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+                if !themes.is_empty() {
+                    s.push_str(&format!("\nTema: {}", themes.join("; ")));
+                }
+                if !d.narration_guidance.trim().is_empty() {
+                    s.push_str(&format!("\nArahan narator: {}", d.narration_guidance.trim()));
+                }
+                discourse_block = s;
+            }
         }
         let mut comments = crate::edit::comment_card::load_comment_pool(&job.base_dir);
         if !comments.is_empty() {
             comments.sort_by(|a, b| b.likes.cmp(&a.likes)); // most-liked first
             let lines: Vec<String> = comments.iter().take(12)
-                .map(|c| if c.likes > 0 {
-                    format!("- {} ({} like): {}", c.author, c.likes, c.text)
-                } else {
-                    format!("- {}: {}", c.author, c.text)
+                .map(|c| {
+                    let head = if c.likes > 0 {
+                        format!("- {} ({} like): {}", c.author, c.likes, c.text)
+                    } else {
+                        format!("- {}: {}", c.author, c.text)
+                    };
+                    // Attach the decoded subtext so the narrator reads sarcasm/coded refs correctly.
+                    if c.context.trim().is_empty() { head }
+                    else { format!("{head}  [maksud: {}]", c.context.trim()) }
                 })
                 .collect();
             sources.push(format!("[Komentar Netizen Teratas]\n{}", lines.join("\n")));
+        }
+        if !discourse_block.is_empty() {
+            sources.push(discourse_block);
         }
 
         // Vision model's account of what's literally ON SCREEN (analyze stage,

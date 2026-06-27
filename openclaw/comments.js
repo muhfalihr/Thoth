@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 
-const VISION_MODEL = 'qwen/qwen3-vl-8b-instruct';
+const VISION_MODEL = process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-8b-instruct'; // konsisten dgn cropper lain
 
 // W x H = pixel dimensions of the image actually sent (after resize).
 function commentPrompt(W, H) {

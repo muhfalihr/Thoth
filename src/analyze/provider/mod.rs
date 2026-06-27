@@ -26,6 +26,19 @@ pub trait LlmProvider: Send + Sync {
         user: &str,
     ) -> Result<String, AnalyzeError>;
 
+    /// Same as [`chat_completion`] but requests STRICT JSON-OBJECT output where the provider
+    /// supports it (`response_format: {"type":"json_object"}`). Use ONLY for callers that expect a
+    /// top-level JSON OBJECT (analyze/narration/meme/sfx/etc.) — NOT for ones expecting a top-level
+    /// array (news keyword) or prose. Default impl delegates to [`chat_completion`] so providers
+    /// without JSON-mode (or that don't override) behave exactly as before.
+    async fn chat_completion_json(
+        &self,
+        system: &str,
+        user: &str,
+    ) -> Result<String, AnalyzeError> {
+        self.chat_completion(system, user).await
+    }
+
     fn name(&self) -> &str;
     fn model(&self) -> &str;
 }

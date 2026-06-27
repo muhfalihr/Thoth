@@ -50,11 +50,12 @@ impl OpenAiCompatProvider {
     }
 }
 
-#[async_trait]
-impl LlmProvider for OpenAiCompatProvider {
-    async fn chat_completion(&self, system: &str, user: &str) -> Result<String, AnalyzeError> {
+impl OpenAiCompatProvider {
+    /// Shared request path. `json_mode` adds `response_format: {"type":"json_object"}` (OpenAI-compat
+    /// strict JSON) for callers that need a top-level JSON object.
+    async fn complete(&self, system: &str, user: &str, json_mode: bool) -> Result<String, AnalyzeError> {
         let url  = format!("{}/v1/chat/completions", self.base_url);
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
             "messages": [
                 { "role": "system", "content": system },
@@ -63,8 +64,11 @@ impl LlmProvider for OpenAiCompatProvider {
             "temperature": 0.3,
             "max_tokens": 4096
         });
+        if json_mode {
+            body["response_format"] = json!({ "type": "json_object" });
+        }
 
-        debug!("{}: POST {} model={}", self.provider_tag, url, self.model);
+        debug!("{}: POST {} model={} json={}", self.provider_tag, url, self.model, json_mode);
 
         let resp = self.client
             .post(&url)
@@ -107,7 +111,16 @@ impl LlmProvider for OpenAiCompatProvider {
 
         Ok(content)
     }
+}
 
+#[async_trait]
+impl LlmProvider for OpenAiCompatProvider {
+    async fn chat_completion(&self, system: &str, user: &str) -> Result<String, AnalyzeError> {
+        self.complete(system, user, false).await
+    }
+    async fn chat_completion_json(&self, system: &str, user: &str) -> Result<String, AnalyzeError> {
+        self.complete(system, user, true).await
+    }
     fn name(&self)  -> &str { &self.provider_tag }
     fn model(&self) -> &str { &self.model }
 }

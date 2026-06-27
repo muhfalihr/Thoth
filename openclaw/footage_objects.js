@@ -11,14 +11,14 @@
 //           subjects = jangkar topik; objects = benda b-roll (digabung subject saat query); people = tokoh.
 //   CLI:    node footage_objects.js --headline "..." [--caption "..."] [--desc "..."] [--comments "..."]
 //
-// Uses Novita (.novita_key); model via env THOTH_LLM_MODEL (default qwen3-vl-235b — brand-expansion
-// like "ojol"→gojek,grab needs a strong model; 8b under-performs).
+// Uses Novita (.novita_key); model via env THOTH_LLM_MODEL (default deepseek-v3.1 — a TEXT reasoner;
+// brand-expansion like "ojol"→gojek,grab needs a strong model, a vision model is wasteful here).
 
 const fs = require('fs');
 const path = require('path');
 
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
-const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
+const MODEL = process.env.THOTH_LLM_MODEL || 'deepseek/deepseek-v3.1'; // text reasoning (brand-expansion) — pakai reasoner teks, bukan model vision
 
 const PROMPT = ({ description, caption, headline, comments }) => `Dari teks postingan di bawah, ekstrak entitas untuk query pencarian FOOTAGE (b-roll) — klip/post
 yang bisa DITAMPILKAN di video. Pisahkan jadi SUBJECT (jangkar), OBJECT (benda konkret), PEOPLE (tokoh).

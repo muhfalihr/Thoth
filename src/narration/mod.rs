@@ -86,15 +86,22 @@ async fn generate_script(
     };
     let user = format!(
         "Ini SUMBER KONTEKS sebuah kejadian. Bisa berisi beberapa blok: [Judul], \
-         [Deskripsi], [Komentar Netizen Teratas], [Deskripsi Visual] (apa yang \
-         TERLIHAT di layar dari model vision), [Analisa Momen] (kenapa momen ini \
-         viral), [Transkrip Audio], dan/atau [Video Terkait]. Pahami TOPIK & FAKTA \
-         nyatanya dari SEMUA blok:\n\
+         [Deskripsi], [Tokoh], [Konteks Budaya] (penjelasan entitas/meme/slang/peristiwa yang \
+         dirujuk audiens), [Komentar Netizen Teratas] (tiap komentar bisa diikuti '[maksud: ...]' \
+         = arti tersirat & nada-nya), [Maksud Komentar] (sikap kolektif audiens), [Deskripsi Visual] \
+         (apa yang TERLIHAT di layar dari model vision), [Analisa Momen] (kenapa momen ini viral), \
+         [Transkrip Audio], dan/atau [Video Terkait]. Pahami TOPIK & FAKTA nyatanya dari SEMUA blok:\n\
          ====================\n{src}\n====================\n\n\
          PENTING — GROUNDING: Narasi WAJIB berdasar fakta & topik NYATA di atas \
          (nama tokoh, kejadian, angka, sentimen komentar). Kalau transkrip audio \
          kosong/tipis, ambil cerita dari [Judul]+[Deskripsi]+[Komentar]+[Deskripsi Visual]. \
-         DILARANG KERAS mengarang topik/tokoh/kejadian yang tidak ada di konteks.\n\n\
+         DILARANG KERAS mengarang topik/tokoh/kejadian yang tidak ada di konteks.\n\
+         BACA KOMENTAR DENGAN BENAR: komentar sering SARKAS/berkode (nama tokoh, meme, kata satir \
+         spt 'konoha', angka-meme). Pakai [Konteks Budaya] + '[maksud: ...]' tiap komentar + \
+         [Maksud Komentar] buat nangkep arti SEBENARNYA — perlakukan sarkasme sbg sarkasme, JANGAN \
+         harfiah. SELARAS dgn 'Sikap audiens' & 'Arahan narator'. JANGAN menyalahkan/meremehkan \
+         netizen yg komentar — komentar itu BAGIAN cerita, bukan sasaran. Sebut peristiwa nyata \
+         secara akurat sesuai konteks.\n\n\
          {refs_block}\
          Bikin SATU narasi RAGE-BAIT menerus (bahasa {lang}) buat di-voiceover-in. \
          Pelajari DNA rage-bait konten viral Indonesia dan terapkan:\n\n\
@@ -145,7 +152,7 @@ async fn generate_script(
         refs_block = refs_block,
     );
 
-    let raw = provider.chat_completion(SYSTEM, &user).await
+    let raw = provider.chat_completion_json(SYSTEM, &user).await
         .map_err(|e| format!("LLM narration: {e}"))?;
 
     let (narration, hook_raw) = parse_narration_reply(&raw)?;

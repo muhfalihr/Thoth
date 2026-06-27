@@ -91,6 +91,9 @@ run(async () => {
   if (!NO_COMMENTS) step('collect_comments (multi-sumber)', 'collect_comments.js', [file, '--cap', CAP, '--extra', URL]);
   step('build_footage (objek→footage)', 'build_footage.js', [file, '--per', PER, '--max', MAX]);
   step('extract_figures (tokoh — main + footage)', 'extract_figures.js', [file]);
+  // Decode cultural context (entitas/meme/slang + maksud komentar) → narasi paham subteks,
+  // tak menyalahkan netizen. Best-effort (skip diam bila tak ada key / gagal).
+  if (!NO_COMMENTS) step('enrich_context (referensi budaya + maksud komentar)', 'enrich_context.js', [file]);
 
   // 6) Validate + summary.
   step('validate', 'validate_content_set.js', [file]);

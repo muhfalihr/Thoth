@@ -200,7 +200,7 @@ pub async fn extract_keywords_llm(
         max     = max_keywords,
     );
 
-    let raw = match provider.chat_completion(system, &user).await {
+    let raw = match provider.chat_completion_json(system, &user).await {
         Ok(r)  => r,
         Err(e) => {
             tracing::warn!("LLM keyword extraction failed: {e}");

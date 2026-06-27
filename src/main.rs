@@ -501,6 +501,8 @@ async fn main() -> Result<()> {
                         title: set.main_title.trim().to_string(),
                         description: set.main_description.trim().to_string(),
                         figures: set.figures.clone(),
+                        references: set.references.clone(),
+                        discourse: set.discourse.clone(),
                     };
                     let dest = args.output_dir.join(ingest::content_search::MAIN_CONTEXT_FILE);
                     match serde_json::to_string_pretty(&ctx) {
@@ -582,6 +584,7 @@ async fn main() -> Result<()> {
                             // Crop is a local PNG already produced by OpenClaw — pass the
                             // path straight through (no download). Empty = drawn card.
                             image_path: c.image_path.trim().to_string(),
+                            context: c.context.trim().to_string(),
                         });
                     }
                     if !pool.is_empty() {

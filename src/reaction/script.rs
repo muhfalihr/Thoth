@@ -28,7 +28,7 @@ pub async fn generate_script(
 ) -> Result<ReactionScript, ReactionError> {
     let user = build_prompt(moment, transcript_window, news, language, script_style, max_secs);
     let raw = provider
-        .chat_completion(SCRIPT_SYSTEM, &user)
+        .chat_completion_json(SCRIPT_SYSTEM, &user)
         .await
         .map_err(|e| ReactionError::Llm(e.to_string()))?;
 

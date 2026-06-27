@@ -42,10 +42,10 @@ gemini_model = "gemini-2.0-flash"
 # Cloud inference dengan ratusan model open-source.
 # Key: https://novita.ai  →  THOTH_NOVITA_API_KEY
 novita_base_url = "https://api.novita.ai/openai"
-novita_model    = "qwen/qwen-2.5-72b-instruct"   # ANALYZE: andal utk ekstraksi JSON terstruktur (deepseek-v4-flash balik kosong di analyze). Narasi pakai [narration] model.
-# novita_model  = "deepseek/deepseek-v3-0324"
-# novita_model  = "qwen/qwen3-235b-a22b"
-# novita_model  = "meta-llama/llama-3.3-70b-instruct"
+novita_model    = "deepseek/deepseek-v3.1"       # ANALYZE: chat non-reasoning → JSON andal (kini diperkuat response_format json_object). HINDARI varian *-flash/reasoning (potong JSON).
+# novita_model  = "qwen/qwen-2.5-72b-instruct"   # fallback aman bila deepseek bermasalah
+# novita_model  = "qwen/qwen3-235b-a22b-instruct-2507"
+# novita_model  = "zai-org/glm-4.6"
 
 # ── vLLM (self-hosted, OpenAI-compatible) ─────────────────────────────────────
 # Server lokal atau private. Tidak perlu API key jika server tanpa auth.
@@ -119,8 +119,9 @@ score_weight      = 0.35       # 0.0 = text-only, 1.0 = vision-only
 # ── Novita AI (vision scoring) ────────────────────────────────────────────────
 # Dipakai saat provider = "novita". URL/model warisan dari [llm] jika dikosongkan.
 novita_base_url = "https://api.novita.ai/openai"
-novita_model    = "qwen/qwen3-vl-8b-instruct"
-# novita_model  = "qwen/qwen2.5-vl-72b-instruct"   # lebih besar, lebih akurat
+novita_model    = "qwen/qwen2.5-vl-72b-instruct"   # 72b: deskripsi visual jauh lebih akurat (grounding narasi)
+# novita_model  = "qwen/qwen3-vl-8b-instruct"      # 8b: lebih murah/cepat tapi lemah utk scene/box
+# novita_model  = "qwen/qwen3-vl-235b-a22b-instruct" # paling akurat, paling mahal per frame
 
 # ── vLLM (vision scoring, self-hosted) ───────────────────────────────────────
 # Dipakai saat provider = "vllm". Bisa beda server dari [llm].

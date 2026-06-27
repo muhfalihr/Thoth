@@ -181,7 +181,15 @@ Tak dikenal versi lama → diabaikan (forward-compat, sesuai kontrak yang ada di
 
 ## 7. Rencana implementasi bertahap (ROI tinggi dulu)
 
-**Fase 1 — Per-video enrichment (PERBAIKI BUG YANG DILAPORKAN). Murah, ~1–2 LLM call + web cache.**
+**Fase 1 — Per-video enrichment (PERBAIKI BUG YANG DILAPORKAN). Murah, ~1–2 LLM call + web cache.** ✅ SELESAI 2026-06-27
+> Implementasi: `openclaw/enrich_context.js` (1 LLM call → references/discourse/comment.context) di-wire
+> di `run_pipeline` (setelah figures). Rust: struct `Reference`/`Discourse` + `CommentInfo.context`
+> (additive `#[serde(default)]`); `generate_narration` blok `[Konteks Budaya]`+`[Maksud Komentar]`;
+> prompt `narration/mod.rs` (baca sarkasme, jangan salahkan netizen). build_cuda ✅ + test 6/6 ✅.
+> Live test pada run ee7ae8fb: discourse benar ("bangga tapi pesimis… JANGAN menyalahkan netizen").
+> Keterbatasan teramati: ringkasan entitas current-event masih sesuai cutoff model (Nadiem belum
+> "tersangka 2026") → ditangani Fase 2 (web-grounding). Discourse/komentar tetap akurat.
+
 - `openclaw/enrich_context.js` (baru): L1 detect → L2 resolve (CKB→web) → L3 discourse synth →
   tulis `comments[].context`, `references[]`, `discourse{}` ke content-set.
 - Pasang di `run_pipeline.js` SETELAH `collect_comments`, SEBELUM validate.

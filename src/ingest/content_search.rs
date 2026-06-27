@@ -141,6 +141,45 @@ pub struct CommentInfo {
     /// narration grounding. Empty = render the drawn card.
     #[serde(default)]
     pub image_path: String,
+    /// One-line decoded MEANING of this comment (subtext + tone), produced by OpenClaw
+    /// `enrich_context.js`. Lets the narrator read sarcasm/coded references correctly instead
+    /// of taking the literal text at face value. Empty = no enrichment (older sets).
+    #[serde(default)]
+    pub context: String,
+}
+
+/// A cultural/contextual REFERENCE resolved by OpenClaw `enrich_context.js` from the caption +
+/// comments — a named entity, meme, coded term, or recent event the audience assumes you know
+/// (e.g. "Nadiem Makarim", "konoha", the "10+6=17" gaffe). Feeds the narrator a factual explainer
+/// so the script sounds informed, not naive. `[]` = no enrichment / nothing notable.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Reference {
+    /// The term as it appears / its canonical name (e.g. "konoha", "Nadiem Makarim").
+    #[serde(default)]
+    pub term: String,
+    /// "person" | "org" | "place" | "event" | "meme" | "slang".
+    #[serde(default)]
+    pub kind: String,
+    /// 1–2 sentence factual explainer of what it is and why it matters here.
+    #[serde(default)]
+    pub summary: String,
+}
+
+/// The COLLECTIVE audience reading of the comments, synthesized by `enrich_context.js`. Without it
+/// the narrator misreads coded sarcasm as literal complaints (e.g. "blaming netizens"). All fields
+/// empty = no enrichment.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Discourse {
+    /// What the audience collectively means/feels (e.g. "sarkasme protektif: warganet menyarankan
+    /// sang diaspora JANGAN pulang karena Indonesia dinilai menjerat talentanya").
+    #[serde(default)]
+    pub audience_stance: String,
+    /// Recurring themes behind the comments.
+    #[serde(default)]
+    pub themes: Vec<String>,
+    /// One-line steer for the narrator (tone/angle to take given the stance).
+    #[serde(default)]
+    pub narration_guidance: String,
 }
 
 /// A FIGURE the topic is about — a named person, organization, or community.
@@ -177,6 +216,12 @@ pub struct OpenClawContentSet {
     /// Figures (person/org/community) the topic is about. Narration grounding.
     #[serde(default)]
     pub figures: Vec<Figure>,
+    /// Cultural references resolved by `enrich_context.js` (entities/memes/slang/events).
+    #[serde(default)]
+    pub references: Vec<Reference>,
+    /// Collective audience reading of the comments (so the narrator doesn't misread sarcasm).
+    #[serde(default)]
+    pub discourse: Discourse,
 }
 
 /// Parsed content set, split into the parts each pipeline stage consumes.
@@ -199,6 +244,10 @@ pub struct LoadedSet {
     pub main_image_path: String,
     /// Figures (person/org/community) the topic is about. `[]` when none. Narration grounding.
     pub figures: Vec<Figure>,
+    /// Cultural references resolved by `enrich_context.js`. `[]` when none.
+    pub references: Vec<Reference>,
+    /// Collective audience reading of the comments. Empty fields when none.
+    pub discourse: Discourse,
 }
 
 /// Load and validate an OpenClaw content set file.
@@ -222,6 +271,8 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
         comments: set.comments,
         main_image_path: set.main.image_path,
         figures: set.figures,
+        references: set.references,
+        discourse: set.discourse,
     })
 }
 
@@ -242,6 +293,14 @@ pub struct MainContext {
     /// script names the real subject instead of guessing. `[]` when none.
     #[serde(default)]
     pub figures: Vec<Figure>,
+    /// Resolved cultural references (entities/memes/slang/events) — narration grounding so
+    /// the script sounds informed about what the audience is referencing. `[]` when none.
+    #[serde(default)]
+    pub references: Vec<Reference>,
+    /// Collective audience reading of the comments — so the narrator reads sarcasm/coded
+    /// references correctly instead of taking them literally. Empty fields when none.
+    #[serde(default)]
+    pub discourse: Discourse,
 }
 
 /// Load the main-context sidecar from `base_dir/content_context.json`. Returns

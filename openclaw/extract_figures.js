@@ -8,13 +8,13 @@
 //   CLI (test):        node extract_figures.js --title "..." --desc "..." [--caption] [--headline]
 //
 // Returns [] when there is no specific notable figure (e.g. an ordinary anonymous person). Uses
-// Novita (.novita_key); model via THOTH_LLM_MODEL (default 235b — discrimination needs a strong model).
+// Novita (.novita_key); model via THOTH_LLM_MODEL (default deepseek-v3.1 — discrimination needs a strong text reasoner).
 
 const fs = require('fs');
 const path = require('path');
 
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
-const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
+const MODEL = process.env.THOTH_LLM_MODEL || 'deepseek/deepseek-v3.1'; // text reasoning (diskriminasi tokoh) — reasoner teks, bukan model vision
 const TYPES = ['person', 'organization', 'community'];
 
 const PROMPT = ({ title, description, caption, headline }) => `Dari teks topik di bawah, identifikasi TOKOH UTAMA yang sedang DIBICARAKAN: ORANG (nama tokoh),

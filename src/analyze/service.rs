@@ -361,7 +361,7 @@ impl<'a> AnalyzeService<'a> {
                 provider.name(),
                 provider.model()
             ));
-            let raw_response = provider.chat_completion(&sys, &usr).await?;
+            let raw_response = provider.chat_completion_json(&sys, &usr).await?;
             pb.finish_and_clear();
 
             self.parse_with_retry(&*provider, &raw_response, candidate_count, duration_secs)
@@ -719,7 +719,7 @@ impl<'a> AnalyzeService<'a> {
             const MAX_RETRIES: u32 = 5;
 
             let raw = loop {
-                match provider.chat_completion(&sys, &usr).await {
+                match provider.chat_completion_json(&sys, &usr).await {
                     Ok(res) => break res,
 
                     Err(e) if retries < MAX_RETRIES => {
@@ -742,7 +742,7 @@ impl<'a> AnalyzeService<'a> {
                             let sys2 = format!("{}{asset_section}", chunk_system_prompt(clips_per_chunk));
                             let usr2 = user_prompt_with_focus("Video Segment", end2 - start, &chunk2, clips_per_chunk, focus_keywords);
                             // Swap and retry immediately (no sleep needed for 413)
-                            match provider.chat_completion(&sys2, &usr2).await {
+                            match provider.chat_completion_json(&sys2, &usr2).await {
                                 Ok(res) => break res,
                                 Err(e2) => {
                                     warn!("Still failing after chunk reduction: {e2}");
@@ -875,13 +875,13 @@ impl<'a> AnalyzeService<'a> {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
         let pb = spinner("Retrying analysis (fixing JSON)…");
-        let retry_raw = match provider.chat_completion(&retry_sys, &retry_usr).await {
+        let retry_raw = match provider.chat_completion_json(&retry_sys, &retry_usr).await {
             Ok(r) => r,
             Err(e) if e.to_string().contains("429") => {
                 // Still rate-limited — wait longer and try once more
                 pb.set_message("Rate-limited on retry, waiting 20s…");
                 tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
-                provider.chat_completion(&retry_sys, &retry_usr).await?
+                provider.chat_completion_json(&retry_sys, &retry_usr).await?
             }
             Err(e) => return Err(e),
         };

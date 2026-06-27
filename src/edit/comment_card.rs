@@ -36,6 +36,10 @@ pub struct CommentData {
     /// Empty = synthetic drawn card. author/text/likes still feed narration.
     #[serde(default)]
     pub image_path: String,
+    /// One-line decoded meaning (subtext + tone) of this comment, from `enrich_context.js`.
+    /// Used only for narration grounding (not drawn on the card). Empty = no enrichment.
+    #[serde(default)]
+    pub context: String,
 }
 
 /// Load the comment pool from `base_dir/content_comments.json`. Returns an empty

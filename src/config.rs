@@ -656,7 +656,7 @@ fn default_cover_bg_h()          -> u32 { 1536 }
 fn default_cover_steps()         -> u32 { 4 }
 fn default_cover_subject_at()    -> f64 { 1.0 }
 fn default_cover_image_engine()  -> String { "flux".into() }
-fn default_cover_image_model()   -> String { "openai/gpt-5-image".into() }
+fn default_cover_image_model()   -> String { "google/gemini-2.5-flash-image".into() }
 fn default_cover_prompt_suffix() -> String {
     "empty scene with no people, dramatic cinematic poster background, moody dark lighting, \
      high contrast, bokeh, depth of field, viral youtube thumbnail backdrop, photorealistic, \
@@ -1702,7 +1702,7 @@ impl AppConfig {
             .set_default("vision.vllm_base_url", "")?
             .set_default("vision.vllm_model", "Qwen/Qwen2.5-VL-7B-Instruct")?
             .set_default("vision.novita_base_url", "https://api.novita.ai/openai")?
-            .set_default("vision.novita_model", "qwen/qwen3-vl-8b-instruct")?
+            .set_default("vision.novita_model", "qwen/qwen2.5-vl-72b-instruct")?
             .set_default("vision.describe_video", false)?
             .set_default("vision.describe_interval", 10.0)?
             .set_default("vision.describe_batch", 5)?
