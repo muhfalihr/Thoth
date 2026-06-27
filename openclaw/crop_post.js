@@ -146,9 +146,8 @@ async function cropPost({ url, out, pad = 8, navWaitMs = 6000, tries = 12, log =
         try { fs.unlinkSync(tmp); } catch (e) {}
         buf = fs.existsSync(outFile) ? fs.readFileSync(outFile) : null;
       } else {
-        const clip = { x: Math.max(0, m.x + m.sx - pad), y: Math.max(0, m.y + m.sy - pad), width: m.w + pad * 2, height: m.h + pad * 2, scale: dpr };
-        const shot = await client.cmd('Page.captureScreenshot', { format: 'png', clip, fromSurface: true, captureBeyondViewport: true });
-        buf = Buffer.from(shot.data, 'base64');
+        const data = await client.captureClip({ x: m.x + m.sx, y: m.y + m.sy, w: m.w, h: m.h }, pad, { beyondViewport: true });
+        buf = data ? Buffer.from(data, 'base64') : Buffer.alloc(0);
         if (buf.length >= 2048) fs.writeFileSync(outFile, buf);
       }
       if (buf && buf.length >= 2048) return { ok: true, platform, image_path: outFile, w: Math.round(m.w), h: Math.round(m.h), bytes: buf.length, text };

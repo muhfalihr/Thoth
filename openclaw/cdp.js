@@ -108,6 +108,28 @@ async function connect({ match, navigate, waitMs = 6000, requireMatch = false } 
     async navigate(url, w = waitMs) { await cmd('Page.navigate', { url }); await sleep(w); return evaluate('window.location.href'); },
     scroll(y) { return cmd('Runtime.evaluate', { expression: `window.scrollTo(0, ${y})` }); },
     async screenshot() { return (await cmd('Page.captureScreenshot', { format: 'png', fromSurface: true })).data; },
+    // Crop a region given a CSS-pixel rect {x,y,w,h} (+ optional CSS pad). captureScreenshot's `clip`
+    // is in CSS pixels (same as DOM/getBoundingClientRect coords); Chrome renders the output at the
+    // page's devicePixelRatio automatically (scale:1). Do NOT multiply by dpr — that DOUBLE-applies
+    // it: at dpr=2 the clip x/width come out 2× → the crop shifts right (left-chopped) and balloons
+    // with a black empty right. Pass {beyondViewport:true} (with PAGE coords) so regions outside the
+    // viewport render instead of capturing black. Returns base64 PNG or ''. Verified at dpr 0.9 & 2.
+    async captureClip(rect, pad = 0, opts = {}) {
+      if (!rect || !(rect.w > 0) || !(rect.h > 0)) return '';
+      const clip = {
+        x: Math.max(0, rect.x - pad),
+        y: Math.max(0, rect.y - pad),
+        width:  rect.w + pad * 2,
+        height: rect.h + pad * 2,
+        scale: 1,
+      };
+      const params = { format: 'png', clip, fromSurface: true };
+      if (opts.beyondViewport) params.captureBeyondViewport = true;
+      try {
+        const shot = await cmd('Page.captureScreenshot', params);
+        return shot.data;
+      } catch (e) { return ''; }
+    },
     close() { try { ws.close(); } catch (_) {} },
   };
 

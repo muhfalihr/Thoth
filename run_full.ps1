@@ -13,7 +13,12 @@
 
 .EXAMPLE
   .\run_full.ps1
-      Discovery only: list candidate reels + their URLs, then exit.
+      Discovery only: list candidate IG reels + posts + their URLs, then exit.
+
+.EXAMPLE
+  .\run_full.ps1 -TikTok
+      Discovery + TikTok Studio trending topics (region Indonesia; needs a tiktok.com login tab).
+      Use -TikTokRegion "United States" / "all" to change region; -Include reels|posts to narrow.
 
 .EXAMPLE
   .\run_full.ps1 -Url "https://www.instagram.com/acct/reel/CODE/"
@@ -24,10 +29,13 @@
 #>
 [CmdletBinding()]
 param(
-  [string]   $Url       = "",
+  [string]   $Url        = "",
   [switch]   $Discover,
-  [int]      $Hours     = 48,
-  [int]      $MaxPer    = 4,
+  [int]      $Hours      = 48,
+  [int]      $MaxPer     = 4,
+  [string]   $Include    = "reels,posts",
+  [switch]   $TikTok,
+  [string]   $TikTokRegion = "Indonesia",
   [int]      $Per       = 2,
   [int]      $Max       = 4,
   [int]      $Cap       = 12,
@@ -85,17 +93,28 @@ try {
 
 # ── 1. Discovery (kalau -Url kosong, atau -Discover) ─────────────────────────────
 if($Discover -or [string]::IsNullOrWhiteSpace($Url)){
-  Step 1 "Discovery reels (akun kurator IG)"
-  Invoke-Node "discover_reels.js" @("--max-per","$MaxPer","--hours","$Hours")
+  Step 1 "Discovery topik (reels + post akun kurator IG)"
+  $dargs = @("--max-per","$MaxPer","--hours","$Hours","--include",$Include)
+  if($TikTok){ $dargs += @("--tiktok","--tiktok-region",$TikTokRegion) }
+  Invoke-Node "discover_reels.js" $dargs
   if(Test-Path $reelTopics){
     try {
       $rt = Get-Content $reelTopics -Raw | ConvertFrom-Json
-      Ok "`nTop kandidat (salin salah satu URL):"
+      Ok "`nTop kandidat IG (salin salah satu URL):"
       $i = 0
       foreach($x in $rt.reels){
         if($i -ge 6){ break }; $i++
-        Write-Host ("  {0}. [{1} | {2} views | {3}] {4}" -f $i,$x.account,$x.views,$x.age,$x.topic)
+        $kind = if($x.kind){ $x.kind } else { "reel" }
+        Write-Host ("  {0}. [{1} | {2} | {3} views | {4}] {5}" -f $i,$x.account,$kind,$x.views,$x.age,$x.topic)
         Write-Host ("     {0}" -f $x.url) -ForegroundColor DarkGray
+      }
+      if($rt.tiktok_trending -and @($rt.tiktok_trending).Count -gt 0){
+        Ok "`nTikTok trending (region $TikTokRegion) - seed topik (cari sumber videonya):"
+        $j = 0
+        foreach($t in $rt.tiktok_trending){
+          if($j -ge 8){ break }; $j++
+          Write-Host ("  {0}. [{1}] {2}" -f $t.rank,$t.views,$t.title)
+        }
       }
     } catch { Warn "Gagal parse $reelTopics" }
   }
@@ -104,7 +123,7 @@ if($Discover -or [string]::IsNullOrWhiteSpace($Url)){
 }
 
 # ── 2. run_pipeline -> content-set ──────────────────────────────────────────────
-Step 2 "run_pipeline (trace_source -> build_footage -> figures -> comments -> validate)"
+Step 2 "run_pipeline (trace_source -> comments -> build_footage -> figures -> validate)"
 Warn "build_footage bisa diam beberapa menit/objek - itu NORMAL, JANGAN dihentikan."
 Invoke-Node "run_pipeline.js" @($Url,"--out",$contentRel,"--per","$Per","--max","$Max","--cap","$Cap")
 if(-not (Test-Path $contentSet)){ Die "content-set tak terbentuk: $contentSet" }

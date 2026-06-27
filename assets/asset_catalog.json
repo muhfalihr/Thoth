@@ -3,6 +3,56 @@
   "template": "5beat-animelorian",
   "assets": [
     {
+      "file": "assets/sfx/anime-wow.mp3",
+      "kind": "audio",
+      "duration_sec": 4.2,
+      "envelope": "swell",
+      "peak_pos": 0.133,
+      "rise_ratio": 0.02,
+      "loudness_dbfs": -7.5,
+      "env_curve": [
+        0.06,
+        0.84,
+        1.0,
+        0.763,
+        0.72,
+        0.412,
+        0.269,
+        0.139,
+        0.088,
+        0.049,
+        0.032,
+        0.016,
+        0.007,
+        0.003,
+        0.001,
+        0.0
+      ],
+      "label": "Anime Wow",
+      "category": "meme_vocal",
+      "energy": "high",
+      "meaning_id": "Ekspresi terkejut atau kagum yang berlebihan, seringkali ironis.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen",
+        "climax"
+      ],
+      "triggers": [
+        "shock_reveal",
+        "hype_react",
+        "realization_react"
+      ],
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 5.0,
+      "avoid": "Saat suasana serius atau sedih.",
+      "tags": [
+        "anime",
+        "wow",
+        "terkejut"
+      ]
+    },
+    {
       "file": "assets/sfx/bruh.mp3",
       "kind": "audio",
       "duration_sec": 1.296,
@@ -11,44 +61,190 @@
       "rise_ratio": 1.1,
       "loudness_dbfs": -7.9,
       "env_curve": [
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
         0.134,
-        1,
+        1.0,
         0.903,
         0.704,
         0.829,
         0.305,
         0.003,
-        0,
-        0
+        0.0,
+        0.0
       ],
-      "label": "Bruh Sound",
-      "category": "impact_stinger",
-      "is_meme": true,
-      "energy": "high",
-      "meaning_id": "Ungkapan kekecewaan atau ketidakpercayaan yang mendadak.",
+      "label": "Bruh",
+      "category": "meme_vocal",
+      "energy": "medium",
+      "meaning_id": "Menyatakan ketidakpercayaan, kekecewaan, atau kebingungan ringan.",
       "place_beats": [
-        "climax",
-        "transition"
+        "kronologi",
+        "reaksi_netizen"
       ],
       "triggers": [
-        "shock_reveal",
+        "fail_moment",
+        "confused_react",
+        "facepalm_react"
+      ],
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 3.0,
+      "avoid": "Saat momen kemenangan atau kebahagiaan.",
+      "tags": [
+        "bruh",
+        "meme",
+        "kaget",
+        "bingung"
+      ]
+    },
+    {
+      "file": "assets/sfx/cat-laugh.mp3",
+      "kind": "audio",
+      "duration_sec": 3.631,
+      "envelope": "swell",
+      "peak_pos": 0.133,
+      "rise_ratio": 1.14,
+      "loudness_dbfs": 0.0,
+      "env_curve": [
+        0.0,
+        0.909,
+        1.0,
+        0.857,
+        0.829,
+        0.809,
+        0.763,
+        0.746,
+        0.717,
+        0.644,
+        0.621,
+        0.704,
+        0.327,
+        0.84,
+        0.87,
+        0.474
+      ],
+      "label": "Cat Laugh",
+      "category": "meme_vocal",
+      "energy": "high",
+      "meaning_id": "Suara tawa kucing yang lucu dan sedikit mengganggu, untuk momen komedi.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen"
+      ],
+      "triggers": [
+        "cringe_react",
         "fail_moment"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat narasi serius atau edukatif",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 7.0,
+      "avoid": "Saat narasi serius atau informatif.",
       "tags": [
-        "meme",
-        "reaction",
-        "viral"
+        "kucing",
+        "tertawa",
+        "lucu",
+        "cringe"
+      ]
+    },
+    {
+      "file": "assets/sfx/duck-toy.mp3",
+      "kind": "audio",
+      "duration_sec": 0.96,
+      "envelope": "transient",
+      "peak_pos": 0.333,
+      "rise_ratio": 0.95,
+      "loudness_dbfs": -8.3,
+      "env_curve": [
+        0.0,
+        0.003,
+        0.006,
+        0.636,
+        0.922,
+        1.0,
+        0.757,
+        0.058,
+        0.239,
+        0.219,
+        0.016,
+        0.004,
+        0.002,
+        0.002,
+        0.003,
+        0.002
+      ],
+      "label": "Duck Toy Squeak",
+      "category": "impact_stinger",
+      "energy": "low",
+      "meaning_id": "Suara mainan bebek karet, untuk momen yang sedikit konyol atau tidak terduga.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen"
+      ],
+      "triggers": [
+        "fail_moment",
+        "awkward_silence"
+      ],
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 4.0,
+      "avoid": "Saat momen penting atau dramatis.",
+      "tags": [
+        "bebek",
+        "mainan",
+        "konyol"
+      ]
+    },
+    {
+      "file": "assets/sfx/error.mp3",
+      "kind": "audio",
+      "duration_sec": 0.993,
+      "envelope": "transient",
+      "peak_pos": 0.2,
+      "rise_ratio": 0.04,
+      "loudness_dbfs": -0.8,
+      "env_curve": [
+        0.0,
+        0.697,
+        0.979,
+        1.0,
+        0.899,
+        0.669,
+        0.508,
+        0.456,
+        0.231,
+        0.168,
+        0.104,
+        0.089,
+        0.061,
+        0.029,
+        0.006,
+        0.0
+      ],
+      "label": "Error Sound",
+      "category": "impact_stinger",
+      "energy": "medium",
+      "meaning_id": "Menandakan kesalahan, kegagalan, atau sesuatu yang tidak beres.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen"
+      ],
+      "triggers": [
+        "fail_moment",
+        "disagree_react"
+      ],
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 3.0,
+      "avoid": "Saat ada solusi atau keberhasilan.",
+      "tags": [
+        "error",
+        "salah",
+        "gagal"
       ]
     },
     {
@@ -62,7 +258,7 @@
       "env_curve": [
         0.02,
         0.959,
-        1,
+        1.0,
         0.703,
         0.515,
         0.402,
@@ -77,27 +273,73 @@
         0.122,
         0.116
       ],
-      "label": "Fahhh Sigh",
-      "category": "fail_sound",
-      "is_meme": true,
+      "label": "Fahhh",
+      "category": "meme_vocal",
       "energy": "low",
-      "meaning_id": "Nafas panjang menandakan kelelahan, kekecewaan, atau penyerahan diri.",
+      "meaning_id": "Suara ekspresi kelelahan atau kekecewaan yang pasrah.",
       "place_beats": [
         "kronologi",
         "reaksi_netizen"
       ],
       "triggers": [
-        "awkward_silence",
-        "realization_react"
+        "facepalm_react",
+        "fail_moment"
       ],
-      "placement_mode": "under_segment",
-      "lead_in_sec": 0,
-      "min_gap_sec": 3,
-      "avoid": "saat momen hype atau kemenangan",
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 5.0,
+      "avoid": "Saat momen penuh energi atau semangat.",
       "tags": [
-        "sigh",
-        "defeat",
-        "meme"
+        "lelah",
+        "pasrah",
+        "kekecewaan"
+      ]
+    },
+    {
+      "file": "assets/sfx/huh.mp3",
+      "kind": "audio",
+      "duration_sec": 0.625,
+      "envelope": "swell",
+      "peak_pos": 0.4,
+      "rise_ratio": 0.78,
+      "loudness_dbfs": -1.2,
+      "env_curve": [
+        0.05,
+        0.29,
+        0.833,
+        0.926,
+        0.942,
+        0.987,
+        1.0,
+        0.867,
+        0.539,
+        0.403,
+        0.334,
+        0.424,
+        0.538,
+        0.491,
+        0.303,
+        0.11
+      ],
+      "label": "Huh?",
+      "category": "meme_vocal",
+      "energy": "low",
+      "meaning_id": "Ekspresi kebingungan atau pertanyaan.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen"
+      ],
+      "triggers": [
+        "confused_react",
+        "suspicion_moment"
+      ],
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 3.0,
+      "avoid": "Saat penjelasan sudah jelas.",
+      "tags": [
+        "bingung",
+        "tanya"
       ]
     },
     {
@@ -109,11 +351,11 @@
       "rise_ratio": 0.26,
       "loudness_dbfs": -0.2,
       "env_curve": [
-        0,
+        0.0,
         0.502,
         0.908,
         0.984,
-        1,
+        1.0,
         0.888,
         0.638,
         0.391,
@@ -128,25 +370,75 @@
       ],
       "label": "Impact Hit",
       "category": "impact_stinger",
-      "is_meme": false,
       "energy": "high",
-      "meaning_id": "Suara benturan keras untuk menandai puncak aksi atau kejutan.",
+      "meaning_id": "Suara benturan keras, untuk menekankan momen penting atau kejutan.",
       "place_beats": [
-        "climax",
-        "hook"
+        "kronologi",
+        "climax"
       ],
       "triggers": [
         "zoom_punch",
-        "shock_reveal"
+        "shock_reveal",
+        "emphasis_word"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 1.5,
-      "avoid": "saat transisi halus atau narasi lembut",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 2.0,
+      "avoid": "Saat suasana tenang atau santai.",
       "tags": [
-        "hit",
-        "boom",
-        "action"
+        "benturan",
+        "impact",
+        "kejutan"
+      ]
+    },
+    {
+      "file": "assets/sfx/loading-lost-connection.mp3",
+      "kind": "audio",
+      "duration_sec": 2.694,
+      "envelope": "sustained",
+      "peak_pos": 0.8,
+      "rise_ratio": 0.96,
+      "loudness_dbfs": -20.9,
+      "env_curve": [
+        0.427,
+        0.887,
+        0.896,
+        0.892,
+        0.901,
+        0.893,
+        0.901,
+        0.695,
+        0.865,
+        0.955,
+        0.747,
+        0.711,
+        1.0,
+        0.595,
+        0.804,
+        0.724
+      ],
+      "label": "Lost Connection",
+      "category": "ambient",
+      "energy": "low",
+      "meaning_id": "Suara loading dan koneksi terputus, untuk momen kebingungan atau kegagalan teknis.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen"
+      ],
+      "triggers": [
+        "awkward_silence",
+        "fail_moment",
+        "confused_react"
+      ],
+      "placement_mode": "under_segment",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
+      "avoid": "Saat koneksi lancar atau tidak ada masalah teknis.",
+      "tags": [
+        "loading",
+        "koneksi",
+        "gagal",
+        "bingung"
       ]
     },
     {
@@ -158,9 +450,9 @@
       "rise_ratio": 0.03,
       "loudness_dbfs": -5.4,
       "env_curve": [
-        0,
+        0.0,
         0.173,
-        1,
+        1.0,
         0.02,
         0.022,
         0.003,
@@ -175,27 +467,77 @@
         0.002,
         0.002
       ],
-      "label": "Notification Ping",
+      "label": "Notification Pop",
       "category": "notification",
-      "is_meme": false,
-      "energy": "medium",
-      "meaning_id": "Pemberitahuan masuk, biasanya untuk menandai komentar atau update penting.",
+      "energy": "low",
+      "meaning_id": "Suara notifikasi, untuk menarik perhatian pada elemen baru di layar.",
       "place_beats": [
+        "intro_tokoh",
         "reaksi_netizen",
-        "intro_tokoh"
+        "kronologi"
       ],
       "triggers": [
+        "profile_appear",
         "comment_appear",
-        "profile_appear"
+        "number_callout"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 1,
-      "avoid": "saat momen emosional intens",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 1.0,
+      "avoid": "Penggunaan berlebihan yang mengganggu.",
       "tags": [
-        "ping",
-        "alert",
-        "social"
+        "notifikasi",
+        "pop",
+        "muncul"
+      ]
+    },
+    {
+      "file": "assets/sfx/punch-gaming.mp3",
+      "kind": "audio",
+      "duration_sec": 1.533,
+      "envelope": "transient",
+      "peak_pos": 0.267,
+      "rise_ratio": 1.0,
+      "loudness_dbfs": 0.0,
+      "env_curve": [
+        0.0,
+        0.0,
+        0.0,
+        0.283,
+        1.0,
+        0.66,
+        0.227,
+        0.047,
+        0.021,
+        0.007,
+        0.001,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "label": "Gaming Punch",
+      "category": "impact_stinger",
+      "energy": "high",
+      "meaning_id": "Suara pukulan ala game, untuk menekankan aksi atau momen 'epic'.",
+      "place_beats": [
+        "kronologi",
+        "climax"
+      ],
+      "triggers": [
+        "zoom_punch",
+        "emphasis_word",
+        "flex_moment"
+      ],
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 2.0,
+      "avoid": "Saat suasana tenang atau sedih.",
+      "tags": [
+        "pukulan",
+        "gaming",
+        "epic"
       ]
     },
     {
@@ -215,7 +557,7 @@
         0.839,
         0.847,
         0.822,
-        1,
+        1.0,
         0.768,
         0.753,
         0.858,
@@ -226,25 +568,26 @@
       ],
       "label": "Record Scratch",
       "category": "record_scratch",
-      "is_meme": true,
-      "energy": "high",
-      "meaning_id": "Efek suara untuk menghentikan aksi secara dramatis, menandai momen awkward atau perubahan arah.",
+      "energy": "medium",
+      "meaning_id": "Suara piringan hitam berhenti mendadak, untuk menghentikan narasi atau menunjukkan perubahan tak terduga.",
       "place_beats": [
-        "climax",
-        "transition"
+        "kronologi",
+        "reaksi_netizen",
+        "climax"
       ],
       "triggers": [
+        "shock_reveal",
         "freeze_rewind",
-        "suspicion_moment"
+        "awkward_silence"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2.5,
-      "avoid": "saat narasi berjalan lancar tanpa interupsi",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 5.0,
+      "avoid": "Saat transisi mulus atau narasi berlanjut.",
       "tags": [
-        "scratch",
-        "stop",
-        "meme"
+        "record scratch",
+        "berhenti",
+        "kejutan"
       ]
     },
     {
@@ -253,47 +596,46 @@
       "duration_sec": 5.094,
       "envelope": "swell",
       "peak_pos": 0.2,
-      "rise_ratio": 1,
+      "rise_ratio": 1.0,
       "loudness_dbfs": -2.1,
       "env_curve": [
-        0,
-        0,
-        0,
-        1,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
         0.918,
         0.281,
         0.104,
         0.032,
         0.006,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
       ],
-      "label": "Rizz Sound",
-      "category": "musical_sting",
-      "is_meme": true,
+      "label": "Rizz",
+      "category": "meme_vocal",
       "energy": "high",
-      "meaning_id": "Musik pendek yang menunjukkan kepercayaan diri, gaya, atau keberhasilan sosial.",
+      "meaning_id": "Suara 'rizz' yang menunjukkan karisma atau daya tarik yang kuat, seringkali ironis.",
       "place_beats": [
-        "hook",
-        "outro"
+        "kronologi",
+        "reaksi_netizen"
       ],
       "triggers": [
         "flex_moment",
         "hype_react"
       ],
-      "placement_mode": "lead_in",
-      "lead_in_sec": 0.5,
-      "min_gap_sec": 4,
-      "avoid": "saat konten serius atau sedih",
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 8.0,
+      "avoid": "Saat momen serius atau sedih.",
       "tags": [
         "rizz",
-        "cool",
-        "vibe"
+        "karisma",
+        "flex"
       ]
     },
     {
@@ -307,7 +649,7 @@
       "env_curve": [
         0.08,
         0.791,
-        1,
+        1.0,
         0.09,
         0.681,
         0.547,
@@ -320,29 +662,78 @@
         0.738,
         0.324,
         0.023,
-        0
+        0.0
       ],
       "label": "Sad Trombone",
-      "category": "fail_sound",
-      "is_meme": true,
+      "category": "musical_sting",
       "energy": "low",
-      "meaning_id": "Melodi menyedihkan untuk menandai kegagalan atau momen memalukan.",
+      "meaning_id": "Suara trombon sedih, untuk momen kegagalan, kekecewaan, atau ironi.",
       "place_beats": [
         "kronologi",
-        "reaksi_netizen"
+        "reaksi_netizen",
+        "outro"
       ],
       "triggers": [
         "fail_moment",
-        "cringe_react"
+        "facepalm_react",
+        "awkward_silence"
       ],
-      "placement_mode": "under_segment",
-      "lead_in_sec": 0,
-      "min_gap_sec": 3,
-      "avoid": "saat menampilkan kemenangan atau prestasi",
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
+      "avoid": "Saat momen kemenangan atau kebahagiaan.",
       "tags": [
-        "sad",
+        "sedih",
+        "trombon",
+        "gagal"
+      ]
+    },
+    {
+      "file": "assets/sfx/steve-old-hurt.mp3",
+      "kind": "audio",
+      "duration_sec": 1.068,
+      "envelope": "transient",
+      "peak_pos": 0.267,
+      "rise_ratio": 0.2,
+      "loudness_dbfs": -3.3,
+      "env_curve": [
+        0.0,
+        0.028,
+        0.302,
+        0.66,
+        1.0,
+        0.246,
+        0.143,
+        0.03,
+        0.021,
+        0.025,
+        0.022,
+        0.022,
+        0.025,
+        0.025,
+        0.017,
+        0.0
+      ],
+      "label": "Steve Hurt",
+      "category": "fail_sound",
+      "energy": "medium",
+      "meaning_id": "Suara sakit/terkejut, cocok untuk momen kegagalan atau kejutan kecil.",
+      "place_beats": [
+        "kronologi",
+        "climax"
+      ],
+      "triggers": [
+        "fail_moment",
+        "shock_reveal"
+      ],
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 5.0,
+      "avoid": "Saat narasi serius atau momen kemenangan.",
+      "tags": [
         "fail",
-        "trombone"
+        "hurt",
+        "shock"
       ]
     },
     {
@@ -363,7 +754,7 @@
         0.503,
         0.959,
         0.98,
-        1,
+        1.0,
         0.853,
         0.747,
         0.37,
@@ -371,26 +762,24 @@
         0.064,
         0.034
       ],
-      "label": "Sus Sound",
+      "label": "Suspicious",
       "category": "meme_vocal",
-      "is_meme": true,
-      "energy": "medium",
-      "meaning_id": "Kata 'sus' untuk menandai kecurigaan atau sesuatu yang mencurigakan.",
+      "energy": "low",
+      "meaning_id": "Menandakan kecurigaan atau ada sesuatu yang tidak beres.",
       "place_beats": [
         "kronologi",
         "climax"
       ],
       "triggers": [
-        "suspicion_moment",
-        "confused_react"
+        "suspicion_moment"
       ],
-      "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat tidak ada unsur kecurigaan",
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
+      "avoid": "Saat suasana ceria atau jelas.",
       "tags": [
         "sus",
-        "among us",
+        "curiga",
         "meme"
       ]
     },
@@ -399,11 +788,11 @@
       "kind": "audio",
       "duration_sec": 1.032,
       "envelope": "riser",
-      "peak_pos": 1,
+      "peak_pos": 1.0,
       "rise_ratio": 1.75,
       "loudness_dbfs": -5.4,
       "env_curve": [
-        0,
+        0.0,
         0.524,
         0.982,
         0.835,
@@ -418,27 +807,27 @@
         0.862,
         0.956,
         0.704,
-        1
+        1.0
       ],
       "label": "Tuco Get Out",
-      "category": "impact_stinger",
-      "is_meme": true,
+      "category": "meme_vocal",
       "energy": "high",
-      "meaning_id": "Teriakan marah untuk menandai pengusiran atau penolakan tegas.",
+      "meaning_id": "Ekspresi marah atau pengusiran, cocok untuk momen penolakan atau ketidaksetujuan.",
       "place_beats": [
-        "climax",
-        "outro"
+        "kronologi",
+        "reaksi_netizen",
+        "climax"
       ],
       "triggers": [
         "rage_react",
-        "censor_block"
+        "disagree_react"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat suasana damai atau positif",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 8.0,
+      "avoid": "Saat suasana tenang atau setuju.",
       "tags": [
-        "angry",
+        "rage",
         "get out",
         "meme"
       ]
@@ -452,7 +841,7 @@
       "rise_ratio": 0.85,
       "loudness_dbfs": -0.5,
       "env_curve": [
-        0,
+        0.0,
         0.677,
         0.811,
         0.75,
@@ -460,7 +849,7 @@
         0.776,
         0.958,
         0.777,
-        1,
+        1.0,
         0.91,
         0.885,
         0.661,
@@ -471,25 +860,26 @@
       ],
       "label": "Vine Boom",
       "category": "impact_stinger",
-      "is_meme": true,
       "energy": "high",
-      "meaning_id": "Ledakan klasik dari Vine untuk menandai puncak atau twist lucu.",
+      "meaning_id": "Efek suara hentakan yang kuat, cocok untuk momen kejutan, penekanan, atau zoom-punch.",
       "place_beats": [
-        "climax",
-        "hook"
+        "hook",
+        "kronologi",
+        "climax"
       ],
       "triggers": [
+        "shock_reveal",
         "zoom_punch",
-        "shock_reveal"
+        "emphasis_word"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 1.5,
-      "avoid": "saat konten serius atau emosional",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 3.0,
+      "avoid": "Penggunaan berlebihan yang mengurangi dampaknya.",
       "tags": [
-        "vine",
+        "impact",
         "boom",
-        "classic"
+        "meme"
       ]
     },
     {
@@ -501,14 +891,14 @@
       "rise_ratio": 1.19,
       "loudness_dbfs": -4.8,
       "env_curve": [
-        0,
-        0,
+        0.0,
+        0.0,
         0.002,
         0.009,
         0.036,
         0.162,
         0.939,
-        1,
+        1.0,
         0.463,
         0.158,
         0.047,
@@ -518,25 +908,25 @@
         0.002,
         0.001
       ],
-      "label": "Whoose Swipe",
+      "label": "Whoosh Swipe",
       "category": "whoosh_transition",
-      "is_meme": false,
       "energy": "medium",
-      "meaning_id": "Suara swipe cepat untuk transisi antar scene atau elemen visual.",
+      "meaning_id": "Suara sapuan cepat, ideal untuk transisi antar scene atau perpindahan cepat.",
       "place_beats": [
-        "transition"
+        "transition",
+        "kronologi"
       ],
       "triggers": [
         "scene_change"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 1,
-      "avoid": "saat transisi lambat atau dramatis",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 2.0,
+      "avoid": "Saat tidak ada perpindahan visual yang cepat.",
       "tags": [
+        "whoosh",
         "swipe",
-        "transition",
-        "whoosh"
+        "transition"
       ]
     },
     {
@@ -548,38 +938,38 @@
       "rise_ratio": 0.71,
       "loudness_dbfs": -5.6,
       "env_curve": [
-        0,
+        0.0,
         0.005,
         0.007,
         0.057,
-        1,
+        1.0,
         0.72,
         0.133,
         0.027,
         0.005,
         0.001,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
       ],
-      "label": "Whoosh Swipe",
+      "label": "Whoosh Swipe Fast",
       "category": "whoosh_transition",
-      "is_meme": false,
       "energy": "medium",
-      "meaning_id": "Suara whoosh untuk transisi cepat dan dinamis antar bagian video.",
+      "meaning_id": "Suara sapuan cepat, ideal untuk transisi antar scene atau perpindahan cepat.",
       "place_beats": [
-        "transition"
+        "transition",
+        "kronologi"
       ],
       "triggers": [
         "scene_change"
       ],
       "placement_mode": "at_cue",
-      "lead_in_sec": 0,
-      "min_gap_sec": 1,
-      "avoid": "saat transisi halus atau statis",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 2.0,
+      "avoid": "Saat tidak ada perpindahan visual yang cepat.",
       "tags": [
         "whoosh",
         "swipe",
@@ -599,7 +989,7 @@
         0.339,
         0.512,
         0.858,
-        1,
+        1.0,
         0.728,
         0.786,
         0.892,
@@ -614,25 +1004,24 @@
       ],
       "label": "Windows XP Startup",
       "category": "musical_sting",
-      "is_meme": true,
       "energy": "low",
-      "meaning_id": "Nostalgia atau pembukaan klasik untuk menandai awal sesuatu yang penting atau lucu.",
+      "meaning_id": "Suara nostalgia yang menandakan awal atau 'boot up' suatu ide/konsep.",
       "place_beats": [
-        "hook",
-        "intro_tokoh"
+        "intro_tokoh",
+        "outro"
       ],
       "triggers": [
         "profile_appear",
-        "number_callout"
+        "realization_react"
       ],
-      "placement_mode": "lead_in",
-      "lead_in_sec": 0.5,
-      "min_gap_sec": 5,
-      "avoid": "saat tema modern atau futuristik",
+      "placement_mode": "at_cue",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 20.0,
+      "avoid": "Saat suasana tegang atau serius.",
       "tags": [
-        "xp",
         "nostalgia",
-        "startup"
+        "startup",
+        "meme"
       ]
     },
     {
@@ -642,24 +1031,22 @@
       "envelope": null,
       "label": "Montserrat ExtraBold",
       "category": "font_display",
-      "is_meme": false,
       "energy": "high",
-      "meaning_id": "Font tebal untuk judul besar atau teks utama yang menonjol.",
+      "meaning_id": "Font tebal dan modern untuk judul utama atau penekanan kuat.",
       "place_beats": [
         "hook",
-        "intro_tokoh"
+        "intro_tokoh",
+        "climax"
       ],
-      "triggers": [
-        "emphasis_word"
-      ],
+      "triggers": [],
       "placement_mode": "fullscreen_insert",
-      "lead_in_sec": 0,
-      "min_gap_sec": 0,
-      "avoid": "untuk teks paragraf panjang",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 0.0,
+      "avoid": "Untuk teks narasi panjang atau detail.",
       "tags": [
+        "judul",
         "bold",
-        "display",
-        "title"
+        "modern"
       ]
     },
     {
@@ -669,24 +1056,26 @@
       "envelope": null,
       "label": "Poppins Bold",
       "category": "font_display",
-      "is_meme": false,
       "energy": "medium",
-      "meaning_id": "Font bold yang bersih untuk teks penting atau subjudul.",
+      "meaning_id": "Font tebal dan mudah dibaca untuk highlight atau nama.",
       "place_beats": [
         "intro_tokoh",
-        "kronologi"
+        "kronologi",
+        "reaksi_netizen"
       ],
       "triggers": [
-        "number_callout"
+        "profile_appear",
+        "number_callout",
+        "comment_appear"
       ],
-      "placement_mode": "fullscreen_insert",
-      "lead_in_sec": 0,
-      "min_gap_sec": 0,
-      "avoid": "untuk teks body paragraf",
+      "placement_mode": "overlay_pip",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 0.0,
+      "avoid": "Untuk teks body yang sangat panjang.",
       "tags": [
-        "clean",
-        "bold",
-        "subtitle"
+        "highlight",
+        "nama",
+        "bold"
       ]
     },
     {
@@ -696,55 +1085,120 @@
       "envelope": null,
       "label": "Poppins Regular",
       "category": "font_body",
-      "is_meme": false,
       "energy": "low",
-      "meaning_id": "Font standar untuk teks narasi atau deskripsi panjang.",
+      "meaning_id": "Font standar yang bersih dan mudah dibaca untuk teks narasi atau detail.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen",
+        "outro"
+      ],
+      "triggers": [],
+      "placement_mode": "overlay_pip",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 0.0,
+      "avoid": "Untuk judul utama atau penekanan kuat.",
+      "tags": [
+        "body",
+        "narasi",
+        "regular"
+      ]
+    },
+    {
+      "file": "assets/meme/ mengetik-keyboard.mp4",
+      "kind": "video",
+      "subdir": "meme",
+      "duration_sec": 1.788,
+      "width": 1440,
+      "height": 1080,
+      "has_audio": true,
+      "label": "Jim Carrey Mengetik",
+      "category": "meme_reaction",
+      "energy": "medium",
+      "meaning_id": "Menunjukkan seseorang sedang mengetik dengan cepat atau mencari informasi dengan intens.",
       "place_beats": [
         "kronologi",
         "reaksi_netizen"
       ],
       "triggers": [
-        "comment_appear"
+        "emphasis_word",
+        "suspicion_moment"
       ],
       "placement_mode": "fullscreen_insert",
-      "lead_in_sec": 0,
-      "min_gap_sec": 0,
-      "avoid": "untuk judul besar atau teks yang harus menonjol",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
+      "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "regular",
-        "body",
-        "narrative"
+        "mengetik",
+        "keyboard",
+        "jim carrey",
+        "mencari",
+        "investigasi"
       ]
     },
     {
       "file": "assets/meme/black-guy-crying.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 8.312,
-      "width": 576,
-      "height": 1024,
+      "duration_sec": 3.018,
+      "width": 720,
+      "height": 1280,
       "has_audio": true,
-      "label": "Black Guy Crying",
+      "label": "Pria Menangis",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "high",
-      "meaning_id": "Ekspresi menangis ekstrem untuk menunjukkan kekecewaan atau kesedihan yang sangat dalam.",
+      "meaning_id": "Menunjukkan reaksi sedih, terkejut, atau tidak percaya yang berlebihan.",
+      "place_beats": [
+        "reaksi_netizen",
+        "climax"
+      ],
+      "triggers": [
+        "disagree_react",
+        "shock_reveal",
+        "rage_react"
+      ],
+      "placement_mode": "fullscreen_insert",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 15.0,
+      "avoid": "duck narasi saat meme audio diputar",
+      "tags": [
+        "menangis",
+        "sedih",
+        "terkejut",
+        "tidak percaya",
+        "drama"
+      ]
+    },
+    {
+      "file": "assets/meme/cat-thinking.mp4",
+      "kind": "video",
+      "subdir": "meme",
+      "duration_sec": 1.788,
+      "width": 1440,
+      "height": 1080,
+      "has_audio": true,
+      "label": "Kucing Berpikir",
+      "category": "meme_reaction",
+      "energy": "low",
+      "meaning_id": "Menunjukkan momen kebingungan, pemikiran mendalam, atau keraguan.",
       "place_beats": [
         "kronologi",
         "reaksi_netizen"
       ],
       "triggers": [
-        "rage_react",
-        "cringe_react"
+        "confused_react",
+        "suspicion_moment",
+        "realization_react"
       ],
       "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 3,
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 8.0,
       "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "crying",
-        "sad",
-        "meme"
+        "kucing",
+        "berpikir",
+        "bingung",
+        "ragu",
+        "misteri"
       ]
     },
     {
@@ -755,42 +1209,39 @@
       "width": 1024,
       "height": 576,
       "has_audio": true,
-      "label": "Clapping Man",
+      "label": "Shia LaBeouf Clapping",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "medium",
-      "meaning_id": "Tepuk tangan untuk menunjukkan apresiasi, persetujuan, atau ironi.",
+      "meaning_id": "Digunakan untuk menunjukkan apresiasi atau sarkasme terhadap suatu kejadian.",
       "place_beats": [
         "reaksi_netizen",
         "outro"
       ],
       "triggers": [
-        "applause_react",
-        "agree_react"
+        "applause_react"
       ],
-      "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat momen sedih atau gagal",
+      "placement_mode": "fullscreen_insert",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
+      "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "clap",
-        "applause",
-        "meme"
+        "apresiasi",
+        "sarkasme",
+        "tepuk tangan"
       ]
     },
     {
       "file": "assets/meme/Confused-Nick-Young.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 4.272,
-      "width": 640,
-      "height": 360,
+      "duration_sec": 2.182,
+      "width": 1280,
+      "height": 720,
       "has_audio": true,
       "label": "Confused Nick Young",
       "category": "meme_reaction",
-      "is_meme": true,
-      "energy": "medium",
-      "meaning_id": "Ekspresi bingung untuk menunjukkan ketidakpahaman atau keheranan.",
+      "energy": "low",
+      "meaning_id": "Digunakan untuk mengekspresikan kebingungan atau ketidakpahaman terhadap suatu situasi.",
       "place_beats": [
         "kronologi",
         "reaksi_netizen"
@@ -800,137 +1251,171 @@
         "suspicion_moment"
       ],
       "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat narasi jelas atau logis",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 5.0,
+      "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "confused",
-        "what",
-        "meme"
+        "bingung",
+        "tidak paham",
+        "pertanyaan"
       ]
     },
     {
       "file": "assets/meme/Higuruma-facepalm-meme.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 13.1,
-      "width": 720,
-      "height": 540,
+      "duration_sec": 3.251,
+      "width": 960,
+      "height": 720,
       "has_audio": true,
       "label": "Higuruma Facepalm",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "medium",
-      "meaning_id": "Gerakan facepalm untuk menunjukkan kekecewaan, frustrasi, atau ketidaksabaran.",
+      "meaning_id": "Digunakan untuk menunjukkan rasa frustrasi, malu, atau tidak percaya akan suatu kejadian bodoh.",
       "place_beats": [
         "kronologi",
         "reaksi_netizen"
       ],
       "triggers": [
         "facepalm_react",
-        "cringe_react"
+        "cringe_react",
+        "fail_moment"
       ],
-      "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat momen positif atau sukses",
+      "placement_mode": "fullscreen_insert",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 7.0,
+      "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "facepalm",
-        "frustrated",
-        "meme"
+        "frustrasi",
+        "malu",
+        "tidak percaya",
+        "cringe"
+      ]
+    },
+    {
+      "file": "assets/meme/jokowi-kaget.mp4",
+      "kind": "video",
+      "subdir": "meme",
+      "duration_sec": 1.207,
+      "width": 1440,
+      "height": 1080,
+      "has_audio": true,
+      "label": "Jokowi Kaget",
+      "category": "meme_reaction",
+      "energy": "high",
+      "meaning_id": "Digunakan saat ada momen yang mengejutkan atau tidak terduga.",
+      "place_beats": [
+        "kronologi",
+        "reaksi_netizen"
+      ],
+      "triggers": [
+        "shock_reveal",
+        "confused_react"
+      ],
+      "placement_mode": "fullscreen_insert",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
+      "avoid": "duck narasi saat meme audio diputar",
+      "tags": [
+        "jokowi",
+        "kaget",
+        "terkejut",
+        "ekspresi"
       ]
     },
     {
       "file": "assets/meme/Keyboard-smash.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 8.104,
+      "duration_sec": 8.034,
       "width": 1280,
       "height": 720,
       "has_audio": true,
       "label": "Keyboard Smash",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "high",
-      "meaning_id": "Menghancurkan keyboard untuk menunjukkan kemarahan atau keputusasaan ekstrem.",
+      "meaning_id": "Digunakan untuk menunjukkan rasa frustrasi atau kemarahan ekstrem.",
       "place_beats": [
         "kronologi",
-        "climax"
+        "reaksi_netizen"
       ],
       "triggers": [
         "rage_react",
         "fail_moment"
       ],
       "placement_mode": "fullscreen_insert",
-      "lead_in_sec": 0,
-      "min_gap_sec": 3,
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 15.0,
       "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "smash",
-        "rage",
-        "meme"
+        "marah",
+        "frustrasi",
+        "gaming",
+        "pecah"
       ]
     },
     {
       "file": "assets/meme/Leonardo-DiCaprio-Pointing-Meme.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 4.992,
-      "width": 1920,
-      "height": 1080,
+      "duration_sec": 3.32,
+      "width": 1280,
+      "height": 720,
       "has_audio": true,
-      "label": "Leo Pointing",
+      "label": "DiCaprio Pointing",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "medium",
-      "meaning_id": "Menunjuk dengan percaya diri untuk menyoroti seseorang atau sesuatu yang penting.",
+      "meaning_id": "Digunakan untuk menunjuk atau mengidentifikasi sesuatu yang menarik perhatian, seringkali dengan nada sarkasme atau 'aha!'",
       "place_beats": [
         "kronologi",
-        "intro_tokoh"
+        "reaksi_netizen"
       ],
       "triggers": [
-        "number_callout",
+        "realization_react",
         "emphasis_word"
       ],
       "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat tidak ada subjek yang ditunjuk",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 8.0,
+      "avoid": "duck narasi saat meme audio diputar",
       "tags": [
         "pointing",
-        "leo",
-        "meme"
+        "leonardo dicaprio",
+        "aha",
+        "menunjuk"
       ]
     },
     {
       "file": "assets/meme/mashup-screaming-woodchuck.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 12.26,
-      "width": 480,
-      "height": 480,
+      "duration_sec": 1.95,
+      "width": 720,
+      "height": 720,
       "has_audio": true,
       "label": "Screaming Woodchuck",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "high",
-      "meaning_id": "Teriakan histeris dari tupai untuk menunjukkan kepanikan atau kegilaan.",
+      "meaning_id": "Digunakan untuk menunjukkan reaksi terkejut, kaget, atau ekspresi berlebihan terhadap suatu kejadian.",
       "place_beats": [
-        "climax",
-        "kronologi"
+        "hook",
+        "kronologi",
+        "reaksi_netizen",
+        "climax"
       ],
       "triggers": [
         "shock_reveal",
         "rage_react"
       ],
       "placement_mode": "fullscreen_insert",
-      "lead_in_sec": 0,
-      "min_gap_sec": 3,
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
       "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "scream",
-        "panic",
-        "meme"
+        "hewan",
+        "teriak",
+        "kaget",
+        "lucu"
       ]
     },
     {
@@ -943,87 +1428,122 @@
       "has_audio": true,
       "label": "No Signal Pattern",
       "category": "meme_transition",
-      "is_meme": true,
-      "energy": "low",
-      "meaning_id": "Pola no signal untuk menandai gangguan, kekosongan, atau transisi absurd.",
+      "energy": "medium",
+      "meaning_id": "Digunakan sebagai transisi untuk menunjukkan gangguan, kesalahan teknis, atau pergantian adegan yang tiba-tiba/tidak terduga.",
       "place_beats": [
         "transition",
+        "kronologi",
         "climax"
       ],
       "triggers": [
-        "freeze_rewind",
-        "awkward_silence"
+        "scene_change",
+        "shock_reveal",
+        "fail_moment"
       ],
       "placement_mode": "fullscreen_insert",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat narasi harus tetap lancar",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 8.0,
+      "avoid": "tidak ada",
       "tags": [
-        "no signal",
+        "transisi",
         "glitch",
-        "transition"
+        "error",
+        "tv"
+      ]
+    },
+    {
+      "file": "assets/meme/sounding-hidup-jokowi.mp4",
+      "kind": "video",
+      "subdir": "meme",
+      "duration_sec": 1.439,
+      "width": 1080,
+      "height": 1080,
+      "has_audio": true,
+      "label": "Hidup Jokowi Prabowo",
+      "category": "meme_reaction",
+      "energy": "high",
+      "meaning_id": "Digunakan untuk menunjukkan dukungan, semangat, atau momen 'flex' yang kuat dan bersemangat.",
+      "place_beats": [
+        "intro_tokoh",
+        "kronologi",
+        "reaksi_netizen",
+        "outro",
+        "climax"
+      ],
+      "triggers": [
+        "hype_react",
+        "flex_moment",
+        "applause_react"
+      ],
+      "placement_mode": "fullscreen_insert",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 12.0,
+      "avoid": "duck narasi saat meme audio diputar",
+      "tags": [
+        "politik",
+        "semangat",
+        "dukungan",
+        "viral"
       ]
     },
     {
       "file": "assets/meme/sweaty-gamer.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 9.613,
+      "duration_sec": 9.59,
       "width": 1160,
       "height": 720,
       "has_audio": true,
       "label": "Sweaty Gamer",
       "category": "meme_reaction",
-      "is_meme": true,
-      "energy": "high",
-      "meaning_id": "Gamer berkeringat untuk menunjukkan stres, fokus, atau kegagalan dalam game.",
+      "energy": "medium",
+      "meaning_id": "Menunjukkan ekspresi tegang, khawatir, atau sedang berpikir keras dalam situasi sulit.",
       "place_beats": [
         "kronologi",
         "reaksi_netizen"
       ],
       "triggers": [
-        "fail_moment",
-        "cringe_react"
+        "confused_react",
+        "suspicion_moment"
       ],
       "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
       "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "gamer",
-        "sweat",
-        "meme"
+        "tegang",
+        "bingung",
+        "khawatir"
       ]
     },
     {
       "file": "assets/meme/think-about-it.mp4",
       "kind": "video",
       "subdir": "meme",
-      "duration_sec": 1.974,
-      "width": 480,
-      "height": 264,
+      "duration_sec": 0.952,
+      "width": 1310,
+      "height": 720,
       "has_audio": true,
       "label": "Think About It",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "low",
-      "meaning_id": "Mengajak penonton untuk berpikir ulang atau merenungkan sesuatu yang mendalam.",
+      "meaning_id": "Menunjukkan momen 'berpikir' atau 'mencerna' informasi, seringkali dengan nada menyindir atau 'mic drop'.",
       "place_beats": [
-        "outro",
-        "kronologi"
+        "kronologi",
+        "outro"
       ],
       "triggers": [
         "realization_react",
         "suspicion_moment"
       ],
-      "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat informasi sudah jelas",
+      "placement_mode": "fullscreen_insert",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 15.0,
+      "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "think",
-        "reflect",
-        "meme"
+        "berpikir",
+        "realisasi",
+        "sindiran"
       ]
     },
     {
@@ -1036,25 +1556,26 @@
       "has_audio": true,
       "label": "Yea Boi",
       "category": "meme_reaction",
-      "is_meme": true,
       "energy": "high",
-      "meaning_id": "Ekspresi gembira dan setuju untuk menunjukkan kegembiraan atau persetujuan.",
+      "meaning_id": "Menunjukkan ekspresi kegembiraan, persetujuan, atau hype yang berlebihan.",
       "place_beats": [
+        "kronologi",
         "reaksi_netizen",
         "outro"
       ],
       "triggers": [
         "hype_react",
-        "agree_react"
+        "agree_react",
+        "flex_moment"
       ],
-      "placement_mode": "overlay_pip",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat momen sedih atau serius",
+      "placement_mode": "fullscreen_insert",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 8.0,
+      "avoid": "duck narasi saat meme audio diputar",
       "tags": [
-        "yea",
-        "boi",
-        "meme"
+        "gembira",
+        "setuju",
+        "hype"
       ]
     },
     {
@@ -1065,58 +1586,59 @@
       "width": 1920,
       "height": 1080,
       "has_audio": true,
-      "label": "Crumpled Black Paper",
+      "label": "Kertas Remas Hitam",
       "category": "meme_transition",
-      "is_meme": false,
-      "energy": "low",
-      "meaning_id": "Animasi kertas hitam yang terlipat untuk transisi gelap atau misterius.",
+      "energy": "medium",
+      "meaning_id": "Transisi visual yang menunjukkan pergantian adegan atau topik secara dramatis, seperti meremas kertas.",
       "place_beats": [
-        "transition",
-        "outro"
+        "transition"
       ],
       "triggers": [
         "scene_change"
       ],
       "placement_mode": "fullscreen_insert",
-      "lead_in_sec": 0,
-      "min_gap_sec": 2,
-      "avoid": "saat tema cerah atau ceria",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 5.0,
+      "avoid": "Jangan dipakai jika transisi membutuhkan kecepatan tinggi atau kesan modern.",
       "tags": [
-        "paper",
-        "crumpled",
-        "transition"
+        "kertas",
+        "remas",
+        "hitam",
+        "transisi",
+        "dramatis"
       ]
     },
     {
       "file": "assets/ui/Paper-Grid-Background.mp4",
-      "kind": "background",
+      "kind": "video",
       "subdir": "ui",
       "duration_sec": 15.116,
       "width": 1080,
       "height": 1920,
-      "has_audio": false,
-      "label": "Paper Grid (Primary BG)",
-      "category": "background",
-      "is_meme": false,
+      "has_audio": true,
+      "label": "Latar Belakang Kertas Kotak",
+      "category": "meme_transition",
       "energy": "low",
-      "meaning_id": "Latar UTAMA (primary background) montase Animelorian: kertas hitam bergaris grid/graph-paper, bersih & netral, 1080x1920. Kanvas dasar tempat kartu footage/komentar ditempel — BUKAN cue/transisi (kind=background → tak di-place acak).",
+      "meaning_id": "Latar belakang statis atau bergerak lambat yang memberikan kesan catatan, perencanaan, atau analisis.",
       "place_beats": [
-        "base"
+        "kronologi",
+        "reaksi_netizen"
       ],
-      "triggers": [],
-      "placement_mode": "primary_background",
-      "lead_in_sec": 0,
-      "min_gap_sec": 0,
-      "avoid": "",
+      "triggers": [
+        "scene_change",
+        "number_callout"
+      ],
+      "placement_mode": "under_segment",
+      "lead_in_sec": 0.0,
+      "min_gap_sec": 10.0,
+      "avoid": "Jangan dipakai untuk adegan yang membutuhkan visual yang dinamis atau penuh aksi.",
       "tags": [
-        "paper",
+        "kertas",
         "grid",
-        "background",
-        "primary",
-        "dark",
-        "graph"
-      ],
-      "primary": true
+        "latar belakang",
+        "analisis",
+        "catatan"
+      ]
     }
   ]
 }

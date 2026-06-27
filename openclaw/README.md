@@ -53,7 +53,8 @@ via `thoth run --content <set.json>`.
 
 | File | Kapan dipakai |
 |---|---|
-| **`discover_reels.js`** | **Discovery topik utama.** Scan akun IG terkurasi (`ig_accounts.json`) → baca topik dari **HOOK on-screen (vision)** / **voiceover (Whisper)** — BUKAN caption — + filter recency `--hours`. |
+| **`discover_reels.js`** | **Discovery topik utama.** Scan akun IG terkurasi (`ig_accounts.json`) → **reels (`/reel/`) DAN feed post (`/p/`)** (`--include`, default keduanya) → baca topik dari **HOOK on-screen / cover image (vision)** / **voiceover (Whisper, video saja)** — BUKAN caption — + filter recency `--hours`. Tambah `--tiktok` untuk menyertakan **trending topics TikTok Studio** (lihat di bawah) sebagai pool seed terpisah. |
+| `discover_tiktok_trending.js` | **Trending TikTok Studio.** Scrape ranking topik viral resmi TikTok dari `Inspiration → Trending` (judul topik + total views), **default region Indonesia** (auto-pilih dari dropdown; `--region` untuk ganti, `--region all` = semua). Standalone (`output/tiktok_trending.json`) atau dipanggil oleh `discover_reels --tiktok`. Butuh tab **tiktok.com login**. |
 | **`run_pipeline.js`** | **Orkestrator utama.** Satu URL reel/post → content-set LENGKAP: seed → trace_source → build_footage → extract_figures → collect_comments → validate. |
 | `discover_topics.js` | Discovery sekunder: trending X/YouTube + mode `instagram` berbasis caption (cepat tapi sinyal lemah — caption sering nama lagu). |
 | `vision_crop.js` | Fallback terakhir crop post dari screenshot manual (kalau CDP tak bisa). |
@@ -114,12 +115,23 @@ Semua perintah dijalankan dari `~/.openclaw/workspace`:
 ### Step 1 — Discovery topik dari akun IG terkurasi
 
 ```bash
-node discover_reels.js --max-per 4 --hours 48
+node discover_reels.js --max-per 4 --hours 48                 # reels + post (default, net lebih luas)
+node discover_reels.js --include posts                         # hanya feed post (kartu berita foto)
+node discover_reels.js --include reels                         # perilaku lama (reels saja)
+node discover_reels.js --tiktok                                # + trending TikTok Studio (region Indonesia, tab tiktok.com login)
+node discover_tiktok_trending.js --max 25                      # standalone: trending TikTok (region Indonesia) → output/tiktok_trending.json
+node discover_tiktok_trending.js --region "United States"      # region lain · --region all = semua region
 ```
 - Akun diambil dari **`ig_accounts.json`** (edit file itu untuk ganti daftar; `--accounts a,b` meng-override).
-- Topik dibaca dari **hook on-screen** (vision) → fallback **voiceover** (Whisper, butuh `.groq_key`).
-- Output `output/reel_topics.json`, ranking views+recency. Pilih satu reel yang ceritanya jelas
-  (ada kejadian/insiden konkret — bukan meme/musik doang).
+- Memindai **reels (`/reel/`) DAN feed post (`/p/`)** — post foto sering justru kartu-berita yang
+  headline-nya terbaca jelas oleh vision. `--include` memilih tipe (default `reels,posts`).
+- `--max-per` berlaku **per tipe** (mis. `4` → ≤4 reel + ≤4 post per akun). Tiap entry `reel_topics.json`
+  dapat field `kind` (`reel`/`post`); nama key JSON tetap `reels` (downstream tak berubah).
+- Topik dibaca dari **hook on-screen / cover image** (vision) → fallback **voiceover** (Whisper, butuh
+  `.groq_key`, **hanya item video**; post foto tak punya audio → langsung pakai hook vision).
+- Output `output/reel_topics.json`, ranking views+recency. Pilih satu item yang ceritanya jelas
+  (ada kejadian/insiden konkret — bukan meme/musik doang). Catatan: post foto biasanya tak punya
+  view-count di grid → ter-rank lewat recency.
 
 ### Step 2 — Reel terpilih → content-set lengkap
 
@@ -187,6 +199,9 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 | `--per` / `--max` (run_pipeline) | CLI | 2 / 4 | Footage per objek / objek maksimal. |
 | `--cap` (run_pipeline) | CLI | 12 | Jumlah komentar maksimal. Jangan kecilkan — komentar = bahan narasi. |
 | `--hours` (discover_reels) | CLI | 48 | Window recency topik. |
+| `--include` (discover_reels) | CLI | `reels,posts` | Tipe item yang dipindai: `reels,posts` (default, net luas) · `reels` (lama) · `posts` (feed post saja). `--max-per` berlaku per tipe. |
+| `--tiktok` / `--tiktok-max` / `--tiktok-region` (discover_reels) | CLI | off / 25 / Indonesia | Sertakan trending TikTok Studio → section `tiktok_trending` di `reel_topics.json` (pool seed terpisah, tak mencemari ranking views reel IG). Region default Indonesia (`--tiktok-region all` = semua). Butuh tab tiktok.com login. |
+| `--region` (discover_tiktok_trending) | CLI | Indonesia | Region trending yang dipilih dari dropdown TikTok Studio. `all` / `All regions` = tak difilter. |
 | `THOTH_REEL_HALFLIFE_H` | env saat `discover_reels` | 0 (off) | Ranking topik. 0 = pure-views (recency cuma gate+tiebreak). >0 = skor `views × 0.5^(umur/half-life)` → reel yg cepat viral (fresh) naik. Coba ~24 (≈window/2). |
 | `[narration] target_secs` | Thoth `config.toml` | 45 | Panjang narasi (≈3 kata/detik). |
 | `[cover] subject_mode` | Thoth `config.toml` | `auto` | `auto` (cutout asli kalau jelas, kalau gelap/blur → subjek AI) · `ai` (selalu generate) · `cutout` (selalu orang asli). |

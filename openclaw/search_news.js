@@ -68,9 +68,8 @@ async function captureTagged(client, tag, outFile, pad = 10) {
   if (!rect || rect.w <= 30 || rect.h <= 12) return null;
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt) { await sleep(300); rect = (await measure()) || rect; }
-    const clip = { x: Math.max(0, rect.x - pad), y: Math.max(0, rect.y - pad), width: rect.w + pad * 2, height: rect.h + pad * 2, scale: dpr };
-    const shot = await client.cmd('Page.captureScreenshot', { format: 'png', clip, fromSurface: true, captureBeyondViewport: true });
-    const buf = Buffer.from(shot.data, 'base64');
+    const data = await client.captureClip(rect, pad, { beyondViewport: true });
+    const buf = data ? Buffer.from(data, 'base64') : Buffer.alloc(0);
     if (buf.length < 2048) continue;
     fs.writeFileSync(outFile, buf);
     return outFile;

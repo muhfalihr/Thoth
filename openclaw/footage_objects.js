@@ -6,8 +6,10 @@
 // online" → "gojek", "grab"; "mobil sport" → "porsche") so footage is easy to find & relevant.
 //
 //   module: const { footageObjects } = require('./footage_objects');
-//           await footageObjects({ description, caption, headline })  → ["ojol","gojek","grab",...]
-//   CLI:    node footage_objects.js --headline "..." [--caption "..."] [--desc "..."]
+//           await footageObjects({ description, caption, headline, comments })
+//             → { subjects:["nvidia"], objects:["chip ai","data center"], people:["jensen huang"] }
+//           subjects = jangkar topik; objects = benda b-roll (digabung subject saat query); people = tokoh.
+//   CLI:    node footage_objects.js --headline "..." [--caption "..."] [--desc "..."] [--comments "..."]
 //
 // Uses Novita (.novita_key); model via env THOTH_LLM_MODEL (default qwen3-vl-235b — brand-expansion
 // like "ojol"→gojek,grab needs a strong model; 8b under-performs).
@@ -18,54 +20,52 @@ const path = require('path');
 const KEY = (() => { const f = path.join(__dirname, '.novita_key'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : ''; })();
 const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-235b-a22b-instruct';
 
-const PROMPT = ({ description, caption, headline }) => `Dari teks postingan di bawah, ekstrak OBJEK VISUAL / subjek KONKRET yang cocok dijadikan query
-pencarian FOOTAGE (b-roll) — yaitu BENDA / TEMPAT / BRAND / AKTIVITAS yang bisa DITAMPILKAN di video.
+const PROMPT = ({ description, caption, headline, comments }) => `Dari teks postingan di bawah, ekstrak entitas untuk query pencarian FOOTAGE (b-roll) — klip/post
+yang bisa DITAMPILKAN di video. Pisahkan jadi SUBJECT (jangkar), OBJECT (benda konkret), PEOPLE (tokoh).
 
 ATURAN:
-1. Tentukan dulu SUBJEK SPESIFIK topik (nama/judul/tempat/peristiwa inti) sebagai JANGKAR — mis.
-   "cerita lila", "gempa filipina", "mindanao", "silmy karim". SETIAP objek harus UNAMBIGU menunjuk
-   ke subjek ini (jangan sampai menarik peristiwa/hal lain yang mirip).
-2. UTAMAKAN objek DISTINKTIF yang sudah spesifik sendiri (nama tokoh/brand/judul/tempat/event) —
-   pakai apa adanya (mis. "sara wijayanto", "mvp pictures", "daryono", "m block space").
-3. JANGKAR kata GENERIK/umum ke subjek topik — JANGAN keluarkan telanjang. Ini WAJIB untuk:
-   - kategori: "film"→"film cerita lila", "bioskop"→"bioskop cerita lila"
-   - sub-peristiwa/bencana/kejadian umum: "longsor"→"longsor filipina", "banjir"→"banjir <tempat>",
-     "bangunan runtuh"→"bangunan runtuh filipina", "tsunami"/"tsunami warning"→"tsunami filipina",
-     "kebakaran"/"demo"/"kecelakaan"/"gempa" → selalu + lokasi/nama event.
-   DILARANG keluar SENDIRIAN tanpa jangkar: film, bioskop, video, trailer, berita, longsor, banjir,
-   tsunami, gempa, kebakaran, demo, kecelakaan, kejadian, momen, jalan, acara, orang.
-4. EKSPANSI BRAND utk layanan/produk generik (BUKAN di-jangkar lokasi): "ojol"/"ojek online" → gojek,
-   grab, maxim; "e-commerce" → shopee, tokopedia; "mobil sport" → porsche, ferrari; "moge" → harley.
-5. HINDARI objek abstrak (pembayaran, peta jalan, harga, aplikasi, tiket masuk) & angka. JANGAN
-   masukkan akun pengunggah/kurator.
-6. 4-8 objek, ringkas (1-4 kata), huruf kecil, tanpa duplikat.
+1. SUBJECT = jangkar entitas INTI topik: nama brand/organisasi/judul/tempat/peristiwa (mis. "nvidia",
+   "cerita lila", "gempa filipina", "mindanao"). 1-3 saja, yang paling sentral. subjects[0] = PALING inti.
+2. OBJECT = BENDA / PRODUK / TEMPAT / AKTIVITAS konkret yang ditampilkan/diimplikasikan (mis. "chip ai",
+   "data center", "kartu grafis", "longsor", "bioskop"). JANGAN di-jangkar/ditempeli subject — biarkan
+   GENERIK; subject digabung OTOMATIS saat pencarian. Nama distinktif (mis. "mvp pictures",
+   "m block space") boleh apa adanya. EKSPANSI brand generik: "ojol"→gojek,grab; "e-commerce"→shopee,
+   tokopedia; "mobil sport"→porsche,ferrari. 4-8 object, ringkas (1-4 kata), huruf kecil, tanpa duplikat.
+3. PEOPLE = tokoh terkenal yang TERKAIT erat subject (CEO/pendiri/figur publik), dari pengetahuanmu bila
+   tak disebut eksplisit — mis. nvidia→"jensen huang", tesla→"elon musk". 0-2 saja. Kosongkan bila ragu.
+4. HINDARI hal abstrak (pembayaran, harga, kebijakan, angka) & akun pengunggah/kurator.
 
 TEKS:
 [DESKRIPSI/CAPTION]: ${((description || '') + ' ' + (caption || '')).trim().slice(0, 700) || '(kosong)'}
 [HEADLINE/HOOK]: ${(headline || '').slice(0, 300) || '(kosong)'}
+[KOMENTAR NETIZEN]: ${(comments || '').slice(0, 600) || '(kosong)'}
 
-Keluarkan HANYA JSON valid: {"objects": ["", ""]}`;
+Keluarkan HANYA JSON valid: {"subjects": [""], "objects": ["", ""], "people": []}`;
 
-async function footageObjects({ description = '', caption = '', headline = '', key = KEY, model = MODEL } = {}) {
-  if (!key) return [];
-  if (!(description || caption || headline)) return [];
+async function footageObjects({ description = '', caption = '', headline = '', comments = '', key = KEY, model = MODEL } = {}) {
+  const empty = { subjects: [], objects: [], people: [] };
+  if (!key) return empty;
+  if (!(description || caption || headline || comments)) return empty;
   let txt = '';
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({ model, max_tokens: 300, temperature: 0, messages: [{ role: 'user', content: PROMPT({ description, caption, headline }) }] }),
+      body: JSON.stringify({ model, max_tokens: 400, temperature: 0, messages: [{ role: 'user', content: PROMPT({ description, caption, headline, comments }) }] }),
     });
-    if (!resp.ok) return [];
+    if (!resp.ok) return empty;
     const d = await resp.json();
     txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
-  } catch (e) { return []; }
-  const m = txt.match(/\{[\s\S]*\}/); if (!m) return [];
-  let o; try { o = JSON.parse(m[0]); } catch (e) { return []; }
-  const seen = new Set();
-  return (Array.isArray(o.objects) ? o.objects : [])
-    .map(x => String(x).toLowerCase().trim())
-    .filter(x => x && x.length <= 30 && !seen.has(x) && seen.add(x))
-    .slice(0, 8);
+  } catch (e) { return empty; }
+  const m = txt.match(/\{[\s\S]*\}/); if (!m) return empty;
+  let o; try { o = JSON.parse(m[0]); } catch (e) { return empty; }
+  const clean = (arr, max) => {
+    const seen = new Set();
+    return (Array.isArray(arr) ? arr : [])
+      .map(x => String(x).toLowerCase().trim())
+      .filter(x => x && x.length <= 40 && !seen.has(x) && seen.add(x))
+      .slice(0, max);
+  };
+  return { subjects: clean(o.subjects, 3), objects: clean(o.objects, 8), people: clean(o.people, 2) };
 }
 
 module.exports = { footageObjects };
@@ -74,7 +74,7 @@ module.exports = { footageObjects };
 if (require.main === module) {
   const args = process.argv.slice(2);
   const get = n => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : ''; };
-  const input = { description: get('--desc'), caption: get('--caption'), headline: get('--headline') };
+  const input = { description: get('--desc'), caption: get('--caption'), headline: get('--headline'), comments: get('--comments') };
   if (!input.description && !input.caption && !input.headline) { console.log('Usage: node footage_objects.js --headline "..." [--caption "..."] [--desc "..."]'); process.exit(1); }
   (async () => { console.log(JSON.stringify(await footageObjects(input), null, 2)); })();
 }

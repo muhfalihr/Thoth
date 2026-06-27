@@ -5,25 +5,40 @@ duration) each asset belongs on the 5-beat viral template.
 Process:
   1. Measure each audio asset objectively (duration + loudness + envelope shape
      via raw PCM decoded by ffmpeg) -> transient / riser / sustained.
-  2. Enrich semantics with a Novita LLM (category, meme meaning, energy, and a
-     concrete placement recommendation mapped to the 5-beat template + triggers).
-  3. Write assets/asset_catalog.json (machine, consumed by analyze/edit) and
-     assets/ASSET_CATALOG.md (human-readable).
+     Video memes are probed (dims + has_audio) and sampled into frames.
+  2. Enrich semantics with a vision/chat LLM **in small batches** (category, meme
+     meaning, energy, and a concrete placement recommendation mapped to the
+     5-beat template + triggers). Batching avoids JSON truncation and keeps the
+     vision model focused on a few frames at a time.
+  3. Validate every LLM field against a controlled vocabulary, keep the *measured*
+     features authoritative (the LLM can never clobber duration / has_audio /
+     dimensions), then write assets/asset_catalog.json (machine, consumed by
+     analyze/edit) and assets/ASSET_CATALOG.md (human-readable).
 
-Stdlib + ffmpeg/ffprobe only. Requires THOTH_NOVITA_API_KEY in .env.
+Stdlib + ffmpeg/ffprobe only.
+
+Backends (you are subscribed to both):
+  • novita     (default)  — vision: qwen/qwen3-vl-235b-a22b-instruct, text: deepseek/deepseek-v3.1
+  • openrouter            — vision+text: google/gemini-2.5-flash
+Keys: THOTH_NOVITA_API_KEY / THOTH_OPENROUTER_API_KEY (read from .env).
 
 Usage:
     python scripts/annotate_assets.py
-    python scripts/annotate_assets.py --no-llm     # measured features only
+    python scripts/annotate_assets.py --backend openrouter
+    python scripts/annotate_assets.py --no-llm                 # measured features only
+    python scripts/annotate_assets.py --vision-model <id> --text-model <id>
 """
 import argparse
 import array
+import base64
 import json
 import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -35,8 +50,55 @@ FFPROBE = str(ROOT / "ffprobe.exe")
 AUDIO_EXT = {".mp3", ".wav", ".aac", ".m4a", ".ogg", ".flac"}
 FONT_EXT = {".ttf", ".otf"}
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".gif", ".mkv"}
-import base64
-import tempfile
+
+# Measured features are authoritative — the LLM may never overwrite these.
+PROTECTED = {
+    "file", "kind", "subdir", "duration_sec", "envelope", "peak_pos",
+    "rise_ratio", "loudness_dbfs", "env_curve", "width", "height", "has_audio",
+}
+
+# ── Controlled vocabulary (the catalog JSON consumed by Rust must stay in-vocab) ──
+CATEGORIES = {
+    "impact_stinger", "whoosh_transition", "riser_build", "notification",
+    "meme_vocal", "fail_sound", "record_scratch", "musical_sting", "ambient",
+    "font_display", "font_body", "meme_reaction", "meme_transition",
+}
+BEATS = {"hook", "intro_tokoh", "kronologi", "reaksi_netizen", "outro",
+         "transition", "climax"}
+TRIGGERS = {
+    "scene_change", "emphasis_word", "shock_reveal", "zoom_punch", "comment_appear",
+    "profile_appear", "number_callout", "fail_moment", "suspicion_moment",
+    "flex_moment", "freeze_rewind", "awkward_silence", "outro_button",
+    "agree_react", "disagree_react", "confused_react", "facepalm_react",
+    "cringe_react", "hype_react", "realization_react", "censor_block",
+    "rage_react", "applause_react",
+}
+PLACEMENT_MODES = {"at_cue", "under_segment", "lead_in", "overlay_pip",
+                   "fullscreen_insert"}
+ENERGY = {"low", "medium", "high"}
+
+# ── Backend defaults ──────────────────────────────────────────────────────────
+BACKENDS = {
+    "novita": {
+        "url": "https://api.novita.ai/openai/chat/completions",
+        "key_env": "THOTH_NOVITA_API_KEY",
+        "vision_model": "qwen/qwen3-vl-235b-a22b-instruct",
+        "text_model": "deepseek/deepseek-v3.1",
+        "json_mode": True,
+    },
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "key_env": "THOTH_OPENROUTER_API_KEY",
+        "vision_model": "google/gemini-2.5-flash",
+        "text_model": "google/gemini-2.5-flash",
+        "json_mode": False,  # not all OpenRouter models honour response_format
+    },
+}
+
+# Batch sizes: keep each call small so the JSON never truncates and the vision
+# model only ever looks at a handful of frames at once.
+VIDEO_BATCH = 3
+TEXT_BATCH = 14
 
 # ── 5-beat template vocabulary (kept in sync with PLAN_VIRAL_TEMPLATE_ENGINE.md) ──
 TEMPLATE_DOC = """\
@@ -48,7 +110,7 @@ Timeline template 5-beat (video reaction-news 9:16, 30-50s):
 - BEAT 5 "outro"         (akhir)  : punchline / twist / reveal edukasi
 Cross-beat: "transition" (antar scene), "climax" (momen kejut/zoom-punch).
 
-Kosakata trigger penempatan (pilih yang relevan):
+Kosakata trigger penempatan (pilih HANYA dari daftar ini):
   scene_change, emphasis_word, shock_reveal, zoom_punch, comment_appear,
   profile_appear, number_callout, fail_moment, suspicion_moment, flex_moment,
   freeze_rewind, awkward_silence, outro_button,
@@ -57,40 +119,46 @@ Kosakata trigger penempatan (pilih yang relevan):
 """
 
 SCHEMA_HINT = """\
-Balas HANYA JSON array. Tiap elemen objek dengan field PERSIS:
+Balas HANYA objek JSON {"assets":[ ... ]}. Tiap elemen array objek dengan field PERSIS:
 {
   "file": "<persis seperti input>",
   "label": "<nama pendek manusiawi, mis. 'Vine Boom'>",
   "category": "impact_stinger|whoosh_transition|riser_build|notification|meme_vocal|fail_sound|record_scratch|musical_sting|ambient|font_display|font_body|meme_reaction|meme_transition",
-  "is_meme": true/false,
   "energy": "low|medium|high",
   "meaning_id": "<1 kalimat Bahasa Indonesia: makna/kapan secara emosional dipakai>",
   "place_beats": ["hook"|"intro_tokoh"|"kronologi"|"reaksi_netizen"|"outro"|"transition"|"climax", ...],
-  "triggers": ["<dari kosakata trigger>", ...],
+  "triggers": ["<HANYA dari kosakata trigger di atas>", ...],
   "placement_mode": "at_cue|under_segment|lead_in|overlay_pip|fullscreen_insert",
-  "lead_in_sec": <float, berapa detik SEBELUM cue mulai diputar; 0 jika at_cue>,
+  "lead_in_sec": <float, detik SEBELUM cue mulai diputar; 0 jika at_cue>,
   "min_gap_sec": <float, jarak minimal antar pemakaian ulang agar tidak spam>,
   "avoid": "<kapan JANGAN dipakai, 1 frasa>",
   "tags": ["...", "..."]
 }
-Gunakan fitur terukur (duration_sec, envelope, peak_pos, loudness_dbfs) sebagai dasar.
-'transient' pendek -> impact/stinger di cue; 'riser' -> lead_in sebelum reveal;
-'sustained/voice' -> meme vocal/outro button. Untuk font: category font_display/font_body,
-place_beats sesuai (display=hook/intro_tokoh, body=kronologi subtitle).
+Aturan WAJIB:
+- Pakai HANYA nilai dari enum di atas (kategori/trigger/beat/placement_mode). Jangan mengarang nilai baru.
+- JANGAN tulis field 'duration_sec', 'has_audio', 'width', 'height' — itu sudah diukur otomatis dan akan diabaikan.
+- Gunakan fitur terukur (duration_sec, envelope, peak_pos, loudness_dbfs) sebagai dasar:
+  'transient' pendek -> impact/stinger di cue; 'riser' -> lead_in sebelum reveal;
+  'sustained/voice' -> meme vocal/outro button.
+- Untuk FONT: category font_display/font_body; place_beats (display=hook/intro_tokoh, body=kronologi subtitle); triggers boleh kosong.
 
-Untuk ASET VIDEO (kind=video, ada frame contoh yang dilampirkan sebagai gambar):
-- LIHAT framenya untuk identifikasi meme & emosi yang disampaikan (setuju, bingung,
-  facepalm, marah, hype, tepuk tangan, sensor/blokir, realisasi, dll).
-- category: 'meme_reaction' (overlay reaksi) atau 'meme_transition' (efek transisi spt kertas/no-signal).
-- placement_mode 'overlay_pip' (tempel di pojok saat narator komentar) atau 'fullscreen_insert'
-  (sisip 1-2 detik sebagai cutaway). Transisi -> placement_mode lead_in/at_cue di scene_change.
+Untuk ASET VIDEO (kind=video, frame contoh dilampirkan sebagai gambar):
+- LIHAT framenya untuk identifikasi meme & emosi (setuju, bingung, facepalm, marah,
+  hype, tepuk tangan, sensor/blokir, realisasi, dll).
+- category: 'meme_reaction' (overlay reaksi emosi) atau 'meme_transition' (efek transisi spt kertas/no-signal).
+- placement_mode: 'overlay_pip' (tempel di pojok saat narator komentar),
+  'fullscreen_insert' (sisip 1-2 detik sebagai cutaway), atau 'lead_in'/'at_cue' utk transisi di scene_change.
 - triggers pakai *_react sesuai emosi (mis. facepalm_react, hype_react, confused_react).
-- Tambah field "has_audio" pertimbangan: jika meme punya audio sendiri, catat di "avoid"
-  bila bentrok dengan narasi (mis. 'duck narasi saat meme audio diputar')."""
+- 'avoid': jika meme punya audio sendiri, catat 'duck narasi saat meme audio diputar'."""
 
 
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, **kw)
+
+
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
 
 def probe_duration(path: Path) -> float:
@@ -172,10 +240,10 @@ def b64_image(path: Path) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode()
 
 
-def video_features(path: Path, frame_dir: Path, n_frames: int = 2) -> dict:
+def video_features(path: Path, frame_dir: Path, n_frames: int = 3) -> dict:
     """Probe a video meme and extract representative frames for the vision model."""
     dur = probe_duration(path)
-    # width/height/has_audio via ffprobe
+    # width/height/has_audio via ffprobe (authoritative — never set by the LLM)
     r = run([FFPROBE, "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height",
              "-of", "csv=p=0:s=x", str(path)], text=True)
@@ -186,7 +254,8 @@ def video_features(path: Path, frame_dir: Path, n_frames: int = 2) -> dict:
               "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)], text=True)
     has_audio = bool(ra.stdout.strip())
 
-    # Extract n_frames evenly across the clip (skip first/last 10%).
+    # Extract n_frames evenly across the clip (skip first/last 15%), larger now
+    # (512px) so overlay text / facial expression reads clearly to the vision model.
     frames = []
     if dur > 0:
         for i in range(n_frames):
@@ -194,7 +263,7 @@ def video_features(path: Path, frame_dir: Path, n_frames: int = 2) -> dict:
             t = round(dur * frac, 2)
             outp = frame_dir / f"{path.stem}_{i}.jpg"
             run([FFMPEG, "-v", "error", "-ss", str(t), "-i", str(path),
-                 "-frames:v", "1", "-vf", "scale=360:-1", "-q:v", "4", "-y", str(outp)])
+                 "-frames:v", "1", "-vf", "scale=512:-1", "-q:v", "3", "-y", str(outp)])
             if outp.exists():
                 frames.append(outp)
     return {
@@ -248,85 +317,133 @@ def load_env():
                 os.environ.setdefault(k.strip(), v.strip())
 
 
-def llm_annotate(records: list[dict], model: str) -> list[dict]:
-    api_key = os.environ.get("THOTH_NOVITA_API_KEY", "")
-    if not api_key:
-        print("WARN: no THOTH_NOVITA_API_KEY -> skipping LLM enrichment", file=sys.stderr)
-        return []
-
-    # Slim feature view for the prompt (drop long/internal fields).
-    slim = []
-    for r in records:
-        s = {k: v for k, v in r.items() if k not in ("env_curve", "_frames")}
-        slim.append(s)
-
-    prompt = (
-        "Kamu adalah sound/asset director untuk konten short-form viral Indonesia.\n"
-        "Anotasi tiap aset di bawah agar pipeline editor otomatis tahu KAPAN memakainya.\n\n"
-        f"{TEMPLATE_DOC}\n\n"
-        f"FITUR TERUKUR ASET (audio dianalisis dari file asli; video disertai frame contoh):\n"
-        f"{json.dumps(slim, ensure_ascii=False, indent=1)}\n\n"
-        f"{SCHEMA_HINT}\n"
-    )
-
-    # Multimodal content: text prompt + attached frames for each video asset.
-    content = [{"type": "text", "text": prompt}]
-    for r in records:
-        for fr in r.get("_frames", []) or []:
-            content.append({"type": "text", "text": f"\n[FRAME dari {r['file']}]"})
-            content.append({"type": "image_url", "image_url": {"url": b64_image(fr)}})
-
+def chat_completion(content, model: str, cfg: dict, api_key: str,
+                    max_tokens: int = 4000) -> str | None:
+    """One OpenAI-compatible chat call (Novita or OpenRouter) with retries.
+    Returns the assistant text, or None on hard failure."""
     body = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0.3,
-        "max_tokens": 5000,
-        "response_format": {"type": "json_object"},
+        "max_tokens": max_tokens,
     }
+    if cfg["json_mode"]:
+        body["response_format"] = {"type": "json_object"}
     payload = json.dumps(body).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": "thoth-annotator/2.0",
+        "Accept": "application/json",
+    }
+    if "openrouter" in cfg["url"]:
+        headers["HTTP-Referer"] = "https://github.com/muhfalihr/thoth"
+        headers["X-Title"] = "Thoth Asset Annotator"
+
     last = None
     for attempt in range(1, 6):
-        req = urllib.request.Request(
-            "https://api.novita.ai/openai/chat/completions", data=payload,
-            headers={"Authorization": f"Bearer {api_key}",
-                     "Content-Type": "application/json",
-                     "User-Agent": "thoth-annotator/1.0",
-                     "Accept": "application/json"}, method="POST")
+        req = urllib.request.Request(cfg["url"], data=payload, headers=headers,
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
                 out = json.loads(resp.read().decode())
-            text = out["choices"][0]["message"]["content"]
-            return parse_json_array(text)
+            return out["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
             last = f"HTTP {e.code}: {e.read().decode()[:200]}"
             if e.code in (429, 500, 502, 503, 529):
                 wait = min(8 * attempt, 32)
-                print(f"  retry {attempt} ({last}) in {wait}s", file=sys.stderr)
+                print(f"    retry {attempt} ({last}) in {wait}s", file=sys.stderr)
                 time.sleep(wait)
                 continue
-            print(last, file=sys.stderr)
-            return []
+            print(f"    {last}", file=sys.stderr)
+            return None
         except Exception as e:
             last = str(e)
-            print(f"  attempt {attempt} err: {last}", file=sys.stderr)
+            print(f"    attempt {attempt} err: {last}", file=sys.stderr)
             time.sleep(6 * attempt)
-    print(f"LLM failed: {last}", file=sys.stderr)
-    return []
+    print(f"    LLM failed: {last}", file=sys.stderr)
+    return None
+
+
+def annotate_batch(batch: list[dict], model: str, cfg: dict, api_key: str,
+                   with_frames: bool) -> list[dict]:
+    """Annotate one small batch of assets. Vision frames are attached only for
+    the video batch (with_frames=True)."""
+    slim = [{k: v for k, v in r.items() if k not in ("env_curve", "_frames")}
+            for r in batch]
+    kind_note = ("Batch ini berisi ASET VIDEO (meme/transisi); frame contoh tiap aset "
+                 "dilampirkan sebagai gambar di bawah."
+                 if with_frames else
+                 "Batch ini berisi ASET AUDIO (SFX/musik) dan/atau FONT.")
+    prompt = (
+        "Kamu adalah sound/asset director untuk konten short-form viral Indonesia.\n"
+        "Anotasi tiap aset agar pipeline editor otomatis tahu KAPAN memakainya.\n"
+        f"{kind_note}\n\n"
+        f"{TEMPLATE_DOC}\n\n"
+        f"FITUR TERUKUR ASET (sudah diukur otomatis dari file asli):\n"
+        f"{json.dumps(slim, ensure_ascii=False, indent=1)}\n\n"
+        f"{SCHEMA_HINT}\n"
+    )
+    content = [{"type": "text", "text": prompt}]
+    if with_frames:
+        for r in batch:
+            for fr in r.get("_frames", []) or []:
+                content.append({"type": "text", "text": f"\n[FRAME dari {r['file']}]"})
+                content.append({"type": "image_url", "image_url": {"url": b64_image(fr)}})
+
+    # Budget tokens by batch size (~180 tok/asset for the JSON answer, min 1500).
+    max_tokens = max(1500, 220 * len(batch))
+    text = chat_completion(content, model, cfg, api_key, max_tokens=max_tokens)
+    if not text:
+        return []
+    return parse_json_array(text)
+
+
+def llm_annotate(records: list[dict], cfg: dict, api_key: str,
+                 vision_model: str, text_model: str) -> list[dict]:
+    videos = [r for r in records if r.get("_frames")]
+    others = [r for r in records if not r.get("_frames")]  # audio + fonts
+
+    out: list[dict] = []
+    n_batches = (math.ceil(len(others) / TEXT_BATCH) if others else 0) + \
+                (math.ceil(len(videos) / VIDEO_BATCH) if videos else 0)
+    bi = 0
+    for batch in chunks(others, TEXT_BATCH):
+        bi += 1
+        print(f"  [{bi}/{n_batches}] text batch ({len(batch)} assets) via {text_model}…",
+              file=sys.stderr)
+        out += annotate_batch(batch, text_model, cfg, api_key, with_frames=False)
+    for batch in chunks(videos, VIDEO_BATCH):
+        bi += 1
+        print(f"  [{bi}/{n_batches}] vision batch ({len(batch)} memes) via {vision_model}…",
+              file=sys.stderr)
+        out += annotate_batch(batch, vision_model, cfg, api_key, with_frames=True)
+    return out
 
 
 def parse_json_array(text: str) -> list[dict]:
-    text = text.strip()
+    text = (text or "").strip()
     if text.startswith("```"):
         text = text.split("```", 2)[1]
         if text.lstrip().lower().startswith("json"):
             text = text.lstrip()[4:]
-    # Accept either a bare array or {"assets":[...]} wrapper
     try:
         data = json.loads(text)
     except Exception:
+        # Salvage: grab the outermost array or object substring.
         s = text.find("[")
         e = text.rfind("]")
-        data = json.loads(text[s:e + 1]) if s >= 0 and e > s else []
+        if s >= 0 and e > s:
+            try:
+                data = json.loads(text[s:e + 1])
+            except Exception:
+                data = []
+        else:
+            s, e = text.find("{"), text.rfind("}")
+            try:
+                data = json.loads(text[s:e + 1]) if s >= 0 and e > s else []
+            except Exception:
+                data = []
     if isinstance(data, dict):
         for k in ("assets", "annotations", "items", "data"):
             if isinstance(data.get(k), list):
@@ -335,12 +452,51 @@ def parse_json_array(text: str) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+# ── Validation / normalization of LLM output ──────────────────────────────────
+def _clamp_one(v, allowed: set, default):
+    return v if isinstance(v, str) and v in allowed else default
+
+
+def _clamp_list(v, allowed: set):
+    if not isinstance(v, list):
+        return []
+    seen, out = set(), []
+    for x in v:
+        if isinstance(x, str) and x in allowed and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def normalize_annotation(ann: dict) -> dict:
+    """Clamp every controlled field to its vocabulary so only valid values reach
+    the catalog JSON (Rust reads these directly)."""
+    a = dict(ann)
+    if "category" in a:
+        a["category"] = _clamp_one(a.get("category"), CATEGORIES, "")
+    if "energy" in a:
+        a["energy"] = _clamp_one(a.get("energy"), ENERGY, "medium")
+    if "placement_mode" in a:
+        a["placement_mode"] = _clamp_one(a.get("placement_mode"), PLACEMENT_MODES, "")
+    if "place_beats" in a:
+        a["place_beats"] = _clamp_list(a.get("place_beats"), BEATS)
+    if "triggers" in a:
+        a["triggers"] = _clamp_list(a.get("triggers"), TRIGGERS)
+    for fld in ("lead_in_sec", "min_gap_sec"):
+        if fld in a:
+            try:
+                a[fld] = round(float(a[fld]), 2)
+            except (TypeError, ValueError):
+                a.pop(fld, None)
+    return a
+
+
 # ── Output writers ────────────────────────────────────────────────────────────
 def write_markdown(merged: list[dict], out: Path):
     lines = ["# Asset Catalog — Annotated for 5-Beat Template",
              "",
-             "Dihasilkan `scripts/annotate_assets.py`. Fitur audio diukur dari file asli; "
-             "penempatan dianotasi LLM (Novita) ke timeline template 5-beat.",
+             "Dihasilkan `scripts/annotate_assets.py`. Fitur audio/video diukur dari file asli; "
+             "penempatan dianotasi LLM (batched, in-vocab) ke timeline template 5-beat.",
              "",
              "| File | Tipe | Kategori | Energi | Durasi | Beat | Trigger | Makna |",
              "|---|---|---|---|---|---|---|---|"]
@@ -358,11 +514,22 @@ def write_markdown(merged: list[dict], out: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="qwen/qwen3-vl-235b-a22b-instruct")
+    ap.add_argument("--backend", choices=list(BACKENDS), default="novita",
+                    help="LLM provider (default: novita; you also have openrouter)")
+    ap.add_argument("--vision-model", default=None,
+                    help="override vision model id (default per backend)")
+    ap.add_argument("--text-model", default=None,
+                    help="override text model id (default per backend)")
+    ap.add_argument("--model", default=None,
+                    help="[deprecated] alias for --vision-model")
     ap.add_argument("--no-llm", action="store_true")
     ap.add_argument("--out-json", default="assets/asset_catalog.json")
     ap.add_argument("--out-md", default="assets/ASSET_CATALOG.md")
     args = ap.parse_args()
+
+    cfg = BACKENDS[args.backend]
+    vision_model = args.vision_model or args.model or cfg["vision_model"]
+    text_model = args.text_model or cfg["text_model"]
 
     tmp = tempfile.TemporaryDirectory(prefix="thoth_annot_")
     frame_dir = Path(tmp.name)
@@ -375,23 +542,32 @@ def main():
     annotations = []
     if not args.no_llm:
         load_env()
-        print("Annotating placement via LLM…", file=sys.stderr)
-        annotations = llm_annotate(records, args.model)
-        print(f"  {len(annotations)} annotations returned", file=sys.stderr)
+        api_key = os.environ.get(cfg["key_env"], "")
+        if not api_key:
+            print(f"WARN: no {cfg['key_env']} -> skipping LLM enrichment", file=sys.stderr)
+        else:
+            print(f"Annotating placement via {args.backend} "
+                  f"(vision={vision_model}, text={text_model})…", file=sys.stderr)
+            annotations = llm_annotate(records, cfg, api_key, vision_model, text_model)
+            print(f"  {len(annotations)} annotations returned", file=sys.stderr)
 
-    # Merge: measured features authoritative, LLM fields layered on top.
-    # Drop internal-only fields (_frames holds Path objects, not serializable).
-    by_file = {a.get("file"): a for a in annotations}
+    # Merge: measured features authoritative; LLM fields layered on top but
+    # validated in-vocab and forbidden from clobbering PROTECTED measured fields.
+    by_file = {a.get("file"): normalize_annotation(a)
+               for a in annotations if isinstance(a, dict) and a.get("file")}
     merged = []
     for r in records:
         ann = by_file.get(r["file"], {})
         m = {k: v for k, v in r.items() if k != "_frames"}
         for k, v in ann.items():
-            if k == "file":
-                continue
+            if k in PROTECTED:
+                continue  # never let the LLM overwrite a measured fact
             m[k] = v
         merged.append(m)
     tmp.cleanup()
+
+    n_enriched = sum(1 for m in merged if m.get("file") in by_file)
+    print(f"  merged: {n_enriched}/{len(merged)} assets enriched by LLM", file=sys.stderr)
 
     out_json = ROOT / args.out_json
     out_json.parent.mkdir(parents=True, exist_ok=True)

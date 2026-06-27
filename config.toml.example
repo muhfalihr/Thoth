@@ -324,6 +324,11 @@ catalog_path = "assets/asset_catalog.json"
 memes_in_narration  = true
 narration_max_memes = 3                      # maksimum meme per video narasi
 meme_fullscreen     = true                   # meme tampil FULL-LAYAR (cutaway) — bukan PiP kecil di pojok; subtitle tetap di atas
+# Mode narasi: LLM juga menempatkan SFX reaksi (impact/whoosh/riser/notification)
+# di beat emosi/transisi narasi — padanan SFX dari memes_in_narration. SFX menempel
+# pada panjang file (clamp 0.3–3.0s), jarak min 3s, dan dihindari menumpuk di atas meme.
+sfx_in_narration    = true
+narration_max_sfx   = 4                      # maksimum SFX reaksi per video narasi
 # Beat sync: SFX snap ke downbeat BGM + duck BGM saat ada suara.
 # BPM dibaca dari metadata audio; fallback: lofi=85, upbeat=128, cinematic=100, inspirational=110
 beat_sync = true

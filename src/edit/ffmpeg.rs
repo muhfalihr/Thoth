@@ -2153,6 +2153,55 @@ pub fn generate_thumbnail(video_path: &Path, thumb_path: &Path, time_sec: f64) -
     run_ffmpeg(&args)
 }
 
+/// Mean left↔right asymmetry of one frame: 0 = perfectly mirror-symmetric, higher = natural.
+/// Extracts a tiny 64×64 grayscale frame and compares each pixel to its horizontal mirror. Returns
+/// `INFINITY` when scoring fails (so a failure never makes a frame look "more symmetric" / rejected).
+fn frame_asymmetry(video_path: &Path, time_sec: f64) -> f64 {
+    let tmp = std::env::temp_dir().join(format!(
+        "thoth_sym_{}_{}.gray", std::process::id(), (time_sec * 1000.0) as u64));
+    let args = vec![
+        "-y".into(), "-ss".into(), format!("{time_sec:.3}"),
+        "-i".into(), video_path.to_string_lossy().to_string(),
+        "-vframes".into(), "1".into(),
+        "-vf".into(), "scale=64:64,format=gray".into(),
+        "-f".into(), "rawvideo".into(),
+        tmp.to_string_lossy().to_string(),
+    ];
+    if run_ffmpeg(&args).is_err() { return f64::INFINITY; }
+    let buf = match std::fs::read(&tmp) { Ok(b) => b, Err(_) => return f64::INFINITY };
+    let _ = std::fs::remove_file(&tmp);
+    let (w, h) = (64usize, 64usize);
+    if buf.len() < w * h { return f64::INFINITY; }
+    let (mut sum, mut n) = (0u64, 0u64);
+    for y in 0..h {
+        for x in 0..w / 2 {
+            let a = buf[y * w + x] as i64;
+            let b = buf[y * w + (w - 1 - x)] as i64;
+            sum += (a - b).unsigned_abs();
+            n += 1;
+        }
+    }
+    if n == 0 { f64::INFINITY } else { sum as f64 / n as f64 }
+}
+
+/// Pick the cover-subject frame time around `preferred` whose frame is LEAST mirror-symmetric, to
+/// dodge transition/kaleidoscope frames that duplicate the subject (the cover then shows a doubled
+/// face). Samples a small ±1.5 s window so it stays on the intended subject moment. Falls back to
+/// `preferred` when the window is too short or scoring fails.
+pub fn pick_cover_frame_time(video_path: &Path, preferred: f64, start: f64, end: f64) -> f64 {
+    let lo = (preferred - 1.5).max(start);
+    let hi = (preferred + 1.5).min((end - 0.1).max(start));
+    if hi - lo < 0.4 { return preferred; }
+    let steps = 6;
+    let (mut best, mut best_score) = (preferred, -1.0f64);
+    for i in 0..=steps {
+        let t = lo + (hi - lo) * (i as f64 / steps as f64);
+        let s = frame_asymmetry(video_path, t);
+        if s.is_finite() && s > best_score { best_score = s; best = t; }
+    }
+    best
+}
+
 /// Concatenate `main_clip` with an `avatar_segment` (post-roll) into `output`.
 ///
 /// Uses FFmpeg `concat` filter so both clips can have different durations and

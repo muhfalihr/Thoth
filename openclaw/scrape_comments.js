@@ -134,7 +134,6 @@ async function main() {
   const stickerNote = stickerCount ? `, ${stickerCount} sticker-only di-skip` : '';
   console.log(`  ${parsed.length} komentar (dari ${count} terdeteksi${stickerNote})`);
 
-  const dpr = (await client.evaluate('window.devicePixelRatio')) || 1;
 
   console.log('[3/3] Crop pixel-perfect (CDP clip)...');
   const results = [];
@@ -142,7 +141,7 @@ async function main() {
     // Scroll the comment into view, then read its fresh viewport rect.
     await client.evaluate(`(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (el) el.scrollIntoView({block:"center"}); })()`);
     await sleep(350);
-    const rectJson = await client.evaluate(`(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (!el) return ''; const r = el.getBoundingClientRect(); return JSON.stringify({x:r.x,y:r.y,w:r.width,h:r.height}); })()`);
+    const rectJson = await client.evaluate(`(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (!el) return ''; const r = el.getBoundingClientRect(); return JSON.stringify({x:r.x+window.scrollX,y:r.y+window.scrollY,w:r.width,h:r.height}); })()`);
     let rect; try { rect = JSON.parse(rectJson); } catch (e) { rect = null; }
 
     const likes = normalizeLikes(c.likes_raw);
@@ -150,11 +149,11 @@ async function main() {
     const entry = { author: c.author || 'anon', text: c.text, likes, avatar_url: c.avatar_url || '', image_path: '' };
 
     if (rect && rect.w > 30 && rect.h > 12) {
-      const clip = { x: Math.max(0, rect.x - PAD), y: Math.max(0, rect.y - PAD), width: rect.w + PAD * 2, height: rect.h + PAD * 2, scale: dpr };
       try {
-        const shot = await client.cmd('Page.captureScreenshot', { format: 'png', clip, fromSurface: true });
+        const data = await client.captureClip(rect, PAD, { beyondViewport: true }); // page-coords + beyondViewport → no black at dpr>1 / small viewport
+        if (!data) throw new Error('empty crop');
         const file = path.join(OUT_DIR, `comment_${String(c.idx + 1).padStart(2, '0')}_${safe}_${likes}like.png`);
-        fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
+        fs.writeFileSync(file, Buffer.from(data, 'base64'));
         entry.image_path = file;
         const kb = (fs.statSync(file).size / 1024).toFixed(1);
         console.log(`  #${c.idx + 1} @${entry.author} (${likes}❤) → ${path.basename(file)} (${kb} KB)`);

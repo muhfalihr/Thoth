@@ -584,23 +584,47 @@ async function setMainTo(set, orig, username) {
     }
   }
 
+  // ── ENSURE main is DOWNLOADABLE: a TikTok PAGE url (tiktok.com/@/video/) can't be fetched by
+  // yt-dlp (HTTP 403) → resolve to a direct CDN mp4 (tikwm→CDP), same as setMainTo does on a re-trace.
+  // Runs even when main was NOT re-traced (main is its own original) — otherwise Thoth ingest 403s.
+  try {
+    if (/tiktok\.com\/@[^/]+\/video\//.test(set.main.url || '') && !set.main.source_url) {
+      const page = set.main.url;
+      const d = await tiktokDirectUrl(page);
+      if (d && d.url) {
+        set.main.source_url = page; set.main.url = d.url;
+        if (!NO_DL) { const id = (page.match(/video\/(\d+)/) || [])[1] || 'tt'; const out = outPath(`tiktok_${id}.mp4`); const local = await downloadTiktok(page, out); if (local) set.main.source_local = local; }
+        console.log(`    🎬 main TikTok PAGE → URL CDN (${d.via})${set.main.source_local ? ' + mp4 lokal' : ''}. ⚠️ CDN ephemeral → thoth SEGERA.`);
+      } else {
+        console.log('    ⚠️ main TikTok PAGE tak bisa resolve URL CDN (tikwm/CDP) → yt-dlp kemungkinan 403.');
+      }
+    }
+  } catch (e) {}
+
   // ── Real PROFILE-CARD crop (any platform) → Thoth pastes it instead of the synthetic card.
   // TikTok already cropped in its branch above (image_path set → skipped here); this covers IG and,
   // as more platforms land in profile_crop.js, X/FB/YT too. Best-effort: failure keeps synthetic card.
   try {
     set.main.profile = set.main.profile || {};
+    const handle = cleanUser(set.main.profile.handle || urlHandle(set.main.url)
+      || urlHandle(set.main.source_url || '') || set.main.source_traced || '');
+    // ALWAYS record the creator identity from the handle — even when the crop fails. Thoth needs
+    // name/handle to render the creator card; without it the card is skipped (and previously it fell
+    // back to the story SUBJECT, e.g. "Moka", instead of the uploader). The crop, if it succeeds,
+    // upgrades the synthetic card to the real profile screenshot.
+    if (handle) {
+      if (!set.main.profile.handle) set.main.profile.handle = handle;
+      if (!set.main.profile.name)   set.main.profile.name   = handle;
+    }
     const haveCrop = set.main.profile.image_path && fs.existsSync(set.main.profile.image_path);
-    if (!haveCrop) {
-      const handle = cleanUser(set.main.profile.handle || urlHandle(set.main.url)
-        || urlHandle(set.main.source_url || '') || set.main.source_traced || '');
+    if (!haveCrop && handle) {
       const png = outPath(`profile_${handle || set.main.platform || 'main'}.png`);
       const cropped = await cropProfile(set.main.platform, handle, png, { url: set.main.source_url || set.main.url });
       if (cropped) {
         set.main.profile.image_path = cropped;
-        if (handle && !set.main.profile.handle) set.main.profile.handle = handle;
-        console.log(`    🪪 crop kartu profil ${set.main.platform} @${handle || '?'} → ${cropped}`);
+        console.log(`    🪪 crop kartu profil ${set.main.platform} @${handle} → ${cropped}`);
       } else {
-        console.log(`    ℹ️ crop profil ${set.main.platform} gagal/belum didukung → kartu sintetis.`);
+        console.log(`    ℹ️ crop profil ${set.main.platform} gagal → kartu nama @${handle} (tanpa screenshot).`);
       }
     }
   } catch (e) {}

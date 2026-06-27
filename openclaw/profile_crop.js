@@ -34,17 +34,12 @@ async function captureRect(c, rect, outPng, { pad = 12, beyondViewport = false }
   if (beyondViewport) {
     try { ox = (await c.evaluate('window.scrollX')) || 0; oy = (await c.evaluate('window.scrollY')) || 0; } catch (e) {}
   }
-  const clip = {
-    x: Math.max(0, rect.x - pad) + ox, y: Math.max(0, rect.y - pad) + oy,
-    w: rect.w + pad * 2, h: rect.h + pad * 2,
-  };
-  const dpr = (await c.evaluate('window.devicePixelRatio')) || 1;
-  const shot = await c.cmd('Page.captureScreenshot', {
-    format: 'png', fromSurface: true, captureBeyondViewport: beyondViewport,
-    clip: { x: clip.x, y: clip.y, width: clip.w, height: clip.h, scale: dpr },
-  });
-  if (!shot || !shot.data) return '';
-  fs.writeFileSync(outPng, Buffer.from(shot.data, 'base64'));
+  // page-coords rect (viewport + scroll) → device-pixel clip handled by captureClip (dpr-correct).
+  const data = await c.captureClip(
+    { x: rect.x + ox, y: rect.y + oy, w: rect.w, h: rect.h }, pad,
+    { beyondViewport });
+  if (!data) return '';
+  fs.writeFileSync(outPng, Buffer.from(data, 'base64'));
   return outPng;
 }
 

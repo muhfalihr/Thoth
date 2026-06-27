@@ -958,9 +958,19 @@ pub struct AssetsConfig {
     /// instead of a small corner PiP. The subtitle still burns on top. Default true.
     #[serde(default = "default_true")]
     pub meme_fullscreen: bool,
+
+    /// In narrator-driven mode, let the LLM place reaction SFX (impact / whoosh /
+    /// riser / notification) at the narration's emotional & transition beats — the
+    /// SFX analogue of `memes_in_narration`. Default true.
+    #[serde(default = "default_true")]
+    pub sfx_in_narration: bool,
+    /// Max LLM-placed reaction SFX per narrated video.
+    #[serde(default = "default_narration_max_sfx")]
+    pub narration_max_sfx: u32,
 }
 
 fn default_narration_max_memes() -> u32 { 3 }
+fn default_narration_max_sfx() -> u32 { 4 }
 
 fn default_sfx_dir() -> PathBuf { PathBuf::from("assets/sfx") }
 fn default_bgm_dir() -> PathBuf { PathBuf::from("assets/bgm") }

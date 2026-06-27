@@ -7,7 +7,10 @@
 //
 //   node build_footage.js <content_set.json> [--objects "a,b,c"] [--per 2] [--max 3] [--no-crop]
 //
-// Without --objects, objects are extracted from main.title + main.description via footage_objects (LLM).
+// Without --objects, subjects/objects/people are extracted from main.title + main.description + top
+// comments via footage_objects (LLM). Each search query = object + primary subject ("chip ai" +
+// "nvidia" → "chip ai nvidia"; +1 enriched query with a known person, e.g. "… jensen huang"). Drops
+// content identical to main (url/id/caption) and reaction/repost videos (face-cam over a clip ≠ b-roll).
 
 const fs = require('fs');
 const path = require('path');
@@ -56,11 +59,40 @@ function looksSpam(text) {
   return /^https?:\/\//.test(t) || /vidku\.|t\.me\/|bit\.ly|tinyurl|cutt\.ly|\.fun\b|\.xyz\b/i.test(t);
 }
 
+// Reaction/repost content = someone REACTING to other footage (face-cam over a clip), not original
+// b-roll of the subject → useless as cutaway. Conservative markers (NOT bare "nonton" — over-filters).
+const REACTION_RE = /\b(reaction|reaksi|bereaksi|ngereact|nge-?react|react(?:ing|s|ed)?|reupload|nonton bareng)\b/i;
+const looksReaction = t => REACTION_RE.test(t || '');
+
+// Compound footage query: object + topic subject (recall+precision). "chip ai" + "nvidia" →
+// "chip ai nvidia". Skip if the object already carries a subject token (avoid "nvidia chip nvidia").
+function composeQuery(obj, subject) {
+  if (!subject) return obj;
+  const o = (obj || '').toLowerCase();
+  const hit = subject.toLowerCase().split(/\s+/).some(t => t.length >= 3 && o.includes(t));
+  return hit ? obj : `${obj} ${subject}`;
+}
+
+// Platform video/post id → content-identity dedup (a repost of MAIN under a different URL still counts).
+function videoId(u) {
+  if (!u) return '';
+  const m = u.match(/\/video\/(\d{6,})/) || u.match(/[?&]v=([\w-]{6,})/) || u.match(/youtu\.be\/([\w-]+)/) || u.match(/\/(?:reel|reels|p|tv)\/([\w-]+)/);
+  return m ? m[1] : '';
+}
+
+const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+// Top comments text (by likes) → enrich object/subject extraction (names/brands often surface there).
+function topComments(set, n = 12) {
+  return (set.comments || []).slice().sort((a, b) => (b.likes || 0) - (a.likes || 0))
+    .slice(0, n).map(c => (c.text || '').trim()).filter(Boolean).join(' • ').slice(0, 600);
+}
+
 // Run topic_to_urls for an object, gated to that object, return the merged `all` list.
-function searchObject(obj) {
-  try { execFileSync('node', [path.join(__dirname, 'topic_to_urls.js'), obj, '--platforms', 'tiktok,tw,ig,fb', '--max', String(MAX), '--keywords', obj], { stdio: 'pipe', timeout: 200000 }); }
+function searchObject(query) {
+  try { execFileSync('node', [path.join(__dirname, 'topic_to_urls.js'), query, '--platforms', 'tiktok,tw,ig,fb', '--max', String(MAX), '--keywords', query], { stdio: 'pipe', timeout: 200000 }); }
   catch (e) { /* exit!=0 tolerated */ }
-  const f = outPath(`topic_urls_${slugify(obj)}.json`);
+  const f = outPath(`topic_urls_${slugify(query)}.json`);
   if (!fs.existsSync(f)) return [];
   try { return (JSON.parse(fs.readFileSync(f, 'utf8')).all) || []; } catch (e) { return []; }
 }
@@ -73,15 +105,32 @@ function searchObject(obj) {
   // IG creator to ALSO pull footage from: explicit --profile, else auto from a traced IG source.
   const profileUser = PROFILE_FLAG || ((main.source_traced && /instagram/i.test(main.platform || '')) ? main.source_traced : '');
 
-  let objects = OBJ_FLAG ? OBJ_FLAG.split(',').map(s => s.trim()).filter(Boolean)
-    : await footageObjects({ description: main.description || '', headline: main.title || '' });
+  let subjects = [], people = [], objects = [];
+  if (OBJ_FLAG) {
+    objects = OBJ_FLAG.split(',').map(s => s.trim()).filter(Boolean);
+  } else {
+    const ex = await footageObjects({ description: main.description || '', headline: main.title || '', comments: topComments(set) });
+    subjects = ex.subjects; objects = ex.objects; people = ex.people;
+  }
+  const primarySubject = subjects[0] || '';
   console.log('='.repeat(60));
   console.log('  Build Footage dari OBJEK' + (profileUser ? ' + PROFIL @' + profileUser : ''));
   console.log('='.repeat(60));
-  console.log('Objek:', objects.join(' | ') || '(kosong)');
+  console.log('Subject:', subjects.join(' | ') || '(kosong)', '| People:', people.join(' | ') || '(kosong)');
+  console.log('Objek  :', objects.join(' | ') || '(kosong)');
   if (!objects.length && !profileUser) { console.log('Tak ada objek. Selesai.'); process.exit(0); }
 
   const have = new Set(set.footage.map(f => f.url));
+  [main.url, main.source_url, main.source_traced].forEach(u => u && have.add(u));
+  const mainId = videoId(main.url) || videoId(main.source_url);
+  const mainCap = norm(`${main.title || ''} ${main.description || ''}`);
+  // True when a candidate IS the main content (same url/id, or near-identical caption) — never re-use main.
+  const isMain = (url, caption) => {
+    if (have.has(url)) return true;
+    const id = videoId(url); if (id && mainId && id === mainId) return true;
+    const c = norm(caption);
+    return !!(c && c.length > 20 && mainCap && (mainCap.includes(c) || c.includes(mainCap.slice(0, 80))));
+  };
   let addedV = 0, addedP = 0;
 
   // FOOTAGE dari profil SUMBER (creator asli): reel-reel creator yang RELEVAN ke topik (selain main) —
@@ -116,25 +165,26 @@ function searchObject(obj) {
     } catch (e) {}
     console.log(`+${added} reel relevan`);
   }
-  for (const obj of objects) {
+  // Compound queries: each object + topic subject; +1 enriched query (primary object + subject + person).
+  const tasks = objects.map(obj => ({ obj, query: composeQuery(obj, primarySubject) }));
+  if (people[0] && objects[0] && primarySubject) tasks.push({ obj: objects[0], query: `${composeQuery(objects[0], primarySubject)} ${people[0]}` });
+
+  for (const { obj, query } of tasks) {
    try {
-    process.stdout.write(`• "${obj}" … `);
-    const rawAll = searchObject(obj);
+    process.stdout.write(`• "${query}" … `);
+    const rawAll = searchObject(query);
     const all = rawAll.filter(e => !isCuratedAggregator(urlHandle(e.url))); // never footage from ig_accounts curators / their cross-posts
     const aggSkip = rawAll.length - all.length;
-    const vids = all.filter(e => VIDEO.has(e.platform) && !have.has(e.url));
-    const posts = all.filter(e => inferPlatform(e.url) && !have.has(e.url)); // x/ig/fb/threads croppable
-    const nVid = Math.ceil(PER / 2), nPost = PER - nVid;
-    const pickV = vids.slice(0, nVid);
-    let pickP = posts.slice(0, nPost);
-    // fill shortfall from the other type
-    while (pickV.length + pickP.length < PER) {
-      const more = vids.slice(pickV.length).concat(posts.slice(pickP.length)).find(e => !pickV.includes(e) && !pickP.includes(e));
-      if (!more) break;
-      (VIDEO.has(more.platform) ? pickV : pickP).push(more);
-    }
-    let pv = 0, pp = 0, dropped = 0;
-    for (const e of pickV) {
+    const vids = all.filter(e => VIDEO.has(e.platform) && !have.has(e.url) && !isMain(e.url, ''));
+    const posts = all.filter(e => inferPlatform(e.url) && !have.has(e.url) && !isMain(e.url, '')); // x/ig/fb/threads croppable
+    // Aim for a video/post MIX. CRITICAL: do NOT give up after the first pick — many TOP
+    // candidates fail the relevance/main gate, so iterate ALL candidates until the quota is
+    // filled (or we run out), then cross-fill any shortfall from the other type. (Old code
+    // sliced only the top nVid/nPost and quit, yielding 0 footage when those few failed.)
+    const wantV = Math.ceil(PER / 2), wantP = PER - Math.ceil(PER / 2);
+    let pv = 0, pp = 0, dropped = 0, dropReact = 0;
+
+    const addVideo = async (e) => {
       have.add(e.url);
       // description = caption asli footage (oEmbed) → di-embed Thoth utk cocokkan ke narasi.
       let description = '';
@@ -142,26 +192,38 @@ function searchObject(obj) {
         if (e.platform === 'tiktok') { const m = await tiktokOembed(e.url); description = (m && m.title) || ''; }
         else if (e.platform === 'youtube') { const m = await youtubeOembed(e.url); description = (m && m.title) || ''; }
       } catch (err) {}
-      // GATE: video TikTok sudah di-caption-gate saat search → caption kosong tetap diterima
-      // (percaya gate search); kalau ADA caption, harus cocok ke objek.
-      if (description.trim() && !relevant(description, obj)) { dropped++; continue; }
+      if (isMain(e.url, description)) { dropped++; return false; }    // konten sama dengan main → skip
+      if (looksReaction(description)) { dropReact++; return false; }  // video reaction/repost → bukan b-roll
+      // NB: TIDAK ada re-gate relevant() utk video — TikTok/YT sudah di-keyword-gate saat search
+      // (topic_to_urls --keywords), dan story-gate cosine di akhir yang menyaring off-topic. Re-gate
+      // pakai caption oEmbed rapuh: oEmbed flaky/rate-limit → caption salah/tak ada kata objek →
+      // video VALID ke-drop (gejala: "+0v" padahal kandidat bagus). Percaya search-gate + story-gate.
       // TikTok: yt-dlp (Thoth) tak bisa download PAGE TikTok (extractor rusak/403) → resolve ke URL
       // CDN mp4 langsung (tikwm→CDP) yg yt-dlp generic BISA download. Simpan page asli di source_url.
       // Gagal resolve → biar page url (Thoth drop diam, non-fatal). URL CDN ephemeral → jalankan thoth segera.
       let furl = e.url, src_url;
       if (e.platform === 'tiktok') { try { const d = await tiktokDirectUrl(e.url); if (d && d.url) { furl = d.url; src_url = e.url; } } catch (err) {} }
       set.footage.push({ url: furl, platform: e.platform, query: obj, is_video: true, relevance: 'match', description, ...(src_url ? { source_url: src_url } : {}) });
-      pv++; addedV++;
-    }
-    for (const e of pickP) {
+      pv++; addedV++; return true;
+    };
+    const addPost = async (e) => {
       have.add(e.url);
       let image_path = '', description = '';
       if (!NO_CROP) { try { const r = await cropPost({ url: e.url }); if (r.ok) { image_path = r.image_path; description = (r.text || '').trim(); } } catch (err) {} }
-      // GATE: post (X/IG/FB) TIDAK di-gate saat search → wajib teks-nya cocok ke objek + bukan spam.
-      if (!relevant(description, obj) || looksSpam(description)) { if (image_path) { try { fs.rmSync(image_path); } catch (e2) {} } dropped++; continue; }
-      if (NO_CROP || image_path) { set.footage.push({ url: e.url, platform: e.platform === 'tw' ? 'twitter' : e.platform === 'ig' ? 'instagram' : e.platform, query: obj, is_video: false, relevance: 'match', image_path, description }); pp++; addedP++; }
-    }
-    console.log(`+${pv}v/${pp}p` + (dropped ? ` (${dropped} drop tak-relevan)` : '') + (aggSkip ? ` (${aggSkip} drop akun-kurator)` : ''));
+      // GATE: post (X/IG/FB) TIDAK di-gate saat search → wajib teks-nya cocok ke objek + bukan spam/reaction/main.
+      if (isMain(e.url, description) || looksReaction(description)) { if (image_path) { try { fs.rmSync(image_path); } catch (e2) {} } if (looksReaction(description)) dropReact++; else dropped++; return false; }
+      if (!relevant(description, obj) || looksSpam(description)) { if (image_path) { try { fs.rmSync(image_path); } catch (e2) {} } dropped++; return false; }
+      if (NO_CROP || image_path) { set.footage.push({ url: e.url, platform: e.platform === 'tw' ? 'twitter' : e.platform === 'ig' ? 'instagram' : e.platform, query: obj, is_video: false, relevance: 'match', image_path, description }); pp++; addedP++; return true; }
+      return false;
+    };
+
+    // Pass 1: fill each type's quota by trying candidates IN ORDER until enough PASS the gates.
+    for (const e of vids)  { if (pv >= wantV) break; if (!have.has(e.url)) await addVideo(e); }
+    for (const e of posts) { if (pp >= wantP) break; if (!have.has(e.url)) await addPost(e); }
+    // Pass 2: cross-fill shortfall (e.g. no croppable posts) from leftover candidates of EITHER type.
+    for (const e of vids)  { if (pv + pp >= PER) break; if (!have.has(e.url)) await addVideo(e); }
+    for (const e of posts) { if (pv + pp >= PER) break; if (!have.has(e.url)) await addPost(e); }
+    console.log(`+${pv}v/${pp}p` + (dropped ? ` (${dropped} drop tak-relevan)` : '') + (dropReact ? ` (${dropReact} drop reaction)` : '') + (aggSkip ? ` (${aggSkip} drop akun-kurator)` : ''));
     fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8'); // persist after EACH object (crash-resilient)
    } catch (e) {
     console.log(`(⚠️ "${obj}" gagal: ${String((e && e.message) || e).slice(0, 70)} — skip)`);

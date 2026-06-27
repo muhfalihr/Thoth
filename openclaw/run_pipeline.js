@@ -83,13 +83,14 @@ run(async () => {
   };
   fs.writeFileSync(file, JSON.stringify(seed, null, 2), 'utf8');
 
-  // 2-5) Chain the enrich steps. extract_figures runs AFTER build_footage so it can read the footage
-  // descriptions too — named subjects (e.g. "Sara Wijayanto", "MVP Pictures") often surface there
-  // even when the topic/main caption is just a teaser.
+  // 2-6) Chain the enrich steps. collect_comments runs BEFORE build_footage so subject/object extraction
+  // can mine the comments too (names/brands often surface there). extract_figures runs AFTER build_footage
+  // so it can also read footage descriptions — named subjects (e.g. "Sara Wijayanto", "MVP Pictures")
+  // often surface there even when the topic/main caption is just a teaser.
   step('trace_source (sumber/main)', 'trace_source.js', [file]);
+  if (!NO_COMMENTS) step('collect_comments (multi-sumber)', 'collect_comments.js', [file, '--cap', CAP, '--extra', URL]);
   step('build_footage (objek→footage)', 'build_footage.js', [file, '--per', PER, '--max', MAX]);
   step('extract_figures (tokoh — main + footage)', 'extract_figures.js', [file]);
-  if (!NO_COMMENTS) step('collect_comments (multi-sumber)', 'collect_comments.js', [file, '--cap', CAP, '--extra', URL]);
 
   // 6) Validate + summary.
   step('validate', 'validate_content_set.js', [file]);

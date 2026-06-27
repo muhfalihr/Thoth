@@ -99,23 +99,22 @@ async function cropTiktokProfile(username, outPng, { client } = {}) {
       const title = pick('[data-e2e="user-title"]');
       const sub = pick('[data-e2e="user-subtitle"]');
       const stats = pick('[data-e2e="followers-count"]') || pick('[data-e2e="following-count"]');
-      const bio = pick('[data-e2e="user-bio"]');
-      const els = [av, title, sub, stats, bio].filter(Boolean);
+      // NB: bio EXCLUDED — its text/link wraps the full column width and blew the crop into a wide,
+      // mostly-empty box. Avatar + name + handle + stats IS the clean profile card.
+      const els = [av, title, sub, stats].filter(Boolean);
       if (!els.length) return '';
       let x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
       els.forEach(el => { const r = el.getBoundingClientRect(); x1 = Math.min(x1, r.left); y1 = Math.min(y1, r.top); x2 = Math.max(x2, r.right); y2 = Math.max(y2, r.bottom); });
       const pad = 18;
-      return JSON.stringify({ x: Math.max(0, x1 - pad), y: Math.max(0, y1 - pad), w: (x2 - x1) + pad * 2, h: (y2 - y1) + pad * 2 });
+      // PAGE coords (+scroll) so captureBeyondViewport renders the full region — fromSurface alone
+      // returns BLACK outside the composited viewport (worse at dpr>1 / small windows).
+      return JSON.stringify({ x: Math.max(0, x1 + window.scrollX - pad), y: Math.max(0, y1 + window.scrollY - pad), w: (x2 - x1) + pad * 2, h: (y2 - y1) + pad * 2 });
     })()`);
     let rect; try { rect = JSON.parse(rectJson || 'null'); } catch (e) {}
     if (!rect || rect.w < 80 || rect.h < 40) { console.log('    [tiktok] crop profil: header tak terbaca.'); return ''; }
-    const dpr = (await c.evaluate('window.devicePixelRatio')) || 1;
-    const shot = await c.cmd('Page.captureScreenshot', {
-      format: 'png', fromSurface: true,
-      clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h, scale: dpr },
-    });
-    if (!shot || !shot.data) return '';
-    fs.writeFileSync(outPng, Buffer.from(shot.data, 'base64'));
+    const data = await c.captureClip({ x: rect.x, y: rect.y, w: rect.w, h: rect.h }, 0, { beyondViewport: true });
+    if (!data) return '';
+    fs.writeFileSync(outPng, Buffer.from(data, 'base64'));
     return outPng;
   } catch (e) { return ''; } finally { if (own) c.close(); }
 }

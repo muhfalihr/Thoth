@@ -22,11 +22,15 @@ Tab login **tiktok.com + instagram.com** (tambah x.com/facebook.com bila perlu) 
 ter-attach di Brave. `relay DOWN` → `openclaw node start` lalu klik extension untuk attach tab.
 
 ## 1. Discovery topik (akun kurator IG)
-> ⚠️ Long-running, **checkpoint per-reel** (`reel_topics.json`, `"partial":true`). Jangan kill saat senyap.
+> ⚠️ Long-running, **checkpoint per-item** (`reel_topics.json`, `"partial":true`). Jangan kill saat senyap.
 ```bash
-node discover_reels.js --max-per 4 --hours 48
+node discover_reels.js --max-per 4 --hours 48          # reels + feed post (default; --include reels|posts)
+# + trending TikTok Studio region Indonesia (butuh tab tiktok.com login) → section `tiktok_trending`:
+node discover_reels.js --max-per 4 --hours 48 --tiktok   # --tiktok-region all untuk semua region
 ```
-Pilih **satu** reel dengan kejadian fisik konkret (bukan meme/musik). Catat URL-nya.
+Memindai **reels (`/reel/`) DAN feed post (`/p/`)** — net topik lebih luas; post foto = kartu-berita
+yang headline-nya terbaca vision. `--max-per` per tipe. Pilih **satu** item dengan kejadian fisik
+konkret (bukan meme/musik), lihat field `kind` (`reel`/`post`), catat URL-nya.
 
 ## 2. Rakit content-set (orkestrator)
 > ⚠️ **`build_footage` makan beberapa menit/objek dan DIAM** (sub-process silent) — itu NORMAL,

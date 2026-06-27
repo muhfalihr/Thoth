@@ -146,10 +146,10 @@ async function scrapeComments(opts) {
       let saved = false;
       for (let attempt = 0; attempt < 2 && !saved; attempt++) {
         if (attempt) { await sleep(300); rect = (await measure()) || rect; if (!contentMatches(rect)) break; }
-        const clip = { x: Math.max(0, rect.x - pad), y: Math.max(0, rect.y - pad), width: rect.w + pad * 2, height: rect.h + pad * 2, scale: dpr };
         try {
-          const shot = await client.cmd('Page.captureScreenshot', { format: 'png', clip, fromSurface: true, captureBeyondViewport: true });
-          const buf = Buffer.from(shot.data, 'base64');
+          const data = await client.captureClip(rect, pad, { beyondViewport: true }); // device-pixel clip (dpr-correct)
+          if (!data) continue;
+          const buf = Buffer.from(data, 'base64');
           if (buf.length < MIN_CROP_BYTES) continue; // blank → retry / fallback
           const file = path.join(CROPS_DIR, `comment_${String(outIdx + 1).padStart(2, '0')}_${safe}_${likes}like.png`);
           fs.writeFileSync(file, buf);

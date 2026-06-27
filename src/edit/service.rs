@@ -325,6 +325,113 @@ JSON only, no prose: {\"memes\":[{\"file\":\"<catalog file>\",\"at_sec\":<second
     out
 }
 
+/// LLM-pick reaction SFX (impact / whoosh / riser / notification) for the
+/// narration, matched to the spoken emotion or a scene transition. The SFX
+/// analogue of [`select_narration_memes`]. Returns `(file, at_sec)` in NARRATION
+/// time (0-based). Best-effort → empty on any failure.
+async fn select_narration_sfx(
+    provider: &dyn LlmProvider,
+    catalog: &crate::analyze::asset_catalog::AssetCatalog,
+    words: &[WordTimestamp],
+    narr_dur: f64,
+    max_sfx: usize,
+) -> Vec<(String, f64)> {
+    let sfx: Vec<&crate::analyze::asset_catalog::AssetEntry> =
+        catalog.assets.iter().filter(|a| a.kind == "audio").collect();
+    if sfx.is_empty() || words.is_empty() || max_sfx == 0 {
+        return Vec::new();
+    }
+
+    let mut catalog_txt = String::new();
+    for s in &sfx {
+        catalog_txt.push_str(&format!(
+            "  {} | {} | energy: {} | triggers: {} | {}\n",
+            s.file, s.category, s.energy, s.triggers.join(","), s.meaning
+        ));
+    }
+
+    // Narration with timestamps, chunked ~12 words per line.
+    let mut narr = String::new();
+    let mut chunk = String::new();
+    let mut chunk_start = 0i64;
+    let mut n = 0;
+    for w in words {
+        if chunk.is_empty() {
+            chunk_start = w.start_ms;
+        }
+        chunk.push_str(w.word.trim());
+        chunk.push(' ');
+        n += 1;
+        if n >= 12 {
+            narr.push_str(&format!("[t={:.1}s] {}\n", chunk_start as f64 / 1000.0, chunk.trim()));
+            chunk.clear();
+            n = 0;
+        }
+    }
+    if !chunk.trim().is_empty() {
+        narr.push_str(&format!("[t={:.1}s] {}\n", chunk_start as f64 / 1000.0, chunk.trim()));
+    }
+
+    let system = "You are a sound designer placing short SOUND EFFECTS into a narrated \
+Indonesian video so each beat lands harder. You get the narration (with [t=..s] timestamps) \
+and a catalog of SFX files (each with a category, energy and emotional/transition triggers). \
+Place each SFX at the SECOND that calls for it: an IMPACT/stinger on a shock, punchline or \
+number reveal; a WHOOSH on a scene change/transition; a RISER just BEFORE a big reveal; a \
+NOTIFICATION on a 'comment/netizen' mention. Rules: use ONLY files from the catalog; at_sec \
+must be a real moment in the narration; spread them out (>=3s apart); do not carpet-bomb — \
+silence has value. Output STRICT JSON only, no prose: \
+{\"sfx\":[{\"file\":\"<catalog file>\",\"at_sec\":<seconds>,\"reason\":\"<word>\"}]}";
+
+    let user = format!(
+        "SFX CATALOG:\n{catalog_txt}\nNARRATION (total {narr_dur:.0}s):\n{narr}\n\n\
+         Pick up to {max_sfx} SFX. JSON only."
+    );
+
+    let raw = match provider.chat_completion(system, &user).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("sfx selection LLM failed: {e}");
+            return Vec::new();
+        }
+    };
+    let json = match (raw.find('{'), raw.rfind('}')) {
+        (Some(a), Some(b)) if b > a => &raw[a..=b],
+        _ => {
+            warn!("sfx selection: no JSON in response");
+            return Vec::new();
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct Pick {
+        file: String,
+        #[serde(default)]
+        at_sec: f64,
+    }
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        #[serde(default)]
+        sfx: Vec<Pick>,
+    }
+    let resp: Resp = match serde_json::from_str(json) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("sfx selection parse failed: {e}");
+            return Vec::new();
+        }
+    };
+
+    let valid = catalog.valid_files();
+    let mut out = Vec::new();
+    for p in resp.sfx {
+        if !valid.contains(&p.file) || !sfx.iter().any(|s| s.file == p.file) {
+            continue;
+        }
+        out.push((p.file, p.at_sec.clamp(0.0, (narr_dur - 0.3).max(0.0))));
+    }
+    out
+}
+
 /// Narration text spoken within `[lo_sec, hi_sec]` of NARRATION time (from the word
 /// timings). Used to semantically match a footage cutaway to what the narrator is
 /// saying at the moment the card appears.
@@ -560,7 +667,7 @@ impl<'a> EditService<'a> {
             match self.render_narration_video(
                 video_path, &moments, layout, audio_opts, &enrich_pool, &image_pool,
                 &overlay_ytdlp, &ffmpeg_dir, video_dur,
-                profile_override.as_ref(), &comment_pool,
+                profile_override.as_ref(), &comment_pool, source_channel,
             ).await {
                 Ok(clip) => {
                     output_clips.push(clip);
@@ -756,26 +863,27 @@ impl<'a> EditService<'a> {
                 audio_clone.headline = None;
             }
 
-            // ── Beat-2 character intro (profile card + name above head) ──────
-            // Skip on the hook clip — character intro is a CONTENT beat (3–6s).
-            // Real OpenClaw profile (factual handle/followers/avatar) OVERRIDES the
-            // LLM's guessed character_* fields when present. The card still renders
-            // on a content clip; if the LLM found no character but OpenClaw supplied
-            // one, the real profile alone is enough to show it.
-            let has_llm_character = !moment.character_name.trim().is_empty();
-            let has_real_profile  = profile_override.as_ref()
+            // ── Beat-2 profile card = CREATOR of the main video (NOT the story subject) ──
+            // Skip on the hook clip — this is a CONTENT beat (3–6s). Identity priority:
+            // (1) real OpenClaw profile crop/handle, (2) the main video's uploader
+            // (`source_channel` from info.json), (3) none → skip the card. The LLM
+            // `character_*` fields describe the SUBJECT of the story, not the uploader, so
+            // they are NEVER used as the card identity (that mislabels the creator).
+            let has_real_profile = profile_override.as_ref()
                 .map(|p| !p.name.trim().is_empty() || !p.handle.trim().is_empty())
                 .unwrap_or(false);
-            if self.config.profile_card.enabled && !is_hook && (has_llm_character || has_real_profile) {
+            let uploader = source_channel.trim();
+            let has_uploader = !uploader.is_empty();
+            if self.config.profile_card.enabled && !is_hook && (has_real_profile || has_uploader) {
                 let pc = &self.config.profile_card;
                 let clip_dur = end - start;
                 let at = pc.at_sec.clamp(0.0, (clip_dur - 0.5).max(0.0));
                 let dur = pc.duration_sec.min(clip_dur - at).max(0.5);
 
-                // Start from the LLM guess, then overlay real data field-by-field.
-                let mut name   = moment.character_name.trim().to_string();
-                let mut handle = moment.character_handle.trim().to_string();
-                let mut stats  = moment.character_stats.trim().to_string();
+                // Seed from the uploader; real OpenClaw profile (if any) overrides field-by-field.
+                let mut name   = uploader.to_string();
+                let mut handle = uploader.to_string();
+                let mut stats  = String::new();
                 let mut avatar_path = String::new();
                 let mut image_path = String::new();
                 if let Some(p) = &profile_override {
@@ -1542,6 +1650,7 @@ impl<'a> EditService<'a> {
         video_dur:     f64,
         profile_override: Option<&super::profile_card::ProfileCardData>,
         comment_pool:     &[super::comment_card::CommentData],
+        source_channel:   &str,
     ) -> Result<ClipOutput, EditError> {
         // 1) Narration words + duration + hook line.
         let words_raw = std::fs::read_to_string(self.job.narration_words())
@@ -1634,6 +1743,9 @@ impl<'a> EditService<'a> {
                 // event recreation (all modes).
                 if cover_cfg.subject {
                     let at = (start + cover_cfg.subject_at_sec).clamp(start, (end - 0.1).max(start));
+                    // Dodge mirror/kaleidoscope TRANSITION frames (subject appears doubled on the cover)
+                    // by picking the least-symmetric frame in a small window around the chosen moment.
+                    let at = super::ffmpeg::pick_cover_frame_time(video_path, at, start, end);
                     let _ = generate_thumbnail(video_path, &subject_frame, at);
                 }
                 let cover_dur = cover_cfg.duration_sec.min(dur - 0.2).max(0.5);
@@ -1798,20 +1910,23 @@ impl<'a> EditService<'a> {
             }
         }
 
-        // ── Beat-2 profile card (real OpenClaw data overrides LLM guess) ─────
-        // In the single narrated arc the card appears once, just after the hook.
-        let first_moment = moments.moments.first();
-        let has_llm_char = first_moment.map(|m| !m.character_name.trim().is_empty()).unwrap_or(false);
+        // ── Beat-2 profile card = CREATOR of the main video (NOT the story subject) ─────
+        // Card appears once, just after the hook. Identity priority: (1) real OpenClaw
+        // profile crop/handle, (2) the main video's uploader (`source_channel` from
+        // info.json), (3) none → skip. The LLM `character_*` fields describe the SUBJECT
+        // of the story, not the uploader, so they are NEVER used as the card identity.
         let has_real_profile = profile_override
             .map(|p| !p.name.trim().is_empty() || !p.handle.trim().is_empty())
             .unwrap_or(false);
-        if self.config.profile_card.enabled && (has_llm_char || has_real_profile) {
+        let uploader = source_channel.trim();
+        let has_uploader = !uploader.is_empty();
+        if self.config.profile_card.enabled && (has_real_profile || has_uploader) {
             let pc = &self.config.profile_card;
             let at  = (hook_dur + 0.3).clamp(0.0, (dur - 0.5).max(0.0));
             let pdur = pc.duration_sec.min(dur - at).max(0.5);
-            let mut name   = first_moment.map(|m| m.character_name.trim().to_string()).unwrap_or_default();
-            let mut handle = first_moment.map(|m| m.character_handle.trim().to_string()).unwrap_or_default();
-            let mut stats  = first_moment.map(|m| m.character_stats.trim().to_string()).unwrap_or_default();
+            let mut name   = uploader.to_string();
+            let mut handle = uploader.to_string();
+            let mut stats  = String::new();
             let mut avatar_path = String::new();
             let mut image_path = String::new();
             if let Some(p) = profile_override {
@@ -1939,6 +2054,63 @@ impl<'a> EditService<'a> {
                         }
                     }
                     Err(e) => warn!("meme selection: no LLM provider ({e})"),
+                }
+            }
+        }
+
+        // ── Reaction SFX matched to narration beats (LLM-picked) ─────────────
+        // SFX analogue of the meme block above: the LLM drops impact/whoosh/riser/
+        // notification hits on the narration's emotional & transition beats, so SFX
+        // is DYNAMIC in narrator mode too (not just the static comment-card cue).
+        // Independent + best-effort; appends to any SFX already queued (the comment
+        // notifications added earlier survive).
+        if self.config.assets.sfx_in_narration {
+            if let Some(cat) =
+                crate::analyze::asset_catalog::AssetCatalog::load(&self.config.assets.catalog_path)
+            {
+                match build_llm_provider(self.config, &self.config.llm.default_provider) {
+                    Ok(provider) => {
+                        let picks = select_narration_sfx(
+                            provider.as_ref(), &cat, &words, narr_dur,
+                            self.config.assets.narration_max_sfx as usize,
+                        ).await;
+                        // narration-time → clip-time (+lead); keep clear of the hook and
+                        // of the clip tail; sort so the min-gap pass is deterministic.
+                        let meme_ats: Vec<f64> = audio.meme_cues.iter().map(|m| m.at_sec).collect();
+                        let mut cand: Vec<(f64, String)> = picks.into_iter()
+                            .filter_map(|(file, narr_at)| {
+                                let at = (narr_at + lead).clamp(hook_dur + 0.3, (dur - 0.4).max(0.0));
+                                if at <= hook_dur + 0.2 || at >= dur - 0.3 { None } else { Some((at, file)) }
+                            })
+                            .collect();
+                        cand.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                        let max = self.config.assets.narration_max_sfx as usize;
+                        let mut cues: Vec<super::ffmpeg::AssetSfxCue> = Vec::new();
+                        let mut last = -100.0_f64;
+                        for (at, file) in cand {
+                            if cues.len() >= max { break; }
+                            if at - last < 3.0 { continue; }                          // min gap between SFX
+                            if meme_ats.iter().any(|m| (m - at).abs() < 0.6) { continue; } // don't stack on a meme
+                            let path = std::path::PathBuf::from(&file);
+                            if !path.exists() { continue; }
+                            // Play the SFX's own length, bounded so a long sting doesn't run on.
+                            let cdur = cat.assets.iter().find(|a| a.file == file)
+                                .and_then(|a| a.duration_sec).unwrap_or(1.2)
+                                .clamp(0.3, 3.0).min(dur - at - 0.05);
+                            if cdur < 0.2 { continue; }
+                            cues.push(super::ffmpeg::AssetSfxCue {
+                                path, at_sec: at, duration_sec: cdur, volume: 0.85,
+                            });
+                            last = at;
+                        }
+                        if !cues.is_empty() {
+                            info!("       🎚️  Reaction SFX: {} placed (LLM-matched to narration beats)", cues.len());
+                            audio.asset_sfx_cues.extend(cues); // append → keep comment-card notifications
+                        } else {
+                            info!("       🎚️  Reaction SFX: none placed");
+                        }
+                    }
+                    Err(e) => warn!("sfx selection: no LLM provider ({e})"),
                 }
             }
         }
