@@ -187,6 +187,10 @@ pub struct Discourse {
     /// One-line steer for the narrator (tone/angle to take given the stance).
     #[serde(default)]
     pub narration_guidance: String,
+    /// Currently-live discourse terms/memes (from the daily Cultural Pulse harvest) — a STYLE/jargon
+    /// reference the narrator may use when relevant, NOT a topic to force. `[]` when no pulse data.
+    #[serde(default)]
+    pub trends: Vec<String>,
 }
 
 /// A FIGURE the topic is about — a named person, organization, or community.

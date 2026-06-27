@@ -146,6 +146,10 @@ async function enrich(set) {
   refs.forEach(r => ckb.put(KB, r.term, r.kind, r));
   ckb.save(KB);
 
+  // Fase 3b: inject currently-live discourse terms (daily pulse harvest) as a STYLE reference.
+  const trends = ckb.topPulse(KB, 8).map(p => p.term);
+  if (trends.length) set.discourse.trends = trends;
+
   console.log(`  ✅ ${refs.length} ref, ${tagged} komentar di-decode, stance="${(set.discourse.audience_stance || '').slice(0, 60)}"`);
   return true;
 }

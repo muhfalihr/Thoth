@@ -263,7 +263,7 @@ impl<'a> PipelineRunner<'a> {
             }
             // Collective audience reading — emitted after the comments block (see below).
             let d = &ctx.discourse;
-            if !d.audience_stance.trim().is_empty() || !d.narration_guidance.trim().is_empty() {
+            if !d.audience_stance.trim().is_empty() || !d.narration_guidance.trim().is_empty() || !d.trends.is_empty() {
                 let mut s = String::from("[Maksud Komentar]");
                 if !d.audience_stance.trim().is_empty() {
                     s.push_str(&format!("\nSikap audiens: {}", d.audience_stance.trim()));
@@ -274,6 +274,11 @@ impl<'a> PipelineRunner<'a> {
                 }
                 if !d.narration_guidance.trim().is_empty() {
                     s.push_str(&format!("\nArahan narator: {}", d.narration_guidance.trim()));
+                }
+                let trends: Vec<&str> = d.trends.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+                if !trends.is_empty() {
+                    // Style/jargon reference only — explicitly NOT a topic to force.
+                    s.push_str(&format!("\nTren diskursus (gaya/jargon yang lagi hidup — pakai bila relevan, JANGAN paksakan ke topik): {}", trends.join(", ")));
                 }
                 discourse_block = s;
             }

@@ -215,9 +215,16 @@ Tak dikenal versi lama → diabaikan (forward-compat, sesuai kontrak yang ada di
 > single-machine, tanpa dep/infra. Upgrade Supabase (cross-machine + embedding fuzzy-match) = opsi nanti.
 > Slang `kamus-alay`: DITUNDA — model sudah men-decode slang ID dengan baik di test.
 
-**Fase 3 — Cultural Pulse Harvester (scheduled).** Script + cron harian (§4). Isi `pulse` + entities.
-Per-video makin sering hit lokal. Tambah blok `[Tren Diskursus]` (frasa/meme yang lagi hidup) sebagai
-**referensi gaya** (bukan untuk disalin).
+**Fase 3 — Cultural Pulse Harvester (scheduled).** ✅ SELESAI 2026-06-27
+> `openclaw/pulse_harvest.js`: scan feed trending hasil discovery (`reel_topics.json .reels[]` =
+> hasil scan akun, BUKAN index) → scrape komentar berbudget (`--max`/`--per-video`) → distilasi 1 LLM
+> call → hitung frekuensi LINTAS-video (term harus berulang ≥`--min-freq`, default 2) → `ckb.pulse`
+> (+decay recency `exp(-age/τ)`, prune `--ttl`). `ckb.js`: `bumpPulse/prunePulse/topPulse`.
+> **3b surface:** `enrich_context` tulis `discourse.trends` (top pulse) → Rust `Discourse.trends` →
+> blok `[Maksud Komentar]` baris "Tren diskursus (gaya/jargon, JANGAN paksakan topik)". Verified:
+> harvester jalan end-to-end (3 video IG → scrape → distilasi 12 → +0 karena 3 video topik beda;
+> threshold anti-noise benar). Cron harian = jalankan `node pulse_harvest.js` (setelah discover_reels).
+> CATATAN: pakai sumber komentar (discourse), bukan view-index — sesuai kehendak user.
 
 **Fase 4 — Voice/register adaptation.** Dari pulse, ekstrak register/gaya bahasa terkini → panduan
 nada narator (tetap: gaya, bukan jiplak). Tie ke Style Profiles (BLUEPRINT Priority 1).
