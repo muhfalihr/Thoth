@@ -14,6 +14,17 @@
 
 > 📦 **Baru pertama kali setup?** Ikuti **[SETUP.md](SETUP.md)** — panduan lengkap dari prerequisite, toolchain, API key, sampai run pertama (jalur Lite/API & Full/GPU).
 
+### 📚 Peta Dokumentasi
+| Dokumen | Isi |
+|---|---|
+| **[SETUP.md](SETUP.md)** | Instalasi langkah demi langkah (toolchain, API key, run pertama) |
+| **[docs/MODELS.md](docs/MODELS.md)** | Semua model AI yang dipakai (per-stage) + cara ganti + rekomendasi |
+| **[config.toml.example](config.toml.example)** | Referensi lengkap semua opsi `config.toml` (berkomentar) |
+| **[.env.example](.env.example)** | Template semua environment variable / API key |
+| **[openclaw/README.md](openclaw/README.md)** | Content sourcing (OpenClaw/Ella): discovery, content-set, CKB, enrichment |
+| **[openclaw/SETUP.md](openclaw/SETUP.md)** · **[openclaw/RUNBOOK.md](openclaw/RUNBOOK.md)** | Setup & operasi harian OpenClaw |
+| **[CHANGELOG.md](CHANGELOG.md)** · **[BLUEPRINT.md](BLUEPRINT.md)** | Riwayat perubahan · blueprint arsitektur & status fitur |
+
 ---
 
 ## Arsitektur Pipeline
@@ -34,6 +45,8 @@ URL / File / --content set.json (OpenClaw: main + footage + comments + figures)
     │
     ▼ Stage 4: ENRICH  (opt-in)
     Narrator-driven: 1 naskah LLM → TTS voiceover (spine) + RAG struktur narasi
+    Cultural context (OpenClaw): enrich_context → references/discourse + web-grounding
+                                 + CKB (Supabase) — narator paham subteks komentar
     News: keyword → Google News (Playwright) → screenshot cards
     Reaction: script + TTS + avatar (opsional)
     │
@@ -95,6 +108,19 @@ Meme reaksi (`assets/meme/`) disisipkan otomatis di mode narator:
 ### Content Sourcing (OpenClaw + multi-platform)
 - **`thoth run --content set.json`** — terima content-set eksternal `{main, footage, comments, figures, profile}` hasil sourcing OpenClaw (Telegram agent), termasuk crop screenshot komentar & kartu profil.
 - **`[content_search]`** — cari MAIN video + pool enrichment lintas YouTube/Instagram/Twitter/News (Playwright/Scrapling) saat `--query` / auto-trending.
+
+### Cultural Context Enrichment (mode narator)
+Agar narasi **paham subteks** komentar (sarkasme, meme, nama tokoh) dan tidak salah baca:
+- **`enrich_context.js` (OpenClaw)** — decode komentar jadi `references` (entitas/meme/slang),
+  `context` per-komentar (maksud + nada), dan `discourse` (sikap kolektif audiens) → disuntik ke
+  prompt narasi sebagai blok `[Konteks Budaya]` + `[Maksud Komentar]`.
+- **Web-grounding** (`web_grounding.js`) — perbarui status entitas ke **terkini** via Google News
+  (atasi cutoff model, mis. tokoh "menteri" → "terdakwa").
+- **Cultural Knowledge Base** (`ckb.js`, **Supabase**) — cache hasil resolve lintas-run/mesin (cache-first).
+- **Cultural Pulse** (`pulse_harvest.js`, cron harian) — pelajari tren dari **komentar** video trending
+  (bukan index platform) → blok `[Tren Diskursus]` + gaya bahasa kini (opsional).
+
+Detail desain & operasi: [openclaw/README.md](openclaw/README.md). Daftar model: [docs/MODELS.md](docs/MODELS.md).
 
 ### News Enrichment (`[news]`, opt-in)
 Keyword dari transcript per-momen → Google News (Playwright, tanpa API key) → screenshot kartu berita yang relevan disisipkan ke clip.
@@ -386,7 +412,7 @@ embed_model          = "qwen/qwen3-embedding-8b"
 ```toml
 [narration]
 enabled        = true
-model          = "deepseek/deepseek-v4-flash"  # model khusus naskah narasi (provider dari --provider)
+model          = "deepseek/deepseek-v3.1"  # naskah narasi (chat non-reasoning → JSON andal; HINDARI *-flash). Provider dari --provider
 target_secs    = 45        # target panjang narasi (~3 kata/detik)
 language       = "id"
 duck_event_vol = 0.12      # volume audio event saat narator bicara
@@ -476,20 +502,48 @@ mode = "none"                        # none | static_image | sad_talker | did | 
 
 ## Environment Variables (`.env`)
 
+Thoth memuat `.env` di root saat start (via `dotenvy`). Template lengkap: **[.env.example](.env.example)**.
+Prefix kanonik = **`THOTH_`**. Prefix lama **`CLIPPER_*`** masih jalan — saat start, semua `CLIPPER_*`
+otomatis di-mirror ke `THOTH_*` (`src/main.rs`), jadi `.env` lama tak perlu diubah.
+
 ```env
-# LLM
+# ── LLM providers (isi yang dipakai saja) ──
+THOTH_NOVITA_API_KEY=...           # default; analyze/narration/vision/embedding/cover-FLUX/OpenClaw
+THOTH_GROQ_API_KEY=gsk_...         # provider alt + Whisper API (transcribe)
+THOTH_OPENAI_API_KEY=sk-...
 THOTH_CLAUDE_API_KEY=sk-ant-...
 THOTH_GEMINI_API_KEY=AIza...
-THOTH_OPENAI_API_KEY=sk-...
-THOTH_GROQ_API_KEY=gsk_...
-THOTH_NOVITA_API_KEY=...
+THOTH_OPENROUTER_API_KEY=...       # [cover] image_engine="openrouter" (gemini-2.5-flash-image)
+THOTH_TOGETHER_API_KEY= / THOTH_FIREWORKS_API_KEY= / THOTH_VLLM_API_KEY=
 
-# Database (RAG)
-THOTH_SUPABASE_URL=postgresql://...
+# ── RAG + Cultural Knowledge Base (Supabase Postgres) ──
+THOTH_SUPABASE_URL=postgresql://user:pass@host:5432/db   # vector_db RAG + CKB (enrich/pulse)
+THOTH_EMBED_API_KEY=               # kosong = pakai novita key
 
-# Ingest
-FFMPEG_PATH=C:/tools/ffmpeg.exe   # opsional, override auto-download
+# ── TTS (suara narator/reaksi) ──
+THOTH_ELEVENLABS_API_KEY=          # default TTS (eleven_multilingual_v2)
+THOTH_MINIMAX_API_KEY= / THOTH_MINIMAX_GROUP_ID= / THOTH_FISH_AUDIO_API_KEY=
+
+# ── News + avatar (opsional) ──
+THOTH_SERPER_API_KEY=              # news search (kalau provider serper)
+THOTH_DID_API_KEY= / THOTH_HEYGEN_API_KEY=
+
+# ── Tooling / override ──
+FFMPEG_PATH=C:/.../ffmpeg.exe      # opsional (default auto-download / ffmpeg.exe lokal)
+THOTH_PYTHON=python                # interpreter untuk renderer Pillow/cover
+THOTH_WHISPER_LANGUAGE=id          # paksa bahasa transcribe (opsional)
 ```
+
+**Knob model OpenClaw (opsional, default sudah bagus — lihat [docs/MODELS.md](docs/MODELS.md)):**
+`THOTH_LLM_MODEL`, `THOTH_CONTEXT_MODEL`, `THOTH_VISION_MODEL`, `THOTH_EMBED_MODEL`,
+`THOTH_GROUND=0` (matikan web-grounding), `THOTH_CKB_*` (TTL cache).
+
+> **OpenClaw pakai FILE kunci, bukan `.env`.** Di `~/.openclaw/workspace`: `.novita_key` (wajib),
+> `.groq_key` (opsional), dan untuk CKB Supabase: `.supabase_url` (atau env `CLIPPER_SUPABASE_URL`) +
+> `npm install pg`. Detail: [openclaw/README.md](openclaw/README.md).
+
+> 🔐 **Jangan commit** `.env`, `.novita_key`, `.groq_key`, `.supabase_url`, `config.toml`, atau cookie.
+> Semua sudah di `.gitignore`.
 
 ---
 

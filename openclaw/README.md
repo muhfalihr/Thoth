@@ -32,7 +32,9 @@ via `thoth run --content <set.json>`.
 | `threads_video.js` | Ekstrak `<video>.src` fbcdn dari post Threads. |
 | `crop_post.js` | Crop post X/IG/FB/Threads pixel-perfect dari DOM (quoted-tweet disembunyikan). |
 | `resolve_source.js` | LLM: tentukan SUMBER ASLI video repost dari deskripsi/caption/headline. |
-| `footage_objects.js` | LLM: ekstrak OBJEK VISUAL (query b-roll) dari teks postingan. |
+| `footage_objects.js` | LLM: ekstrak SUBJECT/OBJECT/PEOPLE (query b-roll majemuk) dari teks + komentar. |
+| `web_grounding.js` | Headline Google News (CDP, text-only) → status entitas TERKINI. Dipakai `enrich_context`. |
+| `ckb.js` | Cultural Knowledge Base: cache referensi/meme + pulse di **Supabase** (fallback lokal `ckb.json`). Butuh `npm install pg` + URL Supabase. |
 
 ### Langkah pipeline (dipanggil orkestrator, bisa juga manual)
 
@@ -42,6 +44,7 @@ via `thoth run --content <set.json>`.
 | `build_footage.js` | Footage dari OBJEK cerita (per objek: video+post, di-gate relevansi) + reel relevan dari profil creator + story-gate embedding. |
 | `extract_figures.js` | LLM: tokoh/organisasi subjek cerita → `figures[]`. |
 | `collect_comments.js` | Komentar multi-sumber (main + footage + `--extra`), dedupe, sort likes, cap. **Krusial untuk narasi.** |
+| `enrich_context.js` | LLM: decode subteks komentar → `references` (entitas/meme/slang) + `comments[].context` + `discourse` (sikap audiens). +web-grounding status terkini +cache CKB. Bikin narasi paham sarkasme & tak menyalahkan netizen. |
 | `enrich_image_paths.js` | Crop post non-video → `image_path` + gate relevansi. |
 | `search_news.js` | Google News/chart kurs → kartu image news ke `footage[]`. |
 | `topic_to_urls.js` / `urls_to_contentset.js` | Search topik-string lintas platform → content-set dasar (jalur sekunder). |
@@ -55,7 +58,8 @@ via `thoth run --content <set.json>`.
 |---|---|
 | **`discover_reels.js`** | **Discovery topik utama.** Scan akun IG terkurasi (`ig_accounts.json`) → **reels (`/reel/`) DAN feed post (`/p/`)** (`--include`, default keduanya) → baca topik dari **HOOK on-screen / cover image (vision)** / **voiceover (Whisper, video saja)** — BUKAN caption — + filter recency `--hours`. Tambah `--tiktok` untuk menyertakan **trending topics TikTok Studio** (lihat di bawah) sebagai pool seed terpisah. |
 | `discover_tiktok_trending.js` | **Trending TikTok Studio.** Scrape ranking topik viral resmi TikTok dari `Inspiration → Trending` (judul topik + total views), **default region Indonesia** (auto-pilih dari dropdown; `--region` untuk ganti, `--region all` = semua). Standalone (`output/tiktok_trending.json`) atau dipanggil oleh `discover_reels --tiktok`. Butuh tab **tiktok.com login**. |
-| **`run_pipeline.js`** | **Orkestrator utama.** Satu URL reel/post → content-set LENGKAP: seed → trace_source → build_footage → extract_figures → collect_comments → validate. |
+| **`run_pipeline.js`** | **Orkestrator utama.** Satu URL reel/post → content-set LENGKAP: seed → trace_source → collect_comments → build_footage → extract_figures → enrich_context → validate. |
+| `pulse_harvest.js` | **Cultural Pulse (cron harian).** Scrape komentar feed trending → distilasi tren diskursus + register gaya bahasa → CKB `ckb_pulse` (recency-decay). `--max`/`--per-video`/`--min-freq`. |
 | `discover_topics.js` | Discovery sekunder: trending X/YouTube + mode `instagram` berbasis caption (cepat tapi sinyal lemah — caption sering nama lagu). |
 | `vision_crop.js` | Fallback terakhir crop post dari screenshot manual (kalau CDP tak bisa). |
 | `test_narration.js` | A/B prompt narasi antar model TANPA full run Thoth. |
