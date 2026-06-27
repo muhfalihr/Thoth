@@ -230,8 +230,14 @@ Tak dikenal versi lama → diabaikan (forward-compat, sesuai kontrak yang ada di
 > threshold anti-noise benar). Cron harian = jalankan `node pulse_harvest.js` (setelah discover_reels).
 > CATATAN: pakai sumber komentar (discourse), bukan view-index — sesuai kehendak user.
 
-**Fase 4 — Voice/register adaptation.** Dari pulse, ekstrak register/gaya bahasa terkini → panduan
-nada narator (tetap: gaya, bukan jiplak). Tie ke Style Profiles (BLUEPRINT Priority 1).
+**Fase 4 — Voice/register adaptation.** ✅ SELESAI 2026-06-27 (versi lean & aman)
+> `pulse_harvest` distil juga keluarkan `register` (5-8 frasa/interjeksi/gaya kasual yang lagi dipakai
+> warganet — NADA, bukan topik) → `ckb.setRegister` (1 baris di `ckb_memes`, "latest known", difilter
+> profanity). `enrich_context.getRegister` menyuntik sebagai **flavor OPSIONAL** ke
+> `discourse.narration_guidance` ("pakai bila pas, JANGAN dipaksakan") — TANPA perubahan Rust/build
+> (reuse field yang sudah ada). Sengaja konservatif: voice narator inti tetap dari SYSTEM prompt
+> (gossip/rage-bait), register cuma penyegar diksi. Verified: register ter-harvest + tampil di guidance.
+> CATATAN: Style Profiles (BLUEPRINT Priority 1) belum ada, jadi tie-in itu ditunda sampai fitur itu dibuat.
 
 ---
 

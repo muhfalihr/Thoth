@@ -56,30 +56,37 @@ function scrapeComments(url) {
   return comments.map(c => (c.text || '').trim()).filter(Boolean);
 }
 
-// Distil recurring cultural terms from the whole harvested corpus (one LLM call).
+// Distil recurring cultural terms + a current-register snapshot from the corpus (one LLM call).
+// Returns { terms:[{term,kind}], register:[phrasing,...] }.
 async function distil(corpus) {
-  if (!KEY || !corpus.trim()) return [];
-  const prompt = `Dari KUMPULAN KOMENTAR lintas banyak video trending Indonesia di bawah, ekstrak ISTILAH
-yang SEDANG RAMAI / berulang: meme, kata kode/satir (mis. "konoha"), nama tokoh/brand yang ramai
-dibahas, frasa/jargon viral. Fokus yang DISTINKTIF & berulang, abaikan kata umum. Tiap item:
-{"term","kind":"person|org|event|meme|slang|phrase"}. Maks 20.
+  const empty = { terms: [], register: [] };
+  if (!KEY || !corpus.trim()) return empty;
+  const prompt = `Dari KUMPULAN KOMENTAR lintas banyak video trending Indonesia di bawah:
+1. terms: ISTILAH yang SEDANG RAMAI / berulang — meme, kata kode/satir (mis. "konoha"), nama
+   tokoh/brand yang ramai dibahas, jargon viral. DISTINKTIF & berulang, abaikan kata umum. Maks 20.
+   Tiap item {"term","kind":"person|org|event|meme|slang|phrase"}.
+2. register: 5-8 FRASA/INTERJEKSI/GAYA BAHASA kasual yang lagi sering dipakai warganet (mis. cara
+   buka kalimat, slang seru, pola ekspresi) — BUKAN topik, tapi NADA/diksi. Array string pendek.
 
 KOMENTAR:
 ${corpus.slice(0, 6000)}
 
-Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}]}`;
+Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}],"register":[""]}`;
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
       body: JSON.stringify({ model: MODEL, max_tokens: 1000, temperature: 0.2, messages: [{ role: 'user', content: prompt }] }),
     });
-    if (!resp.ok) return [];
+    if (!resp.ok) return empty;
     const d = await resp.json();
     const txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
-    const m = txt.match(/\{[\s\S]*\}/); if (!m) return [];
+    const m = txt.match(/\{[\s\S]*\}/); if (!m) return empty;
     const o = JSON.parse(m[0]);
-    return (Array.isArray(o.terms) ? o.terms : []).map(t => ({ term: String(t.term || '').trim(), kind: String(t.kind || '').trim().toLowerCase() })).filter(t => t.term);
-  } catch (e) { return []; }
+    return {
+      terms: (Array.isArray(o.terms) ? o.terms : []).map(t => ({ term: String(t.term || '').trim(), kind: String(t.kind || '').trim().toLowerCase() })).filter(t => t.term),
+      register: (Array.isArray(o.register) ? o.register : []).map(s => String(s).trim()).filter(Boolean).slice(0, 10),
+    };
+  } catch (e) { return empty; }
 }
 
 (async () => {
@@ -100,8 +107,8 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}]}`;
   }
 
   const corpus = perVideo.map(v => v.text).join('\n');
-  const terms = await distil(corpus);
-  console.log(`Distilasi: ${terms.length} kandidat istilah`);
+  const { terms, register } = await distil(corpus);
+  console.log(`Distilasi: ${terms.length} kandidat istilah, ${register.length} frasa register`);
 
   // Frequency = # of videos whose corpus contains the term (recurring across content = trending).
   const KB = await ckb.load();
@@ -113,6 +120,7 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}]}`;
     ckb.bumpPulse(KB, t.term, t.kind, hits.length, hits.map(h => h.url));
     kept++;
   }
+  if (register.length) ckb.setRegister(KB, register);
   ckb.prunePulse(KB, TTL_DAYS);
   await ckb.save(KB);
 

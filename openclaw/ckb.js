@@ -123,6 +123,22 @@ function topPulse(KB, n = 10) {
     .sort((a, b) => b.score - a.score).slice(0, n);
 }
 
+// ── Fase 4: register snapshot — current casual phrasings/interjections, refreshed each harvest.
+// Stored as a single magic row in the memes bucket (no extra table); always "latest known" (no TTL).
+const REGISTER_KEY = '__register__';
+// The narrator forbids profanity — don't feed it in as "style".
+const PROFANITY_RE = /\b(anjing|anjir|anjay|anying|bangsat|bgst|goblok|tolol|kontol|memek|ngentot|tai|bajingan|jancok|asu)\b/i;
+function setRegister(KB, phrasings) {
+  const list = (phrasings || []).map(p => String(p).trim()).filter(p => p && !PROFANITY_RE.test(p)).slice(0, 10);
+  if (!list.length) return;
+  KB.memes[REGISTER_KEY] = { term: REGISTER_KEY, kind: 'register', summary: list.join(' | '), as_of_date: '', source_url: '', ts: Date.now() };
+  KB._dirty.memes.add(REGISTER_KEY);
+}
+function getRegister(KB) {
+  const e = KB.memes[REGISTER_KEY];
+  return e && e.summary ? e.summary.split(' | ').map(s => s.trim()).filter(Boolean) : [];
+}
+
 function saveLocal(KB) {
   try { fs.writeFileSync(LOCAL_PATH, JSON.stringify({ entities: KB.entities, memes: KB.memes, pulse: KB.pulse }, null, 2), 'utf8'); } catch (e) {}
 }
@@ -154,4 +170,4 @@ async function save(KB) {
   finally { try { await c.end(); } catch (_) {} }
 }
 
-module.exports = { load, save, get, put, norm, bumpPulse, prunePulse, topPulse, supabaseUrl };
+module.exports = { load, save, get, put, norm, bumpPulse, prunePulse, topPulse, setRegister, getRegister, supabaseUrl };

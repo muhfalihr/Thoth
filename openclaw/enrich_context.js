@@ -150,6 +150,15 @@ async function enrich(set) {
   const trends = ckb.topPulse(KB, 8).map(p => p.term);
   if (trends.length) set.discourse.trends = trends;
 
+  // Fase 4: current register/voice snapshot → optional flavor in narration_guidance (no forcing).
+  const reg = ckb.getRegister(KB);
+  if (reg.length) {
+    const note = `Gaya bahasa yang lagi hidup (OPSIONAL, pakai bila pas, JANGAN dipaksakan): ${reg.join(', ')}`;
+    set.discourse = set.discourse || {};
+    set.discourse.narration_guidance = set.discourse.narration_guidance
+      ? `${set.discourse.narration_guidance} | ${note}` : note;
+  }
+
   console.log(`  ✅ ${refs.length} ref, ${tagged} komentar di-decode, stance="${(set.discourse.audience_stance || '').slice(0, 60)}"`);
   return true;
 }
