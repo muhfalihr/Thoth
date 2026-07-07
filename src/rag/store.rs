@@ -44,7 +44,7 @@ impl SimilarMoment {
 }
 
 /// A proven narration STRUCTURE retrieved from `narration_structures` (built by
-/// `scripts/analyze_narration_structure.py`). Used as a reference exemplar so the
+/// `scripts/narration/analyze_narration_structure.py`). Used as a reference exemplar so the
 /// narrator LLM can copy arcs/hooks/lessons that worked.
 #[derive(Debug, Clone)]
 pub struct NarrationRef {

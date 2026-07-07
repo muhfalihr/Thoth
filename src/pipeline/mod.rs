@@ -4,8 +4,10 @@ pub mod state;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use futures_util::stream::{self, StreamExt};
 use tracing::{info, warn};
-use crate::util::progress::stage_header;
+use crate::util::progress::{stage_header, elapsed_secs};
+use crate::brand;
 use uuid::Uuid;
 
 use crate::analyze::AnalyzeService;
@@ -178,16 +180,25 @@ impl<'a> PipelineRunner<'a> {
         let edit = state.stages.edit.as_ref().unwrap();
         let paths: Vec<_> = edit.output_clips.iter().map(|c| c.path.clone()).collect();
 
-        eprintln!("\n  ╔══════════════════════════════════════════════════╗");
-        eprintln!("  ║  Pipeline complete  —  {} clip(s) ready              ║", paths.len());
-        eprintln!("  ╚══════════════════════════════════════════════════╝");
-        for (i, clip) in edit.output_clips.iter().enumerate() {
+        let p = brand::p();
+        eprintln!(
+            "\n  {}{}{}  {}done{} {}{}{} {}{} clip(s){} {}{}{} {}{:.1}s{}",
+            p.gold, brand::FEATHER, p.reset,
+            p.gold, p.reset,
+            p.dim, brand::DOT, p.reset,
+            p.violet, paths.len(), p.reset,
+            p.dim, brand::DOT, p.reset,
+            p.gold, elapsed_secs(), p.reset,
+        );
+        for clip in &edit.output_clips {
             eprintln!(
-                "  [{}] \"{}\"  ({:.0}s)  →  {}",
-                i + 1,
+                "  {}{}{} {}{}{} \"{}\"  {}({:.0}s){}  {}→{}  {}",
+                p.violet, brand::SPINE, p.reset,
+                p.gold, brand::OK, p.reset,
                 clip.title,
-                clip.duration_secs,
-                clip.path.display()
+                p.dim, clip.duration_secs, p.reset,
+                p.dim, p.reset,
+                clip.path.display(),
             );
         }
         eprintln!();
@@ -214,7 +225,7 @@ impl<'a> PipelineRunner<'a> {
             .segments.iter().map(|s| s.text.as_str())
             .collect::<Vec<_>>().join(" ");
 
-        // Build the narration SOURCE from every real story signal OpenClaw gives
+        // Build the narration SOURCE from every real story signal scout gives
         // us — not the spoken audio alone. Raw b-roll (e.g. a 29s arrest clip) has a
         // near-empty transcript, so the title + platform caption + top viral
         // comments carry the actual topic; feeding only the transcript made the LLM
@@ -230,7 +241,7 @@ impl<'a> PipelineRunner<'a> {
             if !ctx.description.trim().is_empty() {
                 sources.push(format!("[Deskripsi]\n{}", ctx.description.trim()));
             }
-            // The real subject(s) — person/org/community OpenClaw identified. Naming them
+            // The real subject(s) — person/org/community scout identified. Naming them
             // explicitly stops the narrator inventing or mislabelling who the story is about.
             if !ctx.figures.is_empty() {
                 let lines: Vec<String> = ctx.figures.iter()
@@ -349,7 +360,7 @@ impl<'a> PipelineRunner<'a> {
 
         if sources.is_empty() {
             anyhow::bail!(
-                "no narration source: empty transcript and no OpenClaw title/description/comments"
+                "no narration source: empty transcript and no scout title/description/comments"
             );
         }
         let source_text = sources.join("\n\n");
@@ -403,13 +414,13 @@ impl<'a> PipelineRunner<'a> {
         // Persist the hook line so the edit can use it for the 0–3s headline.
         let _ = std::fs::write(job.narration_dir().join("hook.txt"), &narr.hook);
         // Persist the full narration script so the structure verifier
-        // (scripts/verify_narration_structure.py) can check it against the corpus.
+        // (scripts/narration/verify_narration_structure.py) can check it against the corpus.
         let _ = std::fs::write(job.narration_dir().join("narration.txt"), &narr.text);
         Ok(())
     }
 
     /// Retrieve proven narration structures from the `narration_structures` Supabase
-    /// table (built by `scripts/analyze_narration_structure.py`) most similar to this
+    /// table (built by `scripts/narration/analyze_narration_structure.py`) most similar to this
     /// video's context, and format them as a reference block for the narrator prompt.
     ///
     /// Gated on `[narration] structure_rag` + a configured `THOTH_SUPABASE_URL` +
@@ -492,43 +503,66 @@ impl<'a> PipelineRunner<'a> {
 
         if candidates.is_empty() { return Vec::new(); }
 
-        let ytdlp = &self.config.ingest.ytdlp_path;
-        let tmp = base_dir.join(".narr_subs");
-        let _ = std::fs::create_dir_all(&tmp);
-        let mut texts: Vec<String> = Vec::new();
+        let ytdlp = self.config.ingest.ytdlp_path.clone();
+        let tmp_root = base_dir.join(".narr_subs");
+        let _ = std::fs::create_dir_all(&tmp_root);
 
-        for cand in candidates {
-            let out_tmpl = tmp.join("%(id)s.%(ext)s");
-            let mut cmd = tokio::process::Command::new(ytdlp);
-            cmd.args([
-                "--skip-download", "--write-auto-sub",
-                "--sub-lang", "id-orig,id,en",
-                "--sub-format", "vtt",
-                "--ignore-errors", "--quiet",
-                "-o", &out_tmpl.to_string_lossy(),
-                &cand.url,
-            ]);
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(15),
-                cmd.output(),
-            ).await;
+        // Konkuren berbatas: 4 yt-dlp subs paralel (cap aman vs platform rate-limit).
+        // Tiap kandidat mendapat sub-dir sendiri (tmp_root/<id>) → tidak ada tabrakan file.
+        let results: Vec<Option<String>> = stream::iter(candidates.into_iter().cloned())
+            .map(|cand| {
+                let ytdlp = ytdlp.clone();
+                let tmp_root = tmp_root.clone();
+                async move {
+                    // Sub-dir unik per video → tidak ada tabrakan file
+                    let sub_dir = tmp_root.join(&cand.url
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '_')
+                        .take(24)
+                        .collect::<String>());
+                    let _ = std::fs::create_dir_all(&sub_dir);
+                    let out_tmpl = sub_dir.join("%(id)s.%(ext)s");
 
-            // Parse the downloaded VTT → plain text
-            if let Some(text) = Self::parse_vtt_dir(&tmp) {
-                if !text.trim().is_empty() {
-                    let label = if !cand.title.is_empty() {
-                        format!("[{}]\n{}", cand.title.chars().take(60).collect::<String>(), text)
-                    } else { text };
-                    texts.push(label);
-                    tracing::debug!("enrichment sub: {} chars from {}", texts.last().unwrap().len(), cand.url);
+                    let mut cmd = tokio::process::Command::new(&ytdlp);
+                    cmd.args([
+                        "--skip-download", "--write-auto-sub",
+                        "--sub-lang", "id-orig,id,en",
+                        "--sub-format", "vtt",
+                        "--ignore-errors", "--quiet",
+                        "-o", &out_tmpl.to_string_lossy().to_string(),
+                        &cand.url,
+                    ]);
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        cmd.output(),
+                    ).await;
+
+                    // Parse VTT → plain text
+                    let result = Self::parse_vtt_dir(&sub_dir).map(|text| {
+                        if !text.trim().is_empty() {
+                            let label = if !cand.title.is_empty() {
+                                format!("[{}]\n{}", cand.title.chars().take(60).collect::<String>(), text)
+                            } else {
+                                text
+                            };
+                            tracing::debug!("enrichment sub: {} chars from {}", label.len(), cand.url);
+                            Some(label)
+                        } else {
+                            None
+                        }
+                    }).flatten();
+
+                    // Bersihkan sub-dir video ini
+                    let _ = std::fs::remove_dir_all(&sub_dir);
+                    result
                 }
-            }
-            // Clean up vtt files after each video
-            let _ = std::fs::read_dir(&tmp).map(|rd| {
-                for e in rd.flatten() { let _ = std::fs::remove_file(e.path()); }
-            });
-        }
-        let _ = std::fs::remove_dir(&tmp);
+            })
+            .buffer_unordered(4)
+            .collect()
+            .await;
+
+        let _ = std::fs::remove_dir_all(&tmp_root);
+        let texts: Vec<String> = results.into_iter().flatten().collect();
         texts
     }
 

@@ -110,12 +110,17 @@ async fn generate_script(
             bikin dahi berkerut. Contoh pola: \"Ada N hal [tokoh] yang bikin geleng-geleng:\", \
             \"Bisa-bisanya [tokoh] ngaku [hal gila]\", \"Niatnya X eh malah Y\". \
             Jangan buka dengan sapaan 'Gais' atau 'Halo'.\n\
-         2. ISI: Ceritakan dengan gaya SINIS + HERAN, bukan empati. Dari komentar, PILIH HANYA 1-2 \
-            yang BENAR-BENAR lucu/nyeleneh/kontroversial — PARAFRASE jadi kalimat sendiri yang natural \
-            (kutip singkat HANYA kalau punchy). ABAIKAN komentar RECEH/random: keluhan badan \
-            ('paha gatel', 'pegel'), pujian umum ('keren','sehat','semangat'), emoji-doang, atau yang \
-            gak nambah cerita. JANGAN dump banyak komentar mentah-mentah. Reaksi heran singkat & \
-            VARIASIKAN tiap kali. Campur kalimat pendek & sedang biar NGALIR natural, bukan patah-patah.\n\
+         2. ISI (DUA LAPIS — TOPIK UTAMA > komentar; porsi cerita didominasi kasusnya, bukan komentar):\n\
+            a. INTI KASUS DULU & PORSI TERBESAR: ceritakan APA yang sebenarnya terjadi dari \
+               [Judul]+[Deskripsi]+[Tokoh]+[Deskripsi Visual]+[Analisa Momen] — tokoh, kronologi, \
+               lokasi, angka/fakta kunci. Bangun dulu kasusnya sampai penonton paham duduk perkaranya. \
+               Gaya SINIS + HERAN (bukan empati, bukan bahasa berita formal).\n\
+            b. REAKSI NETIZEN = PELENGKAP (bukan tulang punggung): SETELAH fakta jelas, bumbui HANYA \
+               1-2 komentar paling nyeleneh/kontroversial — PARAFRASE jadi kalimat sendiri yang natural \
+               (kutip singkat HANYA kalau punchy). ABAIKAN komentar receh: keluhan badan ('paha gatel',\
+               'pegel'), pujian umum ('keren','sehat','semangat'), emoji-doang. JANGAN dump komentar \
+               mentah-mentah & JANGAN biarkan komentar mendominasi narasi.\n\
+            Campur kalimat pendek & sedang biar NGALIR natural. Tiap kalimat menambah info BARU.\n\
          3. PENUTUP: Tutup dengan satu pertanyaan tajam yang SPESIFIK ke kasus ini (sebut detail/\
             tokoh/angka-nya) yang memancing debat — BUKAN template generik yang bisa ditempel di \
             video mana pun. Boleh juga tutup dengan satu komentar heran pendek yang nyangkut ke \
