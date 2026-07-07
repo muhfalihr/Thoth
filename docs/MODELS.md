@@ -43,27 +43,31 @@ Tersimpan di `[llm]` (aktif hanya yang dipilih `default_provider`):
 
 ---
 
-## 2. scout (content sourcing, JavaScript) — diatur via **env var**
+## 2. scout (content sourcing, TypeScript) — diatur via **env var**
 
-scout berjalan langsung dari folder `scout/` dan memakai **file kunci** `.novita_key`
-(bukan `.env`). Model di-override lewat env; default tertanam di script.
+scout berjalan via `node scout/cli.ts <cmd>` (full TypeScript, native Node ≥24 type
+stripping). Semua secret — termasuk `THOTH_NOVITA_API_KEY`/`THOTH_SUPABASE_URL` —
+hidup di **satu `.env` root** lewat `scout/lib/env.ts`. File kunci lama per-folder
+(`.novita_key`/`.groq_key`/`.supabase_url`) **TIDAK dibaca lagi**. Model di-override
+lewat env; default tertanam di script.
 
 | Script | Env override | Default | Tugas |
 |---|---|---|---|
-| `footage_objects.js` | `THOTH_LLM_MODEL` | `deepseek/deepseek-v3.1` | ekstrak subject/object (teks) |
-| `extract_figures.js` | `THOTH_LLM_MODEL` | `deepseek/deepseek-v3.1` | ekstrak tokoh (teks) |
-| `enrich_context.js` | `THOTH_CONTEXT_MODEL` | `deepseek/deepseek-v3.1` | decode subteks komentar (teks) |
-| `pulse_harvest.js` | `THOTH_CONTEXT_MODEL` | `deepseek/deepseek-v3.1` | distilasi tren diskursus (teks) |
-| `resolve_source.js` | `THOTH_LLM_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | tentukan sumber asli |
-| `vision_crop.js` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | bounding-box crop (vision) |
-| `trace_source.js` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | vision |
-| `discover_reels.js` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | baca headline cover |
-| `comments.js` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | vision |
-| `embed.js` | `THOTH_EMBED_MODEL` | `qwen/qwen3-embedding-8b` | embedding (CKB/RAG) |
-| `web_grounding.js` | — | — (scrape Google News, tanpa LLM) | status entitas terkini |
+| `lib/footage_objects.ts` | `THOTH_LLM_MODEL` | `deepseek/deepseek-v3.1` | ekstrak subject/object (teks) |
+| `pipeline/extract_figures.ts` | `THOTH_LLM_MODEL` | `deepseek/deepseek-v3.1` | ekstrak tokoh (teks) |
+| `enrich/enrich_context.ts` | `THOTH_CONTEXT_MODEL` | `deepseek/deepseek-v3.1` | decode subteks komentar (teks) |
+| `enrich/pulse_harvest.ts` | `THOTH_CONTEXT_MODEL` | `deepseek/deepseek-v3.1` | distilasi tren diskursus (teks) |
+| `pipeline/resolve_source.ts` | `THOTH_LLM_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | tentukan sumber asli |
+| `scrapers/vision_crop.ts` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | bounding-box crop (vision) — **fallback terakhir saja**; crop utama kini `scrapers/crop_post.ts` (DOM pixel-perfect, tanpa LLM) |
+| `pipeline/trace_source.ts` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | vision |
+| `pipeline/discover_reels.ts` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | baca headline cover |
+| `lib/comments.ts` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | vision |
+| `lib/embed.ts` | `THOTH_EMBED_MODEL` | `qwen/qwen3-embedding-8b` | embedding (CKB/RAG) |
+| `enrich/web_grounding.ts` | — | — (scrape Google News, tanpa LLM) | status entitas terkini |
+| `scrapers/crop_post.ts` | — | — (DOM crop via CDP, tanpa LLM) | crop kartu postingan non-video (X/IG/FB) — jalur utama |
 
-> CKB (`ckb.js`) menyimpan ke **Supabase Postgres** — bukan model, tapi butuh `npm install pg` +
-> URL (`THOTH_SUPABASE_URL`/file `.supabase_url`). Lihat
+> CKB (`enrich/ckb.ts`) menyimpan ke **Supabase Postgres** — bukan model, tapi butuh `npm install pg` +
+> `THOTH_SUPABASE_URL` di `.env` root. Lihat
 > [scout/README.md](../scout/README.md).
 
 ---
@@ -72,9 +76,9 @@ scout berjalan langsung dari folder `scout/` dan memakai **file kunci** `.novita
 
 | Script | Model | Catatan |
 |---|---|---|
-| `annotate_assets.py` | Novita vision `qwen/qwen3-vl-235b-a22b-instruct` **atau** OpenRouter `google/gemini-2.5-flash` (`--backend`) | anotasi SFX/meme/font |
-| `analyze_narration_structure.py` | LLM via **Groq** + embedding `qwen/qwen3-embedding-8b` | isi korpus `narration_structures` (RAG) |
-| `render_cover.py` | FLUX.1 schnell + merge-face + chat/vision dari spec | dipanggil stage cover |
+| `scripts/media/annotate_assets.py` | Novita vision `qwen/qwen3-vl-235b-a22b-instruct` **atau** OpenRouter `google/gemini-2.5-flash` (`--backend`) | anotasi SFX/meme/font |
+| `scripts/narration/analyze_narration_structure.py` | LLM via **Novita** (`qwen/qwen-2.5-72b-instruct` default, ikut `[llm] novita_model` bila di-set) + embedding `qwen/qwen3-embedding-8b`. Groq (`THOTH_GROQ_API_KEY`) hanya dipakai untuk fallback transkripsi Whisper, bukan analisis struktur | isi korpus `narration_structures` (RAG) |
+| `scripts/render/render_cover.py` | FLUX.1 schnell + merge-face + chat/vision dari spec | dipanggil stage cover |
 
 ---
 
