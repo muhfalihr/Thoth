@@ -10,7 +10,7 @@
 
 > *Dinamai dari **Thoth**, dewa Mesir berkepala ibis — penjaga tulisan, kebijaksanaan, dan juru bicara para dewa. Sebuah tool yang **menulis, menarasikan, dan menyebarkan** cerita.*
 
-**Thoth** adalah CLI tool berbasis Rust yang mengotomasi pembuatan video short-form (TikTok, Reels, Shorts) dari konten long-form **atau** dari content-set hasil sourcing multi-platform (OpenClaw). Pipeline end-to-end: download → transkripsi → analisis AI → enrichment (narator/berita) → edit video dengan GPU acceleration. Mendukung dua mode: **clip-mode** (potong momen viral dari satu video) dan **narrator-driven** (satu naskah komentator jadi tulang punggung, b-roll + kartu reaksi-berita dirakit mengelilinginya).
+**Thoth** adalah CLI tool berbasis Rust yang mengotomasi pembuatan video short-form (TikTok, Reels, Shorts) dari konten long-form **atau** dari content-set hasil sourcing multi-platform (layer `scout/`). Pipeline end-to-end: download → transkripsi → analisis AI → enrichment (narator/berita) → edit video dengan GPU acceleration. Mendukung dua mode: **clip-mode** (potong momen viral dari satu video) dan **narrator-driven** (satu naskah komentator jadi tulang punggung, b-roll + kartu reaksi-berita dirakit mengelilinginya).
 
 > 📦 **Baru pertama kali setup?** Ikuti **[SETUP.md](SETUP.md)** — panduan lengkap dari prerequisite, toolchain, API key, sampai run pertama (jalur Lite/API & Full/GPU).
 
@@ -21,8 +21,8 @@
 | **[docs/MODELS.md](docs/MODELS.md)** | Semua model AI yang dipakai (per-stage) + cara ganti + rekomendasi |
 | **[config.toml.example](config.toml.example)** | Referensi lengkap semua opsi `config.toml` (berkomentar) |
 | **[.env.example](.env.example)** | Template semua environment variable / API key |
-| **[openclaw/README.md](openclaw/README.md)** | Content sourcing (OpenClaw/Ella): discovery, content-set, CKB, enrichment |
-| **[openclaw/SETUP.md](openclaw/SETUP.md)** · **[openclaw/RUNBOOK.md](openclaw/RUNBOOK.md)** | Setup & operasi harian OpenClaw |
+| **[scout/README.md](scout/README.md)** | Content sourcing (layer `scout/`): discovery, content-set, CKB, enrichment |
+| **[scout/SETUP.md](scout/SETUP.md)** · **[scout/RUNBOOK.md](scout/RUNBOOK.md)** | Setup & operasi harian scout |
 | **[CHANGELOG.md](CHANGELOG.md)** · **[BLUEPRINT.md](BLUEPRINT.md)** | Riwayat perubahan · blueprint arsitektur & status fitur |
 
 ---
@@ -30,7 +30,7 @@
 ## Arsitektur Pipeline
 
 ```
-URL / File / --content set.json (OpenClaw: main + footage + comments + figures)
+URL / File / --content set.json (scout: main + footage + comments + figures)
     │
     ▼ Stage 1: INGEST
     yt-dlp → video.mp4 + metadata   (TikTok/IG/CDN .mp4 didukung)
@@ -45,7 +45,7 @@ URL / File / --content set.json (OpenClaw: main + footage + comments + figures)
     │
     ▼ Stage 4: ENRICH  (opt-in)
     Narrator-driven: 1 naskah LLM → TTS voiceover (spine) + RAG struktur narasi
-    Cultural context (OpenClaw): enrich_context → references/discourse + web-grounding
+    Cultural context (scout): enrich_context → references/discourse + web-grounding
                                  + CKB (Supabase) — narator paham subteks komentar
     News: keyword → Google News (Playwright) → screenshot cards
     Reaction: script + TTS + avatar (opsional)
@@ -93,7 +93,7 @@ Judul raksasa scroll-stopper, dua engine:
 - Knob: `palette`, `color_mode`, `text_align`, `margin_l`, `margin_v`, `line_spacing`, `stroke_width`, `font_file`, `shadow_*`.
 
 ### Reaction-News Overlays
-Gaya konten reaksi-berita Indonesia, dirakit dari data faktual (OpenClaw):
+Gaya konten reaksi-berita Indonesia, dirakit dari data faktual (scout):
 - **Profile card** (`[profile_card]`) — kartu profil **crop asli** dari sumber sosmed (bukan sintetis)
 - **Comment cards** — screenshot **komentar viral asli** (author/text/likes) di reaction beat
 - **Callout** (`[callout]`) — angka penting + panah penunjuk
@@ -105,13 +105,13 @@ Meme reaksi (`assets/meme/`) disisipkan otomatis di mode narator:
 - **Full-screen** (`meme_fullscreen`, default) — meme tampil penuh layar (cutaway, meme utuh di atas blurred-fill) **di bawah subtitle**; audio meme nge-duck narasi.
 - Knob: `memes_in_narration`, `narration_max_memes`, `meme_fullscreen`.
 
-### Content Sourcing (OpenClaw + multi-platform)
-- **`thoth run --content set.json`** — terima content-set eksternal `{main, footage, comments, figures, profile}` hasil sourcing OpenClaw (Telegram agent), termasuk crop screenshot komentar & kartu profil.
+### Content Sourcing (scout + multi-platform)
+- **`thoth run --content set.json`** — terima content-set eksternal `{main, footage, comments, figures, profile}` hasil sourcing layer `scout/`, termasuk crop screenshot komentar & kartu profil.
 - **`[content_search]`** — cari MAIN video + pool enrichment lintas YouTube/Instagram/Twitter/News (Playwright/Scrapling) saat `--query` / auto-trending.
 
 ### Cultural Context Enrichment (mode narator)
 Agar narasi **paham subteks** komentar (sarkasme, meme, nama tokoh) dan tidak salah baca:
-- **`enrich_context.js` (OpenClaw)** — decode komentar jadi `references` (entitas/meme/slang),
+- **`enrich_context.js` (scout)** — decode komentar jadi `references` (entitas/meme/slang),
   `context` per-komentar (maksud + nada), dan `discourse` (sikap kolektif audiens) → disuntik ke
   prompt narasi sebagai blok `[Konteks Budaya]` + `[Maksud Komentar]`.
 - **Web-grounding** (`web_grounding.js`) — perbarui status entitas ke **terkini** via Google News
@@ -120,7 +120,7 @@ Agar narasi **paham subteks** komentar (sarkasme, meme, nama tokoh) dan tidak sa
 - **Cultural Pulse** (`pulse_harvest.js`, cron harian) — pelajari tren dari **komentar** video trending
   (bukan index platform) → blok `[Tren Diskursus]` + gaya bahasa kini (opsional).
 
-Detail desain & operasi: [openclaw/README.md](openclaw/README.md). Daftar model: [docs/MODELS.md](docs/MODELS.md).
+Detail desain & operasi: [scout/README.md](scout/README.md). Daftar model: [docs/MODELS.md](docs/MODELS.md).
 
 ### News Enrichment (`[news]`, opt-in)
 Keyword dari transcript per-momen → Google News (Playwright, tanpa API key) → screenshot kartu berita yang relevan disisipkan ke clip.
@@ -243,7 +243,7 @@ RevealLeft, SqueezeH, SmoothLeft
 
 ## CLI Commands
 
-> 🪶 **Thoth.** Binary `thoth`, crate `thoth::`, folder output job `.thoth/`, prefix env **`THOTH_*`**. Var env lama `CLIPPER_*` tetap dibaca otomatis (shim backward-compat di `main.rs`), jadi `.env` lama tak perlu diubah. Conda env: `thoth-news` / `thoth-sadtalker` (buat via `scripts/setup_thoth_news.bat`).
+> 🪶 **Thoth.** Binary `thoth`, crate `thoth::`, folder output job `.thoth/`, prefix env **`THOTH_*`**. Conda env: `thoth-news` / `thoth-sadtalker` (buat via `scripts/setup_thoth_news.bat`).
 
 ### `run` — Pipeline Utama
 ```bash
@@ -267,7 +267,7 @@ thoth run "https://youtu.be/xxxx" --provider claude --layout square
 | `--sfx` | — | Override SFX file (path absolut) |
 | `--bgm` | — | Override BGM file (path absolut) |
 | `--focus` | — | Keyword prioritas, comma-separated |
-| `--content FILE` | — | Content-set JSON (OpenClaw): `{main, footage, comments, figures}` → mode narrator-driven |
+| `--content FILE` | — | Content-set JSON (scout): `{main, footage, comments, figures}` → mode narrator-driven |
 | `--resume JOB_ID` | — | Lanjutkan job yang gagal |
 
 > **Narrator-driven**: jalankan dengan `--content set.json` (atau aktifkan `[narration]`) untuk membangun video di sekitar voiceover narator. Gunakan `--provider novita` untuk narasi (default `groq` kena rate-limit → fallback clip-mode).
@@ -391,7 +391,7 @@ inspirational = "inspiring-piano.mp3"
 ```toml
 [overlay]
 enabled             = true
-cache_dir           = "overlay_cache"
+cache_dir           = "footage_cache"
 max_duration        = 8.0
 fallback_to_youtube = true
 max_variants        = 3
@@ -503,12 +503,10 @@ mode = "none"                        # none | static_image | sad_talker | did | 
 ## Environment Variables (`.env`)
 
 Thoth memuat `.env` di root saat start (via `dotenvy`). Template lengkap: **[.env.example](.env.example)**.
-Prefix kanonik = **`THOTH_`**. Prefix lama **`CLIPPER_*`** masih jalan — saat start, semua `CLIPPER_*`
-otomatis di-mirror ke `THOTH_*` (`src/main.rs`), jadi `.env` lama tak perlu diubah.
 
 ```env
 # ── LLM providers (isi yang dipakai saja) ──
-THOTH_NOVITA_API_KEY=...           # default; analyze/narration/vision/embedding/cover-FLUX/OpenClaw
+THOTH_NOVITA_API_KEY=...           # default; analyze/narration/vision/embedding/cover-FLUX/scout
 THOTH_GROQ_API_KEY=gsk_...         # provider alt + Whisper API (transcribe)
 THOTH_OPENAI_API_KEY=sk-...
 THOTH_CLAUDE_API_KEY=sk-ant-...
@@ -534,13 +532,13 @@ THOTH_PYTHON=python                # interpreter untuk renderer Pillow/cover
 THOTH_WHISPER_LANGUAGE=id          # paksa bahasa transcribe (opsional)
 ```
 
-**Knob model OpenClaw (opsional, default sudah bagus — lihat [docs/MODELS.md](docs/MODELS.md)):**
+**Knob model scout (opsional, default sudah bagus — lihat [docs/MODELS.md](docs/MODELS.md)):**
 `THOTH_LLM_MODEL`, `THOTH_CONTEXT_MODEL`, `THOTH_VISION_MODEL`, `THOTH_EMBED_MODEL`,
 `THOTH_GROUND=0` (matikan web-grounding), `THOTH_CKB_*` (TTL cache).
 
-> **OpenClaw pakai FILE kunci, bukan `.env`.** Di `~/.openclaw/workspace`: `.novita_key` (wajib),
-> `.groq_key` (opsional), dan untuk CKB Supabase: `.supabase_url` (atau env `CLIPPER_SUPABASE_URL`) +
-> `npm install pg`. Detail: [openclaw/README.md](openclaw/README.md).
+> **scout pakai FILE kunci, bukan `.env`.** Di folder `scout/`: `.novita_key` (wajib),
+> `.groq_key` (opsional), dan untuk CKB Supabase: `.supabase_url` (atau env `THOTH_SUPABASE_URL`) +
+> `npm install pg`. Detail: [scout/README.md](scout/README.md).
 
 > 🔐 **Jangan commit** `.env`, `.novita_key`, `.groq_key`, `.supabase_url`, `config.toml`, atau cookie.
 > Semua sudah di `.gitignore`.

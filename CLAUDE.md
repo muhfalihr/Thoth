@@ -61,29 +61,29 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
 - Setiap fitur baru harus graceful degrade jika disabled/unavailable
 - Log level: `info!` untuk progress penting, `warn!` untuk degradasi, `debug!` untuk detail
 
-## Kontrak Content-Set dari OpenClaw (Ella)
+## Kontrak Content-Set dari scout
 
-Discovery 100% di OpenClaw. Thoth menerima **content-set JSON** via `thoth run --content set.json`
+Discovery 100% di layer **`scout/`** (script TypeScript di folder repo, jalan native via Node ≥24, dijalankan langsung — lihat
+`scout/README.md`). Thoth menerima **content-set JSON** via `thoth run --content set.json`
 (loader: `src/ingest/content_search.rs::load_content_set`). Struktur:
 `{ main: MainVideo, footage: [ContentResult], comments: [CommentInfo] }`, `main.profile` opsional.
 Semua struct pakai `#[serde(default)]` + TANPA `deny_unknown_fields` → field JSON baru aman
 (forward-compat, field tak dikenal diabaikan).
 
-**Lokasi file hand-off (konvensi OpenClaw, 2026-06-06):** semua content-set JSON + crop komentar
-ditulis OpenClaw ke folder **`~/.openclaw/workspace/output/`** (JSON) dan **`output/crops/`** (PNG),
-lewat helper `paths.js` — TIDAK lagi berserakan di root workspace. Default content-set:
-`output/thoth_content_set.json`; `comments[].image_path` menunjuk ke `output/crops/comment_*.png`
-(path absolut). `thoth run --content` menerima path absolut apa pun, jadi lokasi ini bebas — tapi
-saat membuat/membaca content-set hasil Ella, cari di `output/`, bukan root.
+**Lokasi file hand-off:** semua content-set JSON + crop komentar ditulis scout ke folder
+**`scout/output/`** (JSON) dan **`scout/output/crops/`** (PNG), lewat helper `lib/paths.ts`.
+Default content-set: `output/thoth_content_set.json`; `comments[].image_path` menunjuk ke
+`output/crops/comment_*.png` (path absolut). `thoth run --content` menerima path absolut apa pun,
+jadi lokasi ini bebas — tapi saat membuat/membaca content-set hasil scout, cari di
+`scout/output/`, bukan root.
 
 ### Field `image_path` (postingan non-video)
 
 Saat URL `main`/`footage` **bukan video** (`is_video:false` — tweet teks, foto IG, status FB,
-artikel), yt-dlp tak bisa download. **OpenClaw** lalu crop kartu postingan jadi PNG bersih →
+artikel), yt-dlp tak bisa download. **scout** lalu crop kartu postingan jadi PNG bersih →
 kirim path-nya di field **`image_path`** (path absolut lokal) pada entry itu. **Cara utama
-(2026-06-07): `crop_post.js` — crop pixel-perfect dari DOM (X/IG/FB) via CDP**, bukan vision.
-(`vision_crop.js` qwen3-vl terbukti tak andal isolasi post → fallback terakhir saja.) Prosedur di
-sisi Ella: `~/.openclaw/workspace/skills/content-sourcing/SKILL.md` ("Postingan non-video").
+(2026-06-07): `scout/scrapers/crop_post.ts` — crop pixel-perfect dari DOM (X/IG/FB) via CDP**, bukan vision.
+(`scout/scrapers/vision_crop.ts` qwen3-vl terbukti tak andal isolasi post → fallback terakhir saja.)
 
 **Status di Rust:** field ini **belum dikonsumsi** — `enrichment::is_downloadable_video` mensyaratkan
 `is_video:true`, jadi entry non-video tak masuk pool cutaway video (benar: bukan video yt-dlp).
@@ -94,8 +94,8 @@ Sampai itu ada, `image_path` cuma diparse-diam (additive, tak memengaruhi run la
 
 ### Narasi grounding: `main.description` + `comments[]` (IMPLEMENTED)
 
-Masalah lama (lihat `ANALISIS_PIPELINE_OPENCLAW_KORUPSI.md`): raw b-roll tanpa voiceover
-→ transkrip Whisper nyaris kosong ("Terima kasih.") → LLM narasi **mengarang topik ngawur**.
+Masalah lama: raw b-roll tanpa voiceover → transkrip Whisper nyaris kosong ("Terima kasih.")
+→ LLM narasi **mengarang topik ngawur**.
 
 Perbaikan: `generate_narration()` (`src/pipeline/mod.rs`) kini menyusun `source_text` dari
 **gabungan blok**, bukan transkrip saja:
@@ -106,13 +106,13 @@ layar — dari vision model `describe_video`, di-persist ke `analyze/video_descr
 `[Transkrip Audio]` (hanya jika ≥8 kata) + `[Video Terkait]` (subtitle enrichment). Prompt LLM
 (`src/narration/mod.rs`) diinstruksi **WAJIB grounding** ke blok-blok itu, dilarang mengarang
 topik di luar konteks. `[Deskripsi Visual]` + `[Analisa Momen]` lahir dari Thoth sendiri
-(stage analyze), bukan OpenClaw — jadi tetap berfungsi untuk run `--url` biasa.
+(stage analyze), bukan scout — jadi tetap berfungsi untuk run `--url` biasa.
 
 Kontrak baru:
 - **`main.description`** (`#[serde(default)]` di `MainVideo`) — caption/deskripsi asli postingan.
   Ditulis main.rs ke sidecar **`content_context.json`** (`MAIN_CONTEXT_FILE`), dibaca narasi via
-  `content_search::load_main_context`. **OpenClaw WAJIB mengisinya** (bawa topik saat audio kosong).
-- **`footage[].query`** — keyword penemu footage. OpenClaw mengisi footage = hasil search dari
+  `content_search::load_main_context`. **scout WAJIB mengisinya** (bawa topik saat audio kosong).
+- **`footage[].query`** — keyword penemu footage. scout mengisi footage = hasil search dari
   keyword penting yang diekstrak dari title+description+komentar main (footage relevan, bukan acak).
 - Empty-transcript tak lagi langsung `bail` — selama ada title/description/komentar, narasi jalan.
 
@@ -125,7 +125,7 @@ Narasi juga di-*ground* ke korpus struktur narasi terbukti. `build_narration_str
 (`src/pipeline/mod.rs`) meng-embed `source_text` lalu retrieve top-N struktur paling mirip dari
 tabel Supabase **`narration_structures`** (`rag/store.rs::retrieve_narration_structures`), format
 jadi blok "REFERENSI STRUKTUR" (arc/hook/pelajaran) yang disuntik ke prompt narator
-(`narration/mod.rs::generate_script`). Korpus diisi oleh `scripts/analyze_narration_structure.py`
+(`narration/mod.rs::generate_script`). Korpus diisi oleh `scripts/narration/analyze_narration_structure.py`
 (kirim URL referensi → beat-arc + hook_format/posture/punchline/lessons + embedding 4096-d).
 Gating: `[narration] structure_rag` (default true) + `THOTH_SUPABASE_URL` + embed valid —
 INDEPENDEN dari `[vector_db] enabled` (itu RAG momen). Degrade diam bila tak tersedia.

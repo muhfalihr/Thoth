@@ -80,8 +80,7 @@ copy .env.example .env      # lalu edit .env
 | `THOTH_SUPABASE_URL` | opsional | RAG memory (pgvector) |
 | `THOTH_MINIMAX/FISH_AUDIO/ELEVENLABS_*` | opsional | TTS narasi/reaksi |
 
-> `.env` **tidak** di-commit (sudah di `.gitignore`). Backward-compat: prefix lama `CLIPPER_*`
-> otomatis dibaca sebagai `THOTH_*`.
+> `.env` **tidak** di-commit (sudah di `.gitignore`).
 
 ---
 
@@ -142,7 +141,7 @@ Script ini set `vcvars64`, `LIBCLANG_PATH`, `CUDA_PATH`, `CMAKE_GENERATOR=Ninja`
 .\target\release\thoth.exe run --url "https://www.tiktok.com/@user/video/123" --provider novita
 ```
 
-### Content-set (hasil OpenClaw sourcing)
+### Content-set (hasil sourcing scout)
 ```powershell
 .\target\release\thoth.exe run --content "C:\path\to\content_set.json" --provider novita
 ```
@@ -154,14 +153,14 @@ Output: `output\.thoth\<job-id>\clips\*.mp4`.
 
 ---
 
-## 9. (Opsional) OpenClaw — Content Sourcing Otomatis
+## 9. (Opsional) scout — Content Sourcing Otomatis
 
-Untuk merakit content-set `{main, footage, comments, figures}` dari sosmed secara otomatis:
-- **Setup OpenClaw** (install, Node.js, node host + CDP relay 18792, pairing, key, skill, deploy
-  script): **[openclaw/SETUP.md](openclaw/SETUP.md)**.
-- **Flow harian** (discover_reels → run_pipeline → `thoth run --content`): **[openclaw/README.md](openclaw/README.md)**.
+Untuk merakit content-set `{main, footage, comments, figures}` dari sosmed secara otomatis,
+layer JS di folder **`scout/`** (Node.js + managed browser CDP standalone):
+- **Setup scout** (Node.js, managed browser port 18800, key file, tab login): **[scout/SETUP.md](scout/SETUP.md)**.
+- **Flow harian** (discover_reels → run_pipeline → `thoth run --content`): **[scout/README.md](scout/README.md)**.
 
-> OpenClaw **opsional** — Thoth tetap jalan via `thoth run --url <link>` tanpanya.
+> scout **opsional** — Thoth tetap jalan via `thoth run --url <link>` tanpanya.
 
 ---
 
@@ -178,4 +177,4 @@ Untuk merakit content-set `{main, footage, comments, figures}` dari sosmed secar
 | Narasi diam-diam jatuh ke clip-mode | Jangan pakai `--provider groq` (rate limit). Pakai `novita` (default). |
 | Video lambat / GPU tak terpakai | `[ffmpeg] nvenc = true` (butuh NVIDIA); jalur Full untuk Whisper GPU. |
 
-Lihat juga: `README.md` (fitur + config detail), `CHANGELOG.md` (riwayat), `openclaw/README.md` (sourcing).
+Lihat juga: `README.md` (fitur + config detail), `CHANGELOG.md` (riwayat), `scout/README.md` (sourcing).
