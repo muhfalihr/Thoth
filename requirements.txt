@@ -1,0 +1,28 @@
+# Python dependencies for Thoth's scripts/ tooling (news/social discovery,
+# screenshot, TTS, render, narration RAG builder). Install into whichever
+# interpreter Thoth is pointed at — conda env (see environment.yml / the
+# `conda_env` key in config.toml [content_search]/[news]) or a plain venv
+# via `THOTH_PYTHON`. Versions pinned from a known-working environment.
+#
+#   pip install -r requirements.txt
+#   playwright install chromium   # required once — downloads the browser binary
+
+# scripts/news/{news_search,news_screenshot,social_search}.py — page fetch/screenshot
+playwright==1.59.0
+scrapling==0.4.8       # optional — social_search.py falls back to Playwright if missing
+
+# scripts/tts/{tts_generate,tts_narrate}.py — voiceover synthesis
+edge-tts==7.2.8
+mutagen==1.47.0        # optional — precise MP3 duration; script degrades without it
+
+# scripts/render/{render_cover,render_headline}.py — Pillow compositing (via THOTH_PYTHON)
+pillow==12.2.0
+numpy==2.4.6            # optional — render_cover.py degrades gracefully without it
+rembg                   # optional — render_cover.py subject cutout; falls back to no-subject
+
+# shared HTTP (render_cover.py Novita calls, narration RAG builder)
+requests==2.34.2
+
+# scripts/narration/analyze_narration_structure.py — narration_structures RAG corpus builder
+psycopg2-binary          # optional — only needed when writing to Supabase
+json-repair              # optional — tolerant LLM-JSON repair; has a regex fallback
