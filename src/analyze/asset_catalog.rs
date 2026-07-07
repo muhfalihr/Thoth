@@ -1,6 +1,6 @@
 //! Annotated asset catalog loader for the analyze stage.
 //!
-//! Reads `assets/asset_catalog.json` (produced by `scripts/annotate_assets.py`)
+//! Reads `assets/asset_catalog.json` (produced by `scripts/media/annotate_assets.py`)
 //! and turns it into:
 //!   1. a compact prompt section the LLM uses to place timestamped `asset_cues`,
 //!   2. a validation set so unknown files emitted by the LLM can be dropped.

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use futures_util::stream::{self, StreamExt};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -67,7 +68,7 @@ impl<'a> AnalyzeService<'a> {
             && video_path.is_some()
             && matches!(
                 self.config.vision.provider.as_str(),
-                "gemini" | "openai" | "claude" | "vllm"
+                "gemini" | "openai" | "claude" | "vllm" | "novita" | "openrouter"
             );
         let candidate_count = if vision_active {
             (max_clips * 2).max(max_clips + 1)
@@ -368,12 +369,35 @@ impl<'a> AnalyzeService<'a> {
                 .await?
         };
 
+        let mut moments = moments;
         if moments.moments.is_empty() {
-            return Err(AnalyzeError::NoMomentsFound);
+            // A SHORT clip with no distinct "viral moment" (common for narrator-driven b-roll:
+            // a 52s news clip with a sparse transcript) is not a failure — the whole clip IS the
+            // content. Degrade to one full-span moment so narration can drive the edit, instead of
+            // killing the pipeline. Long videos with zero moments stay an error (genuine signal).
+            const WHOLE_CLIP_MAX_SEC: f64 = 180.0;
+            if duration_secs > 0.0 && duration_secs <= WHOLE_CLIP_MAX_SEC {
+                warn!(
+                    "model found no viral moments for a {:.0}s clip → using the whole clip as one moment",
+                    duration_secs
+                );
+                let title = if video_title.trim().is_empty() { "Clip" } else { video_title.trim() };
+                let whole = serde_json::json!({
+                    "title": title, "start_sec": 0.0, "end_sec": duration_secs,
+                    "reason": "whole clip (model identified no distinct moment)",
+                    "hook": "", "caption": "", "viral_type": "storytelling",
+                    "content_category": "other", "target_audience": "general",
+                    "emotional_trigger": "curiosity", "energy": "medium",
+                });
+                moments.moments.push(
+                    serde_json::from_value(whole).expect("hardcoded whole-clip moment is valid"),
+                );
+            } else {
+                return Err(AnalyzeError::NoMomentsFound);
+            }
         }
 
         // ── Drop moments that start in the intro section ──────────────────────
-        let mut moments = moments;
 
         // ── Validate asset_cues against the catalog (drop unknown files, clamp timing) ──
         if !asset_valid.is_empty() {
@@ -782,8 +806,8 @@ impl<'a> AnalyzeService<'a> {
             let mut moments = self.parse_with_retry(provider, &raw, clips_per_chunk, total_duration).await?;
             all_moments.append(&mut moments.moments);
 
-            // Small delay between chunks to be polite to rate limits
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            // ponytail: no preemptive inter-chunk sleep — the 429 handler above
+            // does reactive backoff only when a limit is actually hit.
 
             if end >= effective_end {
                 break;
@@ -871,9 +895,8 @@ impl<'a> AnalyzeService<'a> {
             "Return only valid JSON matching the schema. {max_clips} moments, 30-120s each."
         );
 
-        // Wait a beat before retrying — gives TPM window time to recover
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
+        // ponytail: retry immediately — a JSON parse failure is not a TPM problem, so
+        // a preemptive wait buys nothing; if the retry actually 429s, the arm below backs off.
         let pb = spinner("Retrying analysis (fixing JSON)…");
         let retry_raw = match provider.chat_completion_json(&retry_sys, &retry_usr).await {
             Ok(r) => r,
@@ -917,14 +940,23 @@ impl<'a> AnalyzeService<'a> {
         // frames_dir: analyze_dir/frames/  (cleaned up after scoring)
         let frames_dir = self.job.analyze_dir().join("frames");
 
-        let mut scored: Vec<(f32, ViralMoment)> = Vec::with_capacity(n);
-
-        for (idx, mut moment) in moments.drain(..).enumerate() {
+        // Score moments CONCURRENTLY (bounded). Each moment = ffmpeg extract + one vision call and
+        // is independent; `scored` is sorted by combined score below, so completion order doesn't
+        // matter. buffer_unordered caps in-flight vision calls to `concurrency` (respects the
+        // provider rate limit — unbounded fan-out would 429, which is slower than serial).
+        let concurrency = cfg.concurrency.max(1);
+        let items: Vec<(usize, ViralMoment)> = moments.drain(..).enumerate().collect();
+        let scored: Vec<(f32, ViralMoment)> = stream::iter(items)
+            .map(|(idx, mut moment)| {
+                let analyzer   = &analyzer;
+                let this       = &*self;
+                let frames_dir = &frames_dir;
+                async move {
             // Text rank score: #1 LLM pick = 1.0, last = ≈0
             let text_score = (n - idx) as f32 / n as f32;
 
             // Extract segment text from transcript (for prompt context)
-            let segment_text = self.get_transcript_window(
+            let segment_text = this.get_transcript_window(
                 transcript, moment.start_sec, moment.end_sec,
             );
 
@@ -976,8 +1008,13 @@ impl<'a> AnalyzeService<'a> {
             }
 
             moment.visual_score = vis_raw;
-            scored.push((combined, moment));
-        }
+            (combined, moment)
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+        let mut scored = scored;
 
         // Clean up all frame files
         cleanup_frames(&frames_dir);
@@ -1270,7 +1307,7 @@ async fn write_overlay_debug_log(
 
     let _ = writeln!(log);
     let _ = writeln!(log,
-        "NOTE: If cached overlays look wrong, delete the matching overlay_cache/<hash>_*.mp4 \
+        "NOTE: If cached overlays look wrong, delete the matching footage_cache/<hash>_*.mp4 \
          file and re-run. Query changes only take effect when the cache file is absent."
     );
 

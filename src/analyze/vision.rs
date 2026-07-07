@@ -18,6 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use futures_util::stream::{self, StreamExt};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{json, Value};
@@ -272,6 +273,10 @@ impl<'a> VisualAnalyzer<'a> {
             "openai" => self.call_openai(system, &user, frames).await,
             "claude" => self.call_claude(system, &user, frames).await,
             "vllm"   => self.call_vllm(system, &user, frames).await,
+            p @ ("novita" | "openrouter") => {
+                let (b, m, k) = self.oai_vision_params(p);
+                self.call_oai_vision(b, m, k, p, system, &user, frames).await
+            }
             other    => {
                 warn!("vision: provider '{}' does not support vision — skipping", other);
                 return None;
@@ -324,6 +329,10 @@ impl<'a> VisualAnalyzer<'a> {
             // For vLLM, use the describe-specific override (smaller/faster model)
             // if configured; otherwise fall back to the main vllm endpoint.
             "vllm"   => self.call_vllm_describe(system, &user, frames).await,
+            p @ ("novita" | "openrouter") => {
+                let (b, m, k) = self.oai_vision_params(p);
+                self.call_oai_vision(b, m, k, p, system, &user, frames).await
+            }
             other    => {
                 warn!("vision: provider '{}' does not support vision description", other);
                 return None;
@@ -355,6 +364,10 @@ impl<'a> VisualAnalyzer<'a> {
             "openai" => self.call_openai(system, user, frames).await,
             "claude" => self.call_claude(system, user, frames).await,
             "vllm"   => self.call_vllm_describe(system, user, frames).await,
+            p @ ("novita" | "openrouter") => {
+                let (b, m, k) = self.oai_vision_params(p);
+                self.call_oai_vision(b, m, k, p, system, user, frames).await
+            }
             other    => {
                 warn!("vision: provider '{}' does not support raw_vision_call", other);
                 return None;
@@ -364,6 +377,73 @@ impl<'a> VisualAnalyzer<'a> {
             Ok(text) if !text.trim().is_empty() => Some(text),
             Ok(_)    => { warn!("vision: raw_vision_call returned empty response"); None }
             Err(e)   => { warn!("vision: raw_vision_call error: {e}"); None }
+        }
+    }
+
+    /// Generic OpenAI-compatible vision call — used by `novita` and `openrouter`
+    /// (any `/v1/chat/completions` endpoint accepting `image_url` content parts).
+    /// `base_url` must NOT include the trailing `/v1`. Bearer-authed with `api_key`.
+    async fn call_oai_vision(
+        &self,
+        base_url: &str,
+        model:    &str,
+        api_key:  &str,
+        tag:      &str,
+        system:   &str,
+        user:     &str,
+        frames:   &[FrameData],
+    ) -> Result<String> {
+        let base = base_url.trim_end_matches('/');
+        if base.is_empty() {
+            anyhow::bail!("vision.{tag}_base_url is not set in config.toml");
+        }
+        if model.is_empty() {
+            anyhow::bail!("vision.{tag}_model is not set in config.toml");
+        }
+        if api_key.is_empty() {
+            anyhow::bail!("THOTH_{}_API_KEY is not set", tag.to_uppercase());
+        }
+        let url = format!("{base}/v1/chat/completions");
+
+        let mut content: Vec<Value> = frames.iter().map(|f| json!({
+            "type": "image_url",
+            "image_url": { "url": format!("data:image/jpeg;base64,{}", f.base64) }
+        })).collect();
+        content.push(json!({ "type": "text", "text": user }));
+
+        let body = json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user",   "content": content }
+            ],
+            "temperature": 0.1,
+            "max_tokens":  512
+        });
+
+        let resp   = self.client.post(&url).bearer_auth(api_key).json(&body).send().await?;
+        let status = resp.status();
+        let text   = resp.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("{tag} vision {status}: {text}");
+        }
+
+        let json: Value = serde_json::from_str(&text)?;
+        let msg = &json["choices"][0]["message"];
+        let out = msg["content"].as_str()
+            .or_else(|| msg["reasoning_content"].as_str())
+            .or_else(|| msg["reasoning"].as_str())
+            .unwrap_or("")
+            .to_owned();
+        Ok(out)
+    }
+
+    /// Resolve (base_url, model, api_key) for the OpenAI-compatible vision providers.
+    fn oai_vision_params(&self, provider: &str) -> (&str, &str, &str) {
+        if provider == "novita" {
+            (&self.config.novita_base_url, &self.config.novita_model, &self.llm_config.novita_api_key)
+        } else {
+            (&self.config.openrouter_base_url, &self.config.openrouter_model, &self.llm_config.openrouter_api_key)
         }
     }
 
@@ -787,36 +867,53 @@ pub async fn describe_video_frames(
     }
 
     let analyzer = VisualAnalyzer::new(config, llm_config);
-    let mut all_descriptions: Vec<VideoDescription> = Vec::new();
+    let concurrency = config.concurrency.max(1);
 
-    // Process in batches
-    for (batch_idx, chunk) in timestamps.chunks(batch_size as usize).enumerate() {
-        let batch_dir = output_dir.join(format!("desc_batch_{batch_idx:04}"));
+    // Each batch = ffmpeg frame-extract + one vision call; batches are independent and the result
+    // is sorted by timestamp below, so out-of-order completion is fine. Run them CONCURRENTLY with
+    // buffer_unordered, which caps in-flight vision calls to `concurrency` (respects provider rate
+    // limit — unbounded fan-out would 429). Each batch writes to its own desc_batch_ dir (no clash).
+    let batches: Vec<(usize, Vec<f64>)> = timestamps
+        .chunks(batch_size as usize)
+        .enumerate()
+        .map(|(i, c)| (i, c.to_vec()))
+        .collect();
 
-        // Extract one frame per timestamp in this batch (uniform 1-frame extract)
-        let mut ts_list:    Vec<f64>      = Vec::new();
-        let mut frames_data: Vec<FrameData> = Vec::new();
-        for &ts in chunk {
-            let frame_dir = batch_dir.join(format!("t{ts:.0}"));
-            let frames = extract_frames(video_path, ts, ts + 0.5, 1, frame_width, &frame_dir, None).await;
-            if let Some(f) = frames.into_iter().next() {
-                ts_list.push(ts);
-                frames_data.push(f);
+    let per_batch: Vec<Vec<VideoDescription>> = stream::iter(batches)
+        .map(|(batch_idx, chunk)| {
+            let analyzer = &analyzer;
+            async move {
+                let batch_dir = output_dir.join(format!("desc_batch_{batch_idx:04}"));
+
+                // Extract one frame per timestamp in this batch (uniform 1-frame extract)
+                let mut ts_list:    Vec<f64>      = Vec::new();
+                let mut frames_data: Vec<FrameData> = Vec::new();
+                for &ts in &chunk {
+                    let frame_dir = batch_dir.join(format!("t{ts:.0}"));
+                    let frames = extract_frames(video_path, ts, ts + 0.5, 1, frame_width, &frame_dir, None).await;
+                    if let Some(f) = frames.into_iter().next() {
+                        ts_list.push(ts);
+                        frames_data.push(f);
+                    }
+                }
+
+                if frames_data.is_empty() {
+                    return Vec::new();
+                }
+
+                // Call vision LLM to describe this batch
+                let descs = analyzer.describe_batch(&frames_data, &ts_list).await.unwrap_or_default();
+
+                // Clean up batch frames
+                cleanup_frames(&batch_dir);
+                descs
             }
-        }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
 
-        if frames_data.is_empty() {
-            continue;
-        }
-
-        // Call vision LLM to describe this batch
-        if let Some(descs) = analyzer.describe_batch(&frames_data, &ts_list).await {
-            all_descriptions.extend(descs);
-        }
-
-        // Clean up batch frames
-        cleanup_frames(&batch_dir);
-    }
+    let mut all_descriptions: Vec<VideoDescription> = per_batch.into_iter().flatten().collect();
 
     // Sort by timestamp
     all_descriptions.sort_by(|a, b| a.timestamp_sec.partial_cmp(&b.timestamp_sec).unwrap());
