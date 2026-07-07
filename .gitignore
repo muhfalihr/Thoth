@@ -63,7 +63,7 @@ node_modules/
 
 # ── CKB local cache (runtime data, not source) ──────────────────────────────────
 ckb.json
-openclaw/ckb.json
+scout/ckb.json
 
 # ── API keys (never commit) ──────────────────────────────────────────────────────
 .novita_key
@@ -72,3 +72,5 @@ openclaw/ckb.json
 .serper_key
 api_key.txt
 .openrouter_key
+.supabase_url
+*.supabase_url

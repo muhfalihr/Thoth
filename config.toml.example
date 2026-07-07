@@ -107,11 +107,11 @@ default_layout = "vertical"   # vertical | horizontal | square
 # Skor visual (humor, visual_impact, novelty, engagement) digabung dengan
 # text-rank untuk memilih clip terbaik.
 #
-# Provider: openai | claude | gemini | novita | vllm
+# Provider: openai | claude | gemini | novita | openrouter | vllm
 # ─────────────────────────────────────────────────────────────────────────────
 [vision]
 enabled           = true       # aktifkan analisis visual frame
-provider          = "novita"   # openai | claude | gemini | novita | vllm
+provider          = "novita"   # openai | claude | gemini | novita | openrouter | vllm
 frames_per_moment = 3          # frame per kandidat (2-5 recommended)
 frame_width       = 384        # lebar frame dalam px (kecil = lebih sedikit token)
 score_weight      = 0.35       # 0.0 = text-only, 1.0 = vision-only
@@ -119,9 +119,14 @@ score_weight      = 0.35       # 0.0 = text-only, 1.0 = vision-only
 # ── Novita AI (vision scoring) ────────────────────────────────────────────────
 # Dipakai saat provider = "novita". URL/model warisan dari [llm] jika dikosongkan.
 novita_base_url = "https://api.novita.ai/openai"
-novita_model    = "qwen/qwen2.5-vl-72b-instruct"   # 72b: deskripsi visual jauh lebih akurat (grounding narasi)
-# novita_model  = "qwen/qwen3-vl-8b-instruct"      # 8b: lebih murah/cepat tapi lemah utk scene/box
-# novita_model  = "qwen/qwen3-vl-235b-a22b-instruct" # paling akurat, paling mahal per frame
+novita_model    = "qwen/qwen3-vl-235b-a22b-instruct" # paling akurat (grounding narasi); 2.5-72b & 3-8b DEPRECATED Novita 2026-07
+# novita_model  = "qwen/qwen3-vl-30b-a3b-instruct"   # lebih murah/cepat (MoE 3b aktif), akurasi tetap baik
+
+# ── OpenRouter (vision scoring, cloud OpenAI-compatible) ─────────────────────
+# Dipakai saat provider = "openrouter". Butuh THOTH_OPENROUTER_API_KEY.
+# openrouter_model WAJIB diisi (tak ada default — id model OpenRouter beragam).
+openrouter_base_url = "https://openrouter.ai/api"
+openrouter_model    = ""    # e.g. "qwen/qwen-2.5-vl-72b-instruct"
 
 # ── vLLM (vision scoring, self-hosted) ───────────────────────────────────────
 # Dipakai saat provider = "vllm". Bisa beda server dari [llm].
@@ -289,7 +294,7 @@ cookie_file    = ""   # "" = disabled
 [overlay]
 enabled             = true
 ytdlp_path          = "yt-dlp"         # kosong = inherit dari ingest.ytdlp_path
-cache_dir           = "overlay_cache"  # clip di-cache berdasarkan query hash
+cache_dir           = "footage_cache"  # clip di-cache berdasarkan query hash
 max_duration        = 8.0              # max detik yang di-download per overlay
 fallback_to_youtube = true             # fallback ke YouTube Shorts jika TikTok gagal
 max_variants        = 3                # N variant per query, rotate by clip index
@@ -316,7 +321,7 @@ placement_min_similarity = 0.46        # ambang cosine (footage desc ↔ teks na
 [assets]
 sfx_dir   = "assets/sfx"
 bgm_dir   = "assets/bgm"
-# Katalog aset ter-anotasi (dibuat oleh scripts/annotate_assets.py). Saat ada,
+# Katalog aset ter-anotasi (dibuat oleh scripts/media/annotate_assets.py). Saat ada,
 # stage analyze memberi tahu LLM agar mengisi `asset_cues` (SFX + meme ber-timestamp).
 # File hilang = fitur mati otomatis (graceful).
 catalog_path = "assets/asset_catalog.json"
@@ -355,7 +360,7 @@ none          = ""
 # dengan garis hitam tebal + drop-shadow + animasi pop — gaya cover viral.
 # Renderer default = "python" (Pillow → PNG) untuk kualitas stroke/shadow terbaik;
 # fallback otomatis ke "ass" (libass) bila Python/Pillow tidak tersedia.
-# Renderer python butuh: python + Pillow terpasang, dan scripts/render_headline.py.
+# Renderer python butuh: python + Pillow terpasang, dan scripts/render/render_headline.py.
 [hook_title]
 enabled      = true                        # opt-in
 duration_sec = 3.0
@@ -383,7 +388,7 @@ animate      = true                         # pop / fade-in
 # ─────────────────────────────────────────────────────────────────────────────
 # Di hook window: tampil cover full-screen = background AI (Novita FLUX.1 schnell)
 # + cutout subjek (rembg) + teks headline → lalu dissolve ke footage. Reuse key
-# THOTH_NOVITA_API_KEY + scripts/render_cover.py. Best-effort: kalau Python/Novita/
+# THOTH_NOVITA_API_KEY + scripts/render/render_cover.py. Best-effort: kalau Python/Novita/
 # rembg gagal → otomatis fallback ke hook_title biasa.
 # Butuh: python + Pillow + rembg (pip install rembg onnxruntime) + THOTH_NOVITA_API_KEY.
 # Saat cover aktif, hook_title disuppress (teks sudah ada di cover).
@@ -482,7 +487,7 @@ bearer_token        = ""                    # kosong = pakai public bearer token
 enabled          = true                     # opt-in (true = aktifkan multi-platform)
 conda_env        = "thoth-news"
 python_path      = "python"
-script           = "scripts/social_search.py"
+script           = "scripts/news/social_search.py"
 # TikTok di-hide dari default: search/hashtag-nya bot-blocked (EmptyResponse)
 # tanpa proxy residential berbayar. Tambah ",tiktok" manual jika punya proxy.
 platforms        = "youtube,instagram,twitter,news"
@@ -534,7 +539,7 @@ leak_event_vol = 0.45      # volume audio event saat narator JEDA / lead-in (> d
 lead_in_secs            = 1.6  # detik audio event main keras sebelum narator masuk (0 = mati)
 max_enrichment_sources  = 3    # max video tambahan (dari pool enrichment) yg subtitle-nya dijadikan konteks narasi LLM
 # RAG struktur narasi: ambil contoh struktur (arc/hook/pelajaran) yg terbukti dari
-# tabel `narration_structures` (diisi scripts/analyze_narration_structure.py) lalu
+# tabel `narration_structures` (diisi scripts/narration/analyze_narration_structure.py) lalu
 # suntikkan sbg referensi ke prompt narator. Butuh THOTH_SUPABASE_URL + embed valid.
 # Independen dari [vector_db] enabled (itu RAG momen). Degrade diam bila tak tersedia.
 structure_rag                 = true   # false = matikan referensi struktur
@@ -600,7 +605,7 @@ enabled = false
 # Backend pencarian: "playwright" (default, Python, tanpa key) | "serper"
 provider = "playwright"
 
-# Nama conda environment untuk Python scripts (buat dengan scripts\setup_thoth_news.bat).
+# Nama conda environment untuk Python scripts (buat dengan scriptsews\setup_thoth_news.bat).
 # Kosong = pakai python_path langsung tanpa conda.
 conda_env = "thoth-news"
 
@@ -608,10 +613,10 @@ conda_env = "thoth-news"
 python_path = "python"
 
 # Path ke script pencarian berita
-search_script = "scripts/news_search.py"
+search_script = "scripts/news/news_search.py"
 
 # Path ke script screenshot berita
-screenshot_script = "scripts/news_screenshot.py"
+screenshot_script = "scripts/news/news_screenshot.py"
 
 # Jumlah berita maksimum yang disimpan per moment (setelah ranking relevansi)
 max_results_per_moment = 3
@@ -680,7 +685,7 @@ language = "id"
 script_style = "auto"
 
 # Path ke TTS Python script (dijalankan via conda env news)
-tts_script = "scripts/tts_generate.py"
+tts_script = "scripts/tts/tts_generate.py"
 
 # ── TTS ──────────────────────────────────────────────────────────────────────
 [reaction.tts]
@@ -758,7 +763,7 @@ sadtalker_size = 256
 # ─────────────────────────────────────────────────────────────────────────────
 # SADTALKER — Local GPU talking avatar (Phase 6)
 # ─────────────────────────────────────────────────────────────────────────────
-# Setup: jalankan scripts\setup_sadtalker.bat (clone + install + download model)
+# Setup: jalankan scripts\media\setup_sadtalker.bat (clone + install + download model)
 # Aktifkan dengan: [reaction.avatar] mode = "sad_talker"
 #
 # Ubah [reaction.avatar] di atas menjadi:
