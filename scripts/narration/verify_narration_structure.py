@@ -38,7 +38,7 @@ except Exception:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze_narration_structure as ana  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent  # repo root (scripts/narration/ is two deep)
 
 # Hook formats considered "scroll-stopping" (present in the corpus / rage-bait DNA).
 STRONG_HOOK_FORMATS = {

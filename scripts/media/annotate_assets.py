@@ -44,7 +44,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent  # repo root (scripts/media/ is two deep)
 FFMPEG = str(ROOT / "ffmpeg.exe")
 FFPROBE = str(ROOT / "ffprobe.exe")
 AUDIO_EXT = {".mp3", ".wav", ".aac", ".m4a", ".ogg", ".flac"}

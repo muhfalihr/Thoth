@@ -73,7 +73,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     tomllib = None
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent  # repo root (scripts/narration/ is two deep)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

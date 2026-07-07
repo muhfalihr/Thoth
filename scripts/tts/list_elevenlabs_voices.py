@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 
 # Load .env manually (no dotenv dependency needed)
-env_path = Path(__file__).parent.parent / ".env"
+env_path = Path(__file__).parent.parent.parent / ".env"  # repo root (scripts/tts/ is two deep)
 if env_path.exists():
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()

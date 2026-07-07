@@ -41,19 +41,18 @@ except Exception:  # pragma: no cover
 SS = 2  # text supersample
 
 
-# ── Novita API key (env first, then .env; CLIPPER_* shim supported) ───────────
+# ── Novita API key ───────────
 def novita_key():
-    for v in ("THOTH_NOVITA_API_KEY", "CLIPPER_NOVITA_API_KEY"):
-        k = os.environ.get(v)
-        if k:
-            return k
+    k = os.environ.get("THOTH_NOVITA_API_KEY")
+    if k:
+        return k
     try:
         for line in open(".env", encoding="utf-8"):
             line = line.strip()
             if line.startswith("#") or "=" not in line:
                 continue
             n, val = line.split("=", 1)
-            if n.strip() in ("THOTH_NOVITA_API_KEY", "CLIPPER_NOVITA_API_KEY"):
+            if n.strip() == "THOTH_NOVITA_API_KEY":
                 val = val.strip().strip('"').strip("'")
                 if val:
                     return val
@@ -64,17 +63,16 @@ def novita_key():
 
 # ── OpenRouter API key (env first, then .env) ─────────────────────────────────
 def openrouter_key():
-    for v in ("THOTH_OPENROUTER_API_KEY", "CLIPPER_OPENROUTER_API_KEY"):
-        k = os.environ.get(v)
-        if k:
-            return k
+    k = os.environ.get("THOTH_OPENROUTER_API_KEY")
+    if k:
+        return k
     try:
         for line in open(".env", encoding="utf-8"):
             line = line.strip()
             if line.startswith("#") or "=" not in line:
                 continue
             n, val = line.split("=", 1)
-            if n.strip() in ("THOTH_OPENROUTER_API_KEY", "CLIPPER_OPENROUTER_API_KEY"):
+            if n.strip() == "THOTH_OPENROUTER_API_KEY":
                 val = val.strip().strip('"').strip("'")
                 if val:
                     return val
@@ -372,6 +370,58 @@ def cover_fit(img, W, H):
     x = (img.width - W) // 2
     y = (img.height - H) // 2
     return img.crop((x, y, x + W, y + H))
+
+
+def cover_matches_topic(spec, img):
+    """Vision yes/no: does the GENERATED cover actually depict THIS event? Guards against FLUX/OpenRouter
+    drawing an off-topic/generic scene. Returns True when it matches OR when vision is unavailable
+    (degrade safe — don't discard a cover we can't verify)."""
+    import re, requests
+    key = novita_key()
+    model = (spec.get("vision_model") or "").strip()
+    topic = ((spec.get("topic_desc") or "") + " " + (spec.get("headline_text") or "")).strip()
+    if not key or not model or not topic:
+        return True
+    base = (spec.get("vision_base_url") or spec.get("chat_base_url")
+            or "https://api.novita.ai/openai").rstrip("/")
+    try:
+        im = img.convert("RGB"); im.thumbnail((768, 768))
+        buf = io.BytesIO(); im.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        sys_p = ("You judge whether a generated thumbnail faithfully depicts a described news event. "
+                 "Answer ONLY compact JSON {\"match\": true|false}. match=true only if the image's scene, "
+                 "subjects and setting plausibly match the event; false if it shows an unrelated or "
+                 "generic stock scene.")
+        usr = f"Event: {topic[:400]}. Does this image depict that event?"
+        r = requests.post(f"{base}/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={"model": model, "temperature": 0, "max_tokens": 30,
+                  "messages": [{"role": "system", "content": sys_p},
+                               {"role": "user", "content": [
+                                   {"type": "text", "text": usr},
+                                   {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}]},
+            timeout=90)
+        if r.status_code != 200:
+            sys.stderr.write(f"render_cover: cover-check {r.status_code} → assume OK\n"); return True
+        txt = r.json()["choices"][0]["message"]["content"]
+        m = re.search(r"\{.*\}", txt, re.S)
+        ok = bool(json.loads(m.group(0)).get("match", True)) if m else True
+        sys.stderr.write(f"render_cover: cover-check match={ok}\n")
+        return ok
+    except Exception as e:
+        sys.stderr.write(f"render_cover: cover-check error {e} → assume OK\n"); return True
+
+
+def frame_as_cover(spec, W, H):
+    """Use the REAL video frame as the cover background (Lanczos cover-fit to WxH). Faithful to the
+    actual scene — chosen when the AI cover is judged off-topic. Returns an RGB image or None."""
+    frame = spec.get("describe_frame") or spec.get("subject_frame") or ""
+    if not frame or not os.path.exists(frame):
+        return None
+    try:
+        return cover_fit(Image.open(frame), W, H)
+    except Exception as e:
+        sys.stderr.write(f"render_cover: frame-as-cover error {e}\n"); return None
 
 
 def _data_uri(path, max_side=1024):
@@ -779,6 +829,17 @@ def main():
             bg = apply_face_swap(spec, bg, W, H)
     if bg is None:
         bg = fallback_background(spec, W, H)
+
+    # Vision-guard: if the AI cover doesn't actually depict THIS event (FLUX/OpenRouter drifted to a
+    # generic/off-topic scene), use the REAL video frame as the cover instead — faithful over pretty.
+    if bg is not None and mode == "ai" and not cover_matches_topic(spec, bg):
+        fc = frame_as_cover(spec, W, H)
+        if fc is not None:
+            sys.stderr.write("render_cover: AI cover off-topic → using REAL video frame as cover\n")
+            bg = fc
+            mode = "cutout"   # frame already shows the real subject → don't paste a cutout over it
+            cut = None
+
     bg = darken_for_text(bg, W, H, float(spec.get("darken", 0.30)))
 
     canvas = bg.convert("RGBA")
