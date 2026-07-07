@@ -1,15 +1,15 @@
-//! Content data model + OpenClaw content-set loader.
+//! Content data model + scout content-set loader.
 //!
 //! Content discovery (multi-platform search) is no longer done inside Thoth —
-//! it is handled upstream by OpenClaw (the "Ella" agent), which curates the main
-//! clippable video plus a pool of relevant footage and hands them to Thoth via
+//! it is handled upstream by the `scout/` layer, which curates the main clippable
+//! video plus a pool of relevant footage and hands them to Thoth via
 //! `thoth run --content <set.json>`.
 //!
 //! This module keeps:
 //!   - [`ContentResult`]: the normalized footage-pool item consumed by the edit
 //!     stage (cutaways) and narration enrichment. Its on-disk form is the
 //!     `content_enrichment.json` file written into the job's output dir.
-//!   - [`load_content_set`]: parse the OpenClaw `--content` file into a main URL
+//!   - [`load_content_set`]: parse the scout `--content` file into a main URL
 //!     and the footage pool.
 
 use std::path::Path;
@@ -17,7 +17,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 /// One normalized footage item. `content_enrichment.json` is a `Vec<ContentResult>`.
-/// `platform` + `url` are required; everything else defaults so OpenClaw can send
+/// `platform` + `url` are required; everything else defaults so scout can send
 /// a minimal entry (`{"platform": "...", "url": "..."}`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContentResult {
@@ -42,7 +42,7 @@ pub struct ContentResult {
     #[serde(default)]
     pub query: String,
     /// What this footage SHOWS — the clip's own caption (video oEmbed) or post text
-    /// (cropped post), supplied by OpenClaw (`build_footage.js`). Used by the narration
+    /// (cropped post), supplied by scout (`build_footage.js`). Used by the narration
     /// edit stage to PLACE each cutaway where it semantically matches the narration
     /// (embed this vs the script segment, cosine). Empty = fall back to round-robin.
     #[serde(default)]
@@ -52,16 +52,16 @@ pub struct ContentResult {
     /// drops `"unverified"` items to avoid noisy cutaways.
     #[serde(default)]
     pub relevance: String,
-    /// Local path to a clean cropped screenshot of this post, supplied by OpenClaw
+    /// Local path to a clean cropped screenshot of this post, supplied by scout
     /// when the item is NOT a video (`is_video == false` — tweet/IG photo/article).
-    /// yt-dlp cannot fetch such posts, so OpenClaw screenshots + vision-crops them
+    /// yt-dlp cannot fetch such posts, so scout screenshots + vision-crops them
     /// and passes the saved PNG here. The edit stage renders it as a static image
     /// CARD (see `enrichment::load_image_pool`). Empty for video items.
     #[serde(default)]
     pub image_path: String,
 }
 
-/// The MAIN clippable video chosen by OpenClaw. Only `url` is required — ingest
+/// The MAIN clippable video chosen by scout. Only `url` is required — ingest
 /// (yt-dlp) re-derives title/channel/duration on download; the extra fields are
 /// accepted for logging/forward-compat and otherwise ignored.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -72,7 +72,7 @@ pub struct MainVideo {
     #[serde(default)]
     pub title: String,
     /// Platform caption/description of the main post (TikTok caption, YouTube
-    /// description, tweet body, IG caption). Supplied by OpenClaw. For raw b-roll
+    /// description, tweet body, IG caption). Supplied by scout. For raw b-roll
     /// with no spoken narration this carries the topic — the narration stage uses
     /// it (with the title + top comments) to GROUND the script instead of
     /// hallucinating from a near-empty transcript. Empty = unknown.
@@ -83,12 +83,12 @@ pub struct MainVideo {
     #[serde(default)]
     pub duration_sec: u64,
     /// Local path to a clean cropped screenshot of the main post, supplied by
-    /// OpenClaw when `is_video == false`. (The current pipeline still expects a
+    /// scout when `is_video == false`. (The current pipeline still expects a
     /// downloadable `url` for the main subject; this field is accepted for
     /// forward-compat and surfaced via `LoadedSet::main_image_path`.)
     #[serde(default)]
     pub image_path: String,
-    /// Real social profile of the main subject, scraped by OpenClaw. Replaces the
+    /// Real social profile of the main subject, scraped by scout. Replaces the
     /// LLM-guessed `character_*` fields in the Beat-2 profile card (factual, no
     /// hallucinated follower counts). `None` = fall back to the LLM's guess.
     #[serde(default)]
@@ -96,7 +96,7 @@ pub struct MainVideo {
 }
 
 /// Real social-profile metadata for the Beat-2 character intro card. Acquired by
-/// OpenClaw (browser/xpoz) so the on-screen handle + follower count are factual.
+/// scout (browser/xpoz) so the on-screen handle + follower count are factual.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ProfileInfo {
     /// Display name (e.g. "Heru Gundul"). Empty = keep the LLM's `character_name`.
@@ -113,13 +113,13 @@ pub struct ProfileInfo {
     #[serde(default)]
     pub avatar_url: String,
     /// Local path to a pre-cropped screenshot of the source's PROFILE CARD (avatar +
-    /// name + follower/like counts), produced by OpenClaw. When set + file exists, the
+    /// name + follower/like counts), produced by scout. When set + file exists, the
     /// edit stage pastes this real crop instead of drawing the synthetic card.
     #[serde(default)]
     pub image_path: String,
 }
 
-/// One real viral comment scraped by OpenClaw from the source video/post. Rendered
+/// One real viral comment scraped by scout from the source video/post. Rendered
 /// as a screenshot-style card in the reaction beat (`src/edit/comment_card.rs`).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CommentInfo {
@@ -135,20 +135,20 @@ pub struct CommentInfo {
     /// Direct URL to the commenter's avatar image. Empty = drawn initial tile.
     #[serde(default)]
     pub avatar_url: String,
-    /// Local path to a pre-cropped screenshot of THIS comment, produced by OpenClaw
+    /// Local path to a pre-cropped screenshot of THIS comment, produced by scout
     /// (`scrape_comments.js`). When set + file exists, the edit stage pastes this real
     /// crop instead of drawing the synthetic card. The text/likes are still used for
     /// narration grounding. Empty = render the drawn card.
     #[serde(default)]
     pub image_path: String,
-    /// One-line decoded MEANING of this comment (subtext + tone), produced by OpenClaw
+    /// One-line decoded MEANING of this comment (subtext + tone), produced by scout
     /// `enrich_context.js`. Lets the narrator read sarcasm/coded references correctly instead
     /// of taking the literal text at face value. Empty = no enrichment (older sets).
     #[serde(default)]
     pub context: String,
 }
 
-/// A cultural/contextual REFERENCE resolved by OpenClaw `enrich_context.js` from the caption +
+/// A cultural/contextual REFERENCE resolved by scout `enrich_context.js` from the caption +
 /// comments — a named entity, meme, coded term, or recent event the audience assumes you know
 /// (e.g. "Nadiem Makarim", "konoha", the "10+6=17" gaffe). Feeds the narrator a factual explainer
 /// so the script sounds informed, not naive. `[]` = no enrichment / nothing notable.
@@ -194,7 +194,7 @@ pub struct Discourse {
 }
 
 /// A FIGURE the topic is about — a named person, organization, or community.
-/// Extracted by OpenClaw (`extract_figures.js`) from the main title/description.
+/// Extracted by scout (`extract_figures.js`) from the main title/description.
 /// Empty list = no specific notable figure (e.g. an ordinary anonymous person).
 /// Used to ground the narration in the real subject (and, optionally, a subject card).
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -213,11 +213,11 @@ pub struct Figure {
     pub description: String,
 }
 
-/// The OpenClaw content set passed via `thoth run --content <set.json>`:
+/// The scout content set passed via `thoth run --content <set.json>`:
 /// one main video to clip + a footage pool for cutaways/narration enrichment +
 /// (optionally) the subject's real profile and scraped viral comments.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct OpenClawContentSet {
+pub struct ContentSet {
     pub main: MainVideo,
     #[serde(default)]
     pub footage: Vec<ContentResult>,
@@ -251,8 +251,11 @@ pub struct LoadedSet {
     /// Scraped viral comments for reaction-beat comment cards.
     pub comments: Vec<CommentInfo>,
     /// Clean cropped screenshot of the main post when it is non-video. Empty for
-    /// video mains. (Forward-compat; the main still ingests via `main_url`.)
+    /// video mains. Rendered as a still→video MAIN when `main_is_video == false`.
     pub main_image_path: String,
+    /// Whether the main post is a downloadable video. `false` = non-video post
+    /// (photo/slide) → the edit uses `main_image_path` as a still-image MAIN.
+    pub main_is_video: bool,
     /// Figures (person/org/community) the topic is about. `[]` when none. Narration grounding.
     pub figures: Vec<Figure>,
     /// Cultural references resolved by `enrich_context.js`. `[]` when none.
@@ -261,14 +264,14 @@ pub struct LoadedSet {
     pub discourse: Discourse,
 }
 
-/// Load and validate an OpenClaw content set file.
+/// Load and validate an scout content set file.
 ///
 /// The caller writes `footage` to the job's `content_enrichment.json`, downloads
 /// any avatar images, and writes the profile/comment sidecars the edit stage reads.
 pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("cannot read content set {}: {e}", path.display()))?;
-    let set: OpenClawContentSet = serde_json::from_str(&raw)
+    let set: ContentSet = serde_json::from_str(&raw)
         .map_err(|e| anyhow::anyhow!("cannot parse content set {}: {e}", path.display()))?;
     if set.main.url.trim().is_empty() {
         anyhow::bail!("content set {}: main.url is empty", path.display());
@@ -281,6 +284,7 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
         profile: set.main.profile,
         comments: set.comments,
         main_image_path: set.main.image_path,
+        main_is_video: set.main.is_video,
         figures: set.figures,
         references: set.references,
         discourse: set.discourse,
@@ -288,7 +292,7 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
 }
 
 /// Sidecar (in the job base dir) holding the MAIN video's textual context — its
-/// title and platform caption/description, supplied by OpenClaw. The narration
+/// title and platform caption/description, supplied by scout. The narration
 /// stage reads this so the script is GROUNDED in the real topic even when the
 /// spoken transcript is empty (raw b-roll). Written by `main.rs` from `--content`.
 pub const MAIN_CONTEXT_FILE: &str = "content_context.json";

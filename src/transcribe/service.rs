@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
-use futures_util::StreamExt;
+use futures_util::stream::{self, StreamExt};
 
 use crate::config::AppConfig;
 use crate::pipeline::job::JobContext;
@@ -299,6 +299,10 @@ impl<'a> TranscribeService<'a> {
     }
 
     /// Split MP3 into fixed-length chunks, transcribe each, merge with timestamp offsets.
+    ///
+    /// Konkuren berbatas: fase 1 — extract semua chunk secara serial (FFmpeg stream-copy,
+    /// sangat cepat ~1s/chunk); fase 2 — upload ke Groq secara konkuren `buffer_unordered(3)`
+    /// (cap Groq rate-limit); fase 3 — sort by chunk_idx → dedup overlap → merge.
     async fn groq_transcribe_chunked(
         &self,
         mp3_path: &Path,
@@ -306,7 +310,10 @@ impl<'a> TranscribeService<'a> {
     ) -> Result<Transcript, TranscribeError> {
         let n_chunks = (total_duration_secs / CHUNK_DURATION_SECS).ceil() as usize;
         let chunk_dir = mp3_path.parent().unwrap_or(std::path::Path::new("."));
-        let mut all_segments: Vec<WhisperSegment> = Vec::new();
+
+        // ── Fase 1: Extract semua chunk secara serial (stream-copy, cepat) ───────
+        struct ChunkMeta { idx: usize, path: std::path::PathBuf, start: f64, end: f64, mb: f64 }
+        let mut chunk_metas: Vec<ChunkMeta> = Vec::with_capacity(n_chunks);
 
         for chunk_idx in 0..n_chunks {
             let chunk_start = chunk_idx as f64 * CHUNK_DURATION_SECS;
@@ -314,13 +321,10 @@ impl<'a> TranscribeService<'a> {
             let chunk_dur   = chunk_end - chunk_start;
 
             info!(
-                "chunk {}/{}: {:.0}s – {:.0}s ({:.1} min)",
-                chunk_idx + 1, n_chunks,
-                chunk_start, chunk_end,
-                chunk_dur / 60.0
+                "chunk {}/{}: extract {:.0}s–{:.0}s ({:.1} min)",
+                chunk_idx + 1, n_chunks, chunk_start, chunk_end, chunk_dur / 60.0
             );
 
-            // Extract chunk with FFmpeg stream-copy (fast)
             let chunk_path = chunk_dir.join(format!("chunk_{chunk_idx:03}.mp3"));
             let status = crate::util::ffmpeg::command()
                 .args([
@@ -337,31 +341,47 @@ impl<'a> TranscribeService<'a> {
                 .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?;
 
             if !status.success() || !chunk_path.exists() {
-                // Chunk is past end of file — we're done
-                break;
+                break; // Past end of file — done
             }
 
-            let chunk_mb = std::fs::metadata(&chunk_path)
+            let mb = std::fs::metadata(&chunk_path)
                 .map(|m| m.len() as f64 / 1_048_576.0)
                 .unwrap_or(0.0);
+            chunk_metas.push(ChunkMeta { idx: chunk_idx, path: chunk_path, start: chunk_start, end: chunk_end, mb });
+        }
 
-            let pb = spinner(&format!(
-                "[{}/{}] Uploading chunk {:.0}s–{:.0}s ({chunk_mb:.1} MB)…",
-                chunk_idx + 1, n_chunks, chunk_start, chunk_end
-            ));
+        // ── Fase 2: Upload ke Groq secara konkuren (cap 3 — hormati rate-limit) ──
+        let total = chunk_metas.len();
+        let this = self; // capture shared ref untuk async move closures
+        let mut indexed_results: Vec<(usize, Transcript)> =
+            stream::iter(chunk_metas)
+                .map(|meta| async move {
+                    let pb = spinner(&format!(
+                        "[{}/{}] Uploading chunk {:.0}s–{:.0}s ({:.1} MB)…",
+                        meta.idx + 1, total, meta.start, meta.end, meta.mb
+                    ));
+                    let result = this.groq_upload(&meta.path, meta.start).await;
+                    pb.finish_and_clear();
+                    // Bersihkan chunk setelah upload selesai
+                    let _ = tokio::fs::remove_file(&meta.path).await;
+                    result.map(|t| (meta.idx, t))
+                })
+                .buffer_unordered(3)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
 
-            let mut chunk_transcript = self.groq_upload(&chunk_path, chunk_start).await?;
-            pb.finish_and_clear();
-
+        // ── Fase 3: Sort by idx → dedup overlap → flatten ────────────────────────
+        indexed_results.sort_by_key(|(idx, _)| *idx);
+        let mut all_segments: Vec<WhisperSegment> = Vec::new();
+        for (_, mut chunk_transcript) in indexed_results {
             // Deduplicate: drop segments that overlap with the previous chunk's last segment
             if let Some(prev_last) = all_segments.last() {
                 let min_start = prev_last.end_ms;
                 chunk_transcript.segments.retain(|s| s.start_ms >= min_start);
             }
             all_segments.extend(chunk_transcript.segments);
-
-            // Clean up chunk file immediately to save disk space
-            let _ = tokio::fs::remove_file(&chunk_path).await;
         }
 
         let duration_ms = (total_duration_secs * 1000.0) as i64;

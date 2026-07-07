@@ -91,8 +91,15 @@ impl<'a> IngestService<'a> {
 
     pub async fn run(&self, url: &str, force: bool) -> Result<IngestResult, IngestError> {
         let t0 = Instant::now();
+
+        // LOCAL-FILE source (not a URL): a still→video synthesized from a NON-VIDEO main post
+        // (main.rs::synthesize_still_video). Copy it (+ sibling .info.json) into the source dir and
+        // build the result directly — yt-dlp is not involved.
+        if !url.starts_with("http://") && !url.starts_with("https://") && Path::new(url).is_file() {
+            return self.ingest_local_file(Path::new(url)).await;
+        }
         // Bound the id length in the template. For normal sites %(id)s is a short id (e.g. a YouTube
-        // 11-char id), but for a direct CDN .mp4 URL (TikTok/fbcdn, used by OpenClaw content-sets) the
+        // 11-char id), but for a direct CDN .mp4 URL (TikTok/fbcdn, used by scout content-sets) the
         // generic extractor sets `id` to the URL's long query string. yt-dlp's `--trim-filenames` does
         // NOT trim the `.part` temp name during download, so the untrimmed ~250-char path overflows
         // Windows MAX_PATH → "[Errno 22] Invalid argument". Template field-slicing (`%(id).64s`) IS
@@ -682,6 +689,27 @@ impl<'a> IngestService<'a> {
             warn!("FFmpeg merge failed, falling back to video-only file");
             Ok(Some(video_file))
         }
+    }
+
+    /// Ingest a LOCAL video file (e.g. a still→video for a non-video main): copy it (+ its sibling
+    /// `.info.json`, if present, for title/duration) into the source dir, then build the result.
+    async fn ingest_local_file(&self, src: &Path) -> Result<IngestResult, IngestError> {
+        let dir = self.job.source_dir();
+        tokio::fs::create_dir_all(&dir).await.map_err(IngestError::Io)?;
+        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("main_still");
+        let dest = dir.join(format!("{stem}.mp4"));
+        tokio::fs::copy(src, &dest).await.map_err(IngestError::Io)?;
+        let info_src = src.with_extension("info.json");
+        if info_src.exists() {
+            let _ = tokio::fs::copy(&info_src, dest.with_extension("info.json")).await;
+        }
+        info!("  ↪ local source (non-video main → still video): {}", dest.display());
+        let result = self.build_result(dest).await?;
+        eprintln!(
+            "  ✓ Ingest (local still) — {} ({:.0}s)",
+            result.title, result.duration_secs
+        );
+        Ok(result)
     }
 
     async fn build_result(&self, video_path: PathBuf) -> Result<IngestResult, IngestError> {
