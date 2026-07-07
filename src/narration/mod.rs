@@ -112,22 +112,32 @@ async fn generate_script(
             bikin dahi berkerut. Contoh pola: \"Ada N hal [tokoh] yang bikin geleng-geleng:\", \
             \"Bisa-bisanya [tokoh] ngaku [hal gila]\", \"Niatnya X eh malah Y\". \
             Jangan buka dengan sapaan 'Gais' atau 'Halo'.\n\
-         2. ISI (DUA LAPIS — TOPIK UTAMA > komentar; porsi cerita didominasi kasusnya, bukan komentar):\n\
-            a. INTI KASUS DULU & PORSI TERBESAR: ceritakan APA yang sebenarnya terjadi dari \
-               [Judul]+[Deskripsi]+[Tokoh]+[Deskripsi Visual]+[Analisa Momen] — tokoh, kronologi, \
-               lokasi, angka/fakta kunci. Bangun dulu kasusnya sampai penonton paham duduk perkaranya. \
-               Gaya SINIS + HERAN (bukan empati, bukan bahasa berita formal).\n\
-            b. REAKSI NETIZEN = PELENGKAP (bukan tulang punggung): SETELAH fakta jelas, bumbui HANYA \
+         2. ISI (TIGA BAGIAN — TOPIK UTAMA > komentar; porsi cerita didominasi kasusnya, bukan komentar):\n\
+            a. TENSION OPENER (1-2 kalimat): buka celah penasaran — sebut ADA hal paling gila/aneh \
+               di kasus ini TANPA langsung bongkar detailnya (conflict/contrast/cliffhanger), biar \
+               penonton nahan scroll nunggu jawabannya. JANGAN ulang frasa hook, JANGAN bocorkan \
+               punchline-nya di sini.\n\
+            b. INTI KASUS = PORSI TERBESAR: kupas detail yang ditahan di (a) — ceritakan APA yang \
+               sebenarnya terjadi dari [Judul]+[Deskripsi]+[Tokoh]+[Deskripsi Visual]+[Analisa Momen] \
+               — tokoh, kronologi, lokasi, angka/fakta kunci. Bangun kasusnya sampai penonton paham \
+               duduk perkaranya. Gaya SINIS + HERAN (bukan empati, bukan bahasa berita formal).\n\
+            c. REAKSI NETIZEN = PELENGKAP (bukan tulang punggung): SETELAH fakta jelas, bumbui HANYA \
                1-2 komentar paling nyeleneh/kontroversial — PARAFRASE jadi kalimat sendiri yang natural \
                (kutip singkat HANYA kalau punchy). ABAIKAN komentar receh: keluhan badan ('paha gatel',\
                'pegel'), pujian umum ('keren','sehat','semangat'), emoji-doang. JANGAN dump komentar \
                mentah-mentah & JANGAN biarkan komentar mendominasi narasi.\n\
             Campur kalimat pendek & sedang biar NGALIR natural. Tiap kalimat menambah info BARU.\n\
-         3. PENUTUP: Tutup dengan satu pertanyaan tajam yang SPESIFIK ke kasus ini (sebut detail/\
-            tokoh/angka-nya) yang memancing debat — BUKAN template generik yang bisa ditempel di \
-            video mana pun. Boleh juga tutup dengan satu komentar heran pendek yang nyangkut ke \
-            fakta terakhir. JANGAN pernah tutup dengan nasihat, motivasi, atau kesimpulan moral \
-            ('kita harus lebih selektif','tetap bijak','semoga sadar', dll) — itu mematikan rage-bait.\n\n\
+         3. PENUTUP — pilih SATU mode yang paling pas buat kasus ini:\n\
+            MODE A (DEBAT): satu pertanyaan tajam yang SPESIFIK ke kasus ini (sebut detail/tokoh/\
+            angka-nya) yang memancing debat — BUKAN template generik yang bisa ditempel di video \
+            mana pun. Boleh juga satu komentar heran pendek yang nyangkut ke fakta terakhir. \
+            Pilih ini kalau kasusnya bikin opini penonton kebelah.\n\
+            MODE B (VALUE): satu kalimat insight/ironi TAJAM yang spesifik ke kasus ini (sebut \
+            detail/tokoh/angka-nya) — penonton pergi dengan rasa 'gila, jadi intinya gitu'. Tetap \
+            sinis, BUKAN ceramah. Pilih ini kalau kasusnya punya ironi/pelajaran yang jelas.\n\
+            APA PUN MODENYA: JANGAN pernah tutup dengan nasihat, motivasi, atau kesimpulan moral \
+            generik ('kita harus lebih selektif','tetap bijak','semoga sadar', dll) — itu mematikan \
+            rage-bait.\n\n\
          NATURAL & ANTI-TEMPLATE (PENTING untuk kualitas diksi):\n\
          - Tulis bahasa Indonesia LISAN yang wajar diucapkan; hindari frasa kaku / terjemahan literal.\n\
          - JANGAN salin contoh frasa di prompt ini mentah-mentah — itu cuma arah GAYA, bukan kata wajib.\n\
