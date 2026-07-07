@@ -1,0 +1,6 @@
+{
+  "_comment": "Kurator multi-platform untuk discover_reels. instagram di-MERGE dgn ig_accounts.json (legacy). Isi handle tanpa @. Override CLI: --accounts / --tiktok-accounts / --x-accounts.",
+  "instagram": [],
+  "tiktok": [],
+  "x": []
+}

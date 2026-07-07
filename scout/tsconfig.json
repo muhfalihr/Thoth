@@ -1,0 +1,26 @@
+{
+  // Scout jalan NATIVE via Node >=24 type stripping (node cli.ts …) — tsc HANYA untuk
+  // type-check (noEmit). erasableSyntaxOnly menjamin sintaks yang dipakai bisa di-strip
+  // Node (tanpa enum/namespace/parameter-properties).
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023", "dom"],
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    // Pragmatis: kode ini penuh boundary tak bertipe (CDP evaluate, respons LLM, DOM).
+    // strict penuh = ratusan any-error tanpa nilai. Naikkan bertahap nanti.
+    "strict": false,
+    "noImplicitAny": false,
+    "checkJs": false
+  },
+  "include": ["cli.ts", "lib/**/*.ts", "scrapers/**/*.ts", "pipeline/**/*.ts", "enrich/**/*.ts"],
+  "exclude": ["node_modules", "deprecated", "output"]
+}

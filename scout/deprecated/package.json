@@ -1,0 +1,4 @@
+{
+  "type": "commonjs",
+  "//": "File deprecated tetap CommonJS .js — scout/package.json type:module tak boleh mengubah cara parse mereka."
+}

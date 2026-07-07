@@ -1,0 +1,20 @@
+# JANGAN pernah commit kredensial — script scout/ dijalankan langsung dari folder ini,
+# jadi key file & runtime data hidup di sini.
+.novita_key
+.groq_key
+.supabase_url
+.serper_key
+api_key.txt
+*.key
+.env
+ckb.json
+
+# Artefak runtime (folder ini = KODE + runtime; output di-generate saat run)
+output/
+crops/
+*.mp4
+*.png
+
+# TypeScript tooling (Node >=24 menjalankan .ts native; node_modules cuma devDeps typecheck + pg opsional)
+node_modules/
+package-lock.json

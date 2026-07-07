@@ -1,0 +1,13 @@
+{
+  "_comment": "Akun IG sumber penentu topik untuk discover_topics.js (mode instagram). Edit bebas: tambah/hapus handle (tanpa @). discover_topics fromInstagram menarik reels terbaru tiap akun (views+caption) jadi kandidat topik.",
+  "accounts": [
+    "jktlogy",
+    "ctd.insider",
+    "infipop.id",
+    "lambe_turah",
+    "jktpop",
+    "lambegosiip",
+    "yogyakarta.keras",
+    "basevox"
+  ]
+}
