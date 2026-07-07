@@ -1,4 +1,7 @@
 {
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"
+  },
   "permissions": {
     "allow": [
       "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\mfr\\\\Documents\\\\MyTools\\\\CLIPPER\\\\models\")",
@@ -10,7 +13,10 @@
       "Bash(rtk grep *)",
       "Bash(Get-Content *)",
       "Bash(graphify update *)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "Read(//c/Users/mfr/Documents/MyTools/CLIPPER/scout/**)",
+      "Bash(node probe2.js)",
+      "Bash(rtk git *)"
     ]
   }
 }
