@@ -82,7 +82,7 @@ pub struct NarrationConfig {
     #[serde(default = "default_narr_enrich_src")]
     pub max_enrichment_sources: u32,
     /// Retrieve proven narration STRUCTURES from the `narration_structures`
-    /// Supabase table (built by `scripts/analyze_narration_structure.py`) and
+    /// Supabase table (built by `scripts/narration/analyze_narration_structure.py`) and
     /// inject them as a reference block into the narrator prompt — so the script
     /// copies arcs/hooks/lessons that worked instead of hallucinating. Requires
     /// `THOTH_SUPABASE_URL` + a valid embed provider; degrades silently if
@@ -168,7 +168,7 @@ pub struct AnimelorianConfig {
     #[serde(default = "default_anim_variation")]
     pub placement_variation: bool,
     /// Max DISTINCT footage cards shown per content clip (montage density). 1 = the
-    /// single legacy cut; 2+ tiles extra relevant clips from the OpenClaw footage
+    /// single legacy cut; 2+ tiles extra relevant clips from the scout footage
     /// pool across the clip so the video keeps changing footage. Each extra cut is
     /// one more download, so keep it modest (2–3).
     #[serde(default = "default_anim_max_cuts")]
@@ -198,7 +198,7 @@ fn default_anim_seg()       -> f64     { 4.0 }
 fn default_anim_variation() -> bool    { true }
 fn default_anim_max_cuts()  -> u32     { 2 }
 
-/// Multi-platform content search — drives `scripts/social_search.py` to find a
+/// Multi-platform content search — drives `scripts/news/social_search.py` to find a
 /// MAIN clippable video plus MULTIPLE relevant clips/screenshots for enrichment.
 /// Used by `thoth run --query` and the trending auto-mode.
 ///
@@ -207,7 +207,7 @@ fn default_anim_max_cuts()  -> u32     { 2 }
 /// enabled          = true
 /// conda_env        = "thoth-news"
 /// python_path      = "python"
-/// script           = "scripts/social_search.py"
+/// script           = "scripts/news/social_search.py"
 /// platforms        = "youtube,instagram,twitter,news"  # tiktok bot-blocked, opt-in only
 /// engine           = "auto"      # auto | playwright | scrapling
 /// max_per_platform = 6
@@ -273,7 +273,7 @@ impl Default for ContentSearchConfig {
 
 fn default_cs_conda()     -> String { "thoth-news".to_owned() }
 fn default_cs_python()    -> String { "python".to_owned() }
-fn default_cs_script()    -> String { "scripts/social_search.py".to_owned() }
+fn default_cs_script()    -> String { "scripts/news/social_search.py".to_owned() }
 // TikTok dropped from defaults: its search/hashtag endpoints are bot-blocked
 // (EmptyResponseException) without paid residential proxies — verified manually
 // and with the TikTokApi library. Still selectable via `platforms = "...,tiktok"`.
@@ -475,7 +475,7 @@ pub struct HookTitleConfig {
     pub animate: bool,
 
     // ── PNG renderer (Pillow) — higher fidelity than libass ───────────────────
-    /// "python" = render the headline as a PNG via scripts/render_headline.py
+    /// "python" = render the headline as a PNG via scripts/render/render_headline.py
     /// (Pillow: thick stroke, drop-shadow, crisp AA) then overlay it. "ass" =
     /// legacy libass burn. Falls back to "ass" automatically if Python fails.
     #[serde(default = "default_hook_engine")]
@@ -556,7 +556,7 @@ fn default_hook_line_spacing()-> f32   { 1.0 }
 /// AI cover/thumbnail intro. At the hook window (clip start) a full-screen cover
 /// is shown — AI background (Novita FLUX.1 schnell) + subject cutout (rembg) +
 /// the headline text — then it dissolves into the footage. Reuses the Novita key
-/// (`THOTH_NOVITA_API_KEY`) and `scripts/render_cover.py`. Opt-in; best-effort
+/// (`THOTH_NOVITA_API_KEY`) and `scripts/render/render_cover.py`. Opt-in; best-effort
 /// (degrades to the normal hook title if Python/Novita/rembg fail).
 ///
 /// ```toml
@@ -797,6 +797,10 @@ pub struct LlmConfig {
     #[serde(skip)]
     pub novita_api_key: String,
 
+    // ── OpenRouter (cloud, OpenAI-compatible) ───────────────────────────
+    #[serde(skip)]
+    pub openrouter_api_key: String,
+
     // ── vLLM (self-hosted, OpenAI-compatible) ───────────────────────────
     /// vLLM server base URL, e.g. "http://localhost:8000"
     pub vllm_base_url: String,
@@ -941,7 +945,7 @@ pub struct AssetsConfig {
     ///     and restored for the opening/closing seconds
     pub beat_sync: bool,
 
-    /// Annotated asset catalog produced by `scripts/annotate_assets.py`.
+    /// Annotated asset catalog produced by `scripts/media/annotate_assets.py`.
     /// When present, the analyze stage feeds it to the LLM so it can place
     /// timestamped `asset_cues` (SFX + meme videos). Missing file = feature off.
     #[serde(default = "default_asset_catalog")]
@@ -1126,9 +1130,18 @@ pub struct VisionConfig {
     /// Gunakan ini jika provider = "novita" atau "vllm" dengan Novita AI.
     #[serde(default)]
     pub novita_base_url: String,
-    /// Model vision di Novita AI, e.g. "qwen/qwen3-vl-8b-instruct"
+    /// Model vision di Novita AI, e.g. "qwen/qwen3-vl-235b-a22b-instruct"
     #[serde(default)]
     pub novita_model: String,
+
+    /// Base URL untuk OpenRouter vision (cloud, OpenAI-compatible).
+    /// Default "https://openrouter.ai/api". Dipakai saat provider = "openrouter".
+    #[serde(default)]
+    pub openrouter_base_url: String,
+    /// Model vision di OpenRouter, e.g. "qwen/qwen-2.5-vl-72b-instruct".
+    /// WAJIB diisi di config.toml — tak ada default (id model OpenRouter beragam).
+    #[serde(default)]
+    pub openrouter_model: String,
 
     // ── Combined audio-visual prompt (Priority 1) ─────────────────────────────
 
@@ -1183,6 +1196,14 @@ pub struct VisionConfig {
     /// Lower = more sensitive (subtle colour changes count as cuts).
     /// Higher = hard cuts only (fast-paced montage, green screen transitions).
     pub scene_threshold: f32,
+
+    /// Max concurrent vision API calls during analyze (moment scoring + full-video description).
+    /// The analyze stage otherwise probes moments/frames one-by-one; this bounds how many run at
+    /// once. Kept LOW on purpose — vision providers rate-limit (RPM/TPM), and unbounded fan-out
+    /// trips 429s that are slower than serial. Default 4. Raise for high-limit providers; lower to
+    /// 1–2 if you see rate-limit errors. 0 is treated as 1.
+    #[serde(default)]
+    pub concurrency: usize,
 }
 
 // ── News enrichment config (Stage 4) ──────────────────────────────────────────
@@ -1297,8 +1318,8 @@ pub struct NewsConfig {
 fn default_news_provider()          -> String  { "playwright".to_owned() }
 fn default_conda_env()              -> String  { "thoth-news".to_owned() }
 fn default_python_path()            -> String  { "python".to_owned() }
-fn default_news_search_script()     -> PathBuf { PathBuf::from("scripts/news_search.py") }
-fn default_news_screenshot_script() -> PathBuf { PathBuf::from("scripts/news_screenshot.py") }
+fn default_news_search_script()     -> PathBuf { PathBuf::from("scripts/news/news_search.py") }
+fn default_news_screenshot_script() -> PathBuf { PathBuf::from("scripts/news/news_screenshot.py") }
 fn default_news_max_results()   -> usize   { 3 }
 fn default_news_max_keywords()  -> usize   { 5 }
 fn default_news_relevance()     -> f32     { 0.5 }
@@ -1501,7 +1522,7 @@ pub struct AvatarConfig {
 fn default_sadtalker_dir()    -> PathBuf { PathBuf::from("tools/SadTalker") }
 fn default_sadtalker_env()    -> String  { "thoth-sadtalker".to_owned() }
 fn default_sadtalker_size()   -> u32     { 256 }
-fn default_sadtalker_script() -> PathBuf { PathBuf::from("scripts/sadtalker_generate.py") }
+fn default_sadtalker_script() -> PathBuf { PathBuf::from("scripts/media/sadtalker_generate.py") }
 
 impl Default for AvatarConfig {
     fn default() -> Self {
@@ -1583,7 +1604,7 @@ fn default_pip_scale()          -> u32     { 30 }
 fn default_max_reaction_secs()  -> u32     { 25 }
 fn default_reaction_language()  -> String  { "id".to_owned() }
 fn default_script_style()       -> String  { "auto".to_owned() }
-fn default_tts_script()         -> PathBuf { PathBuf::from("scripts/tts_generate.py") }
+fn default_tts_script()         -> PathBuf { PathBuf::from("scripts/tts/tts_generate.py") }
 
 impl Default for TtsConfig {
     fn default() -> Self {
@@ -1702,7 +1723,9 @@ impl AppConfig {
             .set_default("vision.vllm_base_url", "")?
             .set_default("vision.vllm_model", "Qwen/Qwen2.5-VL-7B-Instruct")?
             .set_default("vision.novita_base_url", "https://api.novita.ai/openai")?
-            .set_default("vision.novita_model", "qwen/qwen2.5-vl-72b-instruct")?
+            .set_default("vision.novita_model", "qwen/qwen3-vl-235b-a22b-instruct")?
+            .set_default("vision.openrouter_base_url", "https://openrouter.ai/api")?
+            .set_default("vision.openrouter_model", "")?
             .set_default("vision.describe_video", false)?
             .set_default("vision.describe_interval", 10.0)?
             .set_default("vision.describe_batch", 5)?
@@ -1710,9 +1733,10 @@ impl AppConfig {
             .set_default("vision.describe_vllm_model", "")?
             .set_default("vision.scene_detection", false)?
             .set_default("vision.scene_threshold", 0.3f64)?
+            .set_default("vision.concurrency", 4i64)?
             .set_default("overlay.enabled", false)?
             .set_default("overlay.ytdlp_path", "")?
-            .set_default("overlay.cache_dir", "overlay_cache")?
+            .set_default("overlay.cache_dir", "footage_cache")?
             .set_default("overlay.max_duration", 8.0)?
             .set_default("overlay.fallback_to_youtube", true)?
             .set_default("overlay.max_variants", 3)?
@@ -1738,6 +1762,7 @@ impl AppConfig {
         app.llm.claude_api_key = std::env::var("THOTH_CLAUDE_API_KEY").unwrap_or_default();
         app.llm.gemini_api_key = std::env::var("THOTH_GEMINI_API_KEY").unwrap_or_default();
         app.llm.novita_api_key    = std::env::var("THOTH_NOVITA_API_KEY").unwrap_or_default();
+        app.llm.openrouter_api_key = std::env::var("THOTH_OPENROUTER_API_KEY").unwrap_or_default();
         app.llm.together_api_key  = std::env::var("THOTH_TOGETHER_API_KEY").unwrap_or_default();
         app.llm.fireworks_api_key = std::env::var("THOTH_FIREWORKS_API_KEY").unwrap_or_default();
         app.llm.vllm_api_key      = std::env::var("THOTH_VLLM_API_KEY").unwrap_or_default();

@@ -48,6 +48,17 @@ pub enum Commands {
     Vocab(VocabArgs),
     /// Generate thumbnails for previously rendered clips
     Thumbnail(ThumbnailArgs),
+    /// Run scout content-sourcing commands (TypeScript, requires Node ≥24).
+    ///
+    /// Delegates to scout/cli.ts — all scout sub-commands and flags are passed
+    /// through transparently.
+    ///
+    /// Examples:
+    ///   thoth scout browser status
+    ///   thoth scout discover --max-per 4 --hours 48 --tiktok
+    ///   thoth scout run <url> --out set.json --per 2 --max 4
+    ///   thoth scout validate <set.json>
+    Scout(ScoutArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -213,8 +224,8 @@ pub struct RunArgs {
     /// Example: thoth run --url https://youtu.be/abc
     pub url: Option<String>,
 
-    /// OpenClaw content set (JSON) supplying the main video + footage pool.
-    /// Content discovery is handled upstream by OpenClaw; Thoth no longer
+    /// scout content set (JSON) supplying the main video + footage pool.
+    /// Content discovery is handled upstream by scout; Thoth no longer
     /// searches. The file shape is:
     ///   { "main": { "url": "...", ... }, "footage": [ { "platform": "...", "url": "..." }, ... ] }
     /// The footage list is written to <output_dir>/content_enrichment.json for the
@@ -425,6 +436,22 @@ pub enum VocabCommand {
     Refresh,
     /// Show vocabulary statistics
     Stats,
+}
+
+/// Arguments for `thoth scout` — pass-through to scout/cli.ts (Node.js).
+///
+/// Everything after `thoth scout` is forwarded verbatim to the TypeScript CLI:
+///   thoth scout discover --max-per 4 --hours 48
+///     → node scout/cli.ts discover --max-per 4 --hours 48
+#[derive(Parser, Debug)]
+#[command(trailing_var_arg = true, allow_hyphen_values = true)]
+pub struct ScoutArgs {
+    /// Scout sub-command and its arguments (passed through to scout/cli.ts).
+    ///
+    /// Available: browser, discover, trending, run, comments, footage, figures,
+    ///            enrich, images, validate, pulse, topics, news
+    #[arg(trailing_var_arg = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
