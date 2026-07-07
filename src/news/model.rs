@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// A raw result returned by the search backend (Playwright script or Serper API)
 /// before relevance scoring / screenshotting. Mirrors the JSON shape emitted by
-/// `scripts/news_search.py`.
+/// `scripts/news/news_search.py`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawSearchResult {
     pub url: String,

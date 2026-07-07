@@ -40,7 +40,7 @@ pub struct TimedTtsResult {
 /// Synthesize `text` to MP3 + per-word timings.
 ///
 /// Primary: ElevenLabs `with-timestamps` (exact per-character alignment → words).
-/// Fallback: Edge TTS via `scripts/tts_narrate.py` (word timings distributed from
+/// Fallback: Edge TTS via `scripts/tts/tts_narrate.py` (word timings distributed from
 /// sentence boundaries) when the ElevenLabs key/voice is missing or the call fails.
 pub async fn synthesize_timed(
     text: &str,
@@ -155,7 +155,7 @@ async fn synthesize_elevenlabs_timed(
     Ok(TimedTtsResult { path: output_path.to_path_buf(), duration_secs, words })
 }
 
-/// Edge TTS fallback via `scripts/tts_narrate.py` → MP3 + word timings JSON.
+/// Edge TTS fallback via `scripts/tts/tts_narrate.py` → MP3 + word timings JSON.
 async fn synthesize_edge_timed(
     text: &str,
     output_path: &Path,
@@ -220,7 +220,7 @@ fn b64_decode(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// JSON envelope emitted by `scripts/tts_generate.py`.
+/// JSON envelope emitted by `scripts/tts/tts_generate.py`.
 #[derive(Debug, Deserialize)]
 struct TtsEnvelope {
     success: bool,

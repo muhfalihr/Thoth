@@ -1,6 +1,6 @@
 //! Headless browser screenshot via Python + Playwright (Phase 2).
 //!
-//! Calls `scripts/news_screenshot.py` as a subprocess (routed through the
+//! Calls `scripts/news/news_screenshot.py` as a subprocess (routed through the
 //! configured conda environment). The script outputs a JSON envelope that we
 //! parse into [`ScreenshotResult`].
 //!
@@ -31,7 +31,7 @@ pub struct ScreenshotResult {
     pub source: String,
 }
 
-/// JSON envelope emitted by `scripts/news_screenshot.py`.
+/// JSON envelope emitted by `scripts/news/news_screenshot.py`.
 #[derive(Debug, Deserialize)]
 struct ScreenshotEnvelope {
     success: bool,

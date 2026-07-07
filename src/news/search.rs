@@ -2,7 +2,7 @@
 //!
 //! Two backends are supported, selected by `config.news.provider`:
 //!   - `"playwright"` (default): runs an external Python + Playwright script
-//!     (`scripts/news_search.py`) that scrapes Google News — no paid API key.
+//!     (`scripts/news/news_search.py`) that scrapes Google News — no paid API key.
 //!   - `"serper"`: Serper.dev `/news` endpoint (requires `THOTH_SERPER_API_KEY`).
 //!
 //! Results are normalized into [`NewsItem`]s; the caller aggregates across
@@ -20,7 +20,7 @@ use super::error::NewsError;
 use super::model::{NewsItem, RawSearchResult};
 use super::util::{python_command, run_command};
 
-/// JSON envelope emitted by `scripts/news_search.py` (`{"results": [...]}`).
+/// JSON envelope emitted by `scripts/news/news_search.py` (`{"results": [...]}`).
 #[derive(Debug, Deserialize, Default)]
 struct SearchEnvelope {
     #[serde(default)]

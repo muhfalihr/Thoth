@@ -208,7 +208,7 @@ fn build_filter(
 
 /// Run SadTalker to produce a lip-synced talking head video.
 ///
-/// Calls `scripts/sadtalker_generate.py` via the `thoth-sadtalker` conda env.
+/// Calls `scripts/media/sadtalker_generate.py` via the `thoth-sadtalker` conda env.
 /// The script wraps SadTalker's `inference.py` and returns a JSON envelope.
 async fn create_sadtalker_segment(
     spec:     &AvatarSegmentSpec<'_>,
