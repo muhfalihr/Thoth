@@ -3,6 +3,16 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/muhfalihr/Thoth/releases"><img src="https://img.shields.io/badge/version-0.1.0-f97316?style=flat-square" alt="Version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Proprietary-blue?style=flat-square" alt="License"></a>
+  <img src="https://img.shields.io/badge/rust-1.85+-orange?style=flat-square&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/node-24+-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/PostgreSQL-supported-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
+  <img src="https://img.shields.io/badge/CUDA-NVENC%20%2F%20Whisper-76B900?style=flat-square&logo=nvidia&logoColor=white" alt="CUDA">
+</p>
+
+<p align="center">
   🚧 <strong>Work in progress</strong> — masih dalam pengembangan aktif (API, config, & perilaku bisa berubah).
 </p>
 
