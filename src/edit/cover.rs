@@ -1,4 +1,4 @@
-//! AI cover/thumbnail intro via `scripts/render_cover.py`.
+//! AI cover/thumbnail intro via `scripts/render/render_cover.py`.
 //!
 //! Builds a full-screen cover for the hook window: AI background (Novita FLUX.1
 //! schnell, themed to the headline) + subject cutout (rembg) + the headline text.

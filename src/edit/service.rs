@@ -75,7 +75,7 @@ fn build_hook_overlay(
             },
             out: png_path.to_string_lossy().to_string(),
         };
-        let script = Path::new("scripts/render_headline.py");
+        let script = Path::new("scripts/render/render_headline.py");
         match spec.render(&super::headline_png::python_cmd(), script) {
             Ok(p) => {
                 info!("       💥 Hook title PNG: \"{}\" ({:.1}s, {} colours, Pillow)",
@@ -206,7 +206,7 @@ fn build_cover(
         darken: cfg.darken,
         out: out.to_string_lossy().to_string(),
     };
-    let script = Path::new("scripts/render_cover.py");
+    let script = Path::new("scripts/render/render_cover.py");
     match spec.render(&super::headline_png::python_cmd(), script) {
         Ok(p) => {
             info!("       🖼️  AI cover: \"{}\" ({:.1}s, Novita FLUX + rembg)",
@@ -590,11 +590,11 @@ impl<'a> EditService<'a> {
             Vec::new()
         };
         // Static image-card pool: non-video posts (tweet/IG photo/article) that
-        // OpenClaw screenshotted + vision-cropped. Independent of `overlay.enabled`
+        // scout screenshotted + vision-cropped. Independent of `overlay.enabled`
         // (these are not downloaded — just composited as stills). Empty when none.
         let image_pool = enrichment::load_image_pool(&self.job.base_dir);
 
-        // ── OpenClaw real-data sidecars (optional) ───────────────────────────
+        // ── scout real-data sidecars (optional) ───────────────────────────
         // `content_profile.json` / `content_comments.json` are written by `main.rs`
         // from the `--content` set: the subject's FACTUAL profile (overrides the
         // LLM's guessed character_* fields) and scraped viral comments. Absent for
@@ -602,10 +602,10 @@ impl<'a> EditService<'a> {
         let profile_override = super::profile_card::load_profile_override(&self.job.base_dir);
         let comment_pool = super::comment_card::load_comment_pool(&self.job.base_dir);
         if profile_override.is_some() {
-            info!("🪪 using OpenClaw real profile for the character card");
+            info!("🪪 using scout real profile for the character card");
         }
         if !comment_pool.is_empty() {
-            info!("💬 OpenClaw comment pool: {} viral comment(s)", comment_pool.len());
+            info!("💬 scout comment pool: {} viral comment(s)", comment_pool.len());
         }
 
         let encoder = if self.config.ffmpeg.nvenc { "NVENC (GPU)" } else { "libx264 (CPU)" };
@@ -865,22 +865,23 @@ impl<'a> EditService<'a> {
 
             // ── Beat-2 profile card = CREATOR of the main video (NOT the story subject) ──
             // Skip on the hook clip — this is a CONTENT beat (3–6s). Identity priority:
-            // (1) real OpenClaw profile crop/handle, (2) the main video's uploader
+            // (1) real scout profile crop/handle, (2) the main video's uploader
             // (`source_channel` from info.json), (3) none → skip the card. The LLM
             // `character_*` fields describe the SUBJECT of the story, not the uploader, so
             // they are NEVER used as the card identity (that mislabels the creator).
-            let has_real_profile = profile_override.as_ref()
-                .map(|p| !p.name.trim().is_empty() || !p.handle.trim().is_empty())
+            // Show ONLY when a REAL platform crop screenshot exists on disk (per user: no real crop
+            // → show nothing; never a synthetic name card from a bare handle/uploader).
+            let has_real_crop = profile_override.as_ref()
+                .map(|p| { let ip = p.image_path.trim(); !ip.is_empty() && std::path::Path::new(ip).exists() })
                 .unwrap_or(false);
             let uploader = source_channel.trim();
-            let has_uploader = !uploader.is_empty();
-            if self.config.profile_card.enabled && !is_hook && (has_real_profile || has_uploader) {
+            if self.config.profile_card.enabled && !is_hook && has_real_crop {
                 let pc = &self.config.profile_card;
                 let clip_dur = end - start;
                 let at = pc.at_sec.clamp(0.0, (clip_dur - 0.5).max(0.0));
                 let dur = pc.duration_sec.min(clip_dur - at).max(0.5);
 
-                // Seed from the uploader; real OpenClaw profile (if any) overrides field-by-field.
+                // Seed from the uploader; real scout profile (if any) overrides field-by-field.
                 let mut name   = uploader.to_string();
                 let mut handle = uploader.to_string();
                 let mut stats  = String::new();
@@ -957,7 +958,7 @@ impl<'a> EditService<'a> {
                 }
             }
 
-            // ── Reaction beat: real viral comment card (OpenClaw) ────────────
+            // ── Reaction beat: real viral comment card (scout) ────────────
             // Distribute scraped comments across the CONTENT clips (rotate by clip
             // index), landing one in the reaction zone of each. Skips the hook clip.
             // A notification SFX punctuates the comment's entrance when available.
@@ -1142,7 +1143,7 @@ impl<'a> EditService<'a> {
                     None
                 };
 
-                // (Footage comes ONLY from the OpenClaw enrichment pool above. The old
+                // (Footage comes ONLY from the scout enrichment pool above. The old
                 // query-based auto-search overlay was removed — Thoth no longer invents
                 // footage; if the pool is empty/undownloadable the overlay is simply skipped.)
 
@@ -1234,7 +1235,7 @@ impl<'a> EditService<'a> {
 
             // ── Image cards (Item: non-video posts) ──────────────────────────
             // Tile cropped post screenshots (tweets/IG photos/articles supplied by
-            // OpenClaw as stills) as centred cards on CONTENT clips. Independent of
+            // scout as stills) as centred cards on CONTENT clips. Independent of
             // the video-overlay gate above — image cards need no download. Rotate by
             // clip index so each content clip shows a different post.
             if anim_on && anim_cfg.montage && !is_hook && !image_pool.is_empty() {
@@ -1472,7 +1473,11 @@ impl<'a> EditService<'a> {
             
             let sp_thumb = sub_spinner(&mp, &format!("Generating thumbnail at {:.1}s…", thumb_time));
             let mut final_thumb_path = None;
-            if let Err(e) = generate_thumbnail(&out_path, &thumb_path, thumb_time) {
+            let thumb_result = tokio::task::spawn_blocking({
+                let p = out_path.clone(); let t = thumb_path.clone();
+                move || generate_thumbnail(&p, &t, thumb_time)
+            }).await.map_err(|e| EditError::FfmpegFailed(e.to_string()))?;
+            if let Err(e) = thumb_result {
                 warn!("failed to generate thumbnail: {}", e);
                 sp_thumb.finish_with_message("  ✗ thumbnail failed");
             } else {
@@ -1745,8 +1750,13 @@ impl<'a> EditService<'a> {
                     let at = (start + cover_cfg.subject_at_sec).clamp(start, (end - 0.1).max(start));
                     // Dodge mirror/kaleidoscope TRANSITION frames (subject appears doubled on the cover)
                     // by picking the least-symmetric frame in a small window around the chosen moment.
-                    let at = super::ffmpeg::pick_cover_frame_time(video_path, at, start, end);
-                    let _ = generate_thumbnail(video_path, &subject_frame, at);
+                    // Both pick_cover_frame_time and generate_thumbnail are blocking (std::process::Command)
+                    // — run via spawn_blocking to avoid stalling the Tokio worker thread.
+                    let vp = video_path.to_owned(); let sf = subject_frame.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let at = super::ffmpeg::pick_cover_frame_time(&vp, at, start, end);
+                        let _ = super::ffmpeg::generate_thumbnail(&vp, &sf, at);
+                    }).await;
                 }
                 let cover_dur = cover_cfg.duration_sec.min(dur - 0.2).max(0.5);
                 // Detailed topic description (beyond the short hook) → grounds the AI scene in what the
@@ -1760,8 +1770,21 @@ impl<'a> EditService<'a> {
                     s
                 }).unwrap_or_default();
                 // Subject name → internet reference-photo lookup for a faithful face-swap.
-                let subject_name = moments.moments.first()
+                // Whisper-derived character_name is routinely empty for raw b-roll (no on-screen
+                // speaker named) → render_cover gets no name → fabricates a generic face. Fall back
+                // to the content-set's primary person figure (e.g. "Ferry Irwandi") so a real
+                // reference portrait is fetched. Graceful for --url runs: sidecar absent → stays "".
+                let mut subject_name = moments.moments.first()
                     .map(|m| m.character_name.trim().to_string()).unwrap_or_default();
+                if subject_name.is_empty() {
+                    if let Some(ctx) = crate::ingest::content_search::load_main_context(&self.job.base_dir) {
+                        subject_name = ctx.figures.iter()
+                            .find(|f| f.kind.eq_ignore_ascii_case("person"))
+                            .or_else(|| ctx.figures.first())
+                            .map(|f| f.name.trim().to_string())
+                            .unwrap_or_default();
+                    }
+                }
                 if let Some(cov) = build_cover(
                     cover_cfg, &self.config.hook_title, &hook, &topic_desc, &subject_name, &subject_frame,
                     cover_dur, layout, &ass_path,
@@ -1911,16 +1934,18 @@ impl<'a> EditService<'a> {
         }
 
         // ── Beat-2 profile card = CREATOR of the main video (NOT the story subject) ─────
-        // Card appears once, just after the hook. Identity priority: (1) real OpenClaw
+        // Card appears once, just after the hook. Identity priority: (1) real scout
         // profile crop/handle, (2) the main video's uploader (`source_channel` from
         // info.json), (3) none → skip. The LLM `character_*` fields describe the SUBJECT
         // of the story, not the uploader, so they are NEVER used as the card identity.
-        let has_real_profile = profile_override
-            .map(|p| !p.name.trim().is_empty() || !p.handle.trim().is_empty())
+        // ONLY show the card when a REAL platform crop screenshot exists on disk. A handle/uploader
+        // alone (no crop) used to render a SYNTHETIC name card — per user: if there is no real crop,
+        // show NOTHING. (A downloaded avatar photo is not a card crop either → also skipped.)
+        let has_real_crop = profile_override
+            .map(|p| { let ip = p.image_path.trim(); !ip.is_empty() && std::path::Path::new(ip).exists() })
             .unwrap_or(false);
         let uploader = source_channel.trim();
-        let has_uploader = !uploader.is_empty();
-        if self.config.profile_card.enabled && (has_real_profile || has_uploader) {
+        if self.config.profile_card.enabled && has_real_crop {
             let pc = &self.config.profile_card;
             let at  = (hook_dur + 0.3).clamp(0.0, (dur - 0.5).max(0.0));
             let pdur = pc.duration_sec.min(dur - at).max(0.5);
@@ -1958,7 +1983,7 @@ impl<'a> EditService<'a> {
                   if avatar_path.is_empty() { "" } else { " +photo" }, at);
         }
 
-        // ── Reaction beat: real viral comment cards (OpenClaw) ───────────────
+        // ── Reaction beat: real viral comment cards (scout) ───────────────
         // Show the top comments (by likes) spaced across the reaction portion of
         // the arc, each in its own time window + a notification SFX on entrance.
         if !comment_pool.is_empty() {
@@ -2120,14 +2145,27 @@ impl<'a> EditService<'a> {
               if loop_source { format!(" (looped from {video_dur:.0}s source)") } else { String::new() },
               hook);
 
-        // 5) Encode (blocking ffmpeg).
-        super::ffmpeg::encode_clip_direct(
-            video_path, start, end, &ass_path, layout, &out_path,
-            &self.config.ffmpeg, None, &audio,
-        )?;
+        // 5) Encode (blocking ffmpeg) — run via spawn_blocking to avoid stalling the async runtime.
+        let enc_vp    = video_path.to_owned();
+        let enc_ass   = ass_path.clone();
+        let enc_out   = out_path.clone();
+        let enc_lay   = layout.clone();
+        let enc_cfg   = self.config.ffmpeg.clone();
+        let enc_audio = audio.clone();
+        tokio::task::spawn_blocking(move || {
+            super::ffmpeg::encode_clip_direct(
+                &enc_vp, start, end, &enc_ass, &enc_lay, &enc_out,
+                &enc_cfg, None, &enc_audio,
+            )
+        })
+        .await
+        .map_err(|e| EditError::FfmpegFailed(e.to_string()))??;
 
         let thumb = out_path.with_extension("jpg");
-        let _ = super::ffmpeg::generate_thumbnail(&out_path, &thumb, 1.0);
+        let thumb2 = thumb.clone(); let enc_out2 = out_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            super::ffmpeg::generate_thumbnail(&enc_out2, &thumb2, 1.0)
+        }).await;
 
         Ok(ClipOutput {
             clip_index: 0,

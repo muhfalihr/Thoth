@@ -25,7 +25,7 @@ const NON_MEDIA_PLATFORMS: &[&str] = &["news", "web", "article", "blog"];
 /// True when a result is a downloadable video cutaway candidate.
 ///
 /// Platform-agnostic: any platform yt-dlp can handle qualifies. We gate on the
-/// `is_video` flag (OpenClaw sets it only for real video content — text tweets
+/// `is_video` flag (scout sets it only for real video content — text tweets
 /// are `false`) plus a non-empty URL, and exclude the explicit page-scrape
 /// platforms above. yt-dlp attempts the actual download; if a given platform/URL
 /// can't be fetched, `fetch_overlay_from_url` returns `None` and that footage is
@@ -37,7 +37,7 @@ fn is_downloadable_video(r: &ContentResult) -> bool {
 }
 
 /// True when a result is a NON-video post with a usable cropped screenshot — i.e.
-/// an image-card candidate (tweet/IG photo/article that OpenClaw screenshotted +
+/// an image-card candidate (tweet/IG photo/article that scout screenshotted +
 /// vision-cropped). These cannot be downloaded by yt-dlp; the edit stage renders
 /// the still image as a centred card instead. The file must exist on disk.
 fn is_image_card(r: &ContentResult) -> bool {

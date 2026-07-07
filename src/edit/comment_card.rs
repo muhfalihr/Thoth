@@ -1,5 +1,5 @@
 //! Reaction-beat comment card: a screenshot-style overlay of a REAL viral comment
-//! scraped by OpenClaw (author + text + like count + avatar).
+//! scraped by scout (author + text + like count + avatar).
 //!
 //! Like `profile_card.rs`, the panel/text is drawn with FFmpeg `drawbox`/`drawtext`
 //! filters straight into the video chain (no extra inputs). When a real avatar photo
@@ -31,7 +31,7 @@ pub struct CommentData {
     pub likes: u64,
     #[serde(default)]
     pub avatar_path: String,
-    /// Local path to a pre-cropped screenshot of this comment (OpenClaw). When set +
+    /// Local path to a pre-cropped screenshot of this comment (scout). When set +
     /// file exists, the render stage pastes this real crop instead of the drawn card.
     /// Empty = synthetic drawn card. author/text/likes still feed narration.
     #[serde(default)]

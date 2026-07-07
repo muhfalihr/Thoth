@@ -19,6 +19,8 @@ mod reaction;
 mod rag;
 mod transcribe;
 mod util;
+mod log_style;
+mod brand;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -108,20 +110,23 @@ async fn download_image_to(
     if !resp.status().is_success() {
         return None;
     }
-    let ext = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|ct| {
-            if ct.contains("png") { "png" }
-            else if ct.contains("webp") { "webp" }
-            else { "jpg" }
-        })
-        .unwrap_or("jpg");
     let bytes = resp.bytes().await.ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
+    // Validate the body is a real image by its MAGIC BYTES — NOT the Content-Type header,
+    // which lies: some avatar CDNs return an HTML error page or a whitespace-padded body
+    // with an `image/*` type. A corrupt `-loop 1` PNG never emits a frame, so the overlay
+    // that consumes it blocks the ENTIRE render forever (single- AND multi-threaded alike) —
+    // this was the real cause of the "runaway render" hang. Derive the extension from the
+    // actual signature and reject anything unrecognized (→ None → avatar skipped, no hang).
+    let ext = match bytes.as_ref() {
+        b if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) => "png",
+        b if b.starts_with(&[0xFF, 0xD8, 0xFF]) => "jpg",
+        b if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" => "webp",
+        b if b.starts_with(b"GIF8") => "gif",
+        _ => {
+            tracing::warn!("downloaded image has no valid image signature — skipping: {url}");
+            return None;
+        }
+    };
     let dest = stem.with_extension(ext);
     std::fs::write(&dest, &bytes).ok()?;
     Some(dest)
@@ -221,19 +226,70 @@ fn move_ffmpeg_to_root(dest_dir: &str) -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Immediate feedback to verify if the process even starts
-    println!("[BOOT] Thoth process started. Initializing...");
+/// Synthesize a still-image MAIN into a short video so a NON-VIDEO post (IG photo/slide, tweet image)
+/// can drive the normal pipeline. The cropped post image is fit+padded to the layout and held for
+/// `secs`; a sibling `.info.json` carries the real title/description/uploader so the ingest stage
+/// reports correct metadata (and the analyze whole-clip fallback + narration grounding take over).
+/// Returns the mp4 path, or None on any ffmpeg failure (caller falls back to the post URL).
+fn synthesize_still_video(
+    img: &str, out_dir: &std::path::Path, title: &str, description: &str, uploader: &str,
+    w: u32, h: u32,
+) -> Option<PathBuf> {
+    let secs = 45.0_f64;
+    let out = out_dir.join("main_still.mp4");
+    let ffmpeg = ffmpeg_sidecar::paths::ffmpeg_path();
+    let vf = format!(
+        "scale={w}:{h}:force_original_aspect_ratio=decrease,\
+         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p"
+    );
+    // Include a SILENT audio track (anullsrc) — the transcribe stage extracts audio.wav, which fails
+    // on a video with no audio stream. Silence → empty transcript → narration grounds on context.
+    let status = std::process::Command::new(&ffmpeg)
+        .args([
+            "-y", "-loop", "1", "-framerate", "30", "-t", &secs.to_string(), "-i", img,
+            "-f", "lavfi", "-t", &secs.to_string(), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-vf", &vf, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-shortest",
+            out.to_str()?,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if !status.success() || !out.exists() {
+        return None;
+    }
+    // Sidecar info.json → IngestService::load_info_json reads title/duration/uploader/description.
+    let info = serde_json::json!({
+        "title": if title.trim().is_empty() { "Postingan" } else { title.trim() },
+        "duration": secs, "id": "main_still",
+        "uploader": uploader, "description": description.trim(),
+    });
+    let _ = std::fs::write(out.with_extension("info.json"), info.to_string());
+    Some(out)
+}
 
+#[tokio::main]
+async fn main() {
+    if let Err(e) = run().await {
+        let p = brand::p();
+        eprintln!("\n  {}{}{} {}{}{}", p.red, brand::ERR, p.reset, p.red, e, p.reset);
+        for cause in e.chain().skip(1) {
+            eprintln!("  {}{}{} {}caused by:{} {}", p.dim, brand::SPINE, p.reset, p.dim, p.reset, cause);
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     // Load .env file if present
     dotenvy::dotenv().ok();
 
-    // Backward-compat for the CLIPPER → Thoth rename: mirror any legacy `CLIPPER_*`
+    // Backward-compat for the CLIPPER → Thoth rename: mirror any legacy `THOTH_*`
     // env var onto `THOTH_*` (so an existing .env keeps working unchanged). New keys
     // use `THOTH_*`. Runs once at startup before any config/env reads or task spawns.
     for (k, v) in std::env::vars().collect::<Vec<_>>() {
-        if let Some(rest) = k.strip_prefix("CLIPPER_") {
+        if let Some(rest) = k.strip_prefix("THOTH_") {
             let nk = format!("THOTH_{rest}");
             if std::env::var(&nk).is_err() {
                 unsafe { std::env::set_var(&nk, &v); }
@@ -246,11 +302,11 @@ async fn main() -> Result<()> {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("thoth=info")),
         )
-        .with_target(false)
-        .compact()
+        .event_format(log_style::ThothFormatter)
         .init();
 
-    tracing::info!("Thoth starting...");
+    brand::banner();
+    tracing::debug!("Thoth starting...");
 
     let cli = Cli::parse();
     tracing::debug!("CLI arguments parsed: {:?}", cli);
@@ -341,10 +397,10 @@ async fn main() -> Result<()> {
                 .context("failed to create job directories")?;
             let svc = ingest::IngestService::new(&config, &job);
             let result = svc.run(&args.url, args.force).await?;
-            println!("Ingest complete.");
-            println!("  Video : {}", result.video_path.display());
-            println!("  Title : {}", result.title);
-            println!("  Job ID: {}", job.job_id);
+            println!("{}", brand::ok("Ingest complete."));
+            println!("{}", brand::field("Video", result.video_path.display()));
+            println!("{}", brand::field("Title", result.title));
+            println!("{}", brand::field("Job ID", job.job_id));
         }
 
         Commands::Transcribe(args) => {
@@ -360,10 +416,10 @@ async fn main() -> Result<()> {
 
             let svc = transcribe::TranscribeService::new(&config, &job);
             let result = svc.run(&args.video_path, &args.model.to_string()).await?;
-            println!("Transcription complete.");
-            println!("  Transcript : {}", result.transcript_path.display());
-            println!("  Words      : {}", result.word_count);
-            println!("  Duration   : {:.1}s", result.duration_secs);
+            println!("{}", brand::ok("Transcription complete."));
+            println!("{}", brand::field("Transcript", result.transcript_path.display()));
+            println!("{}", brand::field("Words", result.word_count));
+            println!("{}", brand::field("Duration", format!("{:.1}s", result.duration_secs)));
         }
 
         Commands::Analyze(args) => {
@@ -389,10 +445,10 @@ async fn main() -> Result<()> {
                     &args.channel,
                 )
                 .await?;
-            println!("Analysis complete.");
-            println!("  Moments : {}", result.moment_count);
-            println!("  Provider: {} ({})", result.provider_used, result.model_used);
-            println!("  Output  : {}", result.moments_path.display());
+            println!("{}", brand::ok("Analysis complete."));
+            println!("{}", brand::field("Moments", result.moment_count));
+            println!("{}", brand::field("Provider", format!("{} ({})", result.provider_used, result.model_used)));
+            println!("{}", brand::field("Output", result.moments_path.display()));
         }
 
         Commands::Edit(args) => {
@@ -426,9 +482,9 @@ async fn main() -> Result<()> {
                     &args.style_profile,
                 )
                 .await?;
-            println!("Edit complete. {} clip(s) rendered:", result.output_clips.len());
+            println!("{}", brand::ok(format!("Edit complete — {} clip(s) rendered", result.output_clips.len())));
             for clip in &result.output_clips {
-                println!("  [{}] {} → {}", clip.clip_index, clip.title, clip.path.display());
+                println!("{}", brand::field(&format!("[{}]", clip.clip_index), format!("{} → {}", clip.title, clip.path.display())));
             }
         }
 
@@ -439,12 +495,12 @@ async fn main() -> Result<()> {
             }
 
             if !args.keywords.is_empty() {
-                println!("  Focus keywords: {}", args.keywords.join(", "));
+                println!("{}", brand::field("Focus keywords", args.keywords.join(", ")));
             }
 
             // ── Resolve the main video URL ────────────────────────────────────
-            // Content discovery is handled upstream by OpenClaw. Thoth accepts
-            // either a direct --url (single-video default) or an OpenClaw content
+            // Content discovery is handled upstream by scout. Thoth accepts
+            // either a direct --url (single-video default) or an scout content
             // set via --content (main video + footage pool). It does not search.
             let resolved_url: String = if let Some(ref u) = args.url {
                 u.clone()
@@ -494,7 +550,7 @@ async fn main() -> Result<()> {
                 // see PipelineRunner::generate_narration. Comments are added below.
                 if !set.figures.is_empty() {
                     let names = set.figures.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
-                    tracing::info!("👤 OpenClaw figures: {names} → narration grounding");
+                    tracing::info!("👤 scout figures: {names} → narration grounding");
                 }
                 if !set.main_title.trim().is_empty() || !set.main_description.trim().is_empty() || !set.figures.is_empty() {
                     let ctx = ingest::content_search::MainContext {
@@ -510,7 +566,7 @@ async fn main() -> Result<()> {
                             if let Err(e) = std::fs::write(&dest, j) {
                                 tracing::warn!("could not write main-context sidecar {}: {e}", dest.display());
                             } else {
-                                tracing::info!("📝 OpenClaw main context: title+description → narration grounding");
+                                tracing::info!("📝 scout main context: title+description → narration grounding");
                             }
                         }
                         Err(e) => tracing::warn!("could not serialize main-context sidecar: {e}"),
@@ -518,7 +574,7 @@ async fn main() -> Result<()> {
                 }
 
                 // ── Real subject profile (Beat-2 card) ────────────────────────
-                // OpenClaw supplies the factual handle/follower count + avatar URL.
+                // scout supplies the factual handle/follower count + avatar URL.
                 // Download the avatar locally and persist a sidecar the edit stage
                 // reads to OVERRIDE the LLM's guessed character_* fields.
                 let img_client = reqwest::Client::new();
@@ -548,7 +604,7 @@ async fn main() -> Result<()> {
                             if let Err(e) = std::fs::write(&dest, j) {
                                 tracing::warn!("could not write profile sidecar {}: {e}", dest.display());
                             } else {
-                                tracing::info!("🪪 OpenClaw profile: @{} ({})", data.handle, data.stats);
+                                tracing::info!("🪪 scout profile: @{} ({})", data.handle, data.stats);
                             }
                         }
                         Err(e) => tracing::warn!("could not serialize profile sidecar: {e}"),
@@ -564,24 +620,21 @@ async fn main() -> Result<()> {
                 let _ = std::fs::remove_file(&comments_dest);
                 if !set.comments.is_empty() {
                     let mut pool: Vec<edit::comment_card::CommentData> = Vec::new();
-                    for (idx, c) in set.comments.iter().enumerate() {
+                    for c in &set.comments {
                         if c.author.trim().is_empty() || c.text.trim().is_empty() {
                             continue;
                         }
-                        let avatar_path = download_image_to(
-                            &img_client,
-                            &c.avatar_url,
-                            &args.output_dir.join(format!("comment_avatar_{idx}")),
-                        )
-                        .await
-                        .map(|pb| pb.to_string_lossy().to_string())
-                        .unwrap_or_default();
+                        // Comment avatars are obsolete: comment cards now render from the
+                        // scout crop (`image_path` / has_crop). We no longer download the
+                        // per-comment avatar — a garbage avatar response (whitespace body with
+                        // an image/* type) produced a corrupt `-loop 1` PNG whose overlay
+                        // never got a frame and HUNG the whole render. Empty = crop or drawn card.
                         pool.push(edit::comment_card::CommentData {
                             author: c.author.trim().to_string(),
                             text: c.text.trim().to_string(),
                             likes: c.likes,
-                            avatar_path,
-                            // Crop is a local PNG already produced by OpenClaw — pass the
+                            avatar_path: String::new(),
+                            // Crop is a local PNG already produced by scout — pass the
                             // path straight through (no download). Empty = drawn card.
                             image_path: c.image_path.trim().to_string(),
                             context: c.context.trim().to_string(),
@@ -593,7 +646,7 @@ async fn main() -> Result<()> {
                                 if let Err(e) = std::fs::write(&comments_dest, j) {
                                     tracing::warn!("could not write comments sidecar {}: {e}", comments_dest.display());
                                 } else {
-                                    tracing::info!("💬 OpenClaw comments: {} card(s)", pool.len());
+                                    tracing::info!("💬 scout comments: {} card(s)", pool.len());
                                 }
                             }
                             Err(e) => tracing::warn!("could not serialize comments sidecar: {e}"),
@@ -602,21 +655,39 @@ async fn main() -> Result<()> {
                 }
 
                 tracing::info!(
-                    "📦 OpenClaw content set: main={} — {} footage item(s) → {}",
+                    "📦 scout content set: main={} — {} footage item(s) → {}",
                     set.main_url,
                     set.footage.len(),
                     enrich_path.display()
                 );
-                set.main_url
+                // NON-VIDEO MAIN (IG photo/slide, tweet image): no yt-dlp video exists. Render the
+                // cropped post image into a short still→video so the pipeline runs (ingest local-file
+                // branch → silent transcript → analyze whole-clip → narration grounding → edit). Guard
+                // on image_path presence (scout only crops non-video) so a video main never misfires.
+                let main_img = set.main_image_path.trim().to_string();
+                if !set.main_is_video && !main_img.is_empty() && std::path::Path::new(&main_img).exists() {
+                    let (sw, sh) = match args.layout {
+                        cli::OutputLayout::Horizontal => (1920u32, 1080u32),
+                        cli::OutputLayout::Square => (1080u32, 1080u32),
+                        cli::OutputLayout::Vertical => (1080u32, 1920u32),
+                    };
+                    let uploader = set.profile.as_ref().map(|p| p.handle.trim()).unwrap_or("");
+                    match synthesize_still_video(&main_img, &args.output_dir, &set.main_title, &set.main_description, uploader, sw, sh) {
+                        Some(p) => { tracing::info!("🖼️  MAIN non-video → still video: {}", p.display()); p.to_string_lossy().to_string() }
+                        None => { tracing::warn!("still-video synth failed → using main_url (may not be downloadable)"); set.main_url }
+                    }
+                } else {
+                    set.main_url
+                }
             } else {
                 anyhow::bail!(
                     "no input supplied — provide a single video with --url <URL>, \
-                     or an OpenClaw content set with --content <set.json>"
+                     or an scout content set with --content <set.json>"
                 );
             };
 
             let runner = PipelineRunner::new(&config);
-            let clips = runner
+            let _clips = runner
                 .run(
                     &resolved_url,
                     &args.output_dir,
@@ -643,11 +714,7 @@ async fn main() -> Result<()> {
                     args.resume.as_deref(),
                     &args.style_profile,
                 )
-                .await?;
-            println!("\nPipeline complete. {} clip(s):", clips.len());
-            for p in &clips {
-                println!("  {}", p.display());
-            }
+                .await?; // footer already printed by PipelineRunner::run (brand::FEATHER summary)
         }
 
         Commands::TrendAnalyze(args) => {
@@ -667,15 +734,15 @@ async fn main() -> Result<()> {
             tokio::fs::write(&profile_file, &toml_snippet).await
                 .context("failed to write profile file")?;
 
-            println!("\nTrend analysis complete!");
-            println!("  Profile name : {}", args.output_profile);
-            println!("  Description  : {}", profile.description);
-            println!("  subtitle_style: {}", profile.subtitle_style);
-            println!("  clip_style    : {}", profile.clip_style);
-            println!("  sfx_vibe      : {}", profile.sfx_vibe);
-            println!("  bgm_vibe      : {}", profile.bgm_vibe);
-            println!("  overlay_style : {}", profile.overlay_style);
-            println!("\nProfile saved to: {}", profile_file.display());
+            println!("\n{}", brand::ok("Trend analysis complete!"));
+            println!("{}", brand::field("Profile name", &args.output_profile));
+            println!("{}", brand::field("Description", &profile.description));
+            println!("{}", brand::field("subtitle_style", &profile.subtitle_style));
+            println!("{}", brand::field("clip_style", &profile.clip_style));
+            println!("{}", brand::field("sfx_vibe", &profile.sfx_vibe));
+            println!("{}", brand::field("bgm_vibe", &profile.bgm_vibe));
+            println!("{}", brand::field("overlay_style", &profile.overlay_style));
+            println!("{}", brand::field("Profile saved to", profile_file.display()));
             println!("\nAdd to your config.toml:");
             print!("{toml_snippet}");
             println!("\nThen use with: --style-profile {}", args.output_profile);
@@ -688,11 +755,11 @@ async fn main() -> Result<()> {
             // Build DB pool if configured
             let pool = if config.vector_db.enabled && !config.vector_db.supabase_url.is_empty() {
                 match sqlx::PgPool::connect(&config.vector_db.supabase_url).await {
-                    Ok(p) => { println!("✓ Connected to Supabase"); Some(p) }
-                    Err(e) => { eprintln!("✗ Cannot connect to Supabase: {e}"); None }
+                    Ok(p) => { println!("{}", brand::ok("Connected to Supabase")); Some(p) }
+                    Err(e) => { eprintln!("{}", brand::err(format!("Cannot connect to Supabase: {e}"))); None }
                 }
             } else {
-                eprintln!("⚠  vector_db.enabled = false or THOTH_SUPABASE_URL not set");
+                eprintln!("{}", brand::warn("vector_db.enabled = false or THOTH_SUPABASE_URL not set"));
                 None
             };
 
@@ -704,13 +771,13 @@ async fn main() -> Result<()> {
                     // ── URL mode: download from any URL ──────────────────────
                     if let Some(ref u) = url {
                         let cat = category.as_deref().unwrap_or_else(|| {
-                            eprintln!("⚠  --category is required when using --url");
+                            eprintln!("{}", brand::warn("--category is required when using --url"));
                             "tone_funny"
                         });
-                        println!("⬇  Downloading from: {u}");
-                        println!("   category={cat}, language={language}, column={column}");
+                        println!("{}", brand::field("Downloading from", u));
+                        println!("{}", brand::field("params", format!("category={cat}, language={language}, column={column}")));
                         if let Some(ref f) = label_filter {
-                            println!("   label_filter={f}");
+                            println!("{}", brand::field("label_filter", f));
                         }
                         let n = seed_from_url(
                             &pool, u, cat,
@@ -718,7 +785,7 @@ async fn main() -> Result<()> {
                             &language, column, skip_header,
                             label_filter.as_deref(),
                         ).await?;
-                        println!("✓ Seeded {n} words from URL → category={cat}");
+                        println!("{}", brand::ok(format!("Seeded {n} words from URL → category={cat}")));
                         return Ok(());
                     }
 
@@ -726,27 +793,27 @@ async fn main() -> Result<()> {
                     match source.as_str() {
                         "defaults" | "default" => {
                             let n = seed_defaults(&pool).await?;
-                            println!("✓ Seeded {n} default words to Supabase");
+                            println!("{}", brand::ok(format!("Seeded {n} default words to Supabase")));
                         }
                         "kamus-alay" => {
                             let n = seed_kamus_alay(&pool, &language).await?;
-                            println!("✓ Seeded {n} kamus-alay words (language={language})");
+                            println!("{}", brand::ok(format!("Seeded {n} kamus-alay words (language={language})")));
                         }
                         "openslr-stopwords" => {
                             let n = seed_openslr_stopwords(&pool, &language).await?;
-                            println!("✓ Seeded {n} OpenSLR stop words (language={language})");
+                            println!("{}", brand::ok(format!("Seeded {n} OpenSLR stop words (language={language})")));
                         }
                         other => {
-                            eprintln!("Unknown source '{other}'.");
-                            eprintln!("Available: defaults, kamus-alay, openslr-stopwords");
-                            eprintln!("Or use: --url https://... --category tone_funny");
+                            eprintln!("{}", brand::err(format!("Unknown source '{other}'.")));
+                            eprintln!("{}", brand::field("Available", "defaults, kamus-alay, openslr-stopwords"));
+                            eprintln!("{}", brand::field("Or use", "--url https://... --category tone_funny"));
                         }
                     }
                 }
                 VocabCommand::Add { category, word, subcategory, language, notes } => {
                     let pool = pool.context("Supabase connection required")?;
                     VocabCache::add_word(&pool, &category, subcategory.as_deref(), &word, &language, "manual", notes.as_deref()).await?;
-                    println!("✓ Added '{word}' to category '{category}'");
+                    println!("{}", brand::ok(format!("Added '{word}' to category '{category}'")));
                 }
                 VocabCommand::List { category } => {
                     let pool = pool.context("Supabase connection required")?;
@@ -754,7 +821,7 @@ async fn main() -> Result<()> {
                     if words.is_empty() {
                         println!("(empty — run 'thoth vocab seed' first)");
                     } else {
-                        println!("Category: {category} ({} words)", words.len());
+                        println!("{}", brand::field("Category", format!("{category} ({} words)", words.len())));
                         for (word, sub, lang, weight) in &words {
                             let sub_str = sub.as_deref().map(|s| format!("[{s}]")).unwrap_or_default();
                             println!("  {word}{sub_str} ({lang}, weight={weight:.1})");
@@ -768,7 +835,7 @@ async fn main() -> Result<()> {
                         println!("No pending word candidates to review.");
                         return Ok(());
                     }
-                    println!("Unreviewed word candidates ({}):", candidates.len());
+                    println!("{}", brand::field("Unreviewed word candidates", candidates.len()));
                     for (word, cat, occ, ctx) in &candidates {
                         let cat_str = cat.as_deref().unwrap_or("?");
                         let ctx_str = ctx.as_deref().unwrap_or("").chars().take(60).collect::<String>();
@@ -782,11 +849,11 @@ async fn main() -> Result<()> {
                         match input.trim() {
                             "a" | "approve" => {
                                 VocabCache::approve_candidate(&pool, word, cat_str, "id").await?;
-                                println!("  ✓ Approved → {cat_str}");
+                                println!("  {}", brand::ok(format!("Approved → {cat_str}")));
                             }
                             "r" | "reject" => {
                                 VocabCache::reject_candidate(&pool, word).await?;
-                                println!("  ✗ Rejected");
+                                eprintln!("  {}", brand::err("Rejected"));
                             }
                             _ => println!("  → Skipped"),
                         }
@@ -796,15 +863,15 @@ async fn main() -> Result<()> {
                     let pool = pool.context("Supabase connection required")?;
                     let cache = VocabCache::load(Some(&pool), config.vector_db.vocab_cache_ttl_secs).await;
                     println!("Vocabulary Cache Statistics:");
-                    println!("  Source:       {}", if cache.from_db { "Supabase ✓" } else { "Hardcoded defaults ⚠" });
-                    println!("  tone_funny:   {} words", cache.tone_funny.len());
-                    println!("  tone_serious: {} words", cache.tone_serious.len());
-                    println!("  intro:        {} phrases", cache.intro.len());
-                    println!("  name_titles:  {} patterns", cache.name_titles.len());
-                    println!("  stop_words:   {} (id) + {} (en)", cache.stop_words_id.len(), cache.stop_words_en.len());
-                    println!("  energy_high:  {} words", cache.energy_high.len());
-                    println!("  energy_low:   {} words", cache.energy_low.len());
-                    println!("  vibes:        {} categories", cache.vibes.len());
+                    println!("{}", brand::field("Source", if cache.from_db { "Supabase" } else { "Hardcoded defaults" }));
+                    println!("{}", brand::field("tone_funny", format!("{} words", cache.tone_funny.len())));
+                    println!("{}", brand::field("tone_serious", format!("{} words", cache.tone_serious.len())));
+                    println!("{}", brand::field("intro", format!("{} phrases", cache.intro.len())));
+                    println!("{}", brand::field("name_titles", format!("{} patterns", cache.name_titles.len())));
+                    println!("{}", brand::field("stop_words", format!("{} (id) + {} (en)", cache.stop_words_id.len(), cache.stop_words_en.len())));
+                    println!("{}", brand::field("energy_high", format!("{} words", cache.energy_high.len())));
+                    println!("{}", brand::field("energy_low", format!("{} words", cache.energy_low.len())));
+                    println!("{}", brand::field("vibes", format!("{} categories", cache.vibes.len())));
                     for (vibe, words) in &cache.vibes {
                         println!("    {vibe}: {} keywords", words.len());
                     }
@@ -829,14 +896,14 @@ async fn main() -> Result<()> {
             let moments: crate::analyze::schema::ViralMomentList = serde_json::from_str(&moments_raw)
                 .context("failed to parse moments.json")?;
 
-            println!("Generating thumbnails for {} clips in job '{}'...", moments.moments.len(), args.job_id);
+            println!("{}", brand::field("Generating thumbnails", format!("{} clips in job '{}'", moments.moments.len(), args.job_id)));
 
             let mut count = 0;
             for (i, moment) in moments.moments.iter().enumerate() {
                 let slug = crate::util::fs::slugify(&moment.title);
                 let out_path = job.clip_path(i, &slug);
                 if !out_path.exists() {
-                    println!("  ⚠ clip missing, skipping: {}", out_path.display());
+                    eprintln!("  {}", brand::warn(format!("clip missing, skipping: {}", out_path.display())));
                     continue;
                 }
 
@@ -856,13 +923,57 @@ async fn main() -> Result<()> {
                 println!("  Generating thumbnail for clip {} at {:.1}s...", i + 1, thumb_time);
                 
                 if let Err(e) = edit::ffmpeg::generate_thumbnail(&out_path, &thumb_path, thumb_time) {
-                    eprintln!("  ✗ failed: {}", e);
+                    eprintln!("  {}", brand::err(format!("failed: {}", e)));
                 } else {
-                    println!("  ✓ saved: {}", thumb_path.display());
+                    println!("  {}", brand::ok(format!("saved: {}", thumb_path.display())));
                     count += 1;
                 }
             }
-            println!("Done. Generated {} thumbnails.", count);
+            println!("{}", brand::ok(format!("Done — generated {count} thumbnails")));
+        }
+
+        Commands::Scout(args) => {
+            // ── Resolve scout/ directory ──────────────────────────────────
+            // The binary lives at <repo>/target/release/thoth.exe — the repo
+            // root is 2 levels up.  Fallback: try cwd/scout/ (when running
+            // from the repo root directly during development).
+            let scout_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent()?.parent()?.parent().map(|r| r.join("scout")))
+                .filter(|d| d.join("cli.ts").exists())
+                .or_else(|| {
+                    let cwd = std::env::current_dir().ok()?.join("scout");
+                    if cwd.join("cli.ts").exists() { Some(cwd) } else { None }
+                })
+                .ok_or_else(|| anyhow::anyhow!(
+                    "scout/cli.ts not found — run from the repo root or ensure \
+                     the thoth binary is in <repo>/target/release/"
+                ))?;
+
+            let cli_ts = scout_dir.join("cli.ts");
+
+            // ── Find Node.js ≥24 ─────────────────────────────────────────
+            let node = which::which("node").map_err(|_| anyhow::anyhow!(
+                "node not found in PATH — scout requires Node ≥24 \
+                 (https://nodejs.org/)"
+            ))?;
+
+            // ── Spawn: node scout/cli.ts <args...> ───────────────────────
+            let status = std::process::Command::new(&node)
+                .arg(&cli_ts)
+                .args(&args.args)
+                .current_dir(&scout_dir)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .with_context(|| format!(
+                    "failed to spawn node {} {}",
+                    cli_ts.display(),
+                    args.args.join(" ")
+                ))?;
+
+            std::process::exit(status.code().unwrap_or(1));
         }
     }
 

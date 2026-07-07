@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::intro::dt_escape;
 
 /// Sidecar file (in the job base dir) holding the REAL subject profile that
-/// OpenClaw scraped. Written by `main.rs` from the `--content` set; loaded here to
+/// scout scraped. Written by `main.rs` from the `--content` set; loaded here to
 /// override the LLM-guessed `character_*` fields with factual data.
 pub const PROFILE_FILE: &str = "content_profile.json";
 
@@ -28,7 +28,7 @@ pub struct ProfileCardData {
     pub stats: String,
     #[serde(default)]
     pub avatar_path: String,
-    /// Local path to a pre-cropped screenshot of the source's profile card (OpenClaw).
+    /// Local path to a pre-cropped screenshot of the source's profile card (scout).
     /// When set + file exists, the render stage pastes this crop instead of the drawn card.
     #[serde(default)]
     pub image_path: String,
@@ -73,7 +73,7 @@ pub struct ProfileCard {
     pub name_above_head: bool,
     /// Render the profile card panel (set false for name-only).
     pub show_card: bool,
-    /// Local path to a real avatar image (from OpenClaw). When non-empty the photo
+    /// Local path to a real avatar image (from scout). When non-empty the photo
     /// is composited into the avatar tile (as an FFmpeg input overlay) instead of
     /// the drawn initial letter. Empty = drawn initial tile.
     pub avatar_path: String,

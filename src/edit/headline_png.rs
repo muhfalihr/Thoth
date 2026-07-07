@@ -1,4 +1,4 @@
-//! High-fidelity hook-title renderer via Pillow (`scripts/render_headline.py`).
+//! High-fidelity hook-title renderer via Pillow (`scripts/render/render_headline.py`).
 //!
 //! libass (the ASS path) can't match a designed viral cover — thin uneven
 //! strokes, no real drop-shadow, weaker AA. This module shells out to a small
@@ -56,7 +56,7 @@ impl HeadlinePngSpec {
     /// the PNG exists. Returns the PNG path on success.
     ///
     /// `python_cmd` is the interpreter (e.g. "python"); `script` points at
-    /// `scripts/render_headline.py`.
+    /// `scripts/render/render_headline.py`.
     pub fn render(&self, python_cmd: &str, script: &Path) -> Result<PathBuf, EditError> {
         let out_path = PathBuf::from(&self.out);
         let spec_path = out_path.with_extension("spec.json");

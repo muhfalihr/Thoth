@@ -257,7 +257,7 @@ pub struct FootageCardCue {
 /// from a still image (added as a `-loop 1` input) instead of a downloaded clip.
 #[derive(Debug, Clone)]
 pub struct ImageCardCue {
-    /// Local PNG path (OpenClaw's vision-cropped post screenshot).
+    /// Local PNG path (scout's vision-cropped post screenshot).
     pub path: PathBuf,
     pub at_sec: f64,
     pub duration_sec: f64,
@@ -336,7 +336,7 @@ pub struct AudioOptions {
     pub social_icon_max_size: u32,
 
         /// Optional full-frame video overlay inserted at a specific moment.
-    /// Downloaded by `edit::overlay::fetch_overlay_from_url()` from the OpenClaw
+    /// Downloaded by `edit::overlay::fetch_overlay_from_url()` from the scout
     /// enrichment pool (`content_enrichment.json`). `None` = no overlay (default).
     pub overlay: Option<super::overlay::OverlaySpec>,
 
@@ -1117,6 +1117,9 @@ pub fn encode_clip_direct(
                 video_filter_str
             };
 
+            // ponytail: no `-hwaccel cuda`. Benchmarked to give no measurable speedup (decode ≪
+            // the GPU-bound nvenc encode) and it adds a CUDA decode path that muddies the
+            // overlay/loop frame timing implicated in the filtergraph deadlock. Not worth it.
             let mut a = vec!["-y".into()];
             // Loop the B-roll when the narration outlasts the source (Bug 6). Must precede `-i`.
             if audio.loop_source { a.extend(["-stream_loop".into(), "-1".into()]); }
@@ -1346,10 +1349,31 @@ pub fn encode_clip_direct(
                 af.push_str(";[voice]aformat=sample_fmts=fltp:channel_layouts=stereo[outa]");
             }
 
+            // Multithreaded filtergraph. This USED to deadlock intermittently — many
+            // Multithreaded filtergraph (default = ncpu). The "runaway render" hangs were
+            // NEVER a threading bug — they were a CORRUPT `-loop 1` input image (a garbage
+            // avatar download) that never emitted a frame, so the overlay consuming it
+            // blocked forever. That's thread-count-independent: PROVEN 2026-07-07 when the
+            // SAME corrupt comment_avatar_2.png hung both `-filter_complex_threads 28` AND
+            // `1`. Fixed at the source (main.rs rejects non-image downloads + drops the
+            // obsolete comment avatar), so multithreading is safe again and faster.
+            // `THOTH_FILTER_THREADS` overrides the count; the run_ffmpeg watchdog stays as
+            // the backstop for any other never-EOF input.
+            let filter_threads = std::env::var("THOTH_FILTER_THREADS").ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
             a.extend([
+                "-filter_complex_threads".into(), filter_threads.to_string(),
                 "-filter_complex".into(), format!("{video_filter_str};{af}"),
                 "-map".into(), "[outv]".into(),
                 "-map".into(), "[outa]".into(),
+                // Hard output cap. The video (overlay shortest=1) and audio (amix
+                // duration=first) are bounded INSIDE the filtergraph, but the
+                // `-stream_loop -1` inputs (b-roll + paper-grid bg) never emit EOF —
+                // without an output `-t` ffmpeg hangs forever at finalize (moov never
+                // written). Mirrors the plain-branch/other render paths.
+                "-t".into(), format!("{duration:.3}"),
                 "-c:v".into(), vcodec]);
             a
         } else {
@@ -2092,6 +2116,29 @@ fn build_encoder(cfg: &FfmpegConfig) -> (String, Vec<String>) {
     }
 }
 
+/// Wait for `child` to exit, killing it if it runs longer than `timeout`.
+/// Returns `Ok(Some(status))` on normal exit, `Ok(None)` if it was killed for
+/// exceeding the timeout. Polls rather than blocks so a runaway child can't hang us.
+fn wait_or_kill(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(s) => return Ok(Some(s)),
+            None => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(None);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+    }
+}
+
 fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
     let binary = if let Ok(p) = std::env::var("FFMPEG_PATH") {
         std::path::PathBuf::from(p)
@@ -2101,17 +2148,53 @@ fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
 
     debug!("ffmpeg {}", args.join(" "));
 
-    let output = std::process::Command::new(&binary)
+    let mut child = std::process::Command::new(&binary)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|e| EditError::FfmpegFailed(format!(
             "failed to spawn FFmpeg at '{}': {e}", binary.display()
         )))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // ponytail: watchdog. A runaway ffmpeg — e.g. a `-stream_loop -1` graph that
+    // never reaches EOF under some input combo — otherwise pegs one core forever and
+    // hangs the whole pipeline (`.output()`/`.wait()` never return). Cap wall time and
+    // kill + log the full command so the offending render is diagnosable instead of a
+    // silent 25-minute hang. Override with THOTH_FFMPEG_TIMEOUT_SECS.
+    let timeout = std::time::Duration::from_secs(
+        std::env::var("THOTH_FFMPEG_TIMEOUT_SECS").ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(300),
+    );
+    // Drain stderr in a side thread so ffmpeg never blocks on a full pipe while we poll.
+    let stderr_pipe = child.stderr.take();
+    let drain = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Some(mut p) = stderr_pipe { let _ = p.read_to_end(&mut buf); }
+        buf
+    });
+    let status = match wait_or_kill(&mut child, timeout) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            warn!(
+                "FFmpeg exceeded {}s — killed as runaway render. Full command:\nffmpeg {}",
+                timeout.as_secs(), args.join(" ")
+            );
+            let _ = drain.join();
+            return Err(EditError::FfmpegFailed(format!(
+                "FFmpeg timed out after {}s (runaway render; full command in log above)",
+                timeout.as_secs()
+            )));
+        }
+        Err(e) => return Err(EditError::FfmpegFailed(format!("FFmpeg wait failed: {e}"))),
+    };
+    let stderr_bytes = drain.join().unwrap_or_default();
+
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         let tail: String = stderr
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -2125,11 +2208,11 @@ fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
 
         warn!("FFmpeg stderr:\n{tail}");
         return Err(EditError::FfmpegFailed(format!(
-            "FFmpeg exited with code {:?}. Error:\n{}", output.status.code(), tail
+            "FFmpeg exited with code {:?}. Error:\n{}", status.code(), tail
         )));
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
     for line in stderr.lines() {
         if line.contains("matches no streams") || line.contains("Output file #0 does not contain") {
             warn!("[ffmpeg] {line}");
@@ -2258,6 +2341,30 @@ mod tests {
         AssetSfxCue { path: PathBuf::from("assets/sfx/x.mp3"), at_sec: at, duration_sec: dur, volume: vol }
     }
 
+    // The watchdog must kill a process that outlives its timeout (the runaway-ffmpeg
+    // path) and let a quick one exit normally. `ping` is a portable Windows sleeper.
+    #[test]
+    fn wait_or_kill_terminates_runaway() {
+        use std::time::{Duration, Instant};
+        // Long-runner (~19s): must be killed well before it finishes.
+        let mut long = std::process::Command::new("ping")
+            .args(["127.0.0.1", "-n", "20"])
+            .stdout(std::process::Stdio::null())
+            .spawn().expect("spawn ping");
+        let t0 = Instant::now();
+        let r = wait_or_kill(&mut long, Duration::from_millis(400)).unwrap();
+        assert!(r.is_none(), "runaway should be killed → None");
+        assert!(t0.elapsed() < Duration::from_secs(5), "kill must be prompt");
+
+        // Quick-runner: must exit on its own, not be killed.
+        let mut quick = std::process::Command::new("ping")
+            .args(["127.0.0.1", "-n", "1"])
+            .stdout(std::process::Stdio::null())
+            .spawn().expect("spawn ping");
+        let r = wait_or_kill(&mut quick, Duration::from_secs(10)).unwrap();
+        assert!(r.is_some(), "quick process should exit normally → Some");
+    }
+
     #[test]
     fn cue_filter_delays_and_labels() {
         let f = build_cue_audio_filter(3, 0, &cue(8.0, 1.5, 0.8), 30.0, "NORM");
@@ -2336,7 +2443,7 @@ mod tests {
     fn footage_card_centred_with_window() {
         use crate::edit::overlay::{OverlaySpec, OverlayStyle};
         let ov = OverlaySpec {
-            path: PathBuf::from("overlay_cache/x.mp4"),
+            path: PathBuf::from("footage_cache/x.mp4"),
             at_sec: 4.0, duration_sec: 4.0,
             style: OverlayStyle::FootageCard { scale_pct: 88, y_offset: 0 },
         };
@@ -2376,7 +2483,7 @@ mod tests {
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
         );
-        assert!(f.contains("[7:v]scale=1080:1920"));         // paper bg from input 7
+        assert!(f.contains("[7:v]scale=1080:1920")); // paper bg (input 7) composited at native framerate
         assert!(f.contains("crop=1080:1920"));
         assert!(f.contains("scale=950:-2,setsar=1[fg]"));    // footage card width
         assert!(f.contains("(H-h)/2+(-120)"));               // placement variation
