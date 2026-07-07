@@ -272,6 +272,44 @@ thoth run "https://youtu.be/xxxx" --provider claude --layout square
 
 > **Narrator-driven**: jalankan dengan `--content set.json` (atau aktifkan `[narration]`) untuk membangun video di sekitar voiceover narator. Gunakan `--provider novita` untuk narasi (default `groq` kena rate-limit → fallback clip-mode).
 
+### `scout` — Content Sourcing (TypeScript pass-through)
+
+Thoth Rust punya **satu titik masuk terpusat** untuk tooling eksternal:
+`thoth scout <perintah> [args...]` meneruskan apa adanya (`trailing_var_arg`) ke
+entrypoint TypeScript tunggal `scout/cli.ts` (`node scout/cli.ts <perintah> [args...]`,
+Node ≥24, tanpa build). Semua flag script lama tetap berlaku — Rust hanya jadi
+gerbang panggilan, bukan reimplementasi. Kredensial di-load sekali oleh
+`scout/lib/env.ts` dari `.env` ROOT (file yang sama dipakai Thoth) sebelum child
+process mana pun di-spawn.
+
+```bash
+thoth scout browser status                        # cek CDP browser terkelola (port 18800)
+thoth scout discover --max-per 4 --hours 48        # discovery topik akun IG kurator
+thoth scout trending --max 20 --region ID          # trending TikTok Studio
+thoth scout run "<url>" --out set.json --per 2 --max 4   # <url> → content-set lengkap
+thoth scout comments set.json --extra <url> --cap 30      # komentar multi-sumber
+thoth scout footage set.json --per 3 --max 8       # b-roll objek cerita
+thoth scout figures set.json                       # ekstrak tokoh/organisasi → figures[]
+thoth scout enrich set.json                         # konteks budaya komentar (references/discourse)
+thoth scout images set.json --force                 # crop post non-video → image_path
+thoth scout validate set.json                       # lint WAJIB sebelum hand-off (exit 0 = aman)
+thoth scout pulse --max 50 --per-video 5             # Cultural Pulse harian → CKB (Supabase)
+thoth scout topics                                   # discovery sekunder trending X/YouTube
+thoth scout news                                     # kartu image Google News → footage[]
+```
+
+**Flow harian:** `thoth scout browser status` → `thoth scout discover` →
+`thoth scout run <url> --out set.json` → `thoth scout validate set.json` →
+`thoth run --content set.json`.
+
+**Sisi Python** dari pipeline (news search/screenshot, TTS) TIDAK punya perintah
+pass-through terpisah — dipanggil otomatis oleh masing-masing stage Rust
+(`analyze`/`news`/`reaction`) lewat satu runner terpusat (`news::util::python_command`)
+yang membaca interpreter dari config, bukan hardcode per pemanggilan:
+`python_path`/`conda_env` di `[content_search]`/`[news]`/`[tts]` (`config.toml`), atau
+`THOTH_PYTHON` env untuk renderer Pillow (`edit::headline_png::python_cmd`). Ganti
+interpreter/conda-env di satu tempat → semua stage Python ikut.
+
 ### `trend-analyze` — Auto-generate Style Profile
 ```bash
 # Analisis 10 video trending → generate style profile ke config.toml
@@ -425,7 +463,7 @@ structure_rag  = true      # RAG struktur narasi (Supabase narration_structures)
 ```toml
 [content_search]
 enabled          = true
-script           = "scripts/social_search.py"
+script           = "scripts/news/social_search.py"
 platforms        = "youtube,instagram,twitter,news"   # tiktok perlu proxy residential
 engine           = "auto"            # auto | playwright | scrapling
 max_per_platform = 6
@@ -536,12 +574,12 @@ THOTH_WHISPER_LANGUAGE=id          # paksa bahasa transcribe (opsional)
 `THOTH_LLM_MODEL`, `THOTH_CONTEXT_MODEL`, `THOTH_VISION_MODEL`, `THOTH_EMBED_MODEL`,
 `THOTH_GROUND=0` (matikan web-grounding), `THOTH_CKB_*` (TTL cache).
 
-> **scout pakai FILE kunci, bukan `.env`.** Di folder `scout/`: `.novita_key` (wajib),
-> `.groq_key` (opsional), dan untuk CKB Supabase: `.supabase_url` (atau env `THOTH_SUPABASE_URL`) +
-> `npm install pg`. Detail: [scout/README.md](scout/README.md).
+> **scout pakai `.env` ROOT yang sama dengan Thoth** (via `scout/lib/env.ts`) — key file
+> per-folder lama (`.novita_key`/`.groq_key`/`.supabase_url`) sudah tidak dibaca lagi.
+> Wajib: `THOTH_NOVITA_API_KEY`. Opsional: `THOTH_GROQ_API_KEY` (fallback discovery), dan
+> untuk CKB Supabase: `THOTH_SUPABASE_URL` + `npm install pg`. Detail: [scout/README.md](scout/README.md).
 
-> 🔐 **Jangan commit** `.env`, `.novita_key`, `.groq_key`, `.supabase_url`, `config.toml`, atau cookie.
-> Semua sudah di `.gitignore`.
+> 🔐 **Jangan commit** `.env` atau `config.toml`, atau cookie. Semua sudah di `.gitignore`.
 
 ---
 
