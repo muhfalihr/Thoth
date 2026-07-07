@@ -79,7 +79,9 @@ async fn generate_script(
     } else {
         format!(
             "REFERENSI STRUKTUR NARASI YANG TERBUKTI (dari video sejenis yang viral — \
-             TIRU POLA arc/hook/pacing/punchline-nya, JANGAN salin kata-katanya, topiknya beda):\n\
+             TIRU POLA arc/hook/pacing/punchline-nya, JANGAN salin kata-katanya, topiknya beda). \
+             Referensi ini cuma INSPIRASI pola — kalau bentrok dengan STRUKTUR WAJIB di bawah, \
+             STRUKTUR WAJIB yang menang:\n\
              {structure_refs}\n\n",
             structure_refs = structure_refs.trim(),
         )
