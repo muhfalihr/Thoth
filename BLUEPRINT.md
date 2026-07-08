@@ -558,3 +558,11 @@ output/.THOTH/{job_id}/
   - *Rust: struct `Reference`/`Discourse` (+`as_of_date`/`source_url`/`trends`) di `content_search.rs`, blok narasi di `pipeline/mod.rs`, prompt di `narration/mod.rs`; `LlmProvider::chat_completion_json` (response_format json_object) utk keandalan JSON analyze/narasi.*
   - *Model audit: analyze → `deepseek-v3.1`; vision frame-desc → `qwen2.5-vl-72b` (2026-07: DEPRECATED Novita → `qwen3-vl-235b-a22b-instruct`); task teks scout → `deepseek-v3.1`; cover default → `gemini-2.5-flash-image`.*
   - *Detail penuh: `RESEARCH_context_enrichment_narration.md`.*
+
+*Last updated: 2026-07-08 (iii) — Narration prompt FLSR alignment (`src/narration/mod.rs`):*
+  - RAG referensi struktur narasi ditandai inspirasi-saja; STRUKTUR WAJIB menang bila terjadi konflik dengan referensi.
+  - ISI 3-tier di STRUKTUR WAJIB kini dibuka dengan tension-opener (kalimat gantung sebelum detail kasus mengalir).
+  - PENUTUP dual-mode: pertanyaan tajam (kasus debat) ATAU value-close spesifik (kasus non-debat) — bukan nasihat generik.
+  - REFERENSI VIBE diperbarui untuk mendemonstrasikan TENSION OPENER + struktur MODE A/B secara konkret.
+  - Spesifikasi: `docs/superpowers/specs/2026-07-08-flsr-narration-prompt-design.md`.
+  - *Verified: `cargo test --bin thoth narration` 4 passed/0 failed; `build_cuda.bat` EXIT 0 (0 error, `thoth.exe` rebuilt).*
