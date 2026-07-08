@@ -153,13 +153,15 @@ async fn generate_script(
          - JANGAN kalimat panjang bertele-tele.\n\n\
          REFERENSI VIBE yang BENAR:\n\
          Contoh topik 'penceramah ngaku penjaga gawang neraka': \
-         \"Top dua pernyataan paling gila dari Abah Gufron. Yang pertama — katanya santrinya \
-         yang kecelakaan selamat karena malaikat maut takut sama dia. Serius. Malaikat. Takut. \
-         Yang kedua, ngaku jadi penjaga gawang neraka. Bisa-bisanya. Dan jamaahnya bilang 'betul'. \
-         Jadi kalau gawang neraka dijaga Abah Gufron, yang nge-gol-in siapa dong?\"\n\
-         → Notice: tidak ada sapaan, tidak ada nasihat, tidak ada 'mantul'. Fakta gila + \
-         reaksi heran singkat + penutup pertanyaan yang SPESIFIK ke kasusnya (bukan template). \
-         Itu rage-bait. (Ingat: JANGAN tiru kalimatnya — tiru POLA-nya saja.)\n\n\
+         \"Ada satu penceramah yang klaimnya bikin satu Indonesia geleng-geleng — dan yang paling \
+         gila justru bukan yang pertama. Katanya santrinya yang kecelakaan selamat karena malaikat \
+         maut takut sama dia. Serius. Malaikat. Takut. Tapi itu belum seberapa — dia juga ngaku \
+         jadi penjaga gawang neraka. Bisa-bisanya. Dan jamaahnya bilang 'betul'. Jadi kalau gawang \
+         neraka dijaga Abah Gufron, yang nge-gol-in siapa dong?\"\n\
+         → Notice: TENSION OPENER dulu (sebut ada klaim gila TANPA bongkar semua), baru detail, \
+         reaksi heran singkat, tutup MODE A (pertanyaan spesifik ke kasus). Varian tutup MODE B \
+         untuk kasus yang sama: \"Jadi gelar penjaga gawang neraka itu modalnya cuma satu — \
+         jamaah yang mau bilang betul.\" (Ingat: JANGAN tiru kalimatnya — tiru POLA-nya saja.)\n\n\
          Panjang sekitar {words} kata (≈{secs} detik dibaca). Natural buat diucapin.\n\n\
          Output JSON:\n\
          {{\"hook\": \"hook penasaran ≤12 kata buat judul — WAJIB tanpa tanda baca apa pun (tanpa titik, koma, tanda tanya, tanda seru, titik dua, tanda hubung, em-dash, kutip, elipsis); huruf dan angka saja\", \
