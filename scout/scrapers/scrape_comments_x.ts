@@ -3,7 +3,7 @@
 // article is the main tweet → skipped), author from User-Name, body from tweetText, like
 // count from the like button's aria-label, avatar from Tweet-User-Avatar.
 //
-//   node scrape_comments_x.js <tweet_url> [out.json] [--max N]
+//   bun scrape_comments_x.js <tweet_url> [out.json] [--max N]
 //   (tab x.com / twitter.com harus login & ter-attach relay)
 
 import { run } from '../lib/cdp.ts';
@@ -41,7 +41,7 @@ const EXTRACT_JS = `(() => {
 })()`;
 
 const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) { console.log('Usage: node scrape_comments_x.ts <tweet_url> [out.json] [--max N]'); process.exit(1); }
+if (!url) { console.log('Usage: bun scrape_comments_x.ts <tweet_url> [out.json] [--max N]'); process.exit(1); }
 
 const id = (url.match(/status\/(\d+)/) || [, ''])[1];
 const user = (url.match(/(?:x|twitter)\.com\/([^/?#]+)/) || [, 'user'])[1];

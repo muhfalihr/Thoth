@@ -8,7 +8,7 @@
 // Replaces the old vision_pipeline.js (which had a dead hardcoded key + was pinned to a
 // leftover dev screenshot). Key is read from THOTH_NOVITA_API_KEY (.env root via lib/env.js) — never hardcoded.
 //
-//   node vision_crop.js <input.png> [output.png] [--w 1200]
+//   bun vision_crop.js <input.png> [output.png] [--w 1200]
 //
 // Exit 0 = crop written; 2 = obstructed/low-confidence (retry screenshot); 1 = error.
 
@@ -69,7 +69,7 @@ async function main() {
   }
   const input = pos[0];
   if (!input) {
-    console.log('Usage: node vision_crop.ts <input.png> [output.png] [--w 1200]');
+    console.log('Usage: bun vision_crop.ts <input.png> [output.png] [--w 1200]');
     process.exit(1);
   }
   if (!fs.existsSync(input)) throw new Error(`Input tidak ada: ${input}`);

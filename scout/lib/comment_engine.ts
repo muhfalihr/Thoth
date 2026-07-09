@@ -114,7 +114,7 @@ async function scrapeComments(opts) {
       const measure = async () => {
         await client.evaluate(`(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (el) el.scrollIntoView({block:"center"}); })()`);
         // Wait for the node's OWN images (avatar/media) to actually decode before we read/capture —
-        // an unpainted node captures as a solid-black clip (the root cause of blank crops). Poll
+        // an unpainted bun captures as a solid-black clip (the root cause of blank crops). Poll
         // from Node since client.evaluate doesn't awaitPromise; break early once painted (usually
         // faster than the old blind 420ms), cap ~1.3s for lazy avatars.
         const imgsReady = `(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (!el) return true; return [...el.querySelectorAll('img')].every(im => im.complete && im.naturalWidth > 0); })()`;
@@ -122,8 +122,8 @@ async function scrapeComments(opts) {
         const rj = await client.evaluate(`(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (!el) return ''; const r = el.getBoundingClientRect(); return JSON.stringify({x:r.x+window.scrollX,y:r.y+window.scrollY,w:r.width,h:r.height,txt:(el.innerText||'').replace(/\\s+/g,' ').slice(0,400)}); })()`);
         try { return JSON.parse(rj); } catch (e) { return null; }
       };
-      // The tagged node must STILL show this comment's text at capture time. Virtualised lists (IG/X)
-      // recycle off-screen nodes, so a `data-clip-idx` can end up on a node now rendering something
+      // The tagged bun must STILL show this comment's text at capture time. Virtualised lists (IG/X)
+      // recycle off-screen nodes, so a `data-clip-idx` can end up on a bun now rendering something
       // else (e.g. the post caption) → a crop of the WRONG content. Guard: require the comment's text
       // to appear in the element's current innerText; if not, skip the crop (keep the correct
       // author/text → Thoth draws the synthetic card) instead of pasting a mismatched screenshot.
@@ -137,7 +137,7 @@ async function scrapeComments(opts) {
         seen.add(key); progressed = true;
         results.push({ author: c.author || 'anon', text, likes: normalizeLikes(c.likes_raw), avatar_url: c.avatar_url || '', image_path: '' });
         outIdx++;
-        console.log(`  #${outIdx} @${c.author}: crop konten tak cocok (node ter-recycle) → kartu sintetis`);
+        console.log(`  #${outIdx} @${c.author}: crop konten tak cocok (bun ter-recycle) → kartu sintetis`);
         continue;
       }
 
@@ -190,7 +190,7 @@ async function scrapeComments(opts) {
   console.log(ui.rule());
   console.log(`📄 ${OUT_JSON} (${results.length} komentar)  |  📁 crops: ${CROPS_DIR}`);
   console.log('\nValidate lalu run:');
-  console.log(`  node validate_content_set.ts "${OUT_JSON}"`);
+  console.log(`  bun validate_content_set.ts "${OUT_JSON}"`);
   console.log(`  thoth run --content "${OUT_JSON}"`);
 
   return { comments: results, outJson: OUT_JSON };

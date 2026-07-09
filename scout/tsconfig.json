@@ -1,7 +1,7 @@
 {
-  // Scout jalan NATIVE via Node >=24 type stripping (node cli.ts …) — tsc HANYA untuk
-  // type-check (noEmit). erasableSyntaxOnly menjamin sintaks yang dipakai bisa di-strip
-  // Node (tanpa enum/namespace/parameter-properties).
+  // Scout jalan NATIVE via Bun (bun cli.ts …) — tsc HANYA untuk type-check (noEmit).
+  // erasableSyntaxOnly dipertahankan agar TS tetap portable (tanpa enum/namespace/
+  // parameter-properties), meski Bun sendiri mampu menjalankan sintaks tersebut.
   "compilerOptions": {
     "target": "es2023",
     "module": "nodenext",

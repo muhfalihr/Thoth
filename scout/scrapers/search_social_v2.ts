@@ -5,8 +5,8 @@
 // (mis. instagram.com/p/<handle>/reel/ → 404) atau diakses logged-out (x.com login-wall).
 // FIX: navigasi browser yang SUDAH LOGIN, ambil href canonical real dari DOM, validasi regex.
 //
-//   node search_social_v2.js ig "korupsi BGN MBG"
-//   node search_social_v2.js tw "korupsi BGN MBG"
+//   bun search_social_v2.js ig "korupsi BGN MBG"
+//   bun search_social_v2.js tw "korupsi BGN MBG"
 //
 // Output: output/<ig|tw>_urls.json  { query, fetched_at, logged_out_hint, urls:[...] }
 
@@ -20,7 +20,7 @@ async function main() {
   const platform = (process.argv[2] || '').toLowerCase();
   const query = process.argv[3];
   if (!['ig', 'tw'].includes(platform) || !query) {
-    console.log('Usage: node search_social_v2.ts <ig|tw> "<query>"');
+    console.log('Usage: bun search_social_v2.ts <ig|tw> "<query>"');
     process.exit(1);
   }
 
@@ -40,7 +40,7 @@ async function main() {
         out: 'tw_urls.json',
       };
 
-  // connect() does the CDP preflight: a clear "run node lib/browser.js start" message if CDP is down.
+  // connect() does the CDP preflight: a clear "run bun lib/browser.js start" message if CDP is down.
   const client = await connect({ match: cfg.match });
 
   console.log(`🔎 [${platform}] navigate: ${cfg.searchUrl}`);

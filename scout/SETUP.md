@@ -10,12 +10,12 @@ saja; flow harian ada di **[README.md](README.md)** / **[RUNBOOK.md](RUNBOOK.md)
 
 | Item | Untuk |
 |---|---|
-| **Node.js LTS** (18+; box ini v24) | menjalankan semua script (`node ...`). `fetch`/`WebSocket` global. |
+| **Bun** (≥1.2) | menjalankan semua script (`bun ...`). `fetch`/`WebSocket` global. |
 | **Brave / Chrome / Edge** | managed browser CDP (§2). `lib/browser.ts` auto-deteksi Brave > Chrome > Edge. |
 | **Thoth ter-build + Python deps** | render sisi Rust — lihat [../SETUP.md](../SETUP.md). |
 
-Tak ada dependency npm wajib untuk pipeline inti (script pakai Node builtins).
-`npm install pg` hanya bila memakai CKB Supabase (§4).
+Tak ada dependency wajib untuk pipeline inti (script pakai builtin `node:*` yang didukung Bun).
+`bun add pg` hanya bila memakai CKB Supabase (§4).
 
 ---
 
@@ -26,9 +26,9 @@ profil khusus (`~/.clipper/browser-profile`), yang natively menyajikan CDP di **
 Ini menggantikan segala relay/extension pihak-ketiga.
 
 ```powershell
-node lib/browser.ts start      # launch + serve CDP di 18800
-node lib/browser.ts status     # UP / DOWN
-node lib/browser.ts stop
+bun lib/browser.ts start      # launch + serve CDP di 18800
+bun lib/browser.ts status     # UP / DOWN
+bun lib/browser.ts stop
 ```
 
 Setelah `start`, **login sekali** di window itu ke tab yang dipakai (minimal
@@ -38,7 +38,7 @@ Cookie persisten di profil, jadi login cukup sekali. Biarkan tab-tab itu terbuka
 `lib/cdp.ts` otomatis memakai `http://127.0.0.1:18800` (override via env `THOTH_CDP`).
 Verifikasi:
 ```powershell
-node -e "fetch('http://127.0.0.1:18800/json/version').then(r=>console.log('CDP OK',r.status)).catch(()=>console.log('CDP DOWN'))"
+bun -e "fetch('http://127.0.0.1:18800/json/version').then(r=>console.log('CDP OK',r.status)).catch(()=>console.log('CDP DOWN'))"
 ```
 
 Env opsional: `THOTH_CDP_PORT`, `THOTH_BROWSER_BIN` (path binary), `THOTH_BROWSER_PROFILE`
@@ -72,7 +72,7 @@ lintas-mesin di Supabase Postgres:
 
 ```powershell
 # URL via THOTH_SUPABASE_URL di .env root (§3)
-npm install pg
+bun add pg
 ```
 Tanpa ini, CKB degrade ke cache lokal-JSON (`ckb.json`) — tetap jalan, tak lintas-mesin.
 
@@ -81,10 +81,10 @@ Tanpa ini, CKB degrade ke cache lokal-JSON (`ckb.json`) — tetap jalan, tak lin
 ## 5. Smoke test
 
 ```powershell
-node -e "require('./lib/cdp').listTargets().then(t=>console.log(t.length,'tabs')).catch(e=>console.log('CDP down',e.message))"
-node cli.ts discover --max-per 2 --hours 48     # → output/reel_topics.json
+bun -e "require('./lib/cdp').listTargets().then(t=>console.log(t.length,'tabs')).catch(e=>console.log('CDP down',e.message))"
+bun cli.ts discover --max-per 2 --hours 48     # → output/reel_topics.json
 ```
-Semua fitur bisa lewat satu entrypoint: **`node cli.ts`** (tanpa argumen = daftar perintah).
+Semua fitur bisa lewat satu entrypoint: **`bun cli.ts`** (tanpa argumen = daftar perintah).
 Lanjut ke flow lengkap di **[README.md](README.md)** (discover_reels → run_pipeline → `thoth run --content`).
 
 ---
@@ -93,8 +93,8 @@ Lanjut ke flow lengkap di **[README.md](README.md)** (discover_reels → run_pip
 
 | Gejala | Akar | Fix |
 |---|---|---|
-| `ECONNREFUSED 127.0.0.1:18800` di semua script | Managed browser belum jalan | `node lib/browser.ts status` → kalau DOWN: `node lib/browser.ts start`. |
+| `ECONNREFUSED 127.0.0.1:18800` di semua script | Managed browser belum jalan | `bun lib/browser.ts status` → kalau DOWN: `bun lib/browser.ts start`. |
 | `tab X belum ter-attach (skip)` | Tab platform itu tak terbuka/login | Buka & login tab platform tsb di managed browser, biarkan terbuka. |
-| `node: command not found` | Node.js belum terpasang/PATH | Install Node.js LTS, buka shell baru. |
+| `bun: command not found` | Bun belum terpasang/PATH | Install Bun (https://bun.sh), buka shell baru. |
 | Key error (LLM/vision) di script | `THOTH_NOVITA_API_KEY`/`THOTH_GROQ_API_KEY` kosong/salah | Isi variabelnya di `.env` root repo (§3). |
 | CKB tak lintas-mesin | `pg`/URL Supabase belum diset | §4 — atau abaikan (fallback `ckb.json` lokal). |

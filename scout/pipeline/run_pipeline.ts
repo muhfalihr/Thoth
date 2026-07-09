@@ -5,7 +5,7 @@
 //   → extract_figures (tokoh) → build_footage (objek→footage, gated) → collect_comments (multi-sumber)
 //   → validate.
 //
-//   node run_pipeline.ts <topic_url> [--out file.json] [--title "..."] [--desc "..."]
+//   bun run_pipeline.ts <topic_url> [--out file.json] [--title "..."] [--desc "..."]
 //                        [--per 2] [--max 4] [--cap 12] [--no-comments]
 //
 // <topic_url> = the post/reel the topic was discovered from (e.g. an IG reel). Caption is auto-fetched
@@ -30,7 +30,7 @@ const PER = getFlag('--per', '2');
 const MAX = getFlag('--max', '4');
 const CAP = getFlag('--cap', '12');
 const NO_COMMENTS = args.includes('--no-comments');
-if (!URL) { console.log('Usage: node run_pipeline.ts <topic_url> [--out f.json] [--title][--desc] [--per 2][--max 4][--cap 12] [--no-comments]'); process.exit(1); }
+if (!URL) { console.log('Usage: bun run_pipeline.ts <topic_url> [--out f.json] [--title][--desc] [--per 2][--max 4][--cap 12] [--no-comments]'); process.exit(1); }
 
 const here = s => path.join(import.meta.dirname, s);
 const platformOf = u => /tiktok\.com/.test(u) ? 'tiktok' : /youtube\.com|youtu\.be/.test(u) ? 'youtube'
@@ -61,7 +61,7 @@ async function fetchCaption(url, platform) {
 // Run a sub-step; tolerate non-zero exit (steps degrade gracefully + we validate at the end).
 function step(label, script, scriptArgs) {
   ui.stage(label);
-  try { execFileSync('node', [here(script), ...scriptArgs], { stdio: 'inherit', timeout: 600000 }); }
+  try { execFileSync(process.execPath, [here(script), ...scriptArgs], { stdio: 'inherit', timeout: 600000 }); }
   catch (e) { console.log(ui.amber(`  ${ui.WARN} ${label} exit≠0 — lanjut`)); }
 }
 

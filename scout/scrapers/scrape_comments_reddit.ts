@@ -3,7 +3,7 @@
 // attributes and slots its body in [slot="comment"]; depth="0" = a top-level comment.
 // Nested replies are hidden before measuring so each crop is just that one comment.
 //
-//   node scrape_comments_reddit.js <post_url> [out.json] [--max N]
+//   bun scrape_comments_reddit.js <post_url> [out.json] [--max N]
 //   (komentar publik — login opsional; tab reddit.com ter-attach relay)
 
 import { run } from '../lib/cdp.ts';
@@ -28,7 +28,7 @@ const EXTRACT_JS = `(() => {
 })()`;
 
 const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) { console.log('Usage: node scrape_comments_reddit.ts <post_url> [out.json] [--max N]'); process.exit(1); }
+if (!url) { console.log('Usage: bun scrape_comments_reddit.ts <post_url> [out.json] [--max N]'); process.exit(1); }
 
 const id = (url.match(/comments\/(\w+)/) || [, ''])[1];
 

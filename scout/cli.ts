@@ -1,7 +1,7 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // cli.ts — SATU entrypoint untuk semua fitur scout.
 //
-//   node cli.ts <perintah> [args...]
+//   bun cli.ts <perintah> [args...]
 //
 // Argumen setelah <perintah> diteruskan apa adanya ke script target, jadi semua
 // flag lama (--max-per, --out, --extra, dst.) tetap berlaku. Dijalankan lewat sini,
@@ -33,7 +33,7 @@ const CMDS: Record<string, [string, string]> = {
 function help(bad?: string) {
   const spine = `  ${ui.violet(ui.SPINE)} `;
   if (bad) console.error(`${spine}${ui.red(`${ui.ERR} Perintah tak dikenal: ${bad}`)}`);
-  console.log(`${spine}${ui.dim('Pakai:')} node cli.ts ${ui.gold('<perintah>')} [args...]`);
+  console.log(`${spine}${ui.dim('Pakai:')} bun cli.ts ${ui.gold('<perintah>')} [args...]`);
   console.log(spine);
   const w = Math.max(...Object.keys(CMDS).map(k => k.length));
   for (const [k, [, desc]] of Object.entries(CMDS)) console.log(`${spine}${ui.gold(k.padEnd(w))}  ${ui.dim(desc)}`);

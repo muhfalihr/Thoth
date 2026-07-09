@@ -8,7 +8,7 @@
 // (Brave/Chrome/Edge) with --remote-debugging-port + a dedicated profile, which natively
 // serves CDP on port 18800. Override with THOTH_CDP; otherwise defaults to 18800.
 // "ECONNREFUSED" on the default port = managed browser not started, NOT browser down.
-// Start it: `node lib/browser.ts start` (see lib/browser.ts header for the full CDP writeup).
+// Start it: `bun lib/browser.ts start` (see lib/browser.ts header for the full CDP writeup).
 //
 // Requires Node 18+ (global fetch) / Node 21+ (global WebSocket). This box runs v24.
 
@@ -75,10 +75,10 @@ async function listTargets(): Promise<CdpTarget[]> {
 }
 
 function printRelayHelp(): void {
-  console.log('   FIX (standalone): jalankan  node lib/browser.ts start');
+  console.log('   FIX (standalone): jalankan  bun lib/browser.ts start');
   console.log('   → browser terbuka; login sekali ke tab target (TikTok/IG/X), cookie tersimpan.');
   console.log(`   → lib/browser.ts menyajikan CDP di ${CDP_BASE}; lalu jalankan ulang perintah ini.`);
-  console.log('   Cek status kapan saja:  node lib/browser.ts status');
+  console.log('   Cek status kapan saja:  bun lib/browser.ts status');
 }
 
 // Open a CDP session against a page tab.
@@ -97,7 +97,7 @@ async function connect({ match, navigate, waitMs = 6000, requireMatch = false }:
     ? targets.find(t => t.type === 'page' && matches.some(m => String(t.url).includes(m)) && !String(t.url).includes('sw.js'))
     : null;
   if (!tab && requireMatch) {
-    throw relayError(`Tidak ada tab '${matches.join("' / '")}' yang terbuka. Buka & login tab itu di managed browser (node lib/browser.ts start).`);
+    throw relayError(`Tidak ada tab '${matches.join("' / '")}' yang terbuka. Buka & login tab itu di managed browser (bun lib/browser.ts start).`);
   }
   if (!tab) {
     tab = targets.find(t => t.type === 'page' && t.webSocketDebuggerUrl

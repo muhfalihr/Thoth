@@ -438,11 +438,11 @@ pub enum VocabCommand {
     Stats,
 }
 
-/// Arguments for `thoth scout` — pass-through to scout/cli.ts (Node.js).
+/// Arguments for `thoth scout` — pass-through to scout/cli.ts (Bun).
 ///
 /// Everything after `thoth scout` is forwarded verbatim to the TypeScript CLI:
 ///   thoth scout discover --max-per 4 --hours 48
-///     → node scout/cli.ts discover --max-per 4 --hours 48
+///     → bun scout/cli.ts discover --max-per 4 --hours 48
 #[derive(Parser, Debug)]
 #[command(trailing_var_arg = true, allow_hyphen_values = true)]
 pub struct ScoutArgs {

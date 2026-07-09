@@ -5,7 +5,7 @@
 // (TikTok/YouTube → is_video:true) and posts (X/IG/FB/Threads → cropped to image_path). Each footage
 // is gated to ITS object (relevance:"match", query=object) so Thoth keeps it.
 //
-//   node build_footage.ts <content_set.json> [--objects "a,b,c"] [--per 2] [--max 3] [--no-crop]
+//   bun build_footage.ts <content_set.json> [--objects "a,b,c"] [--per 2] [--max 3] [--no-crop]
 //
 // Without --objects, subjects/objects/people are extracted from main.title + main.description + top
 // comments via footage_objects (LLM). Each search query = object + primary subject ("chip ai" +
@@ -33,7 +33,7 @@ const PER = parseInt(getFlag('--per', '2'), 10);
 const MAX = getFlag('--max', '3');
 const NO_CROP = args.includes('--no-crop');
 const PROFILE_FLAG = getFlag('--profile', null); // IG username to also pull relevant footage from
-if (!FILE) { console.log('Usage: node build_footage.ts <content_set.json> [--objects "a,b"] [--per 2] [--max 3] [--no-crop]'); process.exit(1); }
+if (!FILE) { console.log('Usage: bun build_footage.ts <content_set.json> [--objects "a,b"] [--per 2] [--max 3] [--no-crop]'); process.exit(1); }
 if (!fs.existsSync(FILE)) { console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`)); process.exit(1); }
 
 const VIDEO = new Set(['tiktok', 'youtube']);
@@ -91,7 +91,7 @@ function topComments(set, n = 12) {
 
 // Run topic_to_urls for an object, gated to that object, return the merged `all` list.
 function searchObject(query) {
-  try { execFileSync('node', [path.join(import.meta.dirname, 'topic_to_urls.ts'), query, '--platforms', 'tiktok,tw,ig,fb', '--max', String(MAX), '--keywords', query], { stdio: 'pipe', timeout: 200000 }); }
+  try { execFileSync(process.execPath, [path.join(import.meta.dirname, 'topic_to_urls.ts'), query, '--platforms', 'tiktok,tw,ig,fb', '--max', String(MAX), '--keywords', query], { stdio: 'pipe', timeout: 200000 }); }
   catch (e) { /* exit!=0 tolerated */ }
   const f = outPath(`topic_urls_${slugify(query)}.json`);
   if (!fs.existsSync(f)) return [];
@@ -374,5 +374,5 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
   fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
   console.log(ui.rule('thin'));
   console.log(`Selesai: +${addedV} video b-roll, +${addedP} kartu post → footage total ${set.footage.length}. (${FILE})`);
-  console.log('Lalu: node validate_content_set.ts "' + FILE + '"');
+  console.log('Lalu: bun validate_content_set.ts "' + FILE + '"');
 })();

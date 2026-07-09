@@ -3,7 +3,7 @@
 // drive the browser: the post is a real DOM element, so we measure its exact box and screenshot
 // just that — no vision model guessing (qwen3-vl boxes the nav/sidebar).
 //
-//   CLI:    node crop_post.js <post_url> [out.png]
+//   CLI:    bun crop_post.js <post_url> [out.png]
 //   module: import { cropPost, inferPlatform } from './crop_post.ts';
 //           await cropPost({ url, out });   // → { ok, image_path, platform, w, h, reason }
 //
@@ -111,7 +111,7 @@ async function cropPost({ url, out, pad = 8, navWaitMs = 6000, tries = 12, maxSl
     const place = async () => {
       await client.evaluate(`(() => { const el = document.querySelector('[data-crop-post="1"]'); if (el) { const top = el.getBoundingClientRect().top + window.scrollY; window.scrollTo(0, Math.max(0, top - 64)); } })()`);
       // Wait for the post's images (avatar/photo) to decode before reading/capturing — an unpainted
-      // node captures as a solid-black clip. Poll from Node (evaluate doesn't awaitPromise); break
+      // bun captures as a solid-black clip. Poll from Node (evaluate doesn't awaitPromise); break
       // early once painted, cap ~1.3s for lazy media.
       const imgsReady = `(() => { const el = document.querySelector('[data-crop-post="1"]'); if (!el) return true; return [...el.querySelectorAll('img')].every(im => im.complete && im.naturalWidth > 0); })()`;
       for (let i = 0; i < 8; i++) { await sleep(160); try { if ((await client.evaluate(imgsReady)) === true) break; } catch (e) {} }
@@ -211,7 +211,7 @@ export { cropPost, inferPlatform, PLATFORMS };
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const url = argv[0];
-  if (!url) { console.log('Usage: node crop_post.ts <post_url> [out.png]'); process.exit(1); }
+  if (!url) { console.log('Usage: bun crop_post.ts <post_url> [out.png]'); process.exit(1); }
   run(async () => {
     console.log(ui.rule());
     console.log(`  Crop Post (DOM/CDP) — ${inferPlatform(url) || '??'}`);

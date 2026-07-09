@@ -6,7 +6,7 @@
 //   - ARTICLES : anything else → Google News (tbm=nws) → top result cards (title+url+source),
 //             each cropped as an image card too.
 //
-//   node search_news.js "<topik>" [--max N] [--mode chart|articles|auto]
+//   bun search_news.js "<topik>" [--max N] [--mode chart|articles|auto]
 //
 // Needs a google.com tab attached to the relay; if none, falls back to any page tab + navigates to
 // Google (Google search needs no login). Output → output/news_<slug>.json. Crops → output/crops/.
@@ -23,7 +23,7 @@ const QUERY = args.find(a => !a.startsWith('--') && !['--max', '--mode', '--appe
 const MAX = parseInt(getFlag('--max', '5'), 10);
 const MODE = getFlag('--mode', 'auto');
 const APPEND = getFlag('--append', null); // content-set JSON to fold news items into footage[]
-if (!QUERY) { console.log('Usage: node search_news.ts "<topik>" [--max N] [--mode chart|articles|auto]'); process.exit(1); }
+if (!QUERY) { console.log('Usage: bun search_news.ts "<topik>" [--max N] [--mode chart|articles|auto]'); process.exit(1); }
 
 const slug = QUERY.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'news';
 

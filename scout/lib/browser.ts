@@ -31,13 +31,13 @@
 //
 // USAGE
 // -----
-//   node lib/browser.js start     # launch managed browser, wait until CDP is ready
-//   node lib/browser.js status    # is it up? how many page tabs are attached?
-//   node lib/browser.js stop      # terminate the managed browser
-//   node lib/browser.js path      # print the browser binary that would be used
-//   node lib/browser.js env       # print shell export lines for THOTH_CDP
+//   bun lib/browser.js start     # launch managed browser, wait until CDP is ready
+//   bun lib/browser.js status    # is it up? how many page tabs are attached?
+//   bun lib/browser.js stop      # terminate the managed browser
+//   bun lib/browser.js path      # print the browser binary that would be used
+//   bun lib/browser.js env       # print shell export lines for THOTH_CDP
 //
-// First run: `node lib/browser.js start`, then in the window that opens log into
+// First run: `bun lib/browser.js start`, then in the window that opens log into
 // TikTok / Instagram / X once. Cookies live in the dedicated profile, so every later
 // run reuses that login — no re-attach, no extension.
 //
@@ -242,7 +242,7 @@ async function cmdStatus() {
   }
   console.log(`⭘ DOWN  http://${HOST}:${PORT}  —  CDP tidak merespon.`);
   if (st && pidAlive(st.pid)) console.log(`   (proses pid ${st.pid} masih hidup tapi CDP tak menjawab — coba stop lalu start.)`);
-  console.log('   Jalankan: node lib/browser.ts start');
+  console.log('   Jalankan: bun lib/browser.ts start');
   return 1;
 }
 
@@ -282,7 +282,7 @@ async function main() {
   const table = { start: cmdStart, status: cmdStatus, stop: cmdStop, path: cmdPath, env: cmdEnv };
   const fn = table[cmd];
   if (!fn) {
-    console.log('Usage: node lib/browser.ts [start|status|stop|path|env]');
+    console.log('Usage: bun lib/browser.ts [start|status|stop|path|env]');
     process.exit(1);
   }
   process.exit((await fn()) || 0);

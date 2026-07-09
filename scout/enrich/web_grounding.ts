@@ -67,6 +67,6 @@ export { groundTerms, googleNewsHeadlines };
 // ---- CLI (debug) ----
 if (import.meta.main) {
   const terms = process.argv.slice(2);
-  if (!terms.length) { console.log('Usage: node web_grounding.ts "<term>" ["<term2>" ...]'); process.exit(1); }
+  if (!terms.length) { console.log('Usage: bun web_grounding.ts "<term>" ["<term2>" ...]'); process.exit(1); }
   (async () => { console.log(JSON.stringify(await groundTerms(terms, { max: 5 }), null, 2)); })();
 }

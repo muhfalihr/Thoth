@@ -6,7 +6,7 @@
 // username link + an img, tag it, and read author/text/likes from there. Fragile by nature
 // — if IG changes layout this is the file to retune (selectors are all in EXTRACT_JS).
 //
-//   node scrape_comments_ig.js <post_or_reel_url> [out.json] [--max N]
+//   bun scrape_comments_ig.js <post_or_reel_url> [out.json] [--max N]
 //   (tab instagram.com harus login & ter-attach relay)
 
 import { run } from '../lib/cdp.ts';
@@ -74,7 +74,7 @@ const EXTRACT_JS = `(() => {
 })()`;
 
 const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) { console.log('Usage: node scrape_comments_ig.ts <post_or_reel_url> [out.json] [--max N]'); process.exit(1); }
+if (!url) { console.log('Usage: bun scrape_comments_ig.ts <post_or_reel_url> [out.json] [--max N]'); process.exit(1); }
 
 const code = (url.match(/\/(?:p|reel|tv)\/([\w-]+)/) || [, ''])[1];
 

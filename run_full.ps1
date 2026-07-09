@@ -5,7 +5,7 @@
   then Thoth render. One file that chains the whole RUNBOOK (scout/RUNBOOK.md).
 
 .DESCRIPTION
-  - scout node scripts run straight from scout/ in this repo, so lib/paths.ts writes into
+  - scout scripts (Bun) run straight from scout/ in this repo, so lib/paths.ts writes into
     scout/output/ (lib/paths.ts is __dirname-based, not cwd-based).
   - Thoth renders from target\release\thoth.exe in this repo.
   - Foreground/synchronous on purpose: no premature "stuck" kill.
@@ -78,7 +78,7 @@ $scout      = Join-Path $repo "scout"
 $thoth      = Join-Path $repo "target\release\thoth.exe"
 
 # yt-dlp cookies for IG slide/post resolves (igSlideDirectUrl/probeVideo) — same cookies.txt
-# Thoth's ingest uses (must carry IG HttpOnly `sessionid`). Inherited by the child node processes.
+# Thoth's ingest uses (must carry IG HttpOnly `sessionid`). Inherited by the child bun processes.
 $cookieTxt = Join-Path $repo "data\cookies.txt"
 if (Test-Path $cookieTxt) { $env:YTDLP_COOKIES_FILE = $cookieTxt }
 $contentRel = "thoth_content_set.json"
@@ -101,12 +101,12 @@ function Die([string]$m){  Emit ((Paint 'red'   $G_ERR)  + " ") $m; exit 1 }
 function Info([string]$m){ Emit '' (Paint 'dim' ($G_DOT + " " + $m)) }   # dim detail line
 function Sub([string]$m){  Write-Host ("  " + (Paint 'violet' $G_SPINE) + "   " + $m) }  # indented sub-item
 
-# Run a scout node script straight from scout/. $rest = string[] of args.
-function Invoke-Node([string]$script,[string[]]$rest){
+# Run a scout script (bun) straight from scout/. $rest = string[] of args.
+function Invoke-Bun([string]$script,[string[]]$rest){
   $p = Join-Path $scout $script
   if(-not (Test-Path $p)){ Die "Tidak ketemu: $p" }
   Push-Location $scout
-  try { & node $p @rest }
+  try { & bun $p @rest }
   finally { Pop-Location }
 }
 
@@ -136,7 +136,7 @@ try {
   Invoke-WebRequest "http://127.0.0.1:18800/json/version" -TimeoutSec 3 -UseBasicParsing | Out-Null
   Ok "Managed browser CDP 18800: OK"
 } catch {
-  Warn "Managed browser (CDP 18800) DOWN - discovery/scraping akan gagal. Jalankan 'node scout/lib/browser.ts start' & login tab target."
+  Warn "Managed browser (CDP 18800) DOWN - discovery/scraping akan gagal. Jalankan 'bun scout/lib/browser.ts start' & login tab target."
 }
 
 # ── 1. Discovery (kalau -Url kosong, atau -Discover) ─────────────────────────────
@@ -144,7 +144,7 @@ if($Discover -or ([string]::IsNullOrWhiteSpace($Url) -and $FromStage -le 2)){
   Step 1 "Discovery topik (reels + post akun kurator IG)"
   $dargs = @("--max-per","$MaxPer","--hours","$Hours","--include",$Include)
   if($TikTok){ $dargs += @("--tiktok","--tiktok-region",$TikTokRegion) }
-  Invoke-Node "pipeline/discover_reels.ts" $dargs
+  Invoke-Bun "pipeline/discover_reels.ts" $dargs
   if(Test-Path $reelTopics){
     try {
       $rt = Get-Content $reelTopics -Raw | ConvertFrom-Json
@@ -180,7 +180,7 @@ if($FromStage -gt 2){
 if($FromStage -le 2){
   Step 2 "run_pipeline (trace_source -> comments -> build_footage -> figures -> validate)"
   Warn "build_footage bisa diam beberapa menit/objek - itu NORMAL, JANGAN dihentikan."
-  Invoke-Node "pipeline/run_pipeline.ts" @($Url,"--out",$contentRel,"--per","$Per","--max","$Max","--cap","$Cap")
+  Invoke-Bun "pipeline/run_pipeline.ts" @($Url,"--out",$contentRel,"--per","$Per","--max","$Max","--cap","$Cap")
   if(-not (Test-Path $contentSet)){ Die "content-set tak terbentuk: $contentSet" }
 
   $c = Get-Counts
@@ -190,8 +190,8 @@ if($FromStage -le 2){
   if($c.footage -eq 0){
     Warn "footage kosong - jalankan build_footage + extract_figures terpisah."
     Step "2b" "build_footage + extract_figures"
-    Invoke-Node "pipeline/build_footage.ts"   @($contentSet,"--per","$Per","--max","$Max")
-    Invoke-Node "pipeline/extract_figures.ts" @($contentSet)
+    Invoke-Bun "pipeline/build_footage.ts"   @($contentSet,"--per","$Per","--max","$Max")
+    Invoke-Bun "pipeline/extract_figures.ts" @($contentSet)
     $c = Get-Counts
     Info ("footage={0}  comments={1}" -f $c.footage,$c.comments)
   }
@@ -202,7 +202,7 @@ if($FromStage -le 3 -and $Extra.Count -gt 0){
   Step 3 "collect_comments (sumber tambahan)"
   $a = @($contentSet,"--cap","$Cap")
   foreach($e in $Extra){ $a += @("--extra",$e) }
-  Invoke-Node "pipeline/collect_comments.ts" $a
+  Invoke-Bun "pipeline/collect_comments.ts" $a
   $c = Get-Counts
   Info ("footage={0}  comments={1}" -f $c.footage,$c.comments)
 }
@@ -210,13 +210,13 @@ if($FromStage -le 3 -and $Extra.Count -gt 0){
 # ── 4. Crop post non-video (idempotent; skip video/sudah ada) ─────────────────────
 if($FromStage -le 4){
   Step 4 "enrich_image_paths (crop post non-video)"
-  Invoke-Node "pipeline/enrich_image_paths.ts" @($contentSet,"--force")
+  Invoke-Bun "pipeline/enrich_image_paths.ts" @($contentSet,"--force")
 }
 
 # ── 5. Validate (WAJIB lolos) ────────────────────────────────────────────────────
 if($FromStage -le 5){
   Step 5 "validate_content_set"
-  Invoke-Node "pipeline/validate_content_set.ts" @($contentSet)
+  Invoke-Bun "pipeline/validate_content_set.ts" @($contentSet)
   if($LASTEXITCODE -ne 0){ Die "Lint FAIL - perbaiki content-set sebelum render (lihat pesan di atas)." }
   $c = Get-Counts
   Ok ("Content-set OK: footage={0}  comments={1}" -f $c.footage,$c.comments)

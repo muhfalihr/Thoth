@@ -3,7 +3,7 @@
 // hot RIGHT NOW (topic phrase + total views), a strong seed for what to make content about — used to
 // ENRICH the topic pool in discover_reels (run it with `--tiktok`).
 //
-//   node discover_tiktok_trending.js [--max 25] [--out file]
+//   bun discover_tiktok_trending.js [--max 25] [--out file]
 //
 // Needs a logged-in tiktok.com tab attached (CDP relay). Output → output/tiktok_trending.json.
 // Also exports fetchTrending({max}) so discover_reels can merge a `tiktok_trending` section.

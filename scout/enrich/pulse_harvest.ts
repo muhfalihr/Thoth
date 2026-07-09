@@ -4,7 +4,7 @@
 // across them into CKB.pulse. This is "trend from actually watching" — the discourse, not the view count.
 // Run daily (cron). Algorithm: RESEARCH_context_enrichment_narration.md §4 (budget + cache-first + decay).
 //
-//   node pulse_harvest.ts [--max 12] [--per-video 12] [--src output/reel_topics.json] [--ttl 30]
+//   bun pulse_harvest.ts [--max 12] [--per-video 12] [--src output/reel_topics.json] [--ttl 30]
 //
 // Best-effort: missing feed / no relay / scrape fail → that video is skipped. Needs logged-in tabs for
 // the platforms scraped (same as collect_comments). Uses Novita (THOTH_NOVITA_API_KEY via lib/env.ts) for term distillation.
@@ -50,7 +50,7 @@ function loadFeed() {
 function scrapeComments(url) {
   const plat = platformOf(url);
   const tmp = outPath(`__pulse_${plat}_${Math.random().toString(36).slice(2, 8)}.json`);
-  try { execFileSync('node', [path.join(import.meta.dirname, '..', 'scrapers', SCRIPT[plat]), url, tmp, '--max', String(PER_VIDEO)], { stdio: 'pipe', timeout: 180000 }); }
+  try { execFileSync(process.execPath, [path.join(import.meta.dirname, '..', 'scrapers', SCRIPT[plat]), url, tmp, '--max', String(PER_VIDEO)], { stdio: 'pipe', timeout: 180000 }); }
   catch (e) { /* tolerated */ }
   let comments = [];
   try { comments = (JSON.parse(fs.readFileSync(tmp, 'utf8')).comments) || []; } catch (e) {}

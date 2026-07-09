@@ -8,7 +8,7 @@
 //   - discourse{}         : {audience_stance, themes[], narration_guidance} — collective reading
 // Consumed by Thoth `generate_narration` ([Konteks Budaya] + [Maksud Komentar] blocks).
 //
-//   node enrich_context.js <content_set.json>
+//   bun enrich_context.js <content_set.json>
 //
 // Uses Novita (THOTH_NOVITA_API_KEY via lib/env.js); model via env THOTH_CONTEXT_MODEL (default deepseek-v3.1 — reasoning
 // about subtext/recent memes needs a strong model). Best-effort: any failure leaves the set unchanged.
@@ -23,7 +23,7 @@ const KEY = novitaKey();
 const MODEL = process.env.THOTH_CONTEXT_MODEL || 'deepseek/deepseek-v3.1'; // reasoner teks utk subteks/sentimen ID (current-event di-ground di Fase 2)
 
 const FILE = process.argv[2];
-if (!FILE) { console.log('Usage: node enrich_context.ts <content_set.json>'); process.exit(1); }
+if (!FILE) { console.log('Usage: bun enrich_context.ts <content_set.json>'); process.exit(1); }
 if (!fs.existsSync(FILE)) { console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`)); process.exit(1); }
 
 const PROMPT = (title, desc, comments) => `Kamu analis BUDAYA INTERNET INDONESIA. Tugas: bongkar konteks

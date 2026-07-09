@@ -6,7 +6,7 @@
 // row, avatar from its img. Like/reaction counts are unreliable in FB's DOM → left blank.
 // Fragile by nature — retune the selectors in EXTRACT_JS if FB changes layout.
 //
-//   node scrape_comments_fb.js <post_url> [out.json] [--max N]
+//   bun scrape_comments_fb.js <post_url> [out.json] [--max N]
 //   (tab facebook.com harus login & ter-attach relay; pastikan komentar sudah tampil)
 
 import { run } from '../lib/cdp.ts';
@@ -35,7 +35,7 @@ const EXTRACT_JS = `(() => {
 })()`;
 
 const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) { console.log('Usage: node scrape_comments_fb.ts <post_url> [out.json] [--max N]'); process.exit(1); }
+if (!url) { console.log('Usage: bun scrape_comments_fb.ts <post_url> [out.json] [--max N]'); process.exit(1); }
 
 run(() => scrapeComments({
   url, platform: 'facebook', label: 'Facebook',

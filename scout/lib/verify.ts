@@ -8,7 +8,7 @@
 // author. Use it to confirm a candidate is on-topic before marking relevance:"match".
 //
 //   Module:  import { tiktokOembed, matchesTopic } from './verify.ts';
-//   CLI:     node verify.ts <tiktok_url> [keyword1 keyword2 ...]
+//   CLI:     bun verify.ts <tiktok_url> [keyword1 keyword2 ...]
 //            → prints caption + author + whether all/any keywords are present.
 
 import fs from 'node:fs';
@@ -209,7 +209,7 @@ if (import.meta.main) {
   (async () => {
     const url = process.argv[2];
     const keywords = process.argv.slice(3);
-    if (!url) { console.log('Usage: node verify.ts <tiktok_url> [keyword ...]'); process.exit(1); }
+    if (!url) { console.log('Usage: bun verify.ts <tiktok_url> [keyword ...]'); process.exit(1); }
     const res = await verifyTikTok(url, keywords);
     if (res.ok === null) {
       console.log(ui.amber(`${ui.WARN}  Caption tak terambil (oEmbed miss). Perlakukan sebagai UNVERIFIED, jangan "match".`));

@@ -15,6 +15,7 @@ crops/
 *.mp4
 *.png
 
-# TypeScript tooling (Node >=24 menjalankan .ts native; node_modules cuma devDeps typecheck + pg opsional)
+# TypeScript tooling (Bun menjalankan .ts native; node_modules cuma devDeps typecheck + pg opsional)
+# bun.lock DI-COMMIT (lockfile of record). package-lock.json warisan npm — jangan commit.
 node_modules/
 package-lock.json

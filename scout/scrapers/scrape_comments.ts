@@ -6,7 +6,7 @@
 // CDP's screenshot `clip`. Thoth renders its comment card from {author,text,likes,
 // avatar_url}; image_path is included too (forward-compat for pasting the real crop).
 //
-//   node scrape_comments.js <tiktok_url> [out.json] [--max N]
+//   bun scrape_comments.js <tiktok_url> [out.json] [--max N]
 //
 // Output: content-set JSON in output/ (default output/thoth_content_set.json) + crop
 // PNGs in output/crops/. Nothing is written to the workspace root.
@@ -33,7 +33,7 @@ const OUT_JSON = outPath(pos[1] || 'thoth_content_set.json');
 const MAX = flags.max || 12;
 
 if (!TARGET_URL) {
-  console.log('Usage: node scrape_comments.ts <tiktok_url> [out.json] [--max N]');
+  console.log('Usage: bun scrape_comments.ts <tiktok_url> [out.json] [--max N]');
   process.exit(1);
 }
 
@@ -208,7 +208,7 @@ async function main() {
   console.log(ui.rule());
   console.log(`📄 ${OUT_JSON} (${results.length} komentar)  |  📁 crops: ${OUT_DIR}`);
   console.log('\nValidate lalu run:');
-  console.log(`  node validate_content_set.ts "${OUT_JSON}"`);
+  console.log(`  bun validate_content_set.ts "${OUT_JSON}"`);
   console.log(`  thoth run --content "${OUT_JSON}"`);
 }
 

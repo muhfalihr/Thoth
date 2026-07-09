@@ -3,7 +3,7 @@
 Urutan command untuk menghasilkan satu video narator dari nol, sudah memasukkan semua
 pelajaran dari bugfix 2026-06-17 (lihat `../BUGFIX_PLAN_2026-06-17.md`).
 
-- **scout:** semua `node` script dijalankan dari **`CLIPPER/scout/`**
+- **scout:** semua `bun` script dijalankan dari **`CLIPPER/scout/`**
   (di sanalah key `.novita_key`/`.groq_key`, folder `output/`, dan tab managed browser terbuka).
 - **Thoth:** `target\release\thoth.exe` di repo ini.
 - **Content-set hasil:** `scout/output/thoth_content_set.json`.
@@ -15,18 +15,18 @@ pelajaran dari bugfix 2026-06-17 (lihat `../BUGFIX_PLAN_2026-06-17.md`).
 
 ## 0. Preflight (sekali per sesi)
 ```powershell
-node lib/browser.ts status
-node -e "fetch('http://127.0.0.1:18800/json/version').then(r=>console.log('CDP OK',r.status)).catch(()=>console.log('CDP DOWN'))"
+bun lib/browser.ts status
+bun -e "fetch('http://127.0.0.1:18800/json/version').then(r=>console.log('CDP OK',r.status)).catch(()=>console.log('CDP DOWN'))"
 ```
 Tab login **tiktok.com + instagram.com** (tambah x.com/facebook.com bila perlu) harus terbuka di
-managed browser. `CDP DOWN` → `node lib/browser.ts start` lalu login sekali di tab target.
+managed browser. `CDP DOWN` → `bun lib/browser.ts start` lalu login sekali di tab target.
 
 ## 1. Discovery topik (akun kurator IG)
 > ⚠️ Long-running, **checkpoint per-item** (`reel_topics.json`, `"partial":true`). Jangan kill saat senyap.
 ```bash
-node pipeline/discover_reels.ts --max-per 4 --hours 48          # reels + feed post (default; --include reels|posts)
+bun pipeline/discover_reels.ts --max-per 4 --hours 48          # reels + feed post (default; --include reels|posts)
 # + trending TikTok Studio region Indonesia (butuh tab tiktok.com login) → section `tiktok_trending`:
-node pipeline/discover_reels.ts --max-per 4 --hours 48 --tiktok   # --tiktok-region all untuk semua region
+bun pipeline/discover_reels.ts --max-per 4 --hours 48 --tiktok   # --tiktok-region all untuk semua region
 ```
 Memindai **reels (`/reel/`) DAN feed post (`/p/`)** — net topik lebih luas; post foto = kartu-berita
 yang headline-nya terbaca vision. `--max-per` per tipe. Pilih **satu** item dengan kejadian fisik
@@ -36,33 +36,33 @@ konkret (bukan meme/musik), lihat field `kind` (`reel`/`post`), catat URL-nya.
 > ⚠️ **`build_footage` makan beberapa menit/objek dan DIAM** (sub-process silent) — itu NORMAL,
 > bukan stuck. Jangan kill pada "(no new output)". Checkpoint per-stage & per-objek aktif.
 ```bash
-node pipeline/run_pipeline.ts "<URL_reel>" --out thoth_content_set.json --per 2 --max 4 --cap 12
+bun pipeline/run_pipeline.ts "<URL_reel>" --out thoth_content_set.json --per 2 --max 4 --cap 12
 ```
 
 **2b. Kalau footage tetap kosong** (run_pipeline ke-kill sebelum footage):
 ```bash
-node pipeline/build_footage.ts   output/thoth_content_set.json --per 2 --max 4
-node pipeline/extract_figures.ts output/thoth_content_set.json
+bun pipeline/build_footage.ts   output/thoth_content_set.json --per 2 --max 4
+bun pipeline/extract_figures.ts output/thoth_content_set.json
 ```
 
 ## 3. Komentar (kalau main minim komentar)
 > ✅ Pasca-fix Bug 1, `scrapers/scrape_comments.ts` MERGE (tak menghapus footage/description) — cocok via
 > page-url / `source_url` / video-id.
 ```bash
-node pipeline/collect_comments.ts output/thoth_content_set.json --cap 12 --extra "<URL_post_rame>"
+bun pipeline/collect_comments.ts output/thoth_content_set.json --cap 12 --extra "<URL_post_rame>"
 # atau refresh dari satu video rame:
-node scrapers/scrape_comments.ts "<URL_tiktok_rame>"
+bun scrapers/scrape_comments.ts "<URL_tiktok_rame>"
 ```
 
 ## 4. Crop post non-video (kalau ada footage X/IG/FB)
 > ✅ Pasca-fix Bug 4, crop X lebih tahan re-render; yang gagal otomatis dibuang (lint lolos).
 ```bash
-node pipeline/enrich_image_paths.ts output/thoth_content_set.json --force
+bun pipeline/enrich_image_paths.ts output/thoth_content_set.json --force
 ```
 
 ## 5. Validasi (WAJIB lolos sebelum render)
 ```bash
-node pipeline/validate_content_set.ts output/thoth_content_set.json
+bun pipeline/validate_content_set.ts output/thoth_content_set.json
 ```
 Target sehat: `MAIN` video (`is_video:true`), `FOOTAGE ≥ 2`, **`COMMENTS ≥ 6`**. Exit 0 = aman.
 

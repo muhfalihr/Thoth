@@ -7,7 +7,7 @@
 //   - YouTube   : home feed (YouTube killed /feed/trending → redirects home) → popular video
 //                 titles + URLs (a topic PROXY: recommended/popular, not strictly "trending")
 //
-//   node discover_topics.js [--top N] [--platforms instagram,x,youtube] [--per-account N]
+//   bun discover_topics.js [--top N] [--platforms instagram,x,youtube] [--per-account N]
 //   (default --platforms instagram; edit ig_accounts.json to change the account set)
 //
 // Output → output/trending_topics.json { fetched_at, sources:{ instagram:[{topic,source_url,account,views}], ... } }.
@@ -158,5 +158,5 @@ async function fromInstagram() {
   fs.writeFileSync(out, JSON.stringify({ fetched_at: new Date().toISOString(), sources }, null, 2), 'utf8');
   console.log(ui.rule('thin'));
   console.log(`📄 ${out}`);
-  console.log('Lanjut: node topic_to_urls.ts "<topik pilihan>"');
+  console.log('Lanjut: bun topic_to_urls.ts "<topik pilihan>"');
 })();

@@ -2,7 +2,7 @@
 // re-wrap's baked headline/watermark. Detection is LLM-driven (resolve_source.ts) over THREE text
 // signals: main DESCRIPTION + CAPTION (oEmbed) + on-screen HEADLINE (read via vision from the cover).
 //
-//   node trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]
+//   bun trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]
 //
 // Flow (MAIN only):
 //   1. Gather description + caption + headline(vision) of main.
@@ -35,7 +35,7 @@ const KEYWORDS = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
 const FORCE_USER = getFlag('--username');
 const NO_DL = args.includes('--no-threads-dl') || args.includes('--no-dl'); // skip local mp4 backup (Threads/TikTok)
 const MODEL = getFlag('--model') || process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
-if (!FILE) { console.log('Usage: node trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]'); process.exit(1); }
+if (!FILE) { console.log('Usage: bun trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]'); process.exit(1); }
 if (!fs.existsSync(FILE)) { console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`)); process.exit(1); }
 
 const VIDEO = new Set(['tiktok', 'youtube']);
@@ -348,7 +348,7 @@ function detectTiktokCredit(text) {
 function searchAll(q: string, gateKw?: string) {
   const slug = q.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'q';
   const extra = gateKw ? ['--keywords', gateKw] : [];
-  try { execFileSync('node', [path.join(import.meta.dirname, 'topic_to_urls.ts'), q, '--platforms', 'tiktok,tw,ig,fb', '--max', '4', ...extra], { stdio: 'pipe', timeout: 200000 }); }
+  try { execFileSync(process.execPath, [path.join(import.meta.dirname, 'topic_to_urls.ts'), q, '--platforms', 'tiktok,tw,ig,fb', '--max', '4', ...extra], { stdio: 'pipe', timeout: 200000 }); }
   catch (e) { /* exit!=0 tolerated */ }
   const f = outPath(`topic_urls_${slug}.json`);
   if (!fs.existsSync(f)) return [];

@@ -3,7 +3,7 @@
 // crop_post into content-set building: after scout assembles main/footage/comments, run this
 // to attach a clean post-card PNG to each non-video entry so Thoth renders it as a still card.
 //
-//   node enrich_image_paths.js <content_set.json> [--force] [--keywords k1,k2] [--mode any|all]
+//   bun enrich_image_paths.js <content_set.json> [--force] [--keywords k1,k2] [--mode any|all]
 //
 // - Targets entries with is_video === false, a supported URL (x/ig/fb), and no existing crop.
 //   --force re-crops even if image_path is already set.
@@ -25,7 +25,7 @@ const FORCE = args.includes('--force');
 const MODE = getFlag('--mode') || 'any';
 const KEYWORDS = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
 const FILE = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--keywords' && args[i - 1] !== '--mode');
-if (!FILE) { console.log('Usage: node enrich_image_paths.ts <content_set.json> [--force] [--keywords k1,k2] [--mode any|all]'); process.exit(1); }
+if (!FILE) { console.log('Usage: bun enrich_image_paths.ts <content_set.json> [--force] [--keywords k1,k2] [--mode any|all]'); process.exit(1); }
 if (!fs.existsSync(FILE)) { console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`)); process.exit(1); }
 
 let set;
@@ -88,5 +88,5 @@ if (KEYWORDS.length) console.log(`Gate relevansi: keywords=[${KEYWORDS.join(', '
   console.log(ui.rule('thin'));
   if (dropped) console.log(`🧹 ${dropped} footage non-video gagal di-crop → dibuang (attach tab + --force utk pulihkan).`);
   console.log(`Selesai: ${ok} crop terisi${KEYWORDS.length ? ` (${matched} on-topic/"match")` : ''}, ${fail} gagal/skip → ${FILE}`);
-  console.log('Validasi: node validate_content_set.ts "' + FILE + '"');
+  console.log('Validasi: bun validate_content_set.ts "' + FILE + '"');
 })();

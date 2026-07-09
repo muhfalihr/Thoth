@@ -63,7 +63,7 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
 
 ## Kontrak Content-Set dari scout
 
-Discovery 100% di layer **`scout/`** (script TypeScript di folder repo, jalan native via Node ≥24, dijalankan langsung — lihat
+Discovery 100% di layer **`scout/`** (script TypeScript di folder repo, jalan native via Bun, dijalankan langsung — lihat
 `scout/README.md`). Thoth menerima **content-set JSON** via `thoth run --content set.json`
 (loader: `src/ingest/content_search.rs::load_content_set`). Struktur:
 `{ main: MainVideo, footage: [ContentResult], comments: [CommentInfo] }`, `main.profile` opsional.

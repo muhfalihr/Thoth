@@ -952,14 +952,14 @@ async fn run() -> Result<()> {
 
             let cli_ts = scout_dir.join("cli.ts");
 
-            // ── Find Node.js ≥24 ─────────────────────────────────────────
-            let node = which::which("node").map_err(|_| anyhow::anyhow!(
-                "node not found in PATH — scout requires Node ≥24 \
-                 (https://nodejs.org/)"
+            // ── Find Bun ─────────────────────────────────────────────────
+            let bun = which::which("bun").map_err(|_| anyhow::anyhow!(
+                "bun not found in PATH — scout requires Bun ≥1.2 \
+                 (https://bun.sh)"
             ))?;
 
-            // ── Spawn: node scout/cli.ts <args...> ───────────────────────
-            let status = std::process::Command::new(&node)
+            // ── Spawn: bun scout/cli.ts <args...> ────────────────────────
+            let status = std::process::Command::new(&bun)
                 .arg(&cli_ts)
                 .args(&args.args)
                 .current_dir(&scout_dir)
@@ -968,7 +968,7 @@ async fn run() -> Result<()> {
                 .stderr(std::process::Stdio::inherit())
                 .status()
                 .with_context(|| format!(
-                    "failed to spawn node {} {}",
+                    "failed to spawn bun {} {}",
                     cli_ts.display(),
                     args.args.join(" ")
                 ))?;

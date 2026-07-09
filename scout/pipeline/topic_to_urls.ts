@@ -6,7 +6,7 @@
 //   - Facebook  : inline CDP search (/search/posts?q=) → real permalinks
 // Each platform is isolated: a missing/!attached tab is logged and SKIPPED, never aborts the rest.
 //
-//   node topic_to_urls.ts "<query>" [--platforms tiktok,tw,ig,fb] [--max N]
+//   bun topic_to_urls.ts "<query>" [--platforms tiktok,tw,ig,fb] [--max N]
 //
 // Output → output/topic_urls_<slug>.json { query, fetched_at, platforms:{...}, all:[...] }.
 
@@ -28,14 +28,14 @@ const MAX = parseInt(getFlag('--max', '8'), 10);
 const KEYWORDS = (getFlag('--keywords', '') || QUERY).split(/[ ,]+/).filter(Boolean);
 const TT_KW = KEYWORDS[0] || '';
 
-if (!QUERY) { console.log('Usage: node topic_to_urls.ts "<query>" [--platforms tiktok,tw,ig,fb] [--max N]'); process.exit(1); }
+if (!QUERY) { console.log('Usage: bun topic_to_urls.ts "<query>" [--platforms tiktok,tw,ig,fb] [--max N]'); process.exit(1); }
 
 const slug = QUERY.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'topic';
 const here = f => path.join(import.meta.dirname, '..', 'scrapers', f); // fetchers live in scrapers/
 
 // Run a tested CLI fetcher, then read the JSON file it wrote. Returns string[] of URLs.
 function runFetcher(scriptArgs, outFile) {
-  execFileSync('node', [here(scriptArgs[0]), ...scriptArgs.slice(1)], { stdio: 'pipe', timeout: 150000 });
+  execFileSync(process.execPath, [here(scriptArgs[0]), ...scriptArgs.slice(1)], { stdio: 'pipe', timeout: 150000 });
   if (!fs.existsSync(outFile)) return [];
   const data = JSON.parse(fs.readFileSync(outFile, 'utf8'));
   return (data.urls || []).map(u => (typeof u === 'string' ? u : u.url)).filter(Boolean);

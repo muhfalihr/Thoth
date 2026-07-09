@@ -5,12 +5,12 @@ Folder ini berisi semua script JS yang **menemukan topik viral → merakit conte
 `thoth run --content <set.json>`.
 
 > **Dijalankan langsung dari folder ini** (`CLIPPER/scout/`) — entrypoint tunggal
-> **`node cli.ts <perintah>`** (tanpa argumen = daftar perintah). Credential terpusat di
+> **`bun cli.ts <perintah>`** (tanpa argumen = daftar perintah). Credential terpusat di
 > **`.env` root repo** (via `lib/env.ts` — tak ada lagi key file per-folder). Folder
 > `output/` dan config akun ada di sini. Tak ada workspace terpisah — edit lalu jalankan.
 
 > 🌐 **Browser CDP STANDALONE — tanpa extension/pihak-ketiga.**
-> `node lib/browser.ts start` melaunch Brave/Chrome/Edge dengan `--remote-debugging-port`
+> `bun lib/browser.ts start` melaunch Brave/Chrome/Edge dengan `--remote-debugging-port`
 > + profil khusus (`~/.clipper/browser-profile`) → menyajikan CDP di **port 18800**.
 > Login sekali ke TikTok/IG/X di window itu; cookie persisten. `lib/cdp.ts` otomatis pakai
 > endpoint ini (override via `THOTH_CDP`). Lihat header `lib/browser.ts` untuk penjelasan
@@ -23,7 +23,7 @@ Folder ini berisi semua script JS yang **menemukan topik viral → merakit conte
 
 ```
 scout/
-├── cli.ts       # ★ ENTRYPOINT TUNGGAL: node cli.ts <perintah> [args] — dispatch ke semua script di bawah
+├── cli.ts       # ★ ENTRYPOINT TUNGGAL: bun cli.ts <perintah> [args] — dispatch ke semua script di bawah
 ├── lib/         # shared modules — di-require, tak dijalankan langsung (env, cdp, browser, paths, verify, …)
 ├── scrapers/    # akses per-platform: scrape_comments_*, *_profile, crop, search_*
 ├── pipeline/    # tahapan perakitan content-set: discover → trace_source → build_footage → …
@@ -34,8 +34,8 @@ scout/
 
 Semua path root (key file, `output/`, `config/`) diresolve via `lib/paths.ts::WORKSPACE`
 (= folder `scout/` ini, berbasis `__dirname` bukan cwd) — script boleh dijalankan dari mana
-saja. Panggil script pakai path folder: `node pipeline/discover_reels.ts`,
-`node scrapers/crop_post.ts`, dst.
+saja. Panggil script pakai path folder: `bun pipeline/discover_reels.ts`,
+`bun scrapers/crop_post.ts`, dst.
 
 ---
 
@@ -61,7 +61,7 @@ saja. Panggil script pakai path folder: `node pipeline/discover_reels.ts`,
 | `pipeline/resolve_source.ts` | LLM: tentukan SUMBER ASLI video repost dari deskripsi/caption/headline. |
 | `lib/footage_objects.ts` | LLM: ekstrak SUBJECT/OBJECT/PEOPLE (query b-roll majemuk) dari teks + komentar. |
 | `enrich/web_grounding.ts` | Headline Google News (CDP, text-only) → status entitas TERKINI. Dipakai `enrich_context`. |
-| `enrich/ckb.ts` | Cultural Knowledge Base: cache referensi/meme + pulse di **Supabase** (fallback lokal `ckb.json`). Butuh `npm install pg` + URL Supabase. |
+| `enrich/ckb.ts` | Cultural Knowledge Base: cache referensi/meme + pulse di **Supabase** (fallback lokal `ckb.json`). Butuh `bun add pg` + URL Supabase. |
 
 ### Langkah pipeline (dipanggil orkestrator, bisa juga manual)
 
@@ -109,8 +109,8 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
 
 1. **Managed browser hidup** — standalone CDP host di **18800**:
    ```powershell
-   node lib/browser.ts status     # harus: UP
-   node lib/browser.ts start       # kalau DOWN
+   bun lib/browser.ts status     # harus: UP
+   bun lib/browser.ts start       # kalau DOWN
    ```
 2. **Tab browser login** di window managed itu: minimal **instagram.com** + **tiktok.com**;
    tambah x.com / facebook.com / google.com sesuai platform yang dipakai. Login persisten di
@@ -118,7 +118,7 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
 3. **Credential di `.env` ROOT repo** (tidak di-commit; dibaca `lib/env.ts`):
    `THOTH_NOVITA_API_KEY` (LLM/vision/embedding), `THOTH_GROQ_API_KEY` (Whisper fallback discovery).
    - **CKB (Cultural Knowledge Base) — opsional, untuk `enrich_context`/`pulse_harvest`:** Supabase
-     Postgres. Sediakan `THOTH_SUPABASE_URL` di `.env` root, lalu: `npm install pg`.
+     Postgres. Sediakan `THOTH_SUPABASE_URL` di `.env` root, lalu: `bun add pg`.
      Tanpa ini, CKB degrade ke cache lokal-JSON (`ckb.json`) — tetap jalan, tapi tidak lintas-mesin.
 4. **Thoth** terbuild (`build_cuda.bat`) + `config.toml`: `[narration] enabled = true`.
    Default `--provider` CLI sudah **novita** (jangan pakai groq — rate limit 12k TPM bikin narasi
@@ -136,7 +136,7 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
 ## 3. FLOW OPTIMAL (jalur yang menghasilkan video terbaik)
 
 Semua perintah dijalankan dari `CLIPPER/scout/` — bentuk kanonik lewat entrypoint tunggal
-`node cli.ts <perintah>` (memanggil script langsung juga tetap bisa; flag identik):
+`bun cli.ts <perintah>` (memanggil script langsung juga tetap bisa; flag identik):
 
 > ⚠️ **`pipeline/discover_reels.ts` & `pipeline/run_pipeline.ts` itu LONG-RUNNING** (vision + whisper + multi-search,
 > bisa >2 menit). Kalau dijalankan sinkron, shell bisa timeout di tengah jalan.
@@ -149,12 +149,12 @@ Semua perintah dijalankan dari `CLIPPER/scout/` — bentuk kanonik lewat entrypo
 ### Step 1 — Discovery topik dari akun IG terkurasi
 
 ```bash
-node cli.ts discover --max-per 4 --hours 48        # reels + post (default, net lebih luas)
-node cli.ts discover --include posts               # hanya feed post (kartu berita foto)
-node cli.ts discover --include reels               # perilaku lama (reels saja)
-node cli.ts discover --tiktok                      # + trending TikTok Studio (region Indonesia, tab tiktok.com login)
-node cli.ts trending --max 25                      # standalone: trending TikTok (region Indonesia) → output/tiktok_trending.json
-node cli.ts trending --region "United States"      # region lain · --region all = semua region
+bun cli.ts discover --max-per 4 --hours 48        # reels + post (default, net lebih luas)
+bun cli.ts discover --include posts               # hanya feed post (kartu berita foto)
+bun cli.ts discover --include reels               # perilaku lama (reels saja)
+bun cli.ts discover --tiktok                      # + trending TikTok Studio (region Indonesia, tab tiktok.com login)
+bun cli.ts trending --max 25                      # standalone: trending TikTok (region Indonesia) → output/tiktok_trending.json
+bun cli.ts trending --region "United States"      # region lain · --region all = semua region
 ```
 - Akun diambil dari **`config/ig_accounts.json`** (edit file itu untuk ganti daftar; `--accounts a,b` meng-override).
 - Memindai **reels (`/reel/`) DAN feed post (`/p/`)** — post foto sering justru kartu-berita yang
@@ -170,7 +170,7 @@ node cli.ts trending --region "United States"      # region lain · --region all
 ### Step 2 — Reel terpilih → content-set lengkap
 
 ```bash
-node cli.ts run "<URL_reel_terpilih>" --out topik_slug.json --per 2 --max 4 --cap 12
+bun cli.ts run "<URL_reel_terpilih>" --out topik_slug.json --per 2 --max 4 --cap 12
 ```
 Yang terjadi otomatis: caption di-fetch → **trace_source** (cari video sumber asli dari kredit;
 TikTok di-resolve ke CDN mp4 + backup lokal) → **build_footage** (b-roll objek + reel relevan
@@ -186,7 +186,7 @@ Cek ringkasan akhirnya — target minimal yang sehat:
 `trace_source` biasanya sudah mengisi `main.url` = CDN + `main.source_local` = mp4 backup.
 Kalau `main.url` masih halaman `tiktok.com/@user/video/...`, resolve manual:
 ```bash
-node -e "const{tiktokDirectUrl}=require('./scrapers/tiktok_video');tiktokDirectUrl('<page_url>').then(d=>console.log(d))"
+bun -e "const{tiktokDirectUrl}=require('./scrapers/tiktok_video');tiktokDirectUrl('<page_url>').then(d=>console.log(d))"
 ```
 ⚠️ **URL CDN tikwm/fbcdn EPHEMERAL (kedaluwarsa dalam hitungan jam) → lanjut ke Step 4 SEGERA.**
 
@@ -251,15 +251,15 @@ cd C:\Users\mfr\Documents\MyTools\CLIPPER
 
 | Gejala | Akar | Fix |
 |---|---|---|
-| `ECONNREFUSED 127.0.0.1:18800` di semua script | Managed browser belum jalan | `node lib/browser.ts status` → kalau DOWN: `node lib/browser.ts start`. |
+| `ECONNREFUSED 127.0.0.1:18800` di semua script | Managed browser belum jalan | `bun lib/browser.ts status` → kalau DOWN: `bun lib/browser.ts start`. |
 | `Process exited with signal SIGKILL` saat discover_reels/run_pipeline | Step long-running ke-kill timeout runtime sebelum selesai | Jalankan via **background + poll** (lihat box di §3), jangan sinkron. Output partial sudah ke-checkpoint: cek `reel_topics.json` (`"partial": true`) / `thoth_content_set.json` — sering sudah cukup dipakai tanpa rerun penuh. Kalau perlu rerun, kecilkan beban (akun/`--per`/`--max` lebih sedikit). |
 | `tab X belum ter-attach (skip)` | Tab platform itu tak terbuka | Buka tab login platform tsb di managed browser, biarkan terbuka. |
 | discover_reels: akun "kosong" | Grid reels IG virtualized tak render via CDP (akun besar/verified) | Known issue (≈4/10 akun). Pakai akun lain di daftar; atau buka profilnya manual di tab IG lalu rerun. |
-| Narasi hambar / generik | `comments[] = 0` di content-set | Jalankan `node pipeline/collect_comments.ts <set.json> --extra <url_post_rame>`. |
+| Narasi hambar / generik | `comments[] = 0` di content-set | Jalankan `bun pipeline/collect_comments.ts <set.json> --extra <url_post_rame>`. |
 | Video jadi clip-mode padahal narration enabled | Provider groq kena 429 (12k TPM) → narasi gagal diam-diam | Pastikan provider novita (default baru). Cek log: `Narration failed`. |
 | yt-dlp gagal download TikTok | Extractor TikTok rusak + page 403 | Sudah ditangani `scrapers/tiktok_video.ts` (tikwm→CDN). Pastikan `main.url` = URL tiktokcdn, bukan page. |
 | URL CDN expired saat thoth run | tikwm/fbcdn ephemeral | Pakai `main.source_local` (mp4 backup) atau re-resolve lalu run segera. |
-| Lint FAIL `is_video:false TANPA image_path` | Crop post gagal (tab tak attach) | Attach tab platform itu → `node pipeline/enrich_image_paths.ts <set.json> --force`. |
+| Lint FAIL `is_video:false TANPA image_path` | Crop post gagal (tab tak attach) | Attach tab platform itu → `bun pipeline/enrich_image_paths.ts <set.json> --force`. |
 | Footage semua di-skip `<floor 0.46` | Footage beda-angle dari narasi (normal untuk cerita niche) | Bukan bug. Turunkan `placement_min_similarity` kalau mau lebih banyak cutaway. |
 
 ---

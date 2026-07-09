@@ -3,7 +3,7 @@
 // downloads+clips), turns the rest into `footage[]` with is_video flags so the pipeline knows
 // which to download (TikTok/YouTube) vs crop as a still card (X/IG/FB → image_path via enrich).
 //
-//   node urls_to_contentset.js <topic_urls_*.json> [--main <url>] [--out <file>]
+//   bun urls_to_contentset.js <topic_urls_*.json> [--main <url>] [--out <file>]
 //
 // Output → output/content_set_<slug>.json. Then: enrich_image_paths → validate_content_set → thoth run.
 
@@ -17,7 +17,7 @@ const args = process.argv.slice(2);
 const getFlag = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
 const IN = args.find(a => !a.startsWith('--') && args[args.indexOf(a) - 1] !== '--main' && args[args.indexOf(a) - 1] !== '--out');
 const MAIN_OVERRIDE = getFlag('--main');
-if (!IN) { console.log('Usage: node urls_to_contentset.ts <topic_urls_*.json> [--main <url>] [--out <file>]'); process.exit(1); }
+if (!IN) { console.log('Usage: bun urls_to_contentset.ts <topic_urls_*.json> [--main <url>] [--out <file>]'); process.exit(1); }
 if (!fs.existsSync(IN)) { console.log(ui.red(`${ui.ERR} File tak ada: ${IN}`)); process.exit(1); }
 
 let src; try { src = JSON.parse(fs.readFileSync(IN, 'utf8')); } catch (e) { console.log(ui.red(`${ui.ERR} JSON tak valid: ${e.message}`)); process.exit(1); }
@@ -107,7 +107,7 @@ const handleOf = u => (u.match(/@([\w.]+)/) || [, ''])[1] || (u.match(/(?:x|twit
   console.log(`📄 ${OUT}`);
   console.log(ui.rule('thin'));
   console.log('Lanjut:');
-  console.log(`  node enrich_image_paths.ts "${OUT}"`);
-  console.log(`  node validate_content_set.ts "${OUT}"`);
+  console.log(`  bun enrich_image_paths.ts "${OUT}"`);
+  console.log(`  bun validate_content_set.ts "${OUT}"`);
   console.log(`  thoth run --content "${OUT}"`);
 })();

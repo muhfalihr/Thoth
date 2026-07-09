@@ -208,7 +208,7 @@ export { cropProfile, igResolveHandle };
 // ---- CLI (testing) ----
 if (import.meta.main) {
   const [platform, username, out] = process.argv.slice(2);
-  if (!platform || !out) { console.log('Usage: node profile_crop.ts <platform> <username|""> <out.png> [reelUrl]'); process.exit(1); }
+  if (!platform || !out) { console.log('Usage: bun profile_crop.ts <platform> <username|""> <out.png> [reelUrl]'); process.exit(1); }
   const url = process.argv[5];
   cropProfile(platform, username, out, { url }).then(r => {
     if (r) console.log(ui.gold(`${ui.OK} crop → ${r}`));

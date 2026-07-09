@@ -9,7 +9,7 @@
 //   module: import { resolveSource } from './resolve_source.ts';
 //           await resolveSource({ description, caption, headline });
 //             → { source: {account,platform}|null, keywords: [], reason }
-//   CLI:    node resolve_source.js --headline "..." [--caption "..."] [--desc "..."]
+//   CLI:    bun resolve_source.js --headline "..." [--caption "..."] [--desc "..."]
 //
 // Uses Novita (THOTH_NOVITA_API_KEY via lib/env.js); model via env THOTH_LLM_MODEL (default qwen3-vl-30b-a3b-instruct, works
 // text-only on the OpenAI-compatible endpoint; 8b deprecated Novita 2026-07).
@@ -137,7 +137,7 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
   const get = n => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : ''; };
   const input = { description: get('--desc'), caption: get('--caption'), headline: get('--headline') };
-  if (!input.description && !input.caption && !input.headline) { console.log('Usage: node resolve_source.ts --headline "..." [--caption "..."] [--desc "..."]'); process.exit(1); }
+  if (!input.description && !input.caption && !input.headline) { console.log('Usage: bun resolve_source.ts --headline "..." [--caption "..."] [--desc "..."]'); process.exit(1); }
   (async () => {
     const r = await resolveSource(input);
     console.log(JSON.stringify(r, null, 2));

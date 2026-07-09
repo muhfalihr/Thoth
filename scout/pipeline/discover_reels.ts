@@ -7,7 +7,7 @@
 // Whisper — guarded: only if a GROQ key exists). Image posts (the headline-card kind) read from the
 // cover image alone — no audio.
 //
-//   node discover_reels.js [--accounts h1,h2,..] [--max-per N] [--hours 48] [--include reels,posts] [--out file]
+//   bun discover_reels.js [--accounts h1,h2,..] [--max-per N] [--hours 48] [--include reels,posts] [--out file]
 //   --include : which item types to scan — "reels,posts" (default) | "reels" | "posts"
 //
 // Needs a logged-in instagram.com tab attached. Output → output/reel_topics.json (ranked views+recency).

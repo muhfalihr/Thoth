@@ -8,7 +8,7 @@
 //   await ckb.save(KB);                                          // ← async (flush dirty rows)
 //
 // Connection: THOTH_SUPABASE_URL dari .env root repo (via lib/env.js). Requires the `pg`
-// package in the run dir (workspace: `npm install pg`). If the URL/pg/connection is unavailable it
+// package in the run dir (workspace: `bun add pg`). If the URL/pg/connection is unavailable it
 // DEGRADES to a local JSON file (workspace/ckb.json) so the tool never breaks.
 //
 // Schema (auto-created): ckb_entities, ckb_memes (term_key PK, summary, as_of_date, source_url,

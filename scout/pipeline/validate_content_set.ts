@@ -6,7 +6,7 @@
 //   - is_video:false entries without a real image_path on disk
 //   - main.description missing (narration hallucination risk — contract: WAJIB)
 //
-//   node validate_content_set.js <content_set.json>
+//   bun validate_content_set.js <content_set.json>
 //
 // Exit 0 = safe to hand off (errors=0). Exit 1 = has errors → fix before thoth run.
 
@@ -15,7 +15,7 @@ import { lintContentSet } from '../lib/validate.ts';
 import { ui } from '../lib/ui.ts';
 
 const file = process.argv[2];
-if (!file) { console.log('Usage: node validate_content_set.ts <content_set.json>'); process.exit(1); }
+if (!file) { console.log('Usage: bun validate_content_set.ts <content_set.json>'); process.exit(1); }
 if (!fs.existsSync(file)) { console.error(ui.red(`${ui.ERR} File tidak ada: ${file}`)); process.exit(1); }
 
 let data;

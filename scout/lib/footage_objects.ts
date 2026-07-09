@@ -9,7 +9,7 @@
 //           await footageObjects({ description, caption, headline, comments })
 //             → { subjects:["nvidia"], objects:["chip ai","data center"], people:["jensen huang"] }
 //           subjects = jangkar topik; objects = benda b-roll (digabung subject saat query); people = tokoh.
-//   CLI:    node footage_objects.js --headline "..." [--caption "..."] [--desc "..."] [--comments "..."]
+//   CLI:    bun footage_objects.js --headline "..." [--caption "..."] [--desc "..."] [--comments "..."]
 //
 // Uses Novita (THOTH_NOVITA_API_KEY via lib/env.js); model via env THOTH_LLM_MODEL (default deepseek-v3.1 — a TEXT reasoner;
 // brand-expansion like "ojol"→gojek,grab needs a strong model, a vision model is wasteful here).
@@ -76,6 +76,6 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
   const get = n => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : ''; };
   const input = { description: get('--desc'), caption: get('--caption'), headline: get('--headline'), comments: get('--comments') };
-  if (!input.description && !input.caption && !input.headline) { console.log('Usage: node footage_objects.ts --headline "..." [--caption "..."] [--desc "..."]'); process.exit(1); }
+  if (!input.description && !input.caption && !input.headline) { console.log('Usage: bun footage_objects.ts --headline "..." [--caption "..."] [--desc "..."]'); process.exit(1); }
   (async () => { console.log(JSON.stringify(await footageObjects(input), null, 2)); })();
 }

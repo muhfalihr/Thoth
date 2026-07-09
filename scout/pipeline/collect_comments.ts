@@ -7,7 +7,7 @@
 // runs the matching per-platform scraper (which produces BOTH the crop AND the data), then merges +
 // dedupes + caps. Reuses the proven scrapers — no refactor.
 //
-//   node collect_comments.ts <content_set.json> [--per-source 6] [--cap 12] [--max-sources 4] [--extra url1,url2]
+//   bun collect_comments.ts <content_set.json> [--per-source 6] [--cap 12] [--max-sources 4] [--extra url1,url2]
 //
 // Needs the relevant platform tabs attached + logged in (same as the standalone scrapers).
 
@@ -25,7 +25,7 @@ const PER_SOURCE = parseInt(getFlag('--per-source', '6'), 10);
 const CAP = parseInt(getFlag('--cap', '12'), 10);
 const MAX_SOURCES = parseInt(getFlag('--max-sources', '4'), 10);
 const EXTRA = (getFlag('--extra', '') || '').split(',').map(s => s.trim()).filter(Boolean);
-if (!FILE) { console.log('Usage: node collect_comments.ts <content_set.json> [--per-source 6] [--cap 12] [--max-sources 4] [--extra url1,url2]'); process.exit(1); }
+if (!FILE) { console.log('Usage: bun collect_comments.ts <content_set.json> [--per-source 6] [--cap 12] [--max-sources 4] [--extra url1,url2]'); process.exit(1); }
 if (!fs.existsSync(FILE)) { console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`)); process.exit(1); }
 
 // platform → scraper script. (threads has no comment scraper → skipped.)
@@ -83,7 +83,7 @@ const dedupeKey = c => `${(c.author || '').toLowerCase()}|${(c.text || '').trim(
     const tmpAbs = outPath(tmp);
     process.stdout.write(`\n• scrape [${s.platform}] … `);
     try {
-      execFileSync('node', [path.join(import.meta.dirname, '..', 'scrapers', SCRIPT[s.platform]), s.url, tmp, '--max', String(PER_SOURCE)], { stdio: 'pipe', timeout: 180000 });
+      execFileSync(process.execPath, [path.join(import.meta.dirname, '..', 'scrapers', SCRIPT[s.platform]), s.url, tmp, '--max', String(PER_SOURCE)], { stdio: 'pipe', timeout: 180000 });
     } catch (e) { /* scraper may exit non-zero; still try to read its output */ }
     let got = [];
     try { const o = JSON.parse(fs.readFileSync(tmpAbs, 'utf8')); got = (o && o.comments) || []; } catch (e) {}

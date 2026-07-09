@@ -1,7 +1,7 @@
 // search_tiktok_v2.js — extract REAL /video/{id} URLs from the logged-in TikTok tab,
 // validate their shape, and (optionally) gate them by caption against topic keywords.
 //
-//   node search_tiktok_v2.js "<query>" [keyword1 keyword2 ...]
+//   bun search_tiktok_v2.js "<query>" [keyword1 keyword2 ...]
 //
 // With keywords, each candidate's caption is fetched via public oEmbed (verify.js) and
 // kept only if it mentions ALL keywords — enforcing the GATE RELEVANSI the skill mandates
@@ -19,7 +19,7 @@ import { ui } from '../lib/ui.ts';
 async function main() {
   const query = process.argv[2];
   const keywords = process.argv.slice(3);
-  if (!query) { console.log('Usage: node search_tiktok_v2.ts "<query>" [keyword ...]'); process.exit(1); }
+  if (!query) { console.log('Usage: bun search_tiktok_v2.ts "<query>" [keyword ...]'); process.exit(1); }
 
   const client = await connect({ match: 'tiktok.com' });
   const searchUrl = 'https://www.tiktok.com/search?q=' + encodeURIComponent(query) + '&type=video';

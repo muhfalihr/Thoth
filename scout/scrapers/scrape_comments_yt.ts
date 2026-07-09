@@ -4,7 +4,7 @@
 // #vote-count-middle, avatar #author-thumbnail img. The crop targets the top comment
 // (#comment) so replies are excluded.
 //
-//   node scrape_comments_yt.js <watch_url> [out.json] [--max N]
+//   bun scrape_comments_yt.js <watch_url> [out.json] [--max N]
 //   (komentar publik — login opsional; tab youtube.com ter-attach relay)
 
 import { run, sleep } from '../lib/cdp.ts';
@@ -60,7 +60,7 @@ async function ensureLoaded(client) {
 }
 
 const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) { console.log('Usage: node scrape_comments_yt.ts <watch_url> [out.json] [--max N]'); process.exit(1); }
+if (!url) { console.log('Usage: bun scrape_comments_yt.ts <watch_url> [out.json] [--max N]'); process.exit(1); }
 
 const id = (url.match(/[?&]v=([\w-]+)/) || url.match(/youtu\.be\/([\w-]+)/) || url.match(/shorts\/([\w-]+)/) || [, ''])[1];
 

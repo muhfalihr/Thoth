@@ -7,7 +7,7 @@
 //
 //   module: import { threadsVideoSrc } from './threads_video.ts';
 //           await threadsVideoSrc(postUrl[, {client}])  → fbcdn mp4 URL or ''
-//   CLI:    node threads_video.js <threads_post_url> [--download]
+//   CLI:    bun threads_video.js <threads_post_url> [--download]
 //
 // ⚠️ The fbcdn URL is SIGNED & EPHEMERAL (expires in hours) — download promptly.
 
@@ -54,7 +54,7 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
   const url = args.find(a => !a.startsWith('--'));
   const doDownload = args.includes('--download');
-  if (!url) { console.log('Usage: node threads_video.ts <threads_post_url> [--download]'); process.exit(1); }
+  if (!url) { console.log('Usage: bun threads_video.ts <threads_post_url> [--download]'); process.exit(1); }
   run(async () => {
     const src = await threadsVideoSrc(url);
     if (!src) { console.log(ui.amber(`${ui.WARN}  tak ada <video> di post ini (mungkin post teks/foto).`)); return; }

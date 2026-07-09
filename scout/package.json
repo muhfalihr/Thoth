@@ -2,9 +2,9 @@
   "name": "scout",
   "private": true,
   "version": "1.0.0",
-  "description": "Upstream content-sourcing untuk Thoth — TypeScript, dijalankan native via Node >=24 type stripping (tanpa build step).",
+  "description": "Upstream content-sourcing untuk Thoth — TypeScript, dijalankan native via Bun (tanpa build step).",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": { "bun": ">=1.2" },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

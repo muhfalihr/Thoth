@@ -4,8 +4,8 @@
 //
 //   module: import { figuresFrom } from './extract_figures.ts';
 //           await figuresFrom({ title, description, caption, headline })  → [{name,type,role,description}]
-//   CLI (content-set): node extract_figures.js <content_set.json>     → sets set.figures, writes file
-//   CLI (test):        node extract_figures.js --title "..." --desc "..." [--caption] [--headline]
+//   CLI (content-set): bun extract_figures.js <content_set.json>     → sets set.figures, writes file
+//   CLI (test):        bun extract_figures.js --title "..." --desc "..." [--caption] [--headline]
 //
 // Returns [] when there is no specific notable figure (e.g. an ordinary anonymous person). Uses
 // Novita (THOTH_NOVITA_API_KEY via lib/env.js); model via THOTH_LLM_MODEL (default deepseek-v3.1 — discrimination needs a strong text reasoner).
@@ -84,7 +84,7 @@ if (import.meta.main) {
       console.log('📄 ' + FILE);
     } else {
       const input = { title: get('--title'), description: get('--desc'), caption: get('--caption'), headline: get('--headline') };
-      if (!input.title && !input.description && !input.caption && !input.headline) { console.log('Usage: node extract_figures.ts <content_set.json> | --title "..." --desc "..."'); process.exit(1); }
+      if (!input.title && !input.description && !input.caption && !input.headline) { console.log('Usage: bun extract_figures.ts <content_set.json> | --title "..." --desc "..."'); process.exit(1); }
       console.log(JSON.stringify(await figuresFrom(input), null, 2));
     }
   })();
