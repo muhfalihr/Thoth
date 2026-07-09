@@ -1,0 +1,17 @@
+# Thoth Clippy Configuration
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# Menyesuaikan threshold karena fungsi seperti `seed_from_url` butuh 8 argumen
+too-many-arguments-threshold = 8
+
+# Karena ini memproses AI dan logika video (wgpu), kompleksitas kognitif kadang tinggi
+cognitive-complexity-threshold = 30
+
+# Mengabaikan nama file tertentu dari linting pedantic
+# (Misalnya jika ada file binding C atau auto-generated)
+# ignore-without-strict-drop-ability = ["*bindgen*"]
+
+# thoth adalah binary-only crate ([[bin]], tanpa [lib]) — tidak ada API publik lintas-crate
+# yang harus dijaga stabil, jadi izinkan clippy memberi saran lebih presisi untuk kode internal
+# (mis. unnecessary_wraps, needless_pass_by_ref_mut, trivially_copy_pass_by_ref).
+avoid-breaking-exported-api = false

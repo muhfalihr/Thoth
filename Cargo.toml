@@ -57,3 +57,29 @@ whisper-rs = { version = "0.16", optional = true }
 opt-level = 3
 lto       = "thin"
 strip     = true
+
+[lints.clippy]
+# Standar linter untuk repositori Thoth
+# Membantu menjaga kualitas kode tanpa memperlambat pengembangan AI/Video
+
+# Menggunakan beberapa rekomendasi ketat (pedantic) dengan prioritas lebih rendah
+pedantic = { level = "warn", priority = -1 }
+
+# Allow (Matikan) peringatan pedantic yang terlalu berisik / kurang relevan untuk iterasi cepat:
+module_name_repetitions = "allow" # Kita sering mengulang nama modul seperti `video::VideoPlayer`
+missing_errors_doc      = "allow" # Dokumentasi error belum wajib untuk binary internal
+missing_panics_doc      = "allow"
+must_use_candidate      = "allow" # Tidak wajib menandai semua fungsi murni dengan #[must_use]
+cast_possible_truncation= "allow" # Sering terjadi saat konversi f32 <-> f64 atau usize <-> u32 di WGPU/Video
+cast_precision_loss     = "allow"
+cast_sign_loss          = "allow"
+too_many_lines          = "allow" # Beberapa modul pipeline AI memang butuh ratusan baris
+struct_excessive_bools  = "allow" # Konfigurasi sering punya banyak boolean flag
+doc_markdown            = "allow" # Terkadang menulis "WGPU" tanpa backtick di komentar itu wajar
+cast_lossless           = "allow" # Sama seperti cast_* lain: konversi numerik WGPU/video/audio sering pakai `as` demi ringkas
+map_unwrap_or           = "allow" # Gaya kontroversial bahkan di komunitas Rust sendiri; .map().unwrap_or() sudah cukup jelas
+
+# Lints terkait idiom Rust yang baik (menjadi warn/error)
+unwrap_used = "warn"      # Sebaiknya gunakan pattern matching atau ?. Boleh di-allow per fungsi bila terpaksa.
+todo = "warn"             # Mengingatkan agar TODO tidak tertinggal ke production
+
