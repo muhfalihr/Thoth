@@ -18,26 +18,44 @@ const MODEL = process.env.THOTH_EMBED_MODEL || 'qwen/qwen3-embedding-8b';
 // Embed an array of strings → array of vectors (same order). Empty strings → null slot.
 async function embed(texts) {
   if (!KEY) return texts.map(() => null);
-  const idx = []; const input = [];
-  texts.forEach((t, i) => { const s = (t || '').trim(); if (s) { idx.push(i); input.push(s.slice(0, 2000)); } });
+  const idx = [];
+  const input = [];
+  texts.forEach((t, i) => {
+    const s = (t || '').trim();
+    if (s) {
+      idx.push(i);
+      input.push(s.slice(0, 2000));
+    }
+  });
   if (!input.length) return texts.map(() => null);
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/embeddings', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
       body: JSON.stringify({ model: MODEL, input }),
     });
     if (!resp.ok) return texts.map(() => null);
     const d = await resp.json();
     const out = texts.map(() => null);
-    (d.data || []).forEach((e, k) => { if (e && e.embedding) out[idx[k]] = e.embedding; });
+    (d.data || []).forEach((e, k) => {
+      if (e && e.embedding) out[idx[k]] = e.embedding;
+    });
     return out;
-  } catch (e) { return texts.map(() => null); }
+  } catch (e) {
+    return texts.map(() => null);
+  }
 }
 
 function cosine(a, b) {
   if (!a || !b || a.length !== b.length) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  let dot = 0,
+    na = 0,
+    nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
   if (!na || !nb) return 0;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }

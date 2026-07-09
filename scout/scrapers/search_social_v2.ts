@@ -24,21 +24,25 @@ async function main() {
     process.exit(1);
   }
 
-  const cfg = platform === 'ig'
-    ? {
-        match: 'instagram.com',
-        searchUrl: 'https://www.instagram.com/explore/search/keyword/?q=' + encodeURIComponent(query),
-        extract: 'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a=>a.href.split("?")[0]).filter(h=>/instagram\\.com\\/(reel|p|tv)\\/[A-Za-z0-9_-]{5,}/.test(h)))',
-        valid: validIG,
-        out: 'ig_urls.json',
-      }
-    : {
-        match: 'x.com',
-        searchUrl: 'https://x.com/search?q=' + encodeURIComponent(query) + '&f=live',
-        extract: 'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a=>a.href.split("?")[0]).filter(h=>/(x|twitter)\\.com\\/[^/]+\\/status\\/\\d{15,}/.test(h)))',
-        valid: validTW,
-        out: 'tw_urls.json',
-      };
+  const cfg =
+    platform === 'ig'
+      ? {
+          match: 'instagram.com',
+          searchUrl:
+            'https://www.instagram.com/explore/search/keyword/?q=' + encodeURIComponent(query),
+          extract:
+            'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a=>a.href.split("?")[0]).filter(h=>/instagram\\.com\\/(reel|p|tv)\\/[A-Za-z0-9_-]{5,}/.test(h)))',
+          valid: validIG,
+          out: 'ig_urls.json',
+        }
+      : {
+          match: 'x.com',
+          searchUrl: 'https://x.com/search?q=' + encodeURIComponent(query) + '&f=live',
+          extract:
+            'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a=>a.href.split("?")[0]).filter(h=>/(x|twitter)\\.com\\/[^/]+\\/status\\/\\d{15,}/.test(h)))',
+          valid: validTW,
+          out: 'tw_urls.json',
+        };
 
   // connect() does the CDP preflight: a clear "run bun lib/browser.js start" message if CDP is down.
   const client = await connect({ match: cfg.match });
@@ -49,33 +53,65 @@ async function main() {
 
   // Detect login-wall / dead page → URLs can't be trusted.
   const loggedOutHint = await client.evaluate(
-    '/log in|masuk untuk|sign up|something went wrong|page isn.t available/i.test(document.body?.innerText||"")'
+    '/log in|masuk untuk|sign up|something went wrong|page isn.t available/i.test(document.body?.innerText||"")',
   );
-  if (loggedOutHint) console.log(ui.amber(`${ui.WARN}  Halaman tampak login-wall / error. Sesi mungkin belum login. URL tak diverifikasi.`));
+  if (loggedOutHint)
+    console.log(
+      ui.amber(
+        `${ui.WARN}  Halaman tampak login-wall / error. Sesi mungkin belum login. URL tak diverifikasi.`,
+      ),
+    );
 
   let links = [];
-  try { links = JSON.parse(await client.evaluate(cfg.extract) || '[]'); } catch (e) { console.log('parse err:', e.message); }
+  try {
+    links = JSON.parse((await client.evaluate(cfg.extract)) || '[]');
+  } catch (e) {
+    console.log('parse err:', e.message);
+  }
   client.close();
 
   // Dedupe + validate (drop fabricated / handle-as-shortcode shapes).
   const seen = new Set();
-  const valid = [], rejected = [];
+  const valid = [],
+    rejected = [];
   for (const u of links) {
-    if (seen.has(u)) continue; seen.add(u);
+    if (seen.has(u)) continue;
+    seen.add(u);
     (cfg.valid(u) ? valid : rejected).push(u);
   }
 
   console.log(ui.gold(`\n${ui.OK} ${valid.length} URL canonical tervalidasi:`));
   valid.slice(0, 15).forEach((l, i) => console.log(`   ${i + 1}. ${l}`));
   if (rejected.length) {
-    console.log(ui.amber(`\n${ui.WARN} ${rejected.length} ditolak (bentuk tidak valid — JANGAN kirim ke Thoth):`));
-    rejected.slice(0, 5).forEach(l => console.log(`   - ${l}`));
+    console.log(
+      ui.amber(
+        `\n${ui.WARN} ${rejected.length} ditolak (bentuk tidak valid — JANGAN kirim ke Thoth):`,
+      ),
+    );
+    rejected.slice(0, 5).forEach((l) => console.log(`   - ${l}`));
   }
 
   const outFile = outPath(cfg.out);
-  fs.writeFileSync(outFile, JSON.stringify({ query, fetched_at: new Date().toISOString(), logged_out_hint: !!loggedOutHint, urls: valid }, null, 2));
+  fs.writeFileSync(
+    outFile,
+    JSON.stringify(
+      {
+        query,
+        fetched_at: new Date().toISOString(),
+        logged_out_hint: !!loggedOutHint,
+        urls: valid,
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`\n💾 ${outFile}`);
-  if (valid.length === 0) console.log(ui.amber(`${ui.WARN}  Nol URL valid → JANGAN rakit URL manual. Buka postingan di browser login lalu salin URL canonical.`));
+  if (valid.length === 0)
+    console.log(
+      ui.amber(
+        `${ui.WARN}  Nol URL valid → JANGAN rakit URL manual. Buka postingan di browser login lalu salin URL canonical.`,
+      ),
+    );
 }
 
 run(main);

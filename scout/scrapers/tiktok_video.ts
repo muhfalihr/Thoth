@@ -15,31 +15,52 @@ import fs from 'node:fs';
 // --- tikwm.com: GET /api/?url=<tiktok> → { data:{ play, hdplay, wmplay, title, duration } } ---
 async function viaTikwm(pageUrl) {
   try {
-    const r = await fetch('https://www.tikwm.com/api/?url=' + encodeURIComponent(pageUrl) + '&hd=1', {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
-    });
+    const r = await fetch(
+      'https://www.tikwm.com/api/?url=' + encodeURIComponent(pageUrl) + '&hd=1',
+      {
+        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+      },
+    );
     if (!r.ok) return null;
     const j = await r.json();
     if (!j || j.code !== 0 || !j.data) return null;
     let p = j.data.hdplay || j.data.play || j.data.wmplay;
     if (!p) return null;
     if (!/^https?:\/\//.test(p)) p = 'https://www.tikwm.com' + p; // tikwm sometimes returns a relative path
-    return { url: p, title: (j.data.title || '').trim(), duration: j.data.duration || 0, via: 'tikwm' };
-  } catch (e) { return null; }
+    return {
+      url: p,
+      title: (j.data.title || '').trim(),
+      duration: j.data.duration || 0,
+      via: 'tikwm',
+    };
+  } catch (e) {
+    return null;
+  }
 }
 
 // --- CDP fallback: open the page in the relay browser, read <video>.currentSrc. Only usable when the
 // player exposes a direct http(s) source (not a blob:/MSE stream). Best-effort. ---
 async function viaCdp(pageUrl) {
   let connect, sleep;
-  try { ({ connect, sleep } = await import('../lib/cdp.ts')); } catch (e) { return null; }
-  let c;
-  try { c = await connect({ match: ['tiktok.com'], requireMatch: true }); } catch (e) { return null; }
   try {
-    try { await c.cmd('Page.bringToFront'); } catch (e) {}
+    ({ connect, sleep } = await import('../lib/cdp.ts'));
+  } catch (e) {
+    return null;
+  }
+  let c;
+  try {
+    c = await connect({ match: ['tiktok.com'], requireMatch: true });
+  } catch (e) {
+    return null;
+  }
+  try {
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
     await c.navigate(pageUrl, 8000);
     await sleep(3500);
-    const src = (await c.evaluate(`(() => {
+    const src =
+      (await c.evaluate(`(() => {
       let best = '', n = 0;
       document.querySelectorAll('video').forEach(v => {
         const s = v.currentSrc || v.src || '';
@@ -50,8 +71,11 @@ async function viaCdp(pageUrl) {
     })()`)) || '';
     if (!/^https?:\/\//.test(src)) return null; // blob:/MSE → not downloadable here
     return { url: src, title: '', duration: 0, via: 'cdp' };
-  } catch (e) { return null; }
-  finally { c.close(); }
+  } catch (e) {
+    return null;
+  } finally {
+    c.close();
+  }
 }
 
 // Resolve a TikTok page URL → direct CDN mp4 descriptor (tikwm first, CDP fallback). null on failure.
@@ -64,13 +88,17 @@ async function downloadTiktok(pageUrl, out) {
   const d = await tiktokDirectUrl(pageUrl);
   if (!d) return '';
   try {
-    const r = await fetch(d.url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.tikwm.com/' } });
+    const r = await fetch(d.url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.tikwm.com/' },
+    });
     if (!r.ok) return '';
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length < 10000) return ''; // too small → likely an error page, not a video
     fs.writeFileSync(out, buf);
     return out;
-  } catch (e) { return ''; }
+  } catch (e) {
+    return '';
+  }
 }
 
 export { tiktokDirectUrl, downloadTiktok };

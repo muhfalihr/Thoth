@@ -26,23 +26,30 @@ async function main() {
     console.log('Search:', h);
     const loc = await client.navigate('https://www.tiktok.com/' + h + '?lang=en', 5000);
     console.log('  URL:', String(loc).slice(0, 60));
-    await client.scroll(1000); await sleep(2000);
-    await client.scroll(2000); await sleep(2000);
+    await client.scroll(1000);
+    await sleep(2000);
+    await client.scroll(2000);
+    await sleep(2000);
 
-    const links = JSON.parse(await client.evaluate(
-      'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a=>a.href.split("?")[0]).filter(h=>h.indexOf("/video/")>-1))'
-    ) || '[]');
-    const fresh = [...new Set(links)].filter(u => validTK(u) && !all.includes(u)).slice(0, 6);
+    const links = JSON.parse(
+      (await client.evaluate(
+        'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a=>a.href.split("?")[0]).filter(h=>h.indexOf("/video/")>-1))',
+      )) || '[]',
+    );
+    const fresh = [...new Set(links)].filter((u) => validTK(u) && !all.includes(u)).slice(0, 6);
     console.log('  New:', fresh.length);
-    fresh.forEach(u => all.push(u));
+    fresh.forEach((u) => all.push(u));
   }
   client.close();
 
   console.log('\n=== ALL UNIQUE URLs ===');
-  all.forEach((u, i) => console.log((i + 1) + '. ' + u));
+  all.forEach((u, i) => console.log(i + 1 + '. ' + u));
 
   const outFile = outPath('viral_urls.json');
-  fs.writeFileSync(outFile, JSON.stringify({ fetched_at: new Date().toISOString(), handles, urls: all }, null, 2));
+  fs.writeFileSync(
+    outFile,
+    JSON.stringify({ fetched_at: new Date().toISOString(), handles, urls: all }, null, 2),
+  );
   console.log('\n💾', outFile);
 }
 

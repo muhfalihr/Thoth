@@ -28,17 +28,32 @@ const EXTRACT_JS = `(() => {
 })()`;
 
 const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) { console.log('Usage: bun scrape_comments_reddit.ts <post_url> [out.json] [--max N]'); process.exit(1); }
+if (!url) {
+  console.log('Usage: bun scrape_comments_reddit.ts <post_url> [out.json] [--max N]');
+  process.exit(1);
+}
 
 const id = (url.match(/comments\/(\w+)/) || [, ''])[1];
 
-run(() => scrapeComments({
-  url, platform: 'reddit', label: 'Reddit',
-  match: 'reddit.com', idToken: id,
-  ensureLoaded: client => pollCount(client, COUNT_JS, 10, 1000),
-  extractJs: EXTRACT_JS,
-  scrollJs: 'window.scrollBy(0, 1400)',
-  buildMain: u => ({ url: u, platform: 'reddit', title: `Reddit ${id}`, is_video: false, duration_sec: 0,
-    profile: { name: '', handle: '', followers: '', avatar_url: '' } }),
-  max: max || 12, out: out || 'thoth_content_set.json',
-}));
+run(() =>
+  scrapeComments({
+    url,
+    platform: 'reddit',
+    label: 'Reddit',
+    match: 'reddit.com',
+    idToken: id,
+    ensureLoaded: (client) => pollCount(client, COUNT_JS, 10, 1000),
+    extractJs: EXTRACT_JS,
+    scrollJs: 'window.scrollBy(0, 1400)',
+    buildMain: (u) => ({
+      url: u,
+      platform: 'reddit',
+      title: `Reddit ${id}`,
+      is_video: false,
+      duration_sec: 0,
+      profile: { name: '', handle: '', followers: '', avatar_url: '' },
+    }),
+    max: max || 12,
+    out: out || 'thoth_content_set.json',
+  }),
+);

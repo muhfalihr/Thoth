@@ -16,7 +16,10 @@ import * as ckb from './ckb.ts';
 import { outPath } from '../lib/paths.ts';
 
 const args = process.argv.slice(2);
-const getFlag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
+const getFlag = (n, d) => {
+  const i = args.indexOf(n);
+  return i >= 0 ? args[i + 1] : d;
+};
 const MAX = parseInt(getFlag('--max', '12'), 10);
 const PER_VIDEO = parseInt(getFlag('--per-video', '12'), 10);
 const TTL_DAYS = parseFloat(getFlag('--ttl', '30'));
@@ -29,33 +32,74 @@ const KEY = novitaKey();
 const MODEL = process.env.THOTH_CONTEXT_MODEL || 'deepseek/deepseek-v3.1';
 
 const SCRIPT = {
-  tiktok: 'scrape_comments.ts', instagram: 'scrape_comments_ig.ts', twitter: 'scrape_comments_x.ts',
-  youtube: 'scrape_comments_yt.ts', facebook: 'scrape_comments_fb.ts',
+  tiktok: 'scrape_comments.ts',
+  instagram: 'scrape_comments_ig.ts',
+  twitter: 'scrape_comments_x.ts',
+  youtube: 'scrape_comments_yt.ts',
+  facebook: 'scrape_comments_fb.ts',
 };
-const platformOf = u => /tiktok\.com/.test(u) ? 'tiktok' : /instagram\.com/.test(u) ? 'instagram'
-  : /(?:x|twitter)\.com/.test(u) ? 'twitter' : /youtube\.com|youtu\.be/.test(u) ? 'youtube'
-  : /facebook\.com/.test(u) ? 'facebook' : '';
+const platformOf = (u) =>
+  /tiktok\.com/.test(u)
+    ? 'tiktok'
+    : /instagram\.com/.test(u)
+      ? 'instagram'
+      : /(?:x|twitter)\.com/.test(u)
+        ? 'twitter'
+        : /youtube\.com|youtu\.be/.test(u)
+          ? 'youtube'
+          : /facebook\.com/.test(u)
+            ? 'facebook'
+            : '';
 
 // Pull candidate trending videos from the discovery feed (reels[] = scanned accounts).
 function loadFeed() {
-  let j; try { j = JSON.parse(fs.readFileSync(SRC, 'utf8')); } catch (e) { return []; }
-  const reels = Array.isArray(j.reels) ? j.reels : (Array.isArray(j.urls) ? j.urls : []);
+  let j;
+  try {
+    j = JSON.parse(fs.readFileSync(SRC, 'utf8'));
+  } catch (e) {
+    return [];
+  }
+  const reels = Array.isArray(j.reels) ? j.reels : Array.isArray(j.urls) ? j.urls : [];
   const seen = new Set();
   return reels
-    .map(r => ({ url: r.url || '', topic: r.topic || r.caption || '' }))
-    .filter(r => r.url && platformOf(r.url) && SCRIPT[platformOf(r.url)] && !seen.has(r.url) && seen.add(r.url))
+    .map((r) => ({ url: r.url || '', topic: r.topic || r.caption || '' }))
+    .filter(
+      (r) =>
+        r.url &&
+        platformOf(r.url) &&
+        SCRIPT[platformOf(r.url)] &&
+        !seen.has(r.url) &&
+        seen.add(r.url),
+    )
     .slice(0, MAX);
 }
 
 function scrapeComments(url) {
   const plat = platformOf(url);
   const tmp = outPath(`__pulse_${plat}_${Math.random().toString(36).slice(2, 8)}.json`);
-  try { execFileSync(process.execPath, [path.join(import.meta.dirname, '..', 'scrapers', SCRIPT[plat]), url, tmp, '--max', String(PER_VIDEO)], { stdio: 'pipe', timeout: 180000 }); }
-  catch (e) { /* tolerated */ }
+  try {
+    execFileSync(
+      process.execPath,
+      [
+        path.join(import.meta.dirname, '..', 'scrapers', SCRIPT[plat]),
+        url,
+        tmp,
+        '--max',
+        String(PER_VIDEO),
+      ],
+      { stdio: 'pipe', timeout: 180000 },
+    );
+  } catch (e) {
+    /* tolerated */
+  }
   let comments = [];
-  try { comments = (JSON.parse(fs.readFileSync(tmp, 'utf8')).comments) || []; } catch (e) {}
-  try { fs.rmSync(tmp); } catch (e) {}
-  return comments.map(c => (c.text || '').trim()).filter(Boolean);
+  try {
+    comments = JSON.parse(fs.readFileSync(tmp, 'utf8')).comments || [];
+  } catch (e) {}
+  try {
+    fs.rmSync(tmp);
+  } catch (e) {}
+  return comments.map((c) => (c.text || '').trim()).filter(Boolean);
 }
 
 // Distil recurring cultural terms + a current-register snapshot from the corpus (one LLM call).
@@ -76,19 +120,39 @@ ${corpus.slice(0, 6000)}
 Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}],"register":[""]}`;
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
-      body: JSON.stringify({ model: MODEL, max_tokens: 1000, temperature: 0.2, messages: [{ role: 'user', content: prompt }] }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 1000,
+        temperature: 0.2,
+        messages: [{ role: 'user', content: prompt }],
+      }),
     });
     if (!resp.ok) return empty;
     const d = await resp.json();
-    const txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
-    const m = txt.match(/\{[\s\S]*\}/); if (!m) return empty;
+    const txt =
+      (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    const m = txt.match(/\{[\s\S]*\}/);
+    if (!m) return empty;
     const o = JSON.parse(m[0]);
     return {
-      terms: (Array.isArray(o.terms) ? o.terms : []).map(t => ({ term: String(t.term || '').trim(), kind: String(t.kind || '').trim().toLowerCase() })).filter(t => t.term),
-      register: (Array.isArray(o.register) ? o.register : []).map(s => String(s).trim()).filter(Boolean).slice(0, 10),
+      terms: (Array.isArray(o.terms) ? o.terms : [])
+        .map((t) => ({
+          term: String(t.term || '').trim(),
+          kind: String(t.kind || '')
+            .trim()
+            .toLowerCase(),
+        }))
+        .filter((t) => t.term),
+      register: (Array.isArray(o.register) ? o.register : [])
+        .map((s) => String(s).trim())
+        .filter(Boolean)
+        .slice(0, 10),
     };
-  } catch (e) { return empty; }
+  } catch (e) {
+    return empty;
+  }
 }
 
 (async () => {
@@ -96,7 +160,10 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}],"register":[""]}`;
   console.log('  Cultural Pulse Harvester');
   console.log(ui.rule());
   const feed = loadFeed();
-  if (!feed.length) { console.log(`Tak ada video di feed (${SRC}). Jalankan discover_reels dulu.`); process.exit(0); }
+  if (!feed.length) {
+    console.log(`Tak ada video di feed (${SRC}). Jalankan discover_reels dulu.`);
+    process.exit(0);
+  }
   console.log(`Feed: ${feed.length} video (budget --max ${MAX}, --per-video ${PER_VIDEO})`);
 
   const perVideo = []; // [{url, text}]
@@ -108,7 +175,7 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}],"register":[""]}`;
     console.log(`${texts.length} komentar`);
   }
 
-  const corpus = perVideo.map(v => v.text).join('\n');
+  const corpus = perVideo.map((v) => v.text).join('\n');
   const { terms, register } = await distil(corpus);
   console.log(`Distilasi: ${terms.length} kandidat istilah, ${register.length} frasa register`);
 
@@ -117,9 +184,15 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}],"register":[""]}`;
   let kept = 0;
   for (const t of terms) {
     const tl = t.term.toLowerCase();
-    const hits = perVideo.filter(v => v.text.includes(tl));
+    const hits = perVideo.filter((v) => v.text.includes(tl));
     if (hits.length < MIN_FREQ) continue; // must recur across ≥MIN_FREQ videos
-    ckb.bumpPulse(KB, t.term, t.kind, hits.length, hits.map(h => h.url));
+    ckb.bumpPulse(
+      KB,
+      t.term,
+      t.kind,
+      hits.length,
+      hits.map((h) => h.url),
+    );
     kept++;
   }
   if (register.length) ckb.setRegister(KB, register);
@@ -129,6 +202,8 @@ Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}],"register":[""]}`;
   const top = ckb.topPulse(KB, 12);
   console.log(ui.rule('thin'));
   console.log(`Pulse: +${kept} istilah berulang (dari ${terms.length}). Top sekarang:`);
-  top.forEach((p, i) => console.log(`  ${i + 1}. ${p.term} [${p.kind}]  freq=${p.freq} score=${p.score.toFixed(1)}`));
+  top.forEach((p, i) =>
+    console.log(`  ${i + 1}. ${p.term} [${p.kind}]  freq=${p.freq} score=${p.score.toFixed(1)}`),
+  );
   console.log(`📄 CKB: ${ckb.LOCAL_PATH}`);
 })();

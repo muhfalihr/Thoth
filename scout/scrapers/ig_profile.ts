@@ -14,7 +14,9 @@ function parseViews(s) {
   if (!m) return 0;
   let n = parseFloat(m[1]) || 0;
   const u = (m[2] || '').toUpperCase();
-  if (u === 'K') n *= 1e3; else if (u === 'M') n *= 1e6; else if (u === 'B') n *= 1e9;
+  if (u === 'K') n *= 1e3;
+  else if (u === 'M') n *= 1e6;
+  else if (u === 'B') n *= 1e9;
   return Math.round(n);
 }
 
@@ -22,12 +24,29 @@ function parseViews(s) {
 // of the /reels/ tab (which filters /p/ out). Needed when the creator published the source as a feed
 // VIDEO post, not a Reel — those live only at /p/<code> and never appear under /reels/. Each item carries
 // `isVideo` (reels are always video; /p/ verified via og:video / <video> when captions:true).
-async function igProfileReels(username: string, { max = 8, captions = true, client, includePosts = false }: { max?: number; captions?: boolean; client?: any; includePosts?: boolean } = {}) {
-  let c = client, own = false;
-  if (!c) { c = await connect({ match: 'instagram.com', requireMatch: true }); own = true; }
+async function igProfileReels(
+  username: string,
+  {
+    max = 8,
+    captions = true,
+    client,
+    includePosts = false,
+  }: { max?: number; captions?: boolean; client?: any; includePosts?: boolean } = {},
+) {
+  let c = client,
+    own = false;
+  if (!c) {
+    c = await connect({ match: 'instagram.com', requireMatch: true });
+    own = true;
+  }
   try {
-    try { await c.cmd('Page.bringToFront'); } catch (e) {}
-    await c.navigate('https://www.instagram.com/' + username + (includePosts ? '/' : '/reels/'), 6000);
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
+    await c.navigate(
+      'https://www.instagram.com/' + username + (includePosts ? '/' : '/reels/'),
+      6000,
+    );
     await sleep(3000);
     // IG VIRTUALIZES the profile grid: only ~6 thumbnail <a> nodes are mounted in the DOM at any instant
     // and get RECYCLED as you scroll, so a single querySelectorAll snapshot sees only whichever ~6 are on
@@ -58,21 +77,38 @@ async function igProfileReels(username: string, { max = 8, captions = true, clie
       return JSON.stringify(out);
     })()`;
     const want = Math.max(max, 12);
-    const acc = new Map();                                  // code -> {type, code, v} (union across scrolls)
+    const acc = new Map(); // code -> {type, code, v} (union across scrolls)
     let stale = 0;
     for (let i = 0; i < 10; i++) {
-      let batch = []; try { batch = JSON.parse((await c.evaluate(collectExpr).catch(() => '[]')) || '[]'); } catch (e) {}
+      let batch = [];
+      try {
+        batch = JSON.parse((await c.evaluate(collectExpr).catch(() => '[]')) || '[]');
+      } catch (e) {}
       const before = acc.size;
       for (const it of batch) if (!acc.has(it.code)) acc.set(it.code, it);
       if (acc.size >= want) break;
-      if (acc.size === before) { if (++stale >= 2) break; } else stale = 0;  // grid exhausted (no new in 2 ticks)
+      if (acc.size === before) {
+        if (++stale >= 2) break;
+      } else stale = 0; // grid exhausted (no new in 2 ticks)
       await c.evaluate('window.scrollBy(0, document.body.scrollHeight)').catch(() => {});
       await sleep(1500);
     }
     let items = Array.from(acc.values())
       // Preserve the real owner in the URL (collab/tagged posts are owned by another account) so
       // downstream aggregator exclusion can see it; bare /p|reel/<code>/ when owner is unknown.
-      .map(it => ({ url: 'https://www.instagram.com/' + (it.owner ? it.owner + '/' : '') + (it.type === 'p' ? 'p' : 'reel') + '/' + it.code + '/', type: it.type, views: parseViews(it.v), caption: '', isVideo: it.type === 'reel' }));
+      .map((it) => ({
+        url:
+          'https://www.instagram.com/' +
+          (it.owner ? it.owner + '/' : '') +
+          (it.type === 'p' ? 'p' : 'reel') +
+          '/' +
+          it.code +
+          '/',
+        type: it.type,
+        views: parseViews(it.v),
+        caption: '',
+        isVideo: it.type === 'reel',
+      }));
     // Reels-only mode (trace_source): rank by views to find the viral one. includePosts mode
     // (build_footage): KEEP grid/recency order — /p/ feed posts have no grid view count (views=0),
     // so view-sort would bury every /p/ post below the reels and slice() could cut the relevant ones.
@@ -82,22 +118,30 @@ async function igProfileReels(username: string, { max = 8, captions = true, clie
     if (captions) {
       for (const it of items) {
         try {
-          await c.navigate(it.url, 5000); await sleep(1800);
+          await c.navigate(it.url, 5000);
+          await sleep(1800);
           const meta = await c.evaluate(`(() => {
             const og = (document.querySelector('meta[property="og:description"]')||{}).content||'';
             const ogv = (document.querySelector('meta[property="og:video"]')||{}).content||'';
             return JSON.stringify({ og, isVideo: !!ogv || !!document.querySelector('video') });
           })()`);
-          let mj: any = {}; try { mj = JSON.parse(meta || '{}'); } catch (e) {}
+          let mj: any = {};
+          try {
+            mj = JSON.parse(meta || '{}');
+          } catch (e) {}
           const og = mj.og || '';
           const i = og.indexOf(': "'); // '<user> on <date>: "CAPTION'
           it.caption = (i >= 0 ? og.slice(i + 3).replace(/"\s*$/, '') : og).trim().slice(0, 300);
           if (it.type === 'p') it.isVideo = !!mj.isVideo; // reels are always video; /p/ must be verified
-        } catch (e) { it.caption = ''; }
+        } catch (e) {
+          it.caption = '';
+        }
       }
     }
     return items;
-  } finally { if (own) c.close(); }
+  } finally {
+    if (own) c.close();
+  }
 }
 
 export { igProfileReels, parseViews };

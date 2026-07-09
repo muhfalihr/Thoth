@@ -47,13 +47,18 @@ async function tiktokOembed(url) {
 // Fetch YouTube title via public oEmbed (no login). Returns {title,author} or null.
 async function youtubeOembed(url) {
   try {
-    const r = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(url), {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
+    const r = await fetch(
+      'https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(url),
+      {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      },
+    );
     if (!r.ok) return null;
     const d = await r.json();
     return { title: d.title || '', author: d.author_name || '', thumbnail: d.thumbnail_url || '' };
-  } catch (_) { return null; }
+  } catch (_) {
+    return null;
+  }
 }
 
 // Probe ANY url with yt-dlp metadata (no download) → { isVideo, caption }. Used to admit Twitter/IG
@@ -74,20 +79,48 @@ function ytdlpCookieArgs() {
 
 function probeVideo(url) {
   const YTDLP = process.env.YTDLP || 'yt-dlp';
-  const args = ['--no-warnings', '--skip-download', '--dump-single-json', '--playlist-items', '1',
-    ...ytdlpCookieArgs(), url];
+  const args = [
+    '--no-warnings',
+    '--skip-download',
+    '--dump-single-json',
+    '--playlist-items',
+    '1',
+    ...ytdlpCookieArgs(),
+    url,
+  ];
   try {
-    const out = execFileSync(YTDLP, args, { stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT, maxBuffer: PROBE_MAXBUF });
+    const out = execFileSync(YTDLP, args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT,
+      maxBuffer: PROBE_MAXBUF,
+    });
     const d = JSON.parse(out.toString('utf8'));
-    const isVideo = !!(d && (d.duration || d.ext || d._type === 'video' || (Array.isArray(d.formats) && d.formats.length)));
-    const caption = String(d && (d.title || d.description) || '').replace(/\s+/g, ' ').trim();
-    const thumbnail = String((d && d.thumbnail) || (d && Array.isArray(d.thumbnails) && d.thumbnails.length && d.thumbnails[d.thumbnails.length - 1].url) || '');
+    const isVideo = !!(
+      d &&
+      (d.duration || d.ext || d._type === 'video' || (Array.isArray(d.formats) && d.formats.length))
+    );
+    const caption = String((d && (d.title || d.description)) || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const thumbnail = String(
+      (d && d.thumbnail) ||
+        (d &&
+          Array.isArray(d.thumbnails) &&
+          d.thumbnails.length &&
+          d.thumbnails[d.thumbnails.length - 1].url) ||
+        '',
+    );
     // yt-dlp resolves Twitter's post-nesting/repost to the REAL video owner — webpage_url is the
     // canonical downloadable page (handles t.co/redirect), uploader_id is the actual video author.
-    const uploader = String((d && (d.uploader_id || d.uploader || d.channel_id)) || '').replace(/^@/, '');
+    const uploader = String((d && (d.uploader_id || d.uploader || d.channel_id)) || '').replace(
+      /^@/,
+      '',
+    );
     const webpageUrl = String((d && d.webpage_url) || '');
     return { isVideo, caption, thumbnail, uploader, webpageUrl };
-  } catch (_) { return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: '' }; }
+  } catch (_) {
+    return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: '' };
+  }
 }
 
 // Resolve ONE carousel slide (1-based index n) of an IG/X/FB post to a DIRECT CDN .mp4 URL via
@@ -96,14 +129,33 @@ function probeVideo(url) {
 // generic yt-dlp downloads the signed URL without IG cookies, so run thoth soon (URL expires).
 function igSlideDirectUrl(postUrl, n) {
   const YTDLP = process.env.YTDLP || 'yt-dlp';
-  const args = ['--no-warnings', '--skip-download', '--playlist-items', String(n),
-    '-f', 'best[ext=mp4]/best', '-g',
-    ...ytdlpCookieArgs(), postUrl];
+  const args = [
+    '--no-warnings',
+    '--skip-download',
+    '--playlist-items',
+    String(n),
+    '-f',
+    'best[ext=mp4]/best',
+    '-g',
+    ...ytdlpCookieArgs(),
+    postUrl,
+  ];
   try {
-    const out = execFileSync(YTDLP, args, { stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT, maxBuffer: PROBE_MAXBUF });
-    const url = out.toString('utf8').trim().split(/\r?\n/).find(l => /^https?:\/\//.test(l)) || '';
+    const out = execFileSync(YTDLP, args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT,
+      maxBuffer: PROBE_MAXBUF,
+    });
+    const url =
+      out
+        .toString('utf8')
+        .trim()
+        .split(/\r?\n/)
+        .find((l) => /^https?:\/\//.test(l)) || '';
     return url;
-  } catch (_) { return ''; }
+  } catch (_) {
+    return '';
+  }
 }
 
 // Enumerate an IG/X/FB carousel's slides via yt-dlp (RELIABLE — no DOM, unlike cropPost whose
@@ -112,14 +164,28 @@ function igSlideDirectUrl(postUrl, n) {
 // Lets footage pick up all-video carousels (e.g. a 6-clip post) even when the DOM crop can't.
 function igCarouselSlides(postUrl, maxSlides = 5) {
   const YTDLP = process.env.YTDLP || 'yt-dlp';
-  const args = ['--no-warnings', '--skip-download', '--flat-playlist', '-J',
-    '--playlist-items', '1-' + maxSlides, ...ytdlpCookieArgs(), postUrl];
+  const args = [
+    '--no-warnings',
+    '--skip-download',
+    '--flat-playlist',
+    '-J',
+    '--playlist-items',
+    '1-' + maxSlides,
+    ...ytdlpCookieArgs(),
+    postUrl,
+  ];
   try {
-    const out = execFileSync(YTDLP, args, { stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT, maxBuffer: PROBE_MAXBUF });
+    const out = execFileSync(YTDLP, args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT,
+      maxBuffer: PROBE_MAXBUF,
+    });
     const d = JSON.parse(out.toString('utf8'));
     const entries = Array.isArray(d.entries) && d.entries.length ? d.entries : [d];
-    return entries.map((e, i) => ({ index: i + 1, kind: (e && e.duration) ? 'video' : 'photo' }));
-  } catch (_) { return []; }
+    return entries.map((e, i) => ({ index: i + 1, kind: e && e.duration ? 'video' : 'photo' }));
+  } catch (_) {
+    return [];
+  }
 }
 
 // Classify ANY post URL's SHAPE via ONE yt-dlp -J probe — platform-agnostic (works wherever
@@ -136,27 +202,54 @@ const shapeCache = new Map();
 // Arg builder + JSON parser extracted so the sync `postShape` and the async `warmPostShapes`
 // share ONE implementation (no drift). parseShape maps yt-dlp -J → the shape record.
 function shapeArgs(postUrl, maxSlides = 10) {
-  return ['--no-warnings', '--skip-download', '--ignore-no-formats-error', '--flat-playlist',
-    '-J', '--playlist-items', '1-' + maxSlides, ...ytdlpCookieArgs(), postUrl];
+  return [
+    '--no-warnings',
+    '--skip-download',
+    '--ignore-no-formats-error',
+    '--flat-playlist',
+    '-J',
+    '--playlist-items',
+    '1-' + maxSlides,
+    ...ytdlpCookieArgs(),
+    postUrl,
+  ];
 }
 function parseShape(jsonText: string): any {
   const d = JSON.parse(jsonText);
-  const caption = String((d && (d.description || d.title)) || '').replace(/\s+/g, ' ').trim().slice(0, 300);
-  const time = (d && d.timestamp) || (Array.isArray(d.entries) && d.entries[0] && d.entries[0].timestamp) || 0;
+  const caption = String((d && (d.description || d.title)) || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
+  const time =
+    (d && d.timestamp) || (Array.isArray(d.entries) && d.entries[0] && d.entries[0].timestamp) || 0;
   if (Array.isArray(d.entries) && d.entries.length > 1) {
-    const slides = d.entries.map((e, i) => ({ index: i + 1, kind: (e && e.duration) ? 'video' : 'photo', duration: (e && e.duration) || 0 }));
+    const slides = d.entries.map((e, i) => ({
+      index: i + 1,
+      kind: e && e.duration ? 'video' : 'photo',
+      duration: (e && e.duration) || 0,
+    }));
     return { ok: true, shape: 'carousel', slides, caption, time };
   }
   const one = (Array.isArray(d.entries) && d.entries[0]) || d;
-  const kind = (one && one.duration) ? 'video' : 'photo';
-  return { ok: true, shape: kind, slides: [{ index: 1, kind, duration: (one && one.duration) || 0 }], caption, time };
+  const kind = one && one.duration ? 'video' : 'photo';
+  return {
+    ok: true,
+    shape: kind,
+    slides: [{ index: 1, kind, duration: (one && one.duration) || 0 }],
+    caption,
+    time,
+  };
 }
 function postShape(postUrl, maxSlides = 10) {
   if (shapeCache.has(postUrl)) return shapeCache.get(postUrl);
   const YTDLP = process.env.YTDLP || 'yt-dlp';
   let res: any = { ok: false, shape: '', slides: [], caption: '' };
   try {
-    const out = execFileSync(YTDLP, shapeArgs(postUrl, maxSlides), { stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT, maxBuffer: PROBE_MAXBUF });
+    const out = execFileSync(YTDLP, shapeArgs(postUrl, maxSlides), {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT,
+      maxBuffer: PROBE_MAXBUF,
+    });
     res = parseShape(out.toString('utf8'));
   } catch (_) {}
   shapeCache.set(postUrl, res);
@@ -169,12 +262,15 @@ function postShape(postUrl, maxSlides = 10) {
 // the same {ok:false} sentinel the sync path uses, so the caller's legacy fallback still fires.
 async function warmPostShapes(urls: string[], concurrency = 5): Promise<void> {
   const YTDLP = process.env.YTDLP || 'yt-dlp';
-  const todo = [...new Set(urls)].filter(u => u && !shapeCache.has(u));
+  const todo = [...new Set(urls)].filter((u) => u && !shapeCache.has(u));
   if (!todo.length) return;
   await pool(todo, concurrency, async (u) => {
     let res: any = { ok: false, shape: '', slides: [], caption: '' };
     try {
-      const { stdout } = await execFileP(YTDLP, shapeArgs(u), { timeout: PROBE_TIMEOUT, maxBuffer: PROBE_MAXBUF });
+      const { stdout } = await execFileP(YTDLP, shapeArgs(u), {
+        timeout: PROBE_TIMEOUT,
+        maxBuffer: PROBE_MAXBUF,
+      });
       res = parseShape(stdout.toString());
     } catch (_) {}
     shapeCache.set(u, res);
@@ -186,7 +282,7 @@ async function warmPostShapes(urls: string[], concurrency = 5): Promise<void> {
 function matchesTopic(text, keywords, mode = 'all') {
   if (!keywords || !keywords.length) return true;
   const hay = String(text || '').toLowerCase();
-  const hits = keywords.filter(k => hay.includes(String(k).toLowerCase()));
+  const hits = keywords.filter((k) => hay.includes(String(k).toLowerCase()));
   return mode === 'any' ? hits.length > 0 : hits.length === keywords.length;
 }
 
@@ -197,32 +293,60 @@ async function verifyTikTok(url, keywords = []) {
   const meta = await tiktokOembed(url);
   if (!meta) return { url, ok: null, caption: '', author: '', hits: [], missing: keywords };
   const hay = (meta.title || '').toLowerCase();
-  const hits = keywords.filter(k => hay.includes(String(k).toLowerCase()));
-  const missing = keywords.filter(k => !hay.includes(String(k).toLowerCase()));
-  return { url, ok: keywords.length ? hits.length === keywords.length : true, caption: meta.title, author: meta.author, hits, missing };
+  const hits = keywords.filter((k) => hay.includes(String(k).toLowerCase()));
+  const missing = keywords.filter((k) => !hay.includes(String(k).toLowerCase()));
+  return {
+    url,
+    ok: keywords.length ? hits.length === keywords.length : true,
+    caption: meta.title,
+    author: meta.author,
+    hits,
+    missing,
+  };
 }
 
-export { tiktokOembed, youtubeOembed, matchesTopic, verifyTikTok, probeVideo, igSlideDirectUrl, igCarouselSlides, ytdlpCookieArgs, postShape, warmPostShapes };
+export {
+  tiktokOembed,
+  youtubeOembed,
+  matchesTopic,
+  verifyTikTok,
+  probeVideo,
+  igSlideDirectUrl,
+  igCarouselSlides,
+  ytdlpCookieArgs,
+  postShape,
+  warmPostShapes,
+};
 
 // --- CLI ------------------------------------------------------------------------
 if (import.meta.main) {
   (async () => {
     const url = process.argv[2];
     const keywords = process.argv.slice(3);
-    if (!url) { console.log('Usage: bun verify.ts <tiktok_url> [keyword ...]'); process.exit(1); }
+    if (!url) {
+      console.log('Usage: bun verify.ts <tiktok_url> [keyword ...]');
+      process.exit(1);
+    }
     const res = await verifyTikTok(url, keywords);
     if (res.ok === null) {
-      console.log(ui.amber(`${ui.WARN}  Caption tak terambil (oEmbed miss). Perlakukan sebagai UNVERIFIED, jangan "match".`));
-      process.exitCode = 2; return;
+      console.log(
+        ui.amber(
+          `${ui.WARN}  Caption tak terambil (oEmbed miss). Perlakukan sebagai UNVERIFIED, jangan "match".`,
+        ),
+      );
+      process.exitCode = 2;
+      return;
     }
     console.log('Caption :', res.caption);
     console.log('Author  :', res.author);
     if (keywords.length) {
       console.log('Hits    :', res.hits.join(', ') || '(none)');
       console.log('Missing :', res.missing.join(', ') || '(none)');
-      console.log(res.ok
-        ? ui.gold(`${ui.OK} ON-TOPIC (semua keyword cocok) → boleh "match"`)
-        : ui.red(`${ui.ERR} OFF-TOPIC / sebagian → "unverified" atau buang`));
+      console.log(
+        res.ok
+          ? ui.gold(`${ui.OK} ON-TOPIC (semua keyword cocok) → boleh "match"`)
+          : ui.red(`${ui.ERR} OFF-TOPIC / sebagian → "unverified" atau buang`),
+      );
     }
     process.exitCode = res.ok ? 0 : 1;
   })();

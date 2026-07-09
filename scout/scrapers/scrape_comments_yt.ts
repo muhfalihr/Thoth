@@ -31,7 +31,8 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-const THREAD_COUNT = 'document.querySelectorAll("ytd-comment-thread-renderer, ytd-comment-view-model").length';
+const THREAD_COUNT =
+  'document.querySelectorAll("ytd-comment-thread-renderer, ytd-comment-view-model").length';
 
 // Watch pages: comments mount once you scroll the page (relative scrollBy — absolute scrollTo
 // fights YT's layout). Shorts: the page doesn't scroll; you must click the Comments button to
@@ -60,17 +61,34 @@ async function ensureLoaded(client) {
 }
 
 const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) { console.log('Usage: bun scrape_comments_yt.ts <watch_url> [out.json] [--max N]'); process.exit(1); }
+if (!url) {
+  console.log('Usage: bun scrape_comments_yt.ts <watch_url> [out.json] [--max N]');
+  process.exit(1);
+}
 
-const id = (url.match(/[?&]v=([\w-]+)/) || url.match(/youtu\.be\/([\w-]+)/) || url.match(/shorts\/([\w-]+)/) || [, ''])[1];
+const id = (url.match(/[?&]v=([\w-]+)/) ||
+  url.match(/youtu\.be\/([\w-]+)/) ||
+  url.match(/shorts\/([\w-]+)/) || [, ''])[1];
 
-run(() => scrapeComments({
-  url, platform: 'youtube', label: 'YouTube',
-  match: 'youtube.com', idToken: id,
-  ensureLoaded,
-  extractJs: EXTRACT_JS,
-  scrollJs: 'window.scrollBy(0, 1600)',
-  buildMain: u => ({ url: u, platform: 'youtube', title: `YouTube ${id}`, is_video: true, duration_sec: 0,
-    profile: { name: '', handle: '', followers: '', avatar_url: '' } }),
-  max: max || 12, out: out || 'thoth_content_set.json',
-}));
+run(() =>
+  scrapeComments({
+    url,
+    platform: 'youtube',
+    label: 'YouTube',
+    match: 'youtube.com',
+    idToken: id,
+    ensureLoaded,
+    extractJs: EXTRACT_JS,
+    scrollJs: 'window.scrollBy(0, 1600)',
+    buildMain: (u) => ({
+      url: u,
+      platform: 'youtube',
+      title: `YouTube ${id}`,
+      is_video: true,
+      duration_sec: 0,
+      profile: { name: '', handle: '', followers: '', avatar_url: '' },
+    }),
+    max: max || 12,
+    out: out || 'thoth_content_set.json',
+  }),
+);

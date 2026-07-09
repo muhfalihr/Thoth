@@ -20,11 +20,17 @@ import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
-const getFlag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
+const getFlag = (n, d) => {
+  const i = args.indexOf(n);
+  return i >= 0 ? args[i + 1] : d;
+};
 const TOP = parseInt(getFlag('--top', '15'), 10);
 // Instagram is the primary source now: a curated set of accounts (ig_accounts.json)
 // whose recent reels DEFINE the topic candidates. X/YouTube remain opt-in via --platforms.
-const PLATFORMS = (getFlag('--platforms', 'instagram')).split(',').map(s => s.trim()).filter(Boolean);
+const PLATFORMS = getFlag('--platforms', 'instagram')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 const PER_ACCOUNT = parseInt(getFlag('--per-account', '3'), 10); // top reels per IG account
 const IG_ACCOUNTS_FILE = path.join(import.meta.dirname, '..', 'config', 'ig_accounts.json');
 
@@ -33,8 +39,9 @@ const IG_ACCOUNTS_FILE = path.join(import.meta.dirname, '..', 'config', 'ig_acco
 const EXCLUDE_FOOTBALL = !args.includes('--include-football');
 // Distinctive terms match as substrings (so concatenated hashtags like "#PialaAFF2026" are caught);
 // short/ambiguous tokens keep \b boundaries to avoid false positives (aff≠affair, vs, gol≠golf).
-const FOOTBALL_RE = /(sepak ?bola|timnas|piala|persib|persija|persebaya|arema|futsal|fifa|uefa|el ?clasico|champions ?league|premier ?league|real ?madrid|barcelona|manchester|arsenal|liverpool|chelsea|juventus|football|soccer|\baff\b|\bliga\b|\bgol\b|\bkiper\b|\bwasit\b|\bgawang\b|\bgaruda\b|\bvs\b|\bu-?1[579]\b|\bu-?2[13]\b)/i;
-const isFootball = t => FOOTBALL_RE.test(t || '');
+const FOOTBALL_RE =
+  /(sepak ?bola|timnas|piala|persib|persija|persebaya|arema|futsal|fifa|uefa|el ?clasico|champions ?league|premier ?league|real ?madrid|barcelona|manchester|arsenal|liverpool|chelsea|juventus|football|soccer|\baff\b|\bliga\b|\bgol\b|\bkiper\b|\bwasit\b|\bgawang\b|\bgaruda\b|\bvs\b|\bu-?1[579]\b|\bu-?2[13]\b)/i;
+const isFootball = (t) => FOOTBALL_RE.test(t || '');
 
 // X trending: each [data-testid="trend"] has a few spans (category, name, "N posts"). The topic
 // name is the longest span that isn't meta.
@@ -63,37 +70,58 @@ const YT_EXTRACT = `(() => {
 async function fromX() {
   const c = await connect({ match: ['x.com', 'twitter.com'], requireMatch: true });
   try {
-    try { await c.cmd('Page.bringToFront'); } catch (e) {}
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
     await c.navigate('https://x.com/explore/tabs/trending', 6000);
     await sleep(2000);
-    let raw = []; try { raw = JSON.parse(await c.evaluate(X_EXTRACT) || '[]'); } catch (e) {}
-    return raw.slice(0, TOP).map(topic => ({ topic, source_url: 'https://x.com/explore/tabs/trending' }));
-  } finally { c.close(); }
+    let raw = [];
+    try {
+      raw = JSON.parse((await c.evaluate(X_EXTRACT)) || '[]');
+    } catch (e) {}
+    return raw
+      .slice(0, TOP)
+      .map((topic) => ({ topic, source_url: 'https://x.com/explore/tabs/trending' }));
+  } finally {
+    c.close();
+  }
 }
 
 async function fromYouTube() {
   const c = await connect({ match: 'youtube.com', requireMatch: true });
   try {
-    try { await c.cmd('Page.bringToFront'); } catch (e) {}
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
     await c.navigate('https://www.youtube.com/', 6000); // /feed/trending now redirects here
     await sleep(2500);
-    let raw = []; try { raw = JSON.parse(await c.evaluate(YT_EXTRACT) || '[]'); } catch (e) {}
-    return raw.slice(0, TOP).map(o => ({ ...o, source_url: o.url }));
-  } finally { c.close(); }
+    let raw = [];
+    try {
+      raw = JSON.parse((await c.evaluate(YT_EXTRACT)) || '[]');
+    } catch (e) {}
+    return raw.slice(0, TOP).map((o) => ({ ...o, source_url: o.url }));
+  } finally {
+    c.close();
+  }
 }
 
 // Load the curated IG account handles (strips @, full URLs, trailing path).
 function loadIgAccounts() {
   try {
     const j = JSON.parse(fs.readFileSync(IG_ACCOUNTS_FILE, 'utf8'));
-    const arr = Array.isArray(j) ? j : (j.accounts || []);
+    const arr = Array.isArray(j) ? j : j.accounts || [];
     return arr
-      .map(s => String(s).trim()
-        .replace(/^@/, '')
-        .replace(/^https?:\/\/(www\.)?instagram\.com\//i, '')
-        .replace(/[/?#].*$/, ''))
+      .map((s) =>
+        String(s)
+          .trim()
+          .replace(/^@/, '')
+          .replace(/^https?:\/\/(www\.)?instagram\.com\//i, '')
+          .replace(/[/?#].*$/, ''),
+      )
       .filter(Boolean);
-  } catch (e) { return []; }
+  } catch (e) {
+    return [];
+  }
 }
 
 // Instagram: the topic candidates ARE the recent reels of a fixed account set.
@@ -119,12 +147,16 @@ async function fromInstagram() {
           out.push({ topic: cap.slice(0, 160), source_url: r.url, account: acct, views: r.views });
           n++;
         }
-        process.stdout.write(n ? `${n} reel (top views ${reels[0] ? reels[0].views.toLocaleString() : 0})` : 'kosong');
+        process.stdout.write(
+          n ? `${n} reel (top views ${reels[0] ? reels[0].views.toLocaleString() : 0})` : 'kosong',
+        );
       } catch (e) {
-        process.stdout.write(`skip (${String(e && e.message || e).slice(0, 45)})`);
+        process.stdout.write(`skip (${String((e && e.message) || e).slice(0, 45)})`);
       }
     }
-  } finally { c.close(); }
+  } finally {
+    c.close();
+  }
   process.stdout.write('\n  ');
   out.sort((a, b) => b.views - a.views); // viral-first across all accounts
   return out.slice(0, TOP);
@@ -138,24 +170,42 @@ async function fromInstagram() {
   const jobs = { x: fromX, youtube: fromYouTube, instagram: fromInstagram };
   for (const p of PLATFORMS) {
     const fn = jobs[p];
-    if (!fn) { console.log(`• ${p}: tak didukung (pilih: instagram, x, youtube)`); continue; }
-    process.stdout.write(`• ${p}: ambil ${p === 'instagram' ? 'reels akun terkurasi' : 'trending'} ... `);
+    if (!fn) {
+      console.log(`• ${p}: tak didukung (pilih: instagram, x, youtube)`);
+      continue;
+    }
+    process.stdout.write(
+      `• ${p}: ambil ${p === 'instagram' ? 'reels akun terkurasi' : 'trending'} ... `,
+    );
     try {
       const raw = await fn();
-      const items = EXCLUDE_FOOTBALL ? raw.filter(it => !isFootball(it.topic)) : raw;
+      const items = EXCLUDE_FOOTBALL ? raw.filter((it) => !isFootball(it.topic)) : raw;
       const dropped = raw.length - items.length;
       sources[p] = items;
-      console.log(ui.gold(`${ui.OK} ${items.length}${dropped ? ` (${dropped} sepak bola di-skip)` : ''}`));
-      items.slice(0, 8).forEach((it, i) => console.log(
-        `    ${i + 1}. ${it.account ? `[@${it.account}·${(it.views || 0).toLocaleString()}] ` : ''}${it.topic}`));
+      console.log(
+        ui.gold(`${ui.OK} ${items.length}${dropped ? ` (${dropped} sepak bola di-skip)` : ''}`),
+      );
+      items
+        .slice(0, 8)
+        .forEach((it, i) =>
+          console.log(
+            `    ${i + 1}. ${it.account ? `[@${it.account}·${(it.views || 0).toLocaleString()}] ` : ''}${it.topic}`,
+          ),
+        );
     } catch (err) {
       sources[p] = [];
-      if (err && err.relay) console.log(ui.amber(`${ui.WARN}  tab ${p} belum ter-attach relay (skip)`));
-      else console.log(ui.amber(`${ui.WARN}  ${err && err.message ? err.message.slice(0, 60) : err}`));
+      if (err && err.relay)
+        console.log(ui.amber(`${ui.WARN}  tab ${p} belum ter-attach relay (skip)`));
+      else
+        console.log(ui.amber(`${ui.WARN}  ${err && err.message ? err.message.slice(0, 60) : err}`));
     }
   }
   const out = outPath('trending_topics.json');
-  fs.writeFileSync(out, JSON.stringify({ fetched_at: new Date().toISOString(), sources }, null, 2), 'utf8');
+  fs.writeFileSync(
+    out,
+    JSON.stringify({ fetched_at: new Date().toISOString(), sources }, null, 2),
+    'utf8',
+  );
   console.log(ui.rule('thin'));
   console.log(`📄 ${out}`);
   console.log('Lanjut: bun topic_to_urls.ts "<topik pilihan>"');

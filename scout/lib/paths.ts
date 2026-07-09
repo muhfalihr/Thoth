@@ -12,16 +12,21 @@ const WORKSPACE = path.resolve(import.meta.dirname, '..');
 const OUTPUT_DIR = path.join(WORKSPACE, 'output');
 const CROPS_DIR = path.join(OUTPUT_DIR, 'crops');
 
-const ensureDir = d => { if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); };
+const ensureDir = (d) => {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+};
 
 // Resolve a name into output/. If `name` is already an absolute path (caller passed
 // an explicit destination), honour it untouched.
-const outPath = name => {
+const outPath = (name) => {
   if (name && path.isAbsolute(name)) return name;
   ensureDir(OUTPUT_DIR);
   return path.join(OUTPUT_DIR, name);
 };
 
-const cropPath = name => { ensureDir(CROPS_DIR); return path.join(CROPS_DIR, name); };
+const cropPath = (name) => {
+  ensureDir(CROPS_DIR);
+  return path.join(CROPS_DIR, name);
+};
 
 export { WORKSPACE, OUTPUT_DIR, CROPS_DIR, ensureDir, outPath, cropPath };

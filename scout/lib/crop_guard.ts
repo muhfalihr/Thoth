@@ -11,7 +11,8 @@ export function okCrop(buf: Buffer | null | undefined): boolean {
   if (!buf || buf.length < 2048) return false; // tiny / empty
   // PNG? (8-byte sig, then the IHDR chunk type at offset 12) → judge by pixel density.
   if (buf.length >= 24 && buf.readUInt32BE(12) === 0x49484452) {
-    const w = buf.readUInt32BE(16), h = buf.readUInt32BE(20);
+    const w = buf.readUInt32BE(16),
+      h = buf.readUInt32BE(20);
     if (w > 0 && h > 0) return buf.length / (w * h) >= 0.02;
   }
   return true; // not a PNG / no dims: the 2 KB floor above is the best we can do

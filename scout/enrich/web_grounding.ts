@@ -35,30 +35,54 @@ const NEWS_EXTRACT = `(() => {
 })()`;
 
 async function googleNewsHeadlines(client, query, max = 5) {
-  await client.navigate('https://www.google.com/search?hl=id&tbm=nws&q=' + encodeURIComponent(query), 6000);
+  await client.navigate(
+    'https://www.google.com/search?hl=id&tbm=nws&q=' + encodeURIComponent(query),
+    6000,
+  );
   await sleep(2200);
   let items = [];
-  try { items = JSON.parse((await client.evaluate(NEWS_EXTRACT)) || '[]'); } catch (e) {}
-  return items.slice(0, max).map(it => ({ title: it.title, source: it.source, url: it.url }));
+  try {
+    items = JSON.parse((await client.evaluate(NEWS_EXTRACT)) || '[]');
+  } catch (e) {}
+  return items.slice(0, max).map((it) => ({ title: it.title, source: it.source, url: it.url }));
 }
 
 // Fetch headlines for many terms reusing ONE Google tab. Returns { term: [{title,source,url}] }.
-async function groundTerms(terms: string[], { max = 5, client }: { max?: number; client?: any } = {}) {
+async function groundTerms(
+  terms: string[],
+  { max = 5, client }: { max?: number; client?: any } = {},
+) {
   const out = {};
   const list = (terms || []).filter(Boolean);
   if (!list.length) return out;
-  let c = client, own = false;
+  let c = client,
+    own = false;
   if (!c) {
-    try { c = await connect({ match: ['google.com', 'google.co.id'], requireMatch: false }); own = true; }
-    catch (e) { return out; } // no relay → caller falls back to model summaries
+    try {
+      c = await connect({ match: ['google.com', 'google.co.id'], requireMatch: false });
+      own = true;
+    } catch (e) {
+      return out;
+    } // no relay → caller falls back to model summaries
   }
   try {
-    try { await c.cmd('Page.bringToFront'); } catch (e) {}
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
     for (const t of list) {
-      try { out[t] = await googleNewsHeadlines(c, t, max); }
-      catch (e) { out[t] = []; }
+      try {
+        out[t] = await googleNewsHeadlines(c, t, max);
+      } catch (e) {
+        out[t] = [];
+      }
     }
-  } finally { if (own) { try { c.close(); } catch (e) {} } }
+  } finally {
+    if (own) {
+      try {
+        c.close();
+      } catch (e) {}
+    }
+  }
   return out;
 }
 
@@ -67,6 +91,11 @@ export { groundTerms, googleNewsHeadlines };
 // ---- CLI (debug) ----
 if (import.meta.main) {
   const terms = process.argv.slice(2);
-  if (!terms.length) { console.log('Usage: bun web_grounding.ts "<term>" ["<term2>" ...]'); process.exit(1); }
-  (async () => { console.log(JSON.stringify(await groundTerms(terms, { max: 5 }), null, 2)); })();
+  if (!terms.length) {
+    console.log('Usage: bun web_grounding.ts "<term>" ["<term2>" ...]');
+    process.exit(1);
+  }
+  (async () => {
+    console.log(JSON.stringify(await groundTerms(terms, { max: 5 }), null, 2));
+  })();
 }

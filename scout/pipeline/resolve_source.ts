@@ -22,7 +22,11 @@ const KEY = novitaKey();
 const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
 const PLATFORMS = ['tiktok', 'instagram', 'twitter', 'youtube', 'facebook', 'threads'];
 
-const PROMPT = ({ description, caption, headline }) => `Kamu menganalisis sebuah video REPOST/REACTION (mis. reel kurator). Dari teks di bawah, tentukan
+const PROMPT = ({
+  description,
+  caption,
+  headline,
+}) => `Kamu menganalisis sebuah video REPOST/REACTION (mis. reel kurator). Dari teks di bawah, tentukan
 SUMBER ASLI video tersebut.
 
 ATURAN:
@@ -49,34 +53,63 @@ Keluarkan HANYA JSON valid persis format ini:
 {"source": {"account": "", "platform": ""} , "keywords": [], "reason": ""}
 (set "source": null bila tak ada sumber.)`;
 
-async function resolveSource({ description = '', caption = '', headline = '', key = KEY, model = MODEL } = {}) {
+async function resolveSource({
+  description = '',
+  caption = '',
+  headline = '',
+  key = KEY,
+  model = MODEL,
+} = {}) {
   if (!key) return { source: null, keywords: [], reason: 'no novita key' };
-  if (!(description || caption || headline)) return { source: null, keywords: [], reason: 'no text' };
+  if (!(description || caption || headline))
+    return { source: null, keywords: [], reason: 'no text' };
   let txt = '';
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({ model, max_tokens: 400, temperature: 0, messages: [{ role: 'user', content: PROMPT({ description, caption, headline }) }] }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model,
+        max_tokens: 400,
+        temperature: 0,
+        messages: [{ role: 'user', content: PROMPT({ description, caption, headline }) }],
+      }),
     });
     if (!resp.ok) return { source: null, keywords: [], reason: 'llm ' + resp.status };
     const d = await resp.json();
     txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
-  } catch (e) { return { source: null, keywords: [], reason: 'llm err ' + String(e.message || e).slice(0, 40) }; }
+  } catch (e) {
+    return { source: null, keywords: [], reason: 'llm err ' + String(e.message || e).slice(0, 40) };
+  }
 
   const m = txt.match(/\{[\s\S]*\}/);
   if (!m) return { source: null, keywords: [], reason: 'parse fail' };
-  let o; try { o = JSON.parse(m[0]); } catch (e) { return { source: null, keywords: [], reason: 'json fail' }; }
+  let o;
+  try {
+    o = JSON.parse(m[0]);
+  } catch (e) {
+    return { source: null, keywords: [], reason: 'json fail' };
+  }
 
   // Normalise.
   let source = null;
   if (o.source && (o.source.account || o.source.platform)) {
-    const account = String(o.source.account || '').replace(/^@/, '').trim();
-    let platform = String(o.source.platform || '').toLowerCase().trim();
+    const account = String(o.source.account || '')
+      .replace(/^@/, '')
+      .trim();
+    let platform = String(o.source.platform || '')
+      .toLowerCase()
+      .trim();
     if (platform === 'x' || platform === 'x/twitter') platform = 'twitter';
     if (!PLATFORMS.includes(platform)) platform = '';
     if (account || platform) source = { account, platform };
   }
-  const keywords = Array.isArray(o.keywords) ? o.keywords.map(k => String(k).trim()).filter(Boolean).slice(0, 6) : [];
+  const keywords = Array.isArray(o.keywords)
+    ? o.keywords
+        .map((k) => String(k).trim())
+        .filter(Boolean)
+        .slice(0, 6)
+    : [];
   return { source, keywords, reason: String(o.reason || '').slice(0, 120) };
 }
 
@@ -85,7 +118,14 @@ async function resolveSource({ description = '', caption = '', headline = '', ke
 // phrase and LEANS ON VISION (on-screen headline + scene description) because a curator reel's caption
 // is often vague/motivational and doesn't describe the actual incident. Used by trace_source when a
 // curated-aggregator main must be replaced by a non-aggregator source.
-async function composeSearchQuery({ description = '', caption = '', headline = '', scene = '', key = KEY, model = MODEL } = {}) {
+async function composeSearchQuery({
+  description = '',
+  caption = '',
+  headline = '',
+  scene = '',
+  key = KEY,
+  model = MODEL,
+} = {}) {
   if (!key) return '';
   if (!(description || caption || headline || scene)) return '';
   const prompt = `Dari sinyal sebuah video repost/kurator di bawah, buat SATU query pencarian paling efektif
@@ -107,26 +147,42 @@ ATURAN:
 [DESKRIPSI VISUAL]: ${(scene || '').slice(0, 300) || '(kosong)'}`;
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({ model, max_tokens: 60, temperature: 0, messages: [{ role: 'user', content: prompt }] }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model,
+        max_tokens: 60,
+        temperature: 0,
+        messages: [{ role: 'user', content: prompt }],
+      }),
     });
     if (!resp.ok) return '';
     const d = await resp.json();
-    let q = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
+    let q =
+      (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
     return tightenQuery(q);
-  } catch (e) { return ''; }
+  } catch (e) {
+    return '';
+  }
 }
 
 // Strip function words (prepositions/conjunctions/common verbs) the LLM may still emit. Search treats
 // every token as required (AND), so one filler word ("dengan", "berjalan") yields zero hits — drop them
 // so only ENTITY nouns remain. Conservative list: never strips a name/place. Keeps ≤6 tokens.
-const QUERY_STOP = new Set(('dengan dan di ke dari yang untuk pada atau saat dalam oleh akan telah sudah ' +
-  'menuju kepada serta juga itu ini sang para si adalah berjalan terlihat memperlihatkan bergandengan ' +
-  'mesra bersama sedang usai setelah sebelum karena hingga sambil while with and the of to in at on a an')
-  .split(' '));
+const QUERY_STOP = new Set(
+  (
+    'dengan dan di ke dari yang untuk pada atau saat dalam oleh akan telah sudah ' +
+    'menuju kepada serta juga itu ini sang para si adalah berjalan terlihat memperlihatkan bergandengan ' +
+    'mesra bersama sedang usai setelah sebelum karena hingga sambil while with and the of to in at on a an'
+  ).split(' '),
+);
 function tightenQuery(q) {
-  const cleaned = String(q || '').replace(/^["'\s]+|["'\s]+$/g, '').replace(/["']/g, '').replace(/\s+/g, ' ').trim();
-  const toks = cleaned.split(' ').filter(t => t && !QUERY_STOP.has(t.toLowerCase()));
+  const cleaned = String(q || '')
+    .replace(/^["'\s]+|["'\s]+$/g, '')
+    .replace(/["']/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const toks = cleaned.split(' ').filter((t) => t && !QUERY_STOP.has(t.toLowerCase()));
   return toks.slice(0, 6).join(' ').slice(0, 120);
 }
 
@@ -135,9 +191,19 @@ export { resolveSource, composeSearchQuery, tightenQuery };
 // ---- CLI ----
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const get = n => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : ''; };
-  const input = { description: get('--desc'), caption: get('--caption'), headline: get('--headline') };
-  if (!input.description && !input.caption && !input.headline) { console.log('Usage: bun resolve_source.ts --headline "..." [--caption "..."] [--desc "..."]'); process.exit(1); }
+  const get = (n) => {
+    const i = args.indexOf(n);
+    return i >= 0 ? args[i + 1] : '';
+  };
+  const input = {
+    description: get('--desc'),
+    caption: get('--caption'),
+    headline: get('--headline'),
+  };
+  if (!input.description && !input.caption && !input.headline) {
+    console.log('Usage: bun resolve_source.ts --headline "..." [--caption "..."] [--desc "..."]');
+    process.exit(1);
+  }
   (async () => {
     const r = await resolveSource(input);
     console.log(JSON.stringify(r, null, 2));

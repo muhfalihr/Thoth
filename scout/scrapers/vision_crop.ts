@@ -18,7 +18,8 @@ import { execSync } from 'node:child_process';
 import { cropPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 
-const FFMPEG = process.env.THOTH_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
+const FFMPEG =
+  process.env.THOTH_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
 import * as env from '../lib/env.ts';
 // Override with env THOTH_VISION_MODEL — a larger qwen3-vl (e.g. qwen/qwen3-vl-235b-a22b-instruct)
 // isolates posts far better. (8b deprecated di Novita 2026-07 → default 30b-a3b.)
@@ -36,7 +37,10 @@ function pngSize(file) {
   return { w: b.readUInt32BE(0), h: b.readUInt32BE(4) };
 }
 
-const CROP_PROMPT = (W, H) => `Kamu adalah analis layout presisi. Gambar ini screenshot SATU postingan media sosial
+const CROP_PROMPT = (
+  W,
+  H,
+) => `Kamu adalah analis layout presisi. Gambar ini screenshot SATU postingan media sosial
 (Twitter/X, Instagram, Facebook, atau artikel berita) berukuran ${W}x${H} piksel.
 
 TUGAS: tentukan satu bounding box yang meng-crop HANYA postingan UTAMA, supaya hasilnya
@@ -82,7 +86,10 @@ async function main() {
   const dir = path.dirname(path.resolve(output));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const resized = path.join(dir, '_vc_resized.png');
-  execSync(`"${FFMPEG}" -i "${input}" -vf "scale=${visionW}:-1" -update 1 -y "${resized}"`, { stdio: 'pipe', timeout: 15000 });
+  execSync(`"${FFMPEG}" -i "${input}" -vf "scale=${visionW}:-1" -update 1 -y "${resized}"`, {
+    stdio: 'pipe',
+    timeout: 15000,
+  });
   const sent = pngSize(resized);
   console.log(`[1/3] Resized → ${sent.w}x${sent.h} (vision space)`);
 
@@ -91,16 +98,18 @@ async function main() {
   console.log(`[2/3] Vision (${VISION_MODEL})…`);
   const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + novitaKey() },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + novitaKey() },
     body: JSON.stringify({
       model: VISION_MODEL,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: CROP_PROMPT(sent.w, sent.h) },
-          { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64 } },
-        ],
-      }],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: CROP_PROMPT(sent.w, sent.h) },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64 } },
+          ],
+        },
+      ],
       max_tokens: 700,
       temperature: 0.05,
     }),
@@ -111,32 +120,50 @@ async function main() {
   if (!m) throw new Error('Vision tak balas JSON. Raw: ' + raw.slice(0, 200));
   const det = JSON.parse(m[0]);
   const box = det.box;
-  if (!Array.isArray(box) || box.length !== 4) throw new Error('box tidak valid: ' + JSON.stringify(box));
+  if (!Array.isArray(box) || box.length !== 4)
+    throw new Error('box tidak valid: ' + JSON.stringify(box));
 
   // 3. Scale box back to ORIGINAL resolution and crop.
   const orig = pngSize(input);
-  const sx = orig.w / sent.w, sy = orig.h / sent.h;
+  const sx = orig.w / sent.w,
+    sy = orig.h / sent.h;
   let x1 = Math.max(0, Math.round(box[0] * sx));
   let y1 = Math.max(0, Math.round(box[1] * sy));
   let x2 = Math.min(orig.w, Math.round(box[2] * sx));
   let y2 = Math.min(orig.h, Math.round(box[3] * sy));
-  const w = x2 - x1, h = y2 - y1;
+  const w = x2 - x1,
+    h = y2 - y1;
   if (w < 20 || h < 20) throw new Error(`box terlalu kecil setelah scale-back (${w}x${h}).`);
 
-  execSync(`"${FFMPEG}" -i "${input}" -vf "crop=${w}:${h}:${x1}:${y1}" -update 1 -y "${output}"`, { stdio: 'pipe', timeout: 15000 });
-  try { fs.unlinkSync(resized); } catch (_) {}
+  execSync(`"${FFMPEG}" -i "${input}" -vf "crop=${w}:${h}:${x1}:${y1}" -update 1 -y "${output}"`, {
+    stdio: 'pipe',
+    timeout: 15000,
+  });
+  try {
+    fs.unlinkSync(resized);
+  } catch (_) {}
 
   const kb = (fs.statSync(output).size / 1024).toFixed(1);
   console.log(`[3/3] Crop → ${path.basename(output)} (${w}x${h}, ${kb} KB)`);
-  if (det.post) console.log(`      post: @${det.post.handle || '?'} — "${String(det.post.text || '').slice(0, 60)}"`);
+  if (det.post)
+    console.log(
+      `      post: @${det.post.handle || '?'} — "${String(det.post.text || '').slice(0, 60)}"`,
+    );
   console.log('image_path:', path.resolve(output));
 
   if (det.obstructed || (typeof det.confidence === 'number' && det.confidence < 0.5)) {
-    console.log(ui.amber(`${ui.WARN}  obstructed / confidence rendah — pertimbangkan screenshot ulang (tutup overlay) sebelum dipakai.`));
+    console.log(
+      ui.amber(
+        `${ui.WARN}  obstructed / confidence rendah — pertimbangkan screenshot ulang (tutup overlay) sebelum dipakai.`,
+      ),
+    );
     process.exitCode = 2;
   }
 }
 
 // process.exitCode (not process.exit) so the fetch socket drains — avoids the Node 24
 // /Windows libuv "UV_HANDLE_CLOSING" assertion on abrupt exit after fetch.
-main().catch(e => { console.error(ui.red(`${ui.ERR} ${e.message}`)); process.exitCode = 1; });
+main().catch((e) => {
+  console.error(ui.red(`${ui.ERR} ${e.message}`));
+  process.exitCode = 1;
+});

@@ -32,8 +32,12 @@ const DOT = '·';
 function banner(): void {
   if (!COLOR) return;
   process.stderr.write('\n');
-  process.stderr.write(`  ${paint(C.gold, FEATHER)}  ${paint(C.gold, 'T H O T H')}  ${paint(C.dim, `${DOT} scout`)}\n`);
-  process.stderr.write(`  ${paint(C.violet, SPINE)} ${paint(C.dim, 'content sourcing untuk Thoth')}\n`);
+  process.stderr.write(
+    `  ${paint(C.gold, FEATHER)}  ${paint(C.gold, 'T H O T H')}  ${paint(C.dim, `${DOT} scout`)}\n`,
+  );
+  process.stderr.write(
+    `  ${paint(C.violet, SPINE)} ${paint(C.dim, 'content sourcing untuk Thoth')}\n`,
+  );
   process.stderr.write(`  ${paint(C.violet, SPINE)}\n`);
 }
 

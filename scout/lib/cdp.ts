@@ -17,7 +17,7 @@ import { ui } from './ui.ts';
 
 const CDP_BASE: string = process.env.THOTH_CDP || 'http://127.0.0.1:18800';
 
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // A /json target entry (only the fields we use).
 export interface CdpTarget {
@@ -28,7 +28,12 @@ export interface CdpTarget {
   [k: string]: any;
 }
 
-export interface CdpRect { x: number; y: number; w: number; h: number; }
+export interface CdpRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 export interface CdpClient {
   ws: WebSocket;
@@ -38,7 +43,11 @@ export interface CdpClient {
   navigate: (url: string, waitMs?: number) => Promise<any>;
   scroll: (y: number) => Promise<any>;
   screenshot: () => Promise<string>;
-  captureClip: (rect: CdpRect, pad?: number, opts?: { beyondViewport?: boolean }) => Promise<string>;
+  captureClip: (
+    rect: CdpRect,
+    pad?: number,
+    opts?: { beyondViewport?: boolean },
+  ) => Promise<string>;
   close: () => void;
 }
 
@@ -51,11 +60,19 @@ export interface ConnectOpts {
 
 function httpGetJSON(url: string): Promise<any> {
   return new Promise((resolve, reject) => {
-    http.get(url, res => {
-      let d = '';
-      res.on('data', c => d += c);
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
-    }).on('error', reject);
+    http
+      .get(url, (res) => {
+        let d = '';
+        res.on('data', (c) => (d += c));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(d));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      })
+      .on('error', reject);
   });
 }
 
@@ -77,7 +94,9 @@ async function listTargets(): Promise<CdpTarget[]> {
 function printRelayHelp(): void {
   console.log('   FIX (standalone): jalankan  bun lib/browser.ts start');
   console.log('   → browser terbuka; login sekali ke tab target (TikTok/IG/X), cookie tersimpan.');
-  console.log(`   → lib/browser.ts menyajikan CDP di ${CDP_BASE}; lalu jalankan ulang perintah ini.`);
+  console.log(
+    `   → lib/browser.ts menyajikan CDP di ${CDP_BASE}; lalu jalankan ulang perintah ini.`,
+  );
   console.log('   Cek status kapan saja:  bun lib/browser.ts status');
 }
 
@@ -89,19 +108,33 @@ function printRelayHelp(): void {
 //   requireMatch : if true, throw (instead of grabbing any tab) when no match is attached —
 //              use this for multi-platform scripts so they never drive the wrong site's tab.
 // Returns { ws, tab, cmd, evaluate, navigate, scroll, screenshot, close }.
-async function connect({ match, navigate, waitMs = 6000, requireMatch = false }: ConnectOpts = {}): Promise<CdpClient> {
+async function connect({
+  match,
+  navigate,
+  waitMs = 6000,
+  requireMatch = false,
+}: ConnectOpts = {}): Promise<CdpClient> {
   const targets = await listTargets();
 
-  const matches = Array.isArray(match) ? match : (match ? [match] : []);
+  const matches = Array.isArray(match) ? match : match ? [match] : [];
   let tab = matches.length
-    ? targets.find(t => t.type === 'page' && matches.some(m => String(t.url).includes(m)) && !String(t.url).includes('sw.js'))
+    ? targets.find(
+        (t) =>
+          t.type === 'page' &&
+          matches.some((m) => String(t.url).includes(m)) &&
+          !String(t.url).includes('sw.js'),
+      )
     : null;
   if (!tab && requireMatch) {
-    throw relayError(`Tidak ada tab '${matches.join("' / '")}' yang terbuka. Buka & login tab itu di managed browser (bun lib/browser.ts start).`);
+    throw relayError(
+      `Tidak ada tab '${matches.join("' / '")}' yang terbuka. Buka & login tab itu di managed browser (bun lib/browser.ts start).`,
+    );
   }
   if (!tab) {
-    tab = targets.find(t => t.type === 'page' && t.webSocketDebuggerUrl
-      && !String(t.url).startsWith('devtools://'));
+    tab = targets.find(
+      (t) =>
+        t.type === 'page' && t.webSocketDebuggerUrl && !String(t.url).startsWith('devtools://'),
+    );
   }
   if (!tab || !tab.webSocketDebuggerUrl) {
     throw relayError('Tidak ada page tab CDP yang bisa dipakai.');
@@ -115,31 +148,48 @@ async function connect({ match, navigate, waitMs = 6000, requireMatch = false }:
   });
 
   let mid = 1;
-  const cmd = (method: string, params: Record<string, any> = {}): Promise<any> => new Promise((resolve, reject) => {
-    const id = mid++;
-    const h = (ev: MessageEvent) => {
-      try {
-        const m = JSON.parse(ev.data);
-        if (m.id === id) {
-          ws.removeEventListener('message', h);
-          if (m.error) reject(new Error(`${method}: ${m.error.message}`));
-          else resolve(m.result);
+  const cmd = (method: string, params: Record<string, any> = {}): Promise<any> =>
+    new Promise((resolve, reject) => {
+      const id = mid++;
+      const h = (ev: MessageEvent) => {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.id === id) {
+            ws.removeEventListener('message', h);
+            if (m.error) reject(new Error(`${method}: ${m.error.message}`));
+            else resolve(m.result);
+          }
+        } catch (_) {
+          /* ignore non-JSON frames */
         }
-      } catch (_) { /* ignore non-JSON frames */ }
-    };
-    ws.addEventListener('message', h);
-    ws.send(JSON.stringify({ id, method, params }));
-    setTimeout(() => { ws.removeEventListener('message', h); reject(new Error(`CDP timeout: ${method}`)); }, 20000);
-  });
+      };
+      ws.addEventListener('message', h);
+      ws.send(JSON.stringify({ id, method, params }));
+      setTimeout(() => {
+        ws.removeEventListener('message', h);
+        reject(new Error(`CDP timeout: ${method}`));
+      }, 20000);
+    });
 
   const evaluate = async (expr: string): Promise<any> =>
     (await cmd('Runtime.evaluate', { expression: expr, returnByValue: true }))?.result?.value;
 
   const client: CdpClient = {
-    ws, tab, cmd, evaluate,
-    async navigate(url, w = waitMs) { await cmd('Page.navigate', { url }); await sleep(w); return evaluate('window.location.href'); },
-    scroll(y) { return cmd('Runtime.evaluate', { expression: `window.scrollTo(0, ${y})` }); },
-    async screenshot() { return (await cmd('Page.captureScreenshot', { format: 'png', fromSurface: true })).data; },
+    ws,
+    tab,
+    cmd,
+    evaluate,
+    async navigate(url, w = waitMs) {
+      await cmd('Page.navigate', { url });
+      await sleep(w);
+      return evaluate('window.location.href');
+    },
+    scroll(y) {
+      return cmd('Runtime.evaluate', { expression: `window.scrollTo(0, ${y})` });
+    },
+    async screenshot() {
+      return (await cmd('Page.captureScreenshot', { format: 'png', fromSurface: true })).data;
+    },
     // Crop a region given a CSS-pixel rect {x,y,w,h} (+ optional CSS pad). captureScreenshot's `clip`
     // is in CSS pixels (same as DOM/getBoundingClientRect coords); Chrome renders the output at the
     // page's devicePixelRatio automatically (scale:1). Do NOT multiply by dpr — that DOUBLE-applies
@@ -151,7 +201,7 @@ async function connect({ match, navigate, waitMs = 6000, requireMatch = false }:
       const clip = {
         x: Math.max(0, rect.x - pad),
         y: Math.max(0, rect.y - pad),
-        width:  rect.w + pad * 2,
+        width: rect.w + pad * 2,
         height: rect.h + pad * 2,
         scale: 1,
       };
@@ -160,9 +210,15 @@ async function connect({ match, navigate, waitMs = 6000, requireMatch = false }:
       try {
         const shot = await cmd('Page.captureScreenshot', params);
         return shot.data;
-      } catch (e) { return ''; }
+      } catch (e) {
+        return '';
+      }
     },
-    close() { try { ws.close(); } catch (_) {} },
+    close() {
+      try {
+        ws.close();
+      } catch (_) {}
+    },
   };
 
   if (navigate) await client.navigate(navigate, waitMs);
@@ -175,7 +231,11 @@ async function run(main: () => Promise<any> | any): Promise<void> {
   try {
     await main();
   } catch (e: any) {
-    if (e && e.relay) { console.log(ui.red(`${ui.ERR} ${e.message}`)); printRelayHelp(); process.exit(2); }
+    if (e && e.relay) {
+      console.log(ui.red(`${ui.ERR} ${e.message}`));
+      printRelayHelp();
+      process.exit(2);
+    }
     console.error(ui.red(`${ui.ERR} ${e && e.message ? e.message : e}`));
     process.exit(1);
   }

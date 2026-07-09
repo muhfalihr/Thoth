@@ -7,11 +7,18 @@
 // Preserves input order in the result (out[k] ← fn(items[k])), so callers can zip results back
 // to their candidates by index. `fn` should swallow its own errors (return a sentinel) — a throw
 // rejects the whole pool.
-export async function pool<T, R>(items: T[], n: number, fn: (t: T, i: number) => Promise<R>): Promise<R[]> {
+export async function pool<T, R>(
+  items: T[],
+  n: number,
+  fn: (t: T, i: number) => Promise<R>,
+): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let i = 0;
   const workers = Array.from({ length: Math.min(Math.max(1, n), items.length) }, async () => {
-    while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); }
+    while (i < items.length) {
+      const k = i++;
+      out[k] = await fn(items[k], k);
+    }
   });
   await Promise.all(workers);
   return out;

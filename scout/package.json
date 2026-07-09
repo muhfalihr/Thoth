@@ -4,9 +4,14 @@
   "version": "1.0.0",
   "description": "Upstream content-sourcing untuk Thoth — TypeScript, dijalankan native via Bun (tanpa build step).",
   "type": "module",
-  "engines": { "bun": ">=1.2" },
+  "engines": {
+    "bun": ">=1.2"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write ."
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

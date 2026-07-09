@@ -16,7 +16,11 @@ const ENV_FILE = path.join(import.meta.dirname, '..', '..', '.env');
 
 (function load() {
   let raw = '';
-  try { raw = fs.readFileSync(ENV_FILE, 'utf8'); } catch (e) { return; } // tanpa .env → murni shell env
+  try {
+    raw = fs.readFileSync(ENV_FILE, 'utf8');
+  } catch (e) {
+    return;
+  } // tanpa .env → murni shell env
   for (const line of raw.split(/\r?\n/)) {
     if (line.trim().startsWith('#')) continue;
     const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);

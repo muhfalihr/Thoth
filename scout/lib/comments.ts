@@ -61,18 +61,20 @@ Keluarkan HANYA JSON array valid, tanpa teks/penjelasan lain:
 //  3 — wrecking ranking of view/like counts shown as plain thousands.)
 function normalizeLikes(v) {
   if (typeof v === 'number') return Math.max(0, Math.round(v));
-  const s = String(v || '').trim().toLowerCase();
+  const s = String(v || '')
+    .trim()
+    .toLowerCase();
   const numMatch = s.match(/\d[\d.,]*/);
   if (!numMatch) return 0;
   const num = numMatch[0];
   const suf = (s.match(/(rb|jt|k|m)/) || [])[1] || ''; // rb/jt before k/m in the alternation
   let n;
   if (suf) {
-    n = parseFloat(num.replace(/,/g, '.')) || 0;        // suffix → decimal multiplier
+    n = parseFloat(num.replace(/,/g, '.')) || 0; // suffix → decimal multiplier
     if (suf === 'k' || suf === 'rb') n *= 1e3;
-    else n *= 1e6;                                       // m | jt
+    else n *= 1e6; // m | jt
   } else {
-    n = parseInt(num.replace(/[.,]/g, ''), 10) || 0;    // no suffix → drop thousands separators
+    n = parseInt(num.replace(/[.,]/g, ''), 10) || 0; // no suffix → drop thousands separators
   }
   return Math.max(0, Math.round(n));
 }
@@ -84,16 +86,18 @@ async function detectComments({ imagePath, key, model = VISION_MODEL, W, H }) {
   const b64 = fs.readFileSync(imagePath).toString('base64');
   const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
     body: JSON.stringify({
       model,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: commentPrompt(W, H) },
-          { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64 } },
-        ],
-      }],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: commentPrompt(W, H) },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64 } },
+          ],
+        },
+      ],
       max_tokens: 4000,
       temperature: 0.05,
     }),
@@ -103,15 +107,24 @@ async function detectComments({ imagePath, key, model = VISION_MODEL, W, H }) {
   const m = raw.match(/\[[\s\S]*\]/);
   if (!m) return { raw, comments: [] };
   let arr;
-  try { arr = JSON.parse(m[0]); } catch (e) { return { raw, comments: [] }; }
+  try {
+    arr = JSON.parse(m[0]);
+  } catch (e) {
+    return { raw, comments: [] };
+  }
   const comments = (Array.isArray(arr) ? arr : [])
-    .map(c => ({
-      user: String(c.user || c.author || 'anon').replace(/^@/, '').trim(),
+    .map((c) => ({
+      user: String(c.user || c.author || 'anon')
+        .replace(/^@/, '')
+        .trim(),
       text: String(c.text || '').trim(),
       likes: normalizeLikes(c.likes),
-      box: Array.isArray(c.box) && c.box.length === 4 ? c.box.map(n => Math.round(Number(n) || 0)) : null,
+      box:
+        Array.isArray(c.box) && c.box.length === 4
+          ? c.box.map((n) => Math.round(Number(n) || 0))
+          : null,
     }))
-    .filter(c => c.text);
+    .filter((c) => c.text);
   return { raw, comments };
 }
 

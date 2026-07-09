@@ -37,8 +37,8 @@ if (!TARGET_URL) {
   process.exit(1);
 }
 
-const extractUsername = u => (u.match(/@([\w.]+)/) || [, 'unknown'])[1];
-const extractVideoId = u => (u.match(/video\/(\d+)/) || [, 'unknown'])[1];
+const extractUsername = (u) => (u.match(/@([\w.]+)/) || [, 'unknown'])[1];
+const extractVideoId = (u) => (u.match(/video\/(\d+)/) || [, 'unknown'])[1];
 
 // Runs in the page: each [data-e2e="comment-level-1"] IS the comment text element. We climb
 // to the smallest ancestor that also has the username + avatar img (the full comment row),
@@ -71,8 +71,10 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-const countComments = client =>
-  client.evaluate('document.querySelectorAll(\'[data-e2e="comment-level-1"], div[class*="CommentItem"]\').length');
+const countComments = (client) =>
+  client.evaluate(
+    'document.querySelectorAll(\'[data-e2e="comment-level-1"], div[class*="CommentItem"]\').length',
+  );
 
 async function loadComments(client) {
   // On the immersive player layout the comments panel is hidden until the comment icon is
@@ -82,7 +84,9 @@ async function loadComments(client) {
     if (n > 0) return n;
     await sleep(1000);
   }
-  const clicked = await client.evaluate('(() => { const b = document.querySelector(\'[data-e2e="comment-icon"]\'); if (b) { b.click(); return true; } return false; })()');
+  const clicked = await client.evaluate(
+    '(() => { const b = document.querySelector(\'[data-e2e="comment-icon"]\'); if (b) { b.click(); return true; } return false; })()',
+  );
   if (clicked) console.log('  (buka panel komentar via comment-icon)');
   for (let t = 0; t < 12; t++) {
     const n = await countComments(client);
@@ -103,61 +107,99 @@ async function main() {
 
   // TikTok's SPA only mounts the video detail (player + comments) when the tab is focused;
   // a backgrounded relay tab renders just the home shell. Force focus before navigating.
-  try { await client.cmd('Page.bringToFront'); } catch (e) {}
-  try { await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true }); } catch (e) {}
+  try {
+    await client.cmd('Page.bringToFront');
+  } catch (e) {}
+  try {
+    await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true });
+  } catch (e) {}
 
   // Navigate only if not already on this video.
   const vid = extractVideoId(TARGET_URL);
   const cur = await client.evaluate('window.location.href');
-  if (!cur || !cur.includes(vid)) { console.log('Navigasi ke video...'); await client.navigate(TARGET_URL, 5000); }
+  if (!cur || !cur.includes(vid)) {
+    console.log('Navigasi ke video...');
+    await client.navigate(TARGET_URL, 5000);
+  }
 
   console.log('[1/3] Tunggu komentar render...');
   let count = await loadComments(client);
-  if (!count) { console.log(ui.amber(`${ui.WARN}  Tidak ada elemen komentar. Pastikan tab login & video punya komentar (panel kanan terbuka).`)); client.close(); return; }
+  if (!count) {
+    console.log(
+      ui.amber(
+        `${ui.WARN}  Tidak ada elemen komentar. Pastikan tab login & video punya komentar (panel kanan terbuka).`,
+      ),
+    );
+    client.close();
+    return;
+  }
 
   // Lazy-load more by scrolling the comment list a few times.
   for (let s = 0; s < 4; s++) {
-    await client.evaluate('(() => { const els = document.querySelectorAll(\'[data-e2e="comment-level-1"]\'); const last = els[els.length-1]; if (last) last.scrollIntoView({block:"end"}); window.scrollBy(0, 600); })()');
+    await client.evaluate(
+      '(() => { const els = document.querySelectorAll(\'[data-e2e="comment-level-1"]\'); const last = els[els.length-1]; if (last) last.scrollIntoView({block:"end"}); window.scrollBy(0, 600); })()',
+    );
     await sleep(900);
   }
 
   console.log('[2/3] Ekstrak field dari DOM...');
   const raw = await client.evaluate(EXTRACT_JS);
   let parsed = [];
-  try { parsed = JSON.parse(raw || '[]'); } catch (e) {}
+  try {
+    parsed = JSON.parse(raw || '[]');
+  } catch (e) {}
   // Buang komentar sticker-only ("[Sticker]"/"[Stiker]") — tak ada teks bermakna untuk
   // grounding narasi, dan crop-nya cuma gambar stiker. Filter SEBELUM slice(MAX) supaya
   // kuota terisi komentar bertekst nyata.
-  const isStickerOnly = t => /^\[\s*sti?c?ker\s*\]$/i.test((t || '').trim());
-  const withText = parsed.filter(c => c.text);
-  const stickerCount = withText.filter(c => isStickerOnly(c.text)).length;
-  parsed = withText.filter(c => !isStickerOnly(c.text)).slice(0, MAX);
+  const isStickerOnly = (t) => /^\[\s*sti?c?ker\s*\]$/i.test((t || '').trim());
+  const withText = parsed.filter((c) => c.text);
+  const stickerCount = withText.filter((c) => isStickerOnly(c.text)).length;
+  parsed = withText.filter((c) => !isStickerOnly(c.text)).slice(0, MAX);
   const stickerNote = stickerCount ? `, ${stickerCount} sticker-only di-skip` : '';
   console.log(`  ${parsed.length} komentar (dari ${count} terdeteksi${stickerNote})`);
-
 
   console.log('[3/3] Crop pixel-perfect (CDP clip)...');
   const results = [];
   for (const c of parsed) {
     // Scroll the comment into view, then read its fresh viewport rect.
-    await client.evaluate(`(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (el) el.scrollIntoView({block:"center"}); })()`);
+    await client.evaluate(
+      `(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (el) el.scrollIntoView({block:"center"}); })()`,
+    );
     await sleep(350);
-    const rectJson = await client.evaluate(`(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (!el) return ''; const r = el.getBoundingClientRect(); return JSON.stringify({x:r.x+window.scrollX,y:r.y+window.scrollY,w:r.width,h:r.height}); })()`);
-    let rect; try { rect = JSON.parse(rectJson); } catch (e) { rect = null; }
+    const rectJson = await client.evaluate(
+      `(() => { const el = document.querySelector('[data-clip-idx="${c.idx}"]'); if (!el) return ''; const r = el.getBoundingClientRect(); return JSON.stringify({x:r.x+window.scrollX,y:r.y+window.scrollY,w:r.width,h:r.height}); })()`,
+    );
+    let rect;
+    try {
+      rect = JSON.parse(rectJson);
+    } catch (e) {
+      rect = null;
+    }
 
     const likes = normalizeLikes(c.likes_raw);
     const safe = (c.author || `c${c.idx}`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 20);
-    const entry = { author: c.author || 'anon', text: c.text, likes, avatar_url: c.avatar_url || '', image_path: '' };
+    const entry = {
+      author: c.author || 'anon',
+      text: c.text,
+      likes,
+      avatar_url: c.avatar_url || '',
+      image_path: '',
+    };
 
     if (rect && rect.w > 30 && rect.h > 12) {
       try {
         const data = await client.captureClip(rect, PAD, { beyondViewport: true }); // page-coords + beyondViewport → no black at dpr>1 / small viewport
         if (!data) throw new Error('empty crop');
-        const file = path.join(OUT_DIR, `comment_${String(c.idx + 1).padStart(2, '0')}_${safe}_${likes}like.png`);
+        const file = path.join(
+          OUT_DIR,
+          `comment_${String(c.idx + 1).padStart(2, '0')}_${safe}_${likes}like.png`,
+        );
         fs.writeFileSync(file, Buffer.from(data, 'base64'));
         entry.image_path = file;
         const kb = (fs.statSync(file).size / 1024).toFixed(1);
-        console.log(`  #${c.idx + 1} @${entry.author} (${likes}❤) → ${path.basename(file)} (${kb} KB)`);
+        console.log(
+          `  #${c.idx + 1} @${entry.author} (${likes}❤) → ${path.basename(file)} (${kb} KB)`,
+        );
       } catch (e) {
         console.log(`  #${c.idx + 1} @${entry.author}: crop gagal (${e.message.slice(0, 50)})`);
       }
@@ -173,8 +215,14 @@ async function main() {
   // the same main.url, only its comments are refreshed (footage from content-sourcing kept).
   const username = extractUsername(TARGET_URL);
   let contentSet = {
-    main: { url: TARGET_URL, platform: 'tiktok', title: `TikTok @${username} #${vid}`, is_video: true, duration_sec: 60,
-      profile: { name: username, handle: username, followers: '', avatar_url: '' } },
+    main: {
+      url: TARGET_URL,
+      platform: 'tiktok',
+      title: `TikTok @${username} #${vid}`,
+      is_video: true,
+      duration_sec: 60,
+      profile: { name: username, handle: username, followers: '', avatar_url: '' },
+    },
     footage: [],
     comments: results,
   };
@@ -187,14 +235,15 @@ async function main() {
       // main.url===TARGET_URL never matched → we used to clobber description+footage.
       // Match on page-url, CDN-url, source_url, OR same video id.
       const targetVid = extractVideoId(TARGET_URL);
-      const sameMain = prev && !Array.isArray(prev) && prev.main && (
-        prev.main.url === TARGET_URL ||
-        prev.main.source_url === TARGET_URL ||
-        (targetVid !== 'unknown' && (
-          extractVideoId(prev.main.url || '') === targetVid ||
-          extractVideoId(prev.main.source_url || '') === targetVid
-        ))
-      );
+      const sameMain =
+        prev &&
+        !Array.isArray(prev) &&
+        prev.main &&
+        (prev.main.url === TARGET_URL ||
+          prev.main.source_url === TARGET_URL ||
+          (targetVid !== 'unknown' &&
+            (extractVideoId(prev.main.url || '') === targetVid ||
+              extractVideoId(prev.main.source_url || '') === targetVid)));
       if (sameMain) {
         prev.comments = results; // keep existing main/footage/description, refresh comments only
         contentSet = prev;
@@ -204,7 +253,11 @@ async function main() {
   fs.writeFileSync(OUT_JSON, JSON.stringify(contentSet, null, 2), 'utf8');
 
   console.log('\n' + ui.rule());
-  results.sort((a, b) => b.likes - a.likes).forEach((r, i) => console.log(`  ${i + 1}. @${r.author} (${r.likes}❤) "${r.text.slice(0, 60)}"`));
+  results
+    .sort((a, b) => b.likes - a.likes)
+    .forEach((r, i) =>
+      console.log(`  ${i + 1}. @${r.author} (${r.likes}❤) "${r.text.slice(0, 60)}"`),
+    );
   console.log(ui.rule());
   console.log(`📄 ${OUT_JSON} (${results.length} komentar)  |  📁 crops: ${OUT_DIR}`);
   console.log('\nValidate lalu run:');

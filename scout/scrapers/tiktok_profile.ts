@@ -17,7 +17,9 @@ import { tiktokOembed } from '../lib/verify.ts';
 async function waitProfileReady(c, maxMs = 45000) {
   const step = 1000;
   for (let waited = 0; waited <= maxMs; waited += step) {
-    const ok = await c.evaluate(`String(!!document.querySelector('a[href*="/video/"]') || !!document.querySelector('[data-e2e="user-avatar"]'))`);
+    const ok = await c.evaluate(
+      `String(!!document.querySelector('a[href*="/video/"]') || !!document.querySelector('[data-e2e="user-avatar"]'))`,
+    );
     if (ok === 'true' || ok === true) return true;
     await sleep(step);
   }
@@ -30,17 +32,28 @@ function parseViews(s) {
   if (!m) return 0;
   let n = parseFloat(m[1]) || 0;
   const u = (m[2] || '').toUpperCase();
-  if (u === 'K') n *= 1e3; else if (u === 'M') n *= 1e6; else if (u === 'B') n *= 1e9;
+  if (u === 'K') n *= 1e3;
+  else if (u === 'M') n *= 1e6;
+  else if (u === 'B') n *= 1e9;
   return Math.round(n);
 }
 
-async function tiktokProfileVideos(username: string, { max = 12, captions = true, client }: { max?: number; captions?: boolean; client?: any } = {}) {
+async function tiktokProfileVideos(
+  username: string,
+  { max = 12, captions = true, client }: { max?: number; captions?: boolean; client?: any } = {},
+) {
   const u = (username || '').replace(/^@/, '');
   if (!u) return [];
-  let c = client, own = false;
-  if (!c) { c = await connect({ match: 'tiktok.com', requireMatch: true }); own = true; }
+  let c = client,
+    own = false;
+  if (!c) {
+    c = await connect({ match: 'tiktok.com', requireMatch: true });
+    own = true;
+  }
   try {
-    try { await c.cmd('Page.bringToFront'); } catch (e) {}
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
     await c.navigate('https://www.tiktok.com/@' + u, 9000);
     await waitProfileReady(c, 45000); // ride out the "Please wait..." interstitial + a slow tab (up to 45s)
     const evalGrid = `(() => {
@@ -59,37 +72,62 @@ async function tiktokProfileVideos(username: string, { max = 12, captions = true
     // The grid lazy-loads — read with progressive scroll + retries so a slow tab still yields videos.
     let items = [];
     for (let attempt = 0; attempt < 6; attempt++) {
-      try { await c.scroll(1200 * (attempt + 1)); } catch (e) {}
+      try {
+        await c.scroll(1200 * (attempt + 1));
+      } catch (e) {}
       await sleep(1500);
-      try { items = JSON.parse(await c.evaluate(evalGrid) || '[]'); } catch (e) { items = []; }
+      try {
+        items = JSON.parse((await c.evaluate(evalGrid)) || '[]');
+      } catch (e) {
+        items = [];
+      }
       if (items.length) break;
     }
     // Keep only THIS creator's own videos (the profile grid is theirs; guard against stray links).
     const mine = new RegExp('/@' + u.replace(/[.]/g, '\\.') + '/video/', 'i');
-    items = items.filter(it => mine.test(it.url))
-      .map(it => ({ url: it.url, views: parseViews(it.v), caption: '' }))
+    items = items
+      .filter((it) => mine.test(it.url))
+      .map((it) => ({ url: it.url, views: parseViews(it.v), caption: '' }))
       .slice(0, max);
     if (captions) {
       for (const it of items) {
-        try { const m = await tiktokOembed(it.url); it.caption = (m && m.title) || ''; it.thumbnail = (m && m.thumbnail) || ''; }
-        catch (e) { it.caption = ''; it.thumbnail = ''; }
+        try {
+          const m = await tiktokOembed(it.url);
+          it.caption = (m && m.title) || '';
+          it.thumbnail = (m && m.thumbnail) || '';
+        } catch (e) {
+          it.caption = '';
+          it.thumbnail = '';
+        }
       }
     }
     return items;
-  } finally { if (own) c.close(); }
+  } finally {
+    if (own) c.close();
+  }
 }
 
 // Screenshot the creator's PROFILE-CARD header (avatar + name + follower/like counts) into `outPng`.
 // Thoth pastes this real crop as the on-screen profile card (replacing the synthetic one). Computes a
 // clip from the bounding box of the header elements (avatar + title + stats), with padding. Returns the
 // path on success, '' on failure. Needs a logged-in tiktok.com tab attached.
-async function cropTiktokProfile(username: string, outPng: string, { client }: { client?: any } = {}) {
+async function cropTiktokProfile(
+  username: string,
+  outPng: string,
+  { client }: { client?: any } = {},
+) {
   const u = (username || '').replace(/^@/, '');
   if (!u || !outPng) return '';
-  let c = client, own = false;
-  if (!c) { c = await connect({ match: 'tiktok.com', requireMatch: true }); own = true; }
+  let c = client,
+    own = false;
+  if (!c) {
+    c = await connect({ match: 'tiktok.com', requireMatch: true });
+    own = true;
+  }
   try {
-    try { await c.cmd('Page.bringToFront'); } catch (e) {}
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
     await c.navigate('https://www.tiktok.com/@' + u, 7000);
     await waitProfileReady(c); // ride out the "Please wait..." interstitial
     await sleep(800);
@@ -110,13 +148,25 @@ async function cropTiktokProfile(username: string, outPng: string, { client }: {
       // returns BLACK outside the composited viewport (worse at dpr>1 / small windows).
       return JSON.stringify({ x: Math.max(0, x1 + window.scrollX - pad), y: Math.max(0, y1 + window.scrollY - pad), w: (x2 - x1) + pad * 2, h: (y2 - y1) + pad * 2 });
     })()`);
-    let rect; try { rect = JSON.parse(rectJson || 'null'); } catch (e) {}
-    if (!rect || rect.w < 80 || rect.h < 40) { console.log('    [tiktok] crop profil: header tak terbaca.'); return ''; }
-    const data = await c.captureClip({ x: rect.x, y: rect.y, w: rect.w, h: rect.h }, 0, { beyondViewport: true });
+    let rect;
+    try {
+      rect = JSON.parse(rectJson || 'null');
+    } catch (e) {}
+    if (!rect || rect.w < 80 || rect.h < 40) {
+      console.log('    [tiktok] crop profil: header tak terbaca.');
+      return '';
+    }
+    const data = await c.captureClip({ x: rect.x, y: rect.y, w: rect.w, h: rect.h }, 0, {
+      beyondViewport: true,
+    });
     if (!data) return '';
     fs.writeFileSync(outPng, Buffer.from(data, 'base64'));
     return outPng;
-  } catch (e) { return ''; } finally { if (own) c.close(); }
+  } catch (e) {
+    return '';
+  } finally {
+    if (own) c.close();
+  }
 }
 
 export { tiktokProfileVideos, cropTiktokProfile, parseViews };

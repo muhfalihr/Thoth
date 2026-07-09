@@ -22,12 +22,16 @@ const TRENDING_URL = 'https://www.tiktok.com/tiktokstudio/inspiration/trending';
 // Local count parser — extends K/M to B (billion), which trending topics can reach and the shared
 // normalizeLikes() (IG-tuned: k/rb/m/jt only) does not handle.
 function parseViews(v) {
-  const s = String(v || '').trim().toLowerCase();
+  const s = String(v || '')
+    .trim()
+    .toLowerCase();
   const num = (s.match(/\d[\d.,]*/) || [])[0];
   if (!num) return 0;
   const suf = (s.match(/[kmb]/) || [])[0] || '';
   let n = parseFloat(num.replace(/,/g, '')) || 0;
-  if (suf === 'k') n *= 1e3; else if (suf === 'm') n *= 1e6; else if (suf === 'b') n *= 1e9;
+  if (suf === 'k') n *= 1e3;
+  else if (suf === 'm') n *= 1e6;
+  else if (suf === 'b') n *= 1e9;
   return Math.max(0, Math.round(n));
 }
 
@@ -35,7 +39,8 @@ function parseViews(v) {
 // clicking it drops a column of region options. We detect both class-agnostically by SHAPE. The
 // regex just has to recognise a region label (incl. the current selection) — broad list covers the
 // majors; "All regions" is the unfiltered default.
-const REGION_RE = "/^(All regions|Indonesia|United States|Japan|Brazil|Malaysia|Vietnam|Thailand|Philippines|South Korea|India|Mexico|United Kingdom|Germany|France|Russia|Turkey|Egypt|Italy|Spain|Argentina|Colombia|Canada|Australia|Saudi Arabia|United Arab Emirates|Netherlands|Poland|Pakistan|Bangladesh|Nigeria|Taiwan|Singapore)$/i";
+const REGION_RE =
+  '/^(All regions|Indonesia|United States|Japan|Brazil|Malaysia|Vietnam|Thailand|Philippines|South Korea|India|Mexico|United Kingdom|Germany|France|Russia|Turkey|Egypt|Italy|Spain|Argentina|Colombia|Canada|Australia|Saudi Arabia|United Arab Emirates|Netherlands|Poland|Pakistan|Bangladesh|Nigeria|Taiwan|Singapore)$/i';
 
 // Current region = the TOPMOST region-looking leaf (the closed dropdown shows the selection).
 async function readRegion(client) {
@@ -59,9 +64,11 @@ async function readRegion(client) {
 // { ok, changed, region } — a failure to switch leaves whatever was shown (caller still scrapes).
 async function selectRegion(client, region) {
   const target = String(region || '').trim();
-  if (!target || /^all$/i.test(target)) return { ok: true, changed: false, region: await readRegion(client) };
+  if (!target || /^all$/i.test(target))
+    return { ok: true, changed: false, region: await readRegion(client) };
   const cur = await readRegion(client);
-  if (cur && cur.toLowerCase() === target.toLowerCase()) return { ok: true, changed: false, region: cur };
+  if (cur && cur.toLowerCase() === target.toLowerCase())
+    return { ok: true, changed: false, region: cur };
 
   // Open the dropdown: click the topmost region leaf (the trigger).
   const opened = await client.evaluate(`(() => {
@@ -112,13 +119,24 @@ async function scrapeTopics(client, max, region) {
   if (region) {
     const reg = await selectRegion(client, region);
     if (reg.changed && reg.ok) console.log(`  region → ${reg.region}`);
-    else if (reg.changed) console.log(ui.amber(`  ${ui.WARN}  region: gagal switch ke ${region} (sekarang ${reg.region || '?'})`));
+    else if (reg.changed)
+      console.log(
+        ui.amber(`  ${ui.WARN}  region: gagal switch ke ${region} (sekarang ${reg.region || '?'})`),
+      );
     else if (reg.ok) console.log(`  region: ${reg.region || '?'} (sudah sesuai)`);
-    else console.log(ui.amber(`  ${ui.WARN}  region: gagal buka filter — pakai ${reg.region || 'tampilan saat ini'}`));
+    else
+      console.log(
+        ui.amber(
+          `  ${ui.WARN}  region: gagal buka filter — pakai ${reg.region || 'tampilan saat ini'}`,
+        ),
+      );
     await sleep(1000);
   }
   // Lazy list — scroll to materialise more rows.
-  for (let i = 0; i < 8; i++) { await client.evaluate('window.scrollBy(0, 1000)'); await sleep(800); }
+  for (let i = 0; i < 8; i++) {
+    await client.evaluate('window.scrollBy(0, 1000)');
+    await sleep(800);
+  }
 
   const raw = await client.evaluate(`(() => {
     const VIEWS = /^[\\d]+(?:[.,]\\d+)?\\s*[KMB]$/i;
@@ -140,8 +158,11 @@ async function scrapeTopics(client, max, region) {
     rows.sort((a, b) => a.rank - b.rank);
     return JSON.stringify(rows);
   })()`);
-  let list = []; try { list = JSON.parse(raw || '[]'); } catch (e) {}
-  return list.slice(0, max).map(r => ({ ...r, views_n: parseViews(r.views) }));
+  let list = [];
+  try {
+    list = JSON.parse(raw || '[]');
+  } catch (e) {}
+  return list.slice(0, max).map((r) => ({ ...r, views_n: parseViews(r.views) }));
 }
 
 // Connect to a tiktok.com tab, scrape, disconnect. Best-effort → [] on failure (never throws into
@@ -150,13 +171,23 @@ async function fetchTrending({ max = 25, region = 'Indonesia' } = {}) {
   let client;
   try {
     client = await connect({ match: 'tiktok.com', requireMatch: true });
-    try { await client.cmd('Page.bringToFront'); } catch (e) {}
+    try {
+      await client.cmd('Page.bringToFront');
+    } catch (e) {}
     return await scrapeTopics(client, max, region);
   } catch (e) {
-    console.log(ui.amber(`${ui.WARN}  TikTok trending gagal: ${String(e.message || e).slice(0, 80)} (butuh tab tiktok.com login)`));
+    console.log(
+      ui.amber(
+        `${ui.WARN}  TikTok trending gagal: ${String(e.message || e).slice(0, 80)} (butuh tab tiktok.com login)`,
+      ),
+    );
     return [];
   } finally {
-    if (client) { try { client.close(); } catch (e) {} }
+    if (client) {
+      try {
+        client.close();
+      } catch (e) {}
+    }
   }
 }
 
@@ -164,10 +195,13 @@ export { fetchTrending, scrapeTopics, selectRegion, readRegion, parseViews, TREN
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const getFlag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
+  const getFlag = (n, d) => {
+    const i = args.indexOf(n);
+    return i >= 0 ? args[i + 1] : d;
+  };
   const MAX = parseInt(getFlag('--max', '25'), 10);
   const OUT = getFlag('--out', null);
-  const REGION = getFlag('--region', 'Indonesia');   // 'all' / 'All regions' = unfiltered
+  const REGION = getFlag('--region', 'Indonesia'); // 'all' / 'All regions' = unfiltered
   run(async () => {
     console.log(ui.rule());
     console.log('  TikTok Studio — Trending Topics (Inspiration)');
@@ -175,10 +209,17 @@ if (import.meta.main) {
     console.log('Region:', REGION);
     const topics = await fetchTrending({ max: MAX, region: REGION });
     const out = OUT || outPath('tiktok_trending.json');
-    fs.writeFileSync(out, JSON.stringify(
-      { fetched_at: new Date().toISOString(), source: TRENDING_URL, region: REGION, topics }, null, 2), 'utf8');
+    fs.writeFileSync(
+      out,
+      JSON.stringify(
+        { fetched_at: new Date().toISOString(), source: TRENDING_URL, region: REGION, topics },
+        null,
+        2,
+      ),
+      'utf8',
+    );
     console.log(`\n${topics.length} topik trending:`);
-    topics.slice(0, 20).forEach(t => console.log(`  ${t.rank}. [${t.views}] ${t.title}`));
+    topics.slice(0, 20).forEach((t) => console.log(`  ${t.rank}. [${t.views}] ${t.title}`));
     console.log(`📄 ${out}`);
   });
 }

@@ -14,15 +14,24 @@ import { connect, sleep } from '../lib/cdp.ts';
 
 async function xProfileTweets(handle, { max = 8, client = null } = {}) {
   const h = String(handle).trim().replace(/^@/, '');
-  let c = client, own = false;
-  if (!c) { c = await connect({ match: ['x.com', 'twitter.com'], requireMatch: true }); own = true; }
+  let c = client,
+    own = false;
+  if (!c) {
+    c = await connect({ match: ['x.com', 'twitter.com'], requireMatch: true });
+    own = true;
+  }
   const byId = new Map();
   try {
     await c.navigate(`https://x.com/${h}`, 6000);
     await sleep(3500);
     // Timeline virtualized → beberapa langkah scroll, UNION hasil tiap snapshot (pola ig_profile).
     for (let step = 0; step < 4 && byId.size < max; step++) {
-      if (step) { try { await c.evaluate('window.scrollBy(0, 1500)'); } catch (e) {} await sleep(1800); }
+      if (step) {
+        try {
+          await c.evaluate('window.scrollBy(0, 1500)');
+        } catch (e) {}
+        await sleep(1800);
+      }
       const raw = await c.evaluate(`(() => {
         const H = ${JSON.stringify(h)}.toLowerCase();
         const out = [];
@@ -44,11 +53,18 @@ async function xProfileTweets(handle, { max = 8, client = null } = {}) {
         });
         return JSON.stringify(out);
       })()`);
-      let list = []; try { list = JSON.parse(raw || '[]'); } catch (e) {}
+      let list = [];
+      try {
+        list = JSON.parse(raw || '[]');
+      } catch (e) {}
       for (const tw of list) if (!byId.has(tw.id)) byId.set(tw.id, tw);
     }
   } finally {
-    if (own) { try { c.close(); } catch (e) {} }
+    if (own) {
+      try {
+        c.close();
+      } catch (e) {}
+    }
   }
   return [...byId.values()].slice(0, max);
 }

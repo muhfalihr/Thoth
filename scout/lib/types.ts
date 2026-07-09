@@ -46,9 +46,23 @@ export interface CommentInfo {
   [k: string]: any;
 }
 
-export interface Reference { term: string; kind: string; summary: string; as_of_date?: string; source_url?: string; }
-export interface Discourse { audience_stance: string; themes: string[]; narration_guidance: string; }
-export interface Figure { name: string; type?: string; [k: string]: any; }
+export interface Reference {
+  term: string;
+  kind: string;
+  summary: string;
+  as_of_date?: string;
+  source_url?: string;
+}
+export interface Discourse {
+  audience_stance: string;
+  themes: string[];
+  narration_guidance: string;
+}
+export interface Figure {
+  name: string;
+  type?: string;
+  [k: string]: any;
+}
 
 export interface ContentSet {
   main: MainVideo;

@@ -61,12 +61,12 @@ import { ui } from './ui.ts';
 // ── configuration ──────────────────────────────────────────────────────────
 const PORT = Number(process.env.THOTH_CDP_PORT) || 18800;
 const HOST = '127.0.0.1';
-const PROFILE_DIR = process.env.THOTH_BROWSER_PROFILE
-  || path.join(os.homedir(), '.clipper', 'browser-profile');
+const PROFILE_DIR =
+  process.env.THOTH_BROWSER_PROFILE || path.join(os.homedir(), '.clipper', 'browser-profile');
 const STATE_FILE = path.join(PROFILE_DIR, '.clipper-browser.json');
 const HEADLESS = /^(1|true|yes)$/i.test(process.env.THOTH_BROWSER_HEADLESS || '');
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── browser binary discovery ────────────────────────────────────────────────
 // Brave first (this box's daily driver + what lib/cdp.js was written against),
@@ -97,16 +97,23 @@ function candidateBinaries() {
   }
   // linux
   return [
-    '/usr/bin/brave-browser', '/usr/bin/brave',
-    '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium', '/usr/bin/chromium-browser',
+    '/usr/bin/brave-browser',
+    '/usr/bin/brave',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
     '/usr/bin/microsoft-edge',
   ];
 }
 
 function resolveBinary() {
   for (const b of candidateBinaries()) {
-    try { if (fs.existsSync(b)) return b; } catch (_) { /* ignore */ }
+    try {
+      if (fs.existsSync(b)) return b;
+    } catch (_) {
+      /* ignore */
+    }
   }
   return null;
 }
@@ -114,10 +121,16 @@ function resolveBinary() {
 // ── CDP readiness / discovery ────────────────────────────────────────────────
 function httpGetJSON(urlPath, timeoutMs = 1500) {
   return new Promise((resolve, reject) => {
-    const req = http.get({ host: HOST, port: PORT, path: urlPath, timeout: timeoutMs }, res => {
+    const req = http.get({ host: HOST, port: PORT, path: urlPath, timeout: timeoutMs }, (res) => {
       let d = '';
-      res.on('data', c => (d += c));
-      res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(e); } });
+      res.on('data', (c) => (d += c));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(d));
+        } catch (e) {
+          reject(e);
+        }
+      });
     });
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', reject);
@@ -127,38 +140,66 @@ function httpGetJSON(urlPath, timeoutMs = 1500) {
 // True once the browser answers CDP on our port (a managed browser we launched,
 // or one already running there).
 async function isReady() {
-  try { await httpGetJSON('/json/version'); return true; } catch (_) { return false; }
+  try {
+    await httpGetJSON('/json/version');
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 async function pageTargets() {
   try {
     const t = await httpGetJSON('/json');
-    return Array.isArray(t) ? t.filter(x => x.type === 'page') : [];
-  } catch (_) { return []; }
+    return Array.isArray(t) ? t.filter((x) => x.type === 'page') : [];
+  } catch (_) {
+    return [];
+  }
 }
 
 function portInUse() {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     const s = net.connect({ host: HOST, port: PORT });
-    s.on('connect', () => { s.destroy(); resolve(true); });
+    s.on('connect', () => {
+      s.destroy();
+      resolve(true);
+    });
     s.on('error', () => resolve(false));
-    s.setTimeout(1000, () => { s.destroy(); resolve(false); });
+    s.setTimeout(1000, () => {
+      s.destroy();
+      resolve(false);
+    });
   });
 }
 
 // ── state file (pid/port bookkeeping for stop/status) ─────────────────────────
 function readState() {
-  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch (_) { return null; }
+  try {
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  } catch (_) {
+    return null;
+  }
 }
 function writeState(obj) {
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(obj, null, 2));
 }
-function clearState() { try { fs.unlinkSync(STATE_FILE); } catch (_) { /* ignore */ } }
+function clearState() {
+  try {
+    fs.unlinkSync(STATE_FILE);
+  } catch (_) {
+    /* ignore */
+  }
+}
 
 function pidAlive(pid) {
   if (!pid) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
 }
 
 // ── launch flags ──────────────────────────────────────────────────────────────
@@ -171,7 +212,7 @@ function launchArgs() {
     // Chromium 111+ rejects CDP WebSocket upgrades from disallowed origins; Node's
     // ws sends none, but allowlisting all keeps every client (undici/ws) working.
     '--remote-allow-origins=*',
-    `--user-data-dir=${PROFILE_DIR}`,   // dedicated profile → debug port allowed + login persists
+    `--user-data-dir=${PROFILE_DIR}`, // dedicated profile → debug port allowed + login persists
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-sync',
@@ -180,7 +221,9 @@ function launchArgs() {
     '--restore-last-session=false',
     'about:blank',
   ];
-  if (HEADLESS) { args.splice(args.length - 1, 0, '--headless=new'); }
+  if (HEADLESS) {
+    args.splice(args.length - 1, 0, '--headless=new');
+  }
   return args;
 }
 
@@ -188,12 +231,16 @@ function launchArgs() {
 async function cmdStart() {
   if (await isReady()) {
     const n = (await pageTargets()).length;
-    console.log(ui.gold(`${ui.OK} Managed browser sudah aktif di http://${HOST}:${PORT} (${n} tab).`));
+    console.log(
+      ui.gold(`${ui.OK} Managed browser sudah aktif di http://${HOST}:${PORT} (${n} tab).`),
+    );
     console.log(`   CDP base: http://${HOST}:${PORT}  →  scraper siap jalan.`);
     return 0;
   }
   if (await portInUse()) {
-    console.log(ui.red(`${ui.ERR} Port ${PORT} dipakai proses lain yang bukan CDP (bukan /json/version).`));
+    console.log(
+      ui.red(`${ui.ERR} Port ${PORT} dipakai proses lain yang bukan CDP (bukan /json/version).`),
+    );
     console.log(`   Ganti port: set THOTH_CDP_PORT=<lain> lalu ulangi.`);
     return 1;
   }
@@ -211,9 +258,17 @@ async function cmdStart() {
   console.log(`   CDP    : http://${HOST}:${PORT}${HEADLESS ? '  (headless)' : ''}`);
 
   const child = spawn(bin, launchArgs(), { detached: true, stdio: 'ignore' });
-  child.on('error', e => { console.log(ui.red(`${ui.ERR} Gagal launch:`), e.message); });
+  child.on('error', (e) => {
+    console.log(ui.red(`${ui.ERR} Gagal launch:`), e.message);
+  });
   child.unref();
-  writeState({ pid: child.pid, port: PORT, bin, profile: PROFILE_DIR, startedAt: new Date().toISOString() });
+  writeState({
+    pid: child.pid,
+    port: PORT,
+    bin,
+    profile: PROFILE_DIR,
+    startedAt: new Date().toISOString(),
+  });
 
   // Wait until CDP answers (cold start of a fresh profile can take a few seconds).
   for (let i = 0; i < 40; i++) {
@@ -226,7 +281,9 @@ async function cmdStart() {
     await sleep(500);
   }
   console.log(ui.red(`${ui.ERR} Browser jalan tapi CDP tak merespon dalam 20s.`));
-  console.log('   Kemungkinan browser memblokir debug port di profile ini — cek THOTH_BROWSER_PROFILE.');
+  console.log(
+    '   Kemungkinan browser memblokir debug port di profile ini — cek THOTH_BROWSER_PROFILE.',
+  );
   return 1;
 }
 
@@ -237,19 +294,31 @@ async function cmdStatus() {
     const tabs = await pageTargets();
     console.log(ui.gold(`${ui.OK} UP  http://${HOST}:${PORT}  —  ${tabs.length} page tab`));
     for (const t of tabs.slice(0, 8)) console.log(`   • ${String(t.url).slice(0, 90)}`);
-    if (st) console.log(`   pid ${st.pid} · ${path.basename(st.bin || '?')} · since ${st.startedAt}`);
+    if (st)
+      console.log(`   pid ${st.pid} · ${path.basename(st.bin || '?')} · since ${st.startedAt}`);
     return 0;
   }
   console.log(`⭘ DOWN  http://${HOST}:${PORT}  —  CDP tidak merespon.`);
-  if (st && pidAlive(st.pid)) console.log(`   (proses pid ${st.pid} masih hidup tapi CDP tak menjawab — coba stop lalu start.)`);
+  if (st && pidAlive(st.pid))
+    console.log(
+      `   (proses pid ${st.pid} masih hidup tapi CDP tak menjawab — coba stop lalu start.)`,
+    );
   console.log('   Jalankan: bun lib/browser.ts start');
   return 1;
 }
 
 async function cmdStop() {
   const st = readState();
-  if (!st || !st.pid) { console.log('Tidak ada state managed browser. Tak ada yang di-stop.'); clearState(); return 0; }
-  if (!pidAlive(st.pid)) { console.log(`Proses pid ${st.pid} sudah mati.`); clearState(); return 0; }
+  if (!st || !st.pid) {
+    console.log('Tidak ada state managed browser. Tak ada yang di-stop.');
+    clearState();
+    return 0;
+  }
+  if (!pidAlive(st.pid)) {
+    console.log(`Proses pid ${st.pid} sudah mati.`);
+    clearState();
+    return 0;
+  }
   try {
     if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(st.pid), '/T', '/F']);
     else process.kill(st.pid);
@@ -264,7 +333,10 @@ async function cmdStop() {
 
 function cmdPath() {
   const bin = resolveBinary();
-  if (bin) { console.log(bin); return 0; }
+  if (bin) {
+    console.log(bin);
+    return 0;
+  }
   console.log('(tidak ditemukan — set THOTH_BROWSER_BIN)');
   return 1;
 }

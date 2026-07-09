@@ -25,15 +25,27 @@ import { tiktokProfileVideos } from '../scrapers/tiktok_profile.ts';
 import { xProfileTweets } from '../scrapers/x_profile.ts';
 
 const args = process.argv.slice(2);
-const getFlag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
+const getFlag = (n, d) => {
+  const i = args.indexOf(n);
+  return i >= 0 ? args[i + 1] : d;
+};
 // Default akun = ig_accounts.json (daftar terkurasi user — satu sumber kebenaran, dipakai juga
 // oleh discover_topics --platforms instagram). --accounts meng-override. Fallback: daftar lama.
 function defaultAccounts() {
   try {
-    const j = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'config', 'ig_accounts.json'), 'utf8'));
-    const arr = Array.isArray(j) ? j : (j.accounts || []);
-    const list = arr.map(s => String(s).trim().replace(/^@/, '')
-      .replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').replace(/[/?#].*$/, '')).filter(Boolean);
+    const j = JSON.parse(
+      fs.readFileSync(path.join(import.meta.dirname, '..', 'config', 'ig_accounts.json'), 'utf8'),
+    );
+    const arr = Array.isArray(j) ? j : j.accounts || [];
+    const list = arr
+      .map((s) =>
+        String(s)
+          .trim()
+          .replace(/^@/, '')
+          .replace(/^https?:\/\/(www\.)?instagram\.com\//i, '')
+          .replace(/[/?#].*$/, ''),
+      )
+      .filter(Boolean);
     if (list.length) return list.join(',');
   } catch (e) {}
   return 'sadampermana.w,jktlogy,basevox,unexplnd';
@@ -42,25 +54,57 @@ function defaultAccounts() {
 // ig_accounts.json (legacy, juga sumber aggregator-exclusion) di-MERGE ke bagian instagram —
 // jangan dihapus. Flag --accounts (IG), --tiktok-accounts, --x-accounts meng-override per platform.
 function curatorAccounts() {
-  const norm = s => String(s).trim().replace(/^@/, '')
-    .replace(/^https?:\/\/[^/]+\//i, '').replace(/[/?#].*$/, '');
+  const norm = (s) =>
+    String(s)
+      .trim()
+      .replace(/^@/, '')
+      .replace(/^https?:\/\/[^/]+\//i, '')
+      .replace(/[/?#].*$/, '');
   let cfg: any = {};
-  try { cfg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'config', 'curator_accounts.json'), 'utf8')) || {}; } catch (e) {}
-  const ig = [...new Set([...(cfg.instagram || []).map(norm), ...defaultAccounts().split(',')].filter(Boolean))];
-  return { instagram: ig, tiktok: (cfg.tiktok || []).map(norm).filter(Boolean), x: (cfg.x || []).map(norm).filter(Boolean) };
+  try {
+    cfg =
+      JSON.parse(
+        fs.readFileSync(
+          path.join(import.meta.dirname, '..', 'config', 'curator_accounts.json'),
+          'utf8',
+        ),
+      ) || {};
+  } catch (e) {}
+  const ig = [
+    ...new Set(
+      [...(cfg.instagram || []).map(norm), ...defaultAccounts().split(',')].filter(Boolean),
+    ),
+  ];
+  return {
+    instagram: ig,
+    tiktok: (cfg.tiktok || []).map(norm).filter(Boolean),
+    x: (cfg.x || []).map(norm).filter(Boolean),
+  };
 }
 const CURATORS = curatorAccounts();
-const ACCOUNTS = (getFlag('--accounts', CURATORS.instagram.join(','))).split(',').map(s => s.trim().replace(/^@/, '')).filter(Boolean);
-const TT_ACCOUNTS = (getFlag('--tiktok-accounts', CURATORS.tiktok.join(','))).split(',').map(s => s.trim().replace(/^@/, '')).filter(Boolean);
-const X_ACCOUNTS = (getFlag('--x-accounts', CURATORS.x.join(','))).split(',').map(s => s.trim().replace(/^@/, '')).filter(Boolean);
+const ACCOUNTS = getFlag('--accounts', CURATORS.instagram.join(','))
+  .split(',')
+  .map((s) => s.trim().replace(/^@/, ''))
+  .filter(Boolean);
+const TT_ACCOUNTS = getFlag('--tiktok-accounts', CURATORS.tiktok.join(','))
+  .split(',')
+  .map((s) => s.trim().replace(/^@/, ''))
+  .filter(Boolean);
+const X_ACCOUNTS = getFlag('--x-accounts', CURATORS.x.join(','))
+  .split(',')
+  .map((s) => s.trim().replace(/^@/, ''))
+  .filter(Boolean);
 const MAX_PER = parseInt(getFlag('--max-per', '5'), 10);
 const HOURS = parseInt(getFlag('--hours', '48'), 10);
 const OUT = getFlag('--out', null);
 // Which item types to scan. Default = both reels AND feed posts (broader topic net). Accepts e.g.
 // "reels", "posts", "reels,posts". MAX_PER applies PER TYPE (up to MAX_PER reels + MAX_PER posts).
-const INC_RAW = (getFlag('--include', 'reels,posts')).toLowerCase();
+const INC_RAW = getFlag('--include', 'reels,posts').toLowerCase();
 const INCLUDE = { reels: /reel/.test(INC_RAW), posts: /post|\/p\b|\bp\b/.test(INC_RAW) };
-if (!INCLUDE.reels && !INCLUDE.posts) { INCLUDE.reels = true; INCLUDE.posts = true; } // empty → both
+if (!INCLUDE.reels && !INCLUDE.posts) {
+  INCLUDE.reels = true;
+  INCLUDE.posts = true;
+} // empty → both
 // --tiktok: also pull TikTok Studio's trending topics (needs a logged-in tiktok.com tab) and write
 // them as a `tiktok_trending` section — an extra viral-topic seed pool alongside the IG reels/posts.
 const WANT_TIKTOK = args.includes('--tiktok');
@@ -90,8 +134,12 @@ function scoreOf(r) {
   return (v || 1) * (isNaN(ah) ? 1 : Math.pow(0.5, ah / HALFLIFE_H));
 }
 // Score kecil (decay murni, 0..1) tampil 3 desimal — Math.round akan menyamarkan semuanya jadi 0/1.
-const fmtScore = (r) => { const s = scoreOf(r); return s >= 10 ? Math.round(s) : +s.toFixed(3); };
-const rankCmp = (a, b) => (scoreOf(b) - scoreOf(a)) || (Date.parse(b.time || 0) - Date.parse(a.time || 0));
+const fmtScore = (r) => {
+  const s = scoreOf(r);
+  return s >= 10 ? Math.round(s) : +s.toFixed(3);
+};
+const rankCmp = (a, b) =>
+  scoreOf(b) - scoreOf(a) || Date.parse(b.time || 0) - Date.parse(a.time || 0);
 
 import * as env from '../lib/env.ts';
 import { ui } from '../lib/ui.ts';
@@ -105,7 +153,7 @@ const YTDLP = process.env.YTDLP || 'yt-dlp';
 const YTDLP_COOKIES = (process.env.THOTH_YTDLP_COOKIES || '').trim();
 function cookieArgStr() {
   const a = ytdlpCookieArgs();
-  if (a.length) return ' ' + a.map(s => (/\s/.test(s) ? `"${s}"` : s)).join(' ');
+  if (a.length) return ' ' + a.map((s) => (/\s/.test(s) ? `"${s}"` : s)).join(' ');
   return YTDLP_COOKIES ? ` --cookies-from-browser ${YTDLP_COOKIES}` : '';
 }
 
@@ -120,24 +168,51 @@ async function visionHook(b64, key, model) {
 (1 kalimat ringkas, tanpa tanda kutip), atau string kosong kalau memang tak ada teks overlay.`;
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({ model, max_tokens: 120, temperature: 0, messages: [{ role: 'user', content: [
-        { type: 'text', text: prompt }, { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64 } }] }] }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+      body: JSON.stringify({
+        model,
+        max_tokens: 120,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64 } },
+            ],
+          },
+        ],
+      }),
     });
     if (!resp.ok) {
       if (!visionFailLogged) {
         visionFailLogged = true;
-        let msg = ''; try { msg = (await resp.text()).slice(0, 140); } catch (e) {}
-        console.log(ui.amber(`\n${ui.WARN}  vision API gagal (model=${model}): HTTP ${resp.status} ${msg}`));
+        let msg = '';
+        try {
+          msg = (await resp.text()).slice(0, 140);
+        } catch (e) {}
+        console.log(
+          ui.amber(`\n${ui.WARN}  vision API gagal (model=${model}): HTTP ${resp.status} ${msg}`),
+        );
       }
       return '';
     }
     const d = await resp.json();
-    return ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').replace(/^["'\s]+|["'\s]+$/g, '').slice(0, 160);
+    return (
+      (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) ||
+      ''
+    )
+      .replace(/^["'\s]+|["'\s]+$/g, '')
+      .slice(0, 160);
   } catch (e) {
     if (!visionFailLogged) {
       visionFailLogged = true;
-      console.log(ui.amber(`\n${ui.WARN}  vision API error (model=${model}): ${String((e && e.message) || e).slice(0, 120)}`));
+      console.log(
+        ui.amber(
+          `\n${ui.WARN}  vision API error (model=${model}): ${String((e && e.message) || e).slice(0, 120)}`,
+        ),
+      );
     }
     return '';
   }
@@ -154,12 +229,18 @@ async function audioTopic(reelUrl: string, slideIndex?: number) {
   if (!GROQ_KEY) return { text: '', note: 'audio-off (no GROQ key)' };
   const cookieArg = cookieArgStr();
   if (/instagram\.com/i.test(reelUrl) && !cookieArg) {
-    return { text: '', note: 'audio-skip (IG login-wall — set YTDLP_COOKIES_FILE atau THOTH_YTDLP_COOKIES)' };
+    return {
+      text: '',
+      note: 'audio-skip (IG login-wall — set YTDLP_COOKIES_FILE atau THOTH_YTDLP_COOKIES)',
+    };
   }
   const tmp = path.join(os.tmpdir(), 'reel_' + Date.now());
   const itemArg = slideIndex ? ` --playlist-items ${slideIndex}` : ' --no-playlist';
   try {
-    execSync(`"${YTDLP}" -x --audio-format mp3 --no-warnings${itemArg}${cookieArg} -o "${tmp}.%(ext)s" "${reelUrl}"`, { stdio: 'pipe', timeout: 45000 });
+    execSync(
+      `"${YTDLP}" -x --audio-format mp3 --no-warnings${itemArg}${cookieArg} -o "${tmp}.%(ext)s" "${reelUrl}"`,
+      { stdio: 'pipe', timeout: 45000 },
+    );
     const mp3 = tmp + '.mp3';
     if (!fs.existsSync(mp3)) return { text: '', note: 'audio-skip (yt-dlp tak hasilkan audio)' };
     // Groq Whisper transcription (multipart)
@@ -168,18 +249,33 @@ async function audioTopic(reelUrl: string, slideIndex?: number) {
     fd.append('file', new Blob([buf]), 'a.mp3');
     fd.append('model', 'whisper-large-v3-turbo');
     fd.append('response_format', 'text');
-    const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method: 'POST', headers: { Authorization: 'Bearer ' + GROQ_KEY }, body: fd });
-    try { fs.unlinkSync(mp3); } catch (e) {}
+    const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + GROQ_KEY },
+      body: fd,
+    });
+    try {
+      fs.unlinkSync(mp3);
+    } catch (e) {}
     if (!r.ok) return { text: '', note: 'audio-skip (Groq ' + r.status + ')' };
     const t = (await r.text()).trim();
-    return { text: t.split(/(?<=[.!?])\s/).slice(0, 2).join(' ').slice(0, 200), note: 'audio' };
+    return {
+      text: t
+        .split(/(?<=[.!?])\s/)
+        .slice(0, 2)
+        .join(' ')
+        .slice(0, 200),
+      note: 'audio',
+    };
   } catch (e) {
     // yt-dlp failed (IG login-wall is the usual cause). Keep it clean + best-effort — don't leak the
     // raw command, don't kill the reel (vision hook already carried the topic where it could).
     const err = String((e && (e.stderr || e.message)) || e);
-    const why = /sign ?in|log ?in|cookies|private|rate.?limit|429/i.test(err) ? 'login-wall/akses'
-      : /timed out|ETIMEDOUT|timeout/i.test(err) ? 'timeout'
-      : 'yt-dlp gagal';
+    const why = /sign ?in|log ?in|cookies|private|rate.?limit|429/i.test(err)
+      ? 'login-wall/akses'
+      : /timed out|ETIMEDOUT|timeout/i.test(err)
+        ? 'timeout'
+        : 'yt-dlp gagal';
     return { text: '', note: `audio-skip (${why}${cookieArg ? '' : ' — set YTDLP_COOKIES_FILE'})` };
   }
 }
@@ -208,13 +304,20 @@ function cleanTopic(t) {
 async function collectItems(client, handle) {
   const byCode = new Map();
   const pages = [];
-  if (INCLUDE.posts) pages.push(`https://www.instagram.com/${handle}/`);          // posts + reels
-  if (INCLUDE.reels) pages.push(`https://www.instagram.com/${handle}/reels/`);    // reels (depth)
+  if (INCLUDE.posts) pages.push(`https://www.instagram.com/${handle}/`); // posts + reels
+  if (INCLUDE.reels) pages.push(`https://www.instagram.com/${handle}/reels/`); // reels (depth)
   for (const pg of pages) {
     try {
       await client.navigate(pg, 6000);
       await sleep(3000);
-      const grab = async () => { const raw = await client.evaluate(SNAPSHOT_JS); try { return JSON.parse(raw || '[]'); } catch (e) { return []; } };
+      const grab = async () => {
+        const raw = await client.evaluate(SNAPSHOT_JS);
+        try {
+          return JSON.parse(raw || '[]');
+        } catch (e) {
+          return [];
+        }
+      };
       const SNAPSHOT_JS = `(() => {
         const HANDLE = ${JSON.stringify(handle)}.toLowerCase();
         const seen = new Set(); const out = [];
@@ -234,15 +337,19 @@ async function collectItems(client, handle) {
         return JSON.stringify(out);
       })()`;
       let list = await grab();
-      if (!list.length) { // grid virtualized/blank di snapshot pertama (mis. @jktlogy) → 1x scroll + retry
-        try { await client.evaluate('window.scrollBy(0, 800)'); } catch (e) {}
+      if (!list.length) {
+        // grid virtualized/blank di snapshot pertama (mis. @jktlogy) → 1x scroll + retry
+        try {
+          await client.evaluate('window.scrollBy(0, 800)');
+        } catch (e) {}
         await sleep(2500);
         list = await grab();
       }
       for (const it of list) if (!byCode.has(it.code)) byCode.set(it.code, it); // first (newest) wins
     } catch (e) {}
   }
-  const reel = [], post = [];
+  const reel = [],
+    post = [];
   for (const it of byCode.values()) {
     if (it.type === 'reel' && INCLUDE.reels) reel.push(it);
     else if (it.type === 'post' && INCLUDE.posts) post.push(it);
@@ -256,7 +363,9 @@ async function collectItems(client, handle) {
 async function itemFrame(client, url) {
   await client.navigate(url, 6000);
   await sleep(2500);
-  await client.evaluate(`(() => { const v = document.querySelector('video'); if (v) { try { v.pause(); v.currentTime = 0; } catch (e) {} } })()`);
+  await client.evaluate(
+    `(() => { const v = document.querySelector('video'); if (v) { try { v.pause(); v.currentTime = 0; } catch (e) {} } })()`,
+  );
   await sleep(600);
   const meta = await client.evaluate(`(() => {
     const t = document.querySelector('time');
@@ -274,7 +383,12 @@ async function itemFrame(client, url) {
     const r = el && el.getBoundingClientRect();
     return JSON.stringify({ time: t ? t.getAttribute('datetime') : null, isVideo, rect: r ? { x: r.x, y: r.y, w: r.width, h: r.height } : null });
   })()`);
-  let m; try { m = JSON.parse(meta); } catch (e) { m = {}; }
+  let m;
+  try {
+    m = JSON.parse(meta);
+  } catch (e) {
+    m = {};
+  }
   let frameB64 = '';
   if (m.rect && m.rect.w > 30) {
     frameB64 = await client.captureClip({ x: m.rect.x, y: m.rect.y, w: m.rect.w, h: m.rect.h }, 0);
@@ -287,16 +401,41 @@ run(async () => {
   console.log('  Discover Topics (reels + posts dari akun kurator IG)');
   console.log(ui.rule());
   const incLabel = [INCLUDE.reels && 'reels', INCLUDE.posts && 'posts'].filter(Boolean).join('+');
-  console.log('Akun:', ACCOUNTS.join(', '), '| include:', incLabel, '| max/tipe/akun:', MAX_PER, '| window:', HOURS + 'h');
+  console.log(
+    'Akun:',
+    ACCOUNTS.join(', '),
+    '| include:',
+    incLabel,
+    '| max/tipe/akun:',
+    MAX_PER,
+    '| window:',
+    HOURS + 'h',
+  );
   if (TT_ACCOUNTS.length) console.log('Kurator TikTok:', TT_ACCOUNTS.join(', '));
   if (X_ACCOUNTS.length) console.log('Kurator X:', X_ACCOUNTS.join(', '));
-  if (WANT_TIKTOK) console.log('TikTok Studio trending: ON (butuh tab tiktok.com login) | region:', TIKTOK_REGION, '| max:', TIKTOK_MAX);
-  console.log('Ranking:', DECAY_ON ? `recency-decay (half-life ${HALFLIFE_H}h)` : 'views (set THOTH_REEL_HALFLIFE_H untuk recency-decay)');
-  if (!GROQ_KEY) console.log('ℹ️  audio-fallback OFF (belum ada GROQ key) — pakai hook-frame vision saja.');
+  if (WANT_TIKTOK)
+    console.log(
+      'TikTok Studio trending: ON (butuh tab tiktok.com login) | region:',
+      TIKTOK_REGION,
+      '| max:',
+      TIKTOK_MAX,
+    );
+  console.log(
+    'Ranking:',
+    DECAY_ON
+      ? `recency-decay (half-life ${HALFLIFE_H}h)`
+      : 'views (set THOTH_REEL_HALFLIFE_H untuk recency-decay)',
+  );
+  if (!GROQ_KEY)
+    console.log('ℹ️  audio-fallback OFF (belum ada GROQ key) — pakai hook-frame vision saja.');
 
   const client = await connect({ match: 'instagram.com', requireMatch: true });
-  try { await client.cmd('Page.bringToFront'); } catch (e) {}
-  try { await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true }); } catch (e) {}
+  try {
+    await client.cmd('Page.bringToFront');
+  } catch (e) {}
+  try {
+    await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true });
+  } catch (e) {}
 
   const cutoff = Date.now() - HOURS * 3600 * 1000;
   const found = [];
@@ -307,31 +446,73 @@ run(async () => {
   const out = OUT || outPath('reel_topics.json');
   const ranking = DECAY_ON ? `recency-decay (half-life ${HALFLIFE_H}h)` : 'views';
   const writeRanked = (partial) => {
-    const ranked = found.slice().sort(rankCmp)
-      .map(r => DECAY_ON ? { ...r, score: fmtScore(r) } : r);
-    try { fs.writeFileSync(out, JSON.stringify({ fetched_at: new Date().toISOString(), accounts: ACCOUNTS, hours: HOURS, ranking, partial, reels: ranked, tiktok_trending: tiktokTrending }, null, 2), 'utf8'); } catch (e) {}
+    const ranked = found
+      .slice()
+      .sort(rankCmp)
+      .map((r) => (DECAY_ON ? { ...r, score: fmtScore(r) } : r));
+    try {
+      fs.writeFileSync(
+        out,
+        JSON.stringify(
+          {
+            fetched_at: new Date().toISOString(),
+            accounts: ACCOUNTS,
+            hours: HOURS,
+            ranking,
+            partial,
+            reels: ranked,
+            tiktok_trending: tiktokTrending,
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+    } catch (e) {}
   };
   const flush = () => writeRanked(true);
   for (const h of ACCOUNTS) {
     process.stdout.write(`\n• @${h}: ambil postingan ... `);
     let bundle;
-    try { bundle = await collectItems(client, h); }
-    catch (e) { console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 50)}`)); continue; }
+    try {
+      bundle = await collectItems(client, h);
+    } catch (e) {
+      console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 50)}`));
+      continue;
+    }
     const lists = [];
     if (INCLUDE.reels) lists.push(['reel', bundle.reel]);
     if (INCLUDE.posts) lists.push(['post', bundle.post]);
     const total = lists.reduce((n, [, l]) => n + l.length, 0);
     console.log(`${total} item (${bundle.reel.length} reel, ${bundle.post.length} post)`);
-    if (!total) { console.log(ui.amber(`    ${ui.WARN}  grid kosong/virtualized (atau semua leak antar-akun di-drop) — skip akun ini`)); continue; }
+    if (!total) {
+      console.log(
+        ui.amber(
+          `    ${ui.WARN}  grid kosong/virtualized (atau semua leak antar-akun di-drop) — skip akun ini`,
+        ),
+      );
+      continue;
+    }
     let acctViews = 0;
     // Warm the postShape cache for every grid item CONCURRENTLY before the serial per-item loop
     // (the loop is CDP-bound on itemFrame, but this removes the yt-dlp probe from its critical path).
-    await warmPostShapes(lists.flatMap(([, l]) => l.map(x => x.url)), 5);
+    await warmPostShapes(
+      lists.flatMap(([, l]) => l.map((x) => x.url)),
+      5,
+    );
     for (const [kind, items] of lists) {
       for (const r of items) {
-        let fr; try { fr = await itemFrame(client, r.url); } catch (e) { continue; }
+        let fr;
+        try {
+          fr = await itemFrame(client, r.url);
+        } catch (e) {
+          continue;
+        }
         const ts = fr.time ? Date.parse(fr.time) : NaN;
-        if (!isNaN(ts) && ts < cutoff) { console.log(`    ⏹  ${kind} >${HOURS}h → stop ${kind} akun ini`); break; } // newest-first per list
+        if (!isNaN(ts) && ts < cutoff) {
+          console.log(`    ⏹  ${kind} >${HOURS}h → stop ${kind} akun ini`);
+          break;
+        } // newest-first per list
         let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
         let via = 'hook';
         let shape = '';
@@ -343,33 +524,65 @@ run(async () => {
           //   photo    → caption
           //   carousel → caption → audio slide VIDEO pertama (--playlist-items N)
           const ps = postShape(r.url);
-          shape = ps.ok ? ps.shape : (fr.isVideo ? 'video' : 'photo'); // yt-dlp gagal → tebakan DOM lama
+          shape = ps.ok ? ps.shape : fr.isVideo ? 'video' : 'photo'; // yt-dlp gagal → tebakan DOM lama
           const caption = ps.ok ? cleanTopic(ps.caption).slice(0, 200) : '';
           if (shape === 'video') {
-            const a = await audioTopic(r.url); const at = cleanTopic(a.text);
-            if (at) { topic = at; via = a.note; }
-            else if (caption) { topic = caption; via = 'caption'; }
-            else via = a.note;
+            const a = await audioTopic(r.url);
+            const at = cleanTopic(a.text);
+            if (at) {
+              topic = at;
+              via = a.note;
+            } else if (caption) {
+              topic = caption;
+              via = 'caption';
+            } else via = a.note;
           } else if (shape === 'carousel') {
-            const vs = (ps.slides || []).find(s => s.kind === 'video');
-            if (caption) { topic = caption; via = 'caption'; }
-            else if (vs) {
-              const a = await audioTopic(r.url, vs.index); const at = cleanTopic(a.text);
-              if (at) { topic = at; via = `audio-slide-${vs.index}`; } else via = a.note;
+            const vs = (ps.slides || []).find((s) => s.kind === 'video');
+            if (caption) {
+              topic = caption;
+              via = 'caption';
+            } else if (vs) {
+              const a = await audioTopic(r.url, vs.index);
+              const at = cleanTopic(a.text);
+              if (at) {
+                topic = at;
+                via = `audio-slide-${vs.index}`;
+              } else via = a.note;
             } else via = 'carousel-foto (tanpa caption/teks)';
           } else {
-            if (caption) { topic = caption; via = 'caption'; }
-            else via = 'image-post (tanpa caption/teks)';
+            if (caption) {
+              topic = caption;
+              via = 'caption';
+            } else via = 'image-post (tanpa caption/teks)';
           }
         }
         const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
-        const vn = normalizeLikes(r.views); if (vn > 0) acctViews++;
-        found.push({ account: h, kind, url: r.url, views: r.views, views_n: vn, time: fr.time, age: ageH, topic, via, shape });
-        console.log(`    [${kind}, ${ageH}, ${r.views || '?'} views, ${via}] ${topic || '(tak terbaca)'}`);
+        const vn = normalizeLikes(r.views);
+        if (vn > 0) acctViews++;
+        found.push({
+          account: h,
+          kind,
+          url: r.url,
+          views: r.views,
+          views_n: vn,
+          time: fr.time,
+          age: ageH,
+          topic,
+          via,
+          shape,
+        });
+        console.log(
+          `    [${kind}, ${ageH}, ${r.views || '?'} views, ${via}] ${topic || '(tak terbaca)'}`,
+        );
         flush(); // checkpoint after each item
       }
     }
-    if (total && acctViews === 0) console.log(ui.amber(`    ${ui.WARN}  views 0 untuk semua item @${h} (grid view-count tak render) — ranking pakai recency saja`));
+    if (total && acctViews === 0)
+      console.log(
+        ui.amber(
+          `    ${ui.WARN}  views 0 untuk semua item @${h} (grid view-count tak render) — ranking pakai recency saja`,
+        ),
+      );
     flush(); // checkpoint after each account
   }
   client.close();
@@ -382,12 +595,19 @@ run(async () => {
   for (const h of TT_ACCOUNTS) {
     process.stdout.write(`\n• @${h} (tiktok): ambil video ... `);
     let items = [];
-    try { items = await tiktokProfileVideos(h, { max: MAX_PER, captions: true }); }
-    catch (e) { console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 60)}`)); continue; }
+    try {
+      items = await tiktokProfileVideos(h, { max: MAX_PER, captions: true });
+    } catch (e) {
+      console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 60)}`));
+      continue;
+    }
     console.log(`${items.length} video`);
     // TikTok loop probes postShape unconditionally per item and has NO CDP in it → pure yt-dlp.
     // Warming concurrently first turns N serial probes into ceil(N/5) waves (biggest win here).
-    await warmPostShapes(items.map(it => it.url), 5);
+    await warmPostShapes(
+      items.map((it) => it.url),
+      5,
+    );
     for (const it of items) {
       const ps = postShape(it.url);
       const ts = ps.ok && ps.time ? ps.time * 1000 : NaN;
@@ -395,13 +615,27 @@ run(async () => {
       let topic = cleanTopic(it.caption || (ps.ok ? ps.caption : '')).slice(0, 200);
       let via = 'caption';
       if (topic.length < 8) {
-        const a = await audioTopic(it.url); const at = cleanTopic(a.text);
-        if (at) { topic = at; via = a.note; } else via = a.note;
+        const a = await audioTopic(it.url);
+        const at = cleanTopic(a.text);
+        if (at) {
+          topic = at;
+          via = a.note;
+        } else via = a.note;
       }
       const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
       const vn = it.views || 0;
-      found.push({ account: h, kind: 'tiktok', url: it.url, views: vn ? String(vn) : '', views_n: vn,
-        time: isNaN(ts) ? null : new Date(ts).toISOString(), age: ageH, topic, via, shape: ps.ok ? ps.shape : 'video' });
+      found.push({
+        account: h,
+        kind: 'tiktok',
+        url: it.url,
+        views: vn ? String(vn) : '',
+        views_n: vn,
+        time: isNaN(ts) ? null : new Date(ts).toISOString(),
+        age: ageH,
+        topic,
+        via,
+        shape: ps.ok ? ps.shape : 'video',
+      });
       console.log(`    [tiktok, ${ageH}, ${vn || '?'} views, ${via}] ${topic || '(tak terbaca)'}`);
       flush();
     }
@@ -412,8 +646,12 @@ run(async () => {
   for (const h of X_ACCOUNTS) {
     process.stdout.write(`\n• @${h} (x): ambil tweet ... `);
     let tweets = [];
-    try { tweets = await xProfileTweets(h, { max: MAX_PER }); }
-    catch (e) { console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 60)}`)); continue; }
+    try {
+      tweets = await xProfileTweets(h, { max: MAX_PER });
+    } catch (e) {
+      console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 60)}`));
+      continue;
+    }
     console.log(`${tweets.length} tweet`);
     for (const tw of tweets) {
       const ts = tw.time ? Date.parse(tw.time) : NaN;
@@ -421,13 +659,27 @@ run(async () => {
       let topic = cleanTopic(tw.text).slice(0, 200);
       let via = 'tweet-text';
       if (topic.length < 8 && tw.hasVideo) {
-        const a = await audioTopic(tw.url); const at = cleanTopic(a.text);
-        if (at) { topic = at; via = a.note; } else via = a.note;
+        const a = await audioTopic(tw.url);
+        const at = cleanTopic(a.text);
+        if (at) {
+          topic = at;
+          via = a.note;
+        } else via = a.note;
       }
-      const shape = tw.hasVideo ? 'video' : (tw.hasPhoto ? 'photo' : 'text');
+      const shape = tw.hasVideo ? 'video' : tw.hasPhoto ? 'photo' : 'text';
       const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
-      found.push({ account: h, kind: 'tweet', url: tw.url, views: '', views_n: 0,
-        time: tw.time || null, age: ageH, topic, via, shape });
+      found.push({
+        account: h,
+        kind: 'tweet',
+        url: tw.url,
+        views: '',
+        views_n: 0,
+        time: tw.time || null,
+        age: ageH,
+        topic,
+        via,
+        shape,
+      });
       console.log(`    [tweet, ${ageH}, ${via}] ${topic || '(tak terbaca)'}`);
       flush();
     }
@@ -437,19 +689,28 @@ run(async () => {
   // failure (no tiktok.com tab, layout change) leaves the section empty and never breaks the IG run.
   if (WANT_TIKTOK) {
     process.stdout.write('\n• TikTok Studio trending ... ');
-    try { tiktokTrending = await fetchTrending({ max: TIKTOK_MAX, region: TIKTOK_REGION }); console.log(`${tiktokTrending.length} topik (region ${TIKTOK_REGION})`); }
-    catch (e) { console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 50)}`)); }
+    try {
+      tiktokTrending = await fetchTrending({ max: TIKTOK_MAX, region: TIKTOK_REGION });
+      console.log(`${tiktokTrending.length} topik (region ${TIKTOK_REGION})`);
+    } catch (e) {
+      console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 50)}`));
+    }
   }
 
   found.sort(rankCmp);
   writeRanked(false); // final: drop the partial flag now that the run completed cleanly
   console.log('\n' + ui.rule('thin'));
   console.log(`PERINGKAT (${ranking}):`);
-  found.slice(0, 10).forEach((r, i) => console.log(
-    `  ${i + 1}. [@${r.account}, ${r.kind || 'reel'}, ${r.views || '?'} views, ${r.age}${DECAY_ON ? `, score ${fmtScore(r)}` : ''}] ${r.topic || '(tak terbaca)'}`));
+  found
+    .slice(0, 10)
+    .forEach((r, i) =>
+      console.log(
+        `  ${i + 1}. [@${r.account}, ${r.kind || 'reel'}, ${r.views || '?'} views, ${r.age}${DECAY_ON ? `, score ${fmtScore(r)}` : ''}] ${r.topic || '(tak terbaca)'}`,
+      ),
+    );
   if (tiktokTrending.length) {
     console.log('\nTIKTOK TRENDING (TikTok Studio):');
-    tiktokTrending.slice(0, 10).forEach(t => console.log(`  ${t.rank}. [${t.views}] ${t.title}`));
+    tiktokTrending.slice(0, 10).forEach((t) => console.log(`  ${t.rank}. [${t.views}] ${t.title}`));
   }
   console.log(`📄 ${out}`);
 });
