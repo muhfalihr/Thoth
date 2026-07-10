@@ -23,9 +23,10 @@ deployment) sit on one architecture rather than a rewrite per phase.
 
 ### Non-goals (YAGNI for now)
 - gRPC (browser can't speak it natively; revisit only for service-to-service).
-- Multi-user auth / RBAC (single operator; add when a real second user exists).
+- Multi-user auth / RBAC / OIDC (single operator; a static API key is enough now,
+  OIDC is a later upgrade).
 - Moving the engine off this GPU box (CUDA is required; cloud = expose this box).
-- Persistent job history across restarts (in-memory registry first).
+- A hosted/third-party datastore for job state (use a local embedded SQLite file).
 
 ## 2. Current state → why refactor
 
@@ -104,7 +105,11 @@ scout/  scripts/  src→crates/thoth-*   (existing TS / Python unchanged)
 - REST endpoints (see §6) + SSE stream per job.
 - Job executor: spawns `thoth … --progress-json` via `tokio::process`, parses the
   NDJSON line stream into `ProgressEvent`s, fans them out to SSE subscribers,
-  tracks job state in an **in-memory registry** (persist to Supabase later).
+  and persists job state to an **embedded SQLite store** — the existing `sqlx`
+  dependency with its `sqlite` feature; a local file, no external service. (A
+  small in-memory map still fronts SQLite for the live SSE fan-out.)
+- Auth: a static **API key** guards every endpoint (from config/env). OIDC is a
+  later upgrade, not built now.
 - Serves the compiled SPA as static files (single origin; no CORS).
 - Generates OpenAPI via `utoipa`; a build step generates the TS client for the SPA.
 
@@ -117,8 +122,8 @@ scout/  scripts/  src→crates/thoth-*   (existing TS / Python unchanged)
 2. Server validates, assigns `job_id`, spawns `thoth run --progress-json …`.
 3. Worker runs the pipeline; on each stage boundary/tick it prints one
    `ProgressEvent` JSON line: `{"job_id","stage","pct","message","ts"}`.
-4. Server parses each line, updates the registry, pushes to SSE subscribers of
-   `GET /jobs/:id/stream`. Log lines (stderr) are forwarded as `log` events.
+4. Server parses each line, updates the SQLite job store, pushes to SSE
+   subscribers of `GET /jobs/:id/stream`. Log lines (stderr) → `log` events.
 5. Worker writes structured artifacts to the job's output dir (moments.json,
    transcript.json, narration, cover.png, final .mp4) — same files as today.
 6. On exit: zero → job `succeeded`; non-zero → `failed` with captured stderr tail.
@@ -150,11 +155,17 @@ Endpoint sketch (MVP = §7 Phase 1 subset):
 **SSE event shape** (one JSON per `data:` line):
 `{"type":"progress"|"log"|"done"|"error","job_id","stage","pct","message","ts"}`.
 
+**Auth.** Every endpoint requires a static API key. REST/fetch sends it as an
+`Authorization: Bearer <key>` header. SSE is the exception — the browser
+`EventSource` API **cannot set headers**, so the stream authenticates via a
+same-origin cookie (set on first authenticated request) or a short-lived token
+query param; the choice is settled in implementation.
+
 ## 7. Phasing
 
 | Phase | Area | Scope |
 |---|---|---|
-| **1 — MVP** | Control + Monitor | `thoth-core` extraction (workspace + lib split), `--progress-json`, thoth-server job executor + SSE, `/jobs*` + `/artifacts`, dashboard "cockpit": start a run, live stage progress, log pane, artifact links. |
+| **1 — MVP** | Control + Monitor | `thoth-core` extraction (workspace + lib split), `--progress-json`, thoth-server job executor + SSE, SQLite job store, API-key auth, `/jobs*` + `/artifacts`, dashboard "cockpit": start a run, live stage progress, log pane, artifact links. |
 | **2** | Review & QC | `/jobs/:id/moments`, video player, score charts, edit narration/subtitle, `/rerender`. |
 | **3** | Config & Style | `/config`, `/profiles`, `/vocab`, `/curators`, API keys panel. |
 
@@ -193,9 +204,11 @@ is just a TOML editor.
 
 ## 11. Open questions / future
 
-- Job persistence: in-memory now → Supabase (`sqlx` already present) when history
-  across restarts matters.
-- Auth: none now → token/reverse-proxy when exposed beyond localhost.
+- Job persistence: **embedded SQLite** (local file via `sqlx`'s `sqlite` feature)
+  — self-hosted, no third-party service. RAG/embeddings stay on Supabase/pgvector;
+  that is heavy pipeline data, separate from operational job metadata.
+- Auth: **static API key by default** on all endpoints. **OIDC** is the planned
+  later upgrade for real multi-user / external exposure.
 - gRPC adapter: only if service-to-service (worker fleet / native clients) appears.
 - Cloud: this GPU box becomes the exposed worker host (tunnel/port-forward), not a
   GPU-less web server.
