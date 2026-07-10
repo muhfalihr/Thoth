@@ -74,3 +74,4 @@ api_key.txt
 .openrouter_key
 .supabase_url
 *.supabase_url
+.worktrees/
