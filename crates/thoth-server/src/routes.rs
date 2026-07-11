@@ -178,10 +178,19 @@ pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,
 ) -> Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), StatusCode> {
-    if path.split('/').any(|seg| seg == "..") {
+    // Only plain filename components may compose the served path. This rejects
+    // `..` (ParentDir), backslash-as-separator traversal, and absolute/prefix
+    // forms (`C:\`, `/`) — all of which would otherwise escape output_root on
+    // Windows. A `/`-only string check does not, so build the relative path and
+    // require every component (of both `id` and `path`) to be Normal.
+    let rel = std::path::Path::new(&id).join(&path);
+    if rel
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let full = state.output_root.join(&id).join(&path);
+    let full = state.output_root.join(&rel);
     let bytes = tokio::fs::read(&full)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;

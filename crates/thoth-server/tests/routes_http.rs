@@ -72,6 +72,22 @@ async fn create_job_with_key_returns_201_and_job_id() {
 }
 
 #[tokio::test]
+async fn artifact_backslash_traversal_is_rejected() {
+    // Regression: the old `/`-only `".."` split let `..\..\` through on Windows.
+    // %5C decodes to `\`, which Path treats as a separator → ParentDir component.
+    let (app, tmp) = build_test_app();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/artifacts/job1/..%5C..%5C..%5C..%5CWindows%5CSystem32%5Cdrivers%5Cetc%5Chosts")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST, "traversal must be 400");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
 async fn list_jobs_contains_created_job() {
     let (app, tmp) = build_test_app();
 
