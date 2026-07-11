@@ -7,6 +7,10 @@ description = "Thoth core library — pipeline logic and shared types"
 [lib]
 name = "thoth_core"
 path = "src/lib.rs"
+# Doc comments here carry illustrative diagrams, ffmpeg filter strings, and TOML
+# snippets — not executable Rust. This crate was a [[bin]] its whole history and
+# never ran doctests; the lib split would otherwise try to compile them and fail.
+doctest = false
 
 [features]
 # Local Whisper via whisper.cpp bindings.

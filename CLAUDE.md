@@ -61,6 +61,20 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
 - Setiap fitur baru harus graceful degrade jika disabled/unavailable
 - Log level: `info!` untuk progress penting, `warn!` untuk degradasi, `debug!` untuk detail
 
+## Kontrak Interface: thoth-core ↔ adapters
+
+`thoth-core` adalah SATU sumber kebenaran untuk tipe pipeline + orkestrasi.
+Setiap perubahan pada permukaan publiknya (signature/tipe) WAJIB menyesuaikan
+kedua adapter:
+1. `crates/thoth` (CLI + worker) — dipaksa oleh compiler.
+2. `crates/thoth-server` (REST/SSE) — dipaksa oleh compiler.
+3. `dashboard/src/api.ts` — TIDAK dipaksa compiler. WAJIB diperbarui manual agar
+   `JobSpec`/`JobRecord`/`SseEvent` di TS tetap cocok dengan tipe Rust. Ini satu-
+   satunya langkah yang harus dijaga tangan (utoipa/OpenAPI ditunda ke Fase 3).
+
+Worker channel: `thoth <cmd> --progress-json` mengeluarkan `ProgressEvent` NDJSON
+di stdout; log manusia tetap di stderr. Jangan campur keduanya.
+
 ## Kontrak Content-Set dari scout
 
 Discovery 100% di layer **`scout/`** (script TypeScript di folder repo, jalan native via Bun, dijalankan langsung — lihat
