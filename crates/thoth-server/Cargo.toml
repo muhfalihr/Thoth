@@ -30,6 +30,7 @@ chrono       = { version = "0.4", features = ["serde"] }
 redb         = "2"
 futures-util = "0.3"
 tokio-util   = "0.7"
+async-stream = "0.3"
 
 [lints]
 workspace = true

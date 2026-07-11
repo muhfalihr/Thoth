@@ -3,10 +3,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::{middleware, routing::get, Router};
 use tokio::sync::Mutex;
 
-use thoth_server::auth::{self, AppState};
+use thoth_server::auth::AppState;
 use thoth_server::store::JobStore;
 
 #[tokio::main]
@@ -19,7 +18,15 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| PathBuf::from("output"));
     let worker_bin = std::env::var("THOTH_WORKER_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("thoth"));
+        .unwrap_or_else(|_| PathBuf::from("target/release/thoth.exe"));
+    if !worker_bin.exists() {
+        // Mirrors the CLI's "python not found" degrade: log loudly but still
+        // bind so the dashboard UI loads (job creation will fail per-request).
+        tracing::error!(
+            "worker binary not found at {}: jobs will fail to spawn until THOTH_WORKER_BIN is set correctly",
+            worker_bin.display()
+        );
+    }
     let store = JobStore::open(&output_root.join("jobs.redb"))?;
 
     let state = AppState {
@@ -30,18 +37,7 @@ async fn main() -> anyhow::Result<()> {
         output_root,
     };
 
-    let api = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_api_key,
-        ));
-
-    // /health is public; put it OUTSIDE the auth layer too for load-balancer probes.
-    let app = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .nest("/api", api)
-        .with_state(state);
+    let app = thoth_server::build_router(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
     tracing::info!("thoth-server listening on http://{addr}");
