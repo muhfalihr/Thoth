@@ -25,17 +25,18 @@ fn now() -> String {
 }
 
 /// Build the worker argv from a JobRecord (command + params → flags).
+///
+/// Shapes the argv for `thoth run` exactly as its clap parser expects
+/// (`crates/thoth-core/src/cli.rs::RunArgs`): the URL is a POSITIONAL arg (no
+/// `--url` flag), the content-set is `--content`, and the output dir is
+/// `--output-dir`. Phase 1 drives only `run`; other commands' arg shapes differ.
 fn worker_args(rec: &JobRecord) -> Vec<String> {
     let mut args = vec![rec.spec.command.clone(), "--progress-json".to_owned()];
-    if let Some(u) = &rec.spec.url {
-        args.push("--url".to_owned());
-        args.push(u.clone());
-    }
     if let Some(c) = &rec.spec.content_set {
         args.push("--content".to_owned());
         args.push(c.clone());
     }
-    args.push("--output".to_owned());
+    args.push("--output-dir".to_owned());
     args.push(rec.output_dir.clone());
     // Flatten flat string/number params into `--key value`.
     if let Some(map) = rec.spec.params.as_object() {
@@ -48,7 +49,59 @@ fn worker_args(rec: &JobRecord) -> Vec<String> {
             }
         }
     }
+    // URL is positional on `thoth run` — push it last, after all flags.
+    if let Some(u) = &rec.spec.url {
+        args.push(u.clone());
+    }
     args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::job::{JobSpec, JobStatus};
+
+    fn rec_with(url: Option<&str>, content: Option<&str>) -> JobRecord {
+        JobRecord {
+            id: "j".into(),
+            spec: JobSpec {
+                command: "run".into(),
+                url: url.map(str::to_owned),
+                content_set: content.map(str::to_owned),
+                params: serde_json::json!({}),
+            },
+            status: JobStatus::Queued,
+            stage: None,
+            pct: 0.0,
+            error: None,
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            output_dir: "out/j".into(),
+        }
+    }
+
+    #[test]
+    fn worker_args_matches_thoth_run_cli_contract() {
+        // Regression: url is positional (NOT --url), output is --output-dir.
+        // A drift here clap-errors the real worker and fails every run job.
+        let args = worker_args(&rec_with(Some("https://x/y"), None));
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "--progress-json",
+                "--output-dir",
+                "out/j",
+                "https://x/y", // positional, last
+            ]
+        );
+        assert!(!args.iter().any(|a| a == "--url"), "no --url flag exists");
+        assert!(!args.iter().any(|a| a == "--output"), "flag is --output-dir");
+
+        // content-set variant uses --content.
+        let c = worker_args(&rec_with(None, Some("set.json")));
+        assert_eq!(c, vec!["run", "--progress-json", "--content", "set.json", "--output-dir", "out/j"]);
+    }
 }
 
 /// Spawn the worker and drive its lifecycle in a background task.

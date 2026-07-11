@@ -11,7 +11,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-const COMMANDS = ["run", "scout", "analyze"] as const;
+// Phase 1 drives only `run`. scout/analyze take different CLI arg shapes the
+// server's worker_args does not build yet — add them back when it maps per-command.
+const COMMANDS = ["run"] as const;
 
 /** Builds a JobSpec and starts a run. Notifies the parent so it can jump
  * JobMonitor straight to the new job without waiting on JobList's next poll. */
