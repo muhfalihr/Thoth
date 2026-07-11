@@ -1,0 +1,38 @@
+pub mod auth;
+pub mod executor;
+pub mod job;
+pub mod routes;
+pub mod store;
+
+use axum::{
+    middleware,
+    routing::{get, post},
+    Router,
+};
+
+use auth::AppState;
+
+/// Assemble the full HTTP router: REST `/api/jobs*`, per-job SSE, artifact
+/// serving, and the SPA static fallback. Shared by `main.rs` and the
+/// in-process HTTP integration tests so they can't drift.
+pub fn build_router(state: AppState) -> Router {
+    let api = Router::new()
+        .route("/jobs", get(routes::list_jobs).post(routes::create_job))
+        .route("/jobs/:id", get(routes::get_job))
+        .route("/jobs/:id/cancel", post(routes::cancel_job))
+        .route("/artifacts/:id/*path", get(routes::get_artifact))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_api_key,
+        ));
+
+    // SSE is OUTSIDE the header-auth layer (EventSource can't send headers);
+    // it authenticates via ?token= inside the handler.
+    let api = api.route("/jobs/:id/stream", get(routes::stream_job));
+
+    Router::new()
+        .route("/health", get(|| async { "ok" }))
+        .nest("/api", api)
+        .fallback_service(tower_http::services::ServeDir::new("dashboard/dist"))
+        .with_state(state)
+}

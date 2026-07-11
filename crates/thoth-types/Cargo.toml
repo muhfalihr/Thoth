@@ -1,0 +1,18 @@
+[package]
+name = "thoth-types"
+version = "0.1.0"
+edition = "2024"
+
+# Leaf crate: the wire types shared between the worker (thoth/thoth-core) and
+# the server (thoth-server). Pure serde, zero heavy deps — this is what lets
+# thoth-server build on the types alone without linking ffmpeg/wgpu/CUDA.
+
+[lib]
+name = "thoth_types"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
