@@ -1,26 +1,29 @@
 #![allow(dead_code, unused_imports)]
 
+//! Thoth core library: pipeline orchestration + shared types.
+//! Adapters (thoth CLI, thoth-server) depend on this crate.
+
 /*
  * Thoth - AI-Powered Short-Form Video Strategist
  * Copyright (c) 2026 Thoth. All Rights Reserved.
  * This software is PROPRIETARY. Unauthorized use is strictly prohibited.
  */
 
-mod analyze;
-mod cli;
-mod config;
-mod edit;
-mod gpu;
-mod ingest;
-mod narration;
-mod news;
-mod pipeline;
-mod reaction;
-mod rag;
-mod transcribe;
-mod util;
-mod log_style;
-mod brand;
+pub mod analyze;
+pub mod cli;
+pub mod config;
+pub mod edit;
+pub mod gpu;
+pub mod ingest;
+pub mod narration;
+pub mod news;
+pub mod pipeline;
+pub mod reaction;
+pub mod rag;
+pub mod transcribe;
+pub mod util;
+pub mod log_style;
+pub mod brand;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -162,7 +165,7 @@ async fn download_ffmpeg_with_progress() -> Result<()> {
 
     tracing::info!("Unpacking FFmpeg...");
     extract_zip(archive_name, ".")?;
-    
+
     if std::path::Path::new(archive_name).exists() {
         std::fs::remove_file(archive_name)?;
     }
@@ -190,8 +193,8 @@ fn extract_zip(archive_path: &str, dest_dir: &str) -> Result<()> {
                     std::fs::create_dir_all(p)?;
                 }
             }
-            
-            // If it's ffmpeg.exe, we can flatten it to the root if desired, 
+
+            // If it's ffmpeg.exe, we can flatten it to the root if desired,
             // but let's just extract everything as-is first.
             let mut outfile = std::fs::File::create(&outpath)?;
             std::io::copy(&mut file, &mut outfile)?;
@@ -269,19 +272,9 @@ fn synthesize_still_video(
     Some(out)
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
-        let p = brand::p();
-        eprintln!("\n  {}{}{} {}{}{}", p.red, brand::ERR, p.reset, p.red, e, p.reset);
-        for cause in e.chain().skip(1) {
-            eprintln!("  {}{}{} {}caused by:{} {}", p.dim, brand::SPINE, p.reset, p.dim, p.reset, cause);
-        }
-        std::process::exit(1);
-    }
-}
-
-async fn run() -> Result<()> {
+/// CLI entry point. Parses args, bootstraps logging/ffmpeg/env, dispatches.
+/// (Body = the old `main.rs::run()` with `Cli::parse()` folded in.)
+pub async fn run_cli() -> Result<()> {
     // Load .env file if present
     dotenvy::dotenv().ok();
 
@@ -408,7 +401,7 @@ async fn run() -> Result<()> {
             let output_dir = args.output_dir.clone();
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = JobContext::new(job_id, output_dir).context("failed to create job directories")?;
-            
+
             let mut config = config;
             if let Some(lang) = args.language {
                 config.whisper.language = lang;
@@ -886,7 +879,7 @@ async fn run() -> Result<()> {
         Commands::Thumbnail(args) => {
             let job = JobContext::new(args.job_id.clone(), args.output_dir.clone())
                 .context("failed to access job directory")?;
-            
+
             let moments_path = job.moments_path();
             if !moments_path.exists() {
                 anyhow::bail!("Moments file not found: {}", moments_path.display());
@@ -909,7 +902,7 @@ async fn run() -> Result<()> {
 
                 let thumb_path = out_path.with_extension("jpg");
                 let duration = moment.duration();
-                
+
                 let optimal_time = if moment.overlay_at_sec > 0.0 {
                     moment.overlay_at_sec + 0.5
                 } else if moment.sfx_at_sec > 0.0 {
@@ -917,11 +910,11 @@ async fn run() -> Result<()> {
                 } else {
                     duration / 2.0
                 };
-                
+
                 let thumb_time = optimal_time.clamp(0.0, duration.max(0.1));
-                
+
                 println!("  Generating thumbnail for clip {} at {:.1}s...", i + 1, thumb_time);
-                
+
                 if let Err(e) = edit::ffmpeg::generate_thumbnail(&out_path, &thumb_path, thumb_time) {
                     eprintln!("  {}", brand::err(format!("failed: {}", e)));
                 } else {

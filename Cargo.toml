@@ -1,85 +1,27 @@
-[package]
-name        = "thoth"
-version     = "0.1.0"
-edition     = "2024"
-description = "Thoth — AI short-form video strategist: source, narrate, and edit viral clips"
+[workspace]
+resolver = "2"
+members  = ["crates/thoth-core", "crates/thoth"]
 
-[[bin]]
-name = "thoth"
-path = "src/main.rs"
-
-[features]
-# Local Whisper via whisper.cpp bindings.
-# Requires: LLVM/Clang (for bindgen) + CUDA Toolkit 12.x (for GPU).
-#   Install LLVM: winget install LLVM.LLVM
-#   Install CUDA: https://developer.nvidia.com/cuda-downloads
-# Build with: cargo build --release --features local-whisper,cuda
-local-whisper = ["dep:whisper-rs"]
-cuda          = ["local-whisper", "whisper-rs/cuda"]
-
-[dependencies]
-tokio              = { version = "1",    features = ["full"] }
-tokio-util         = "0.7"
-reqwest            = { version = "0.12", features = ["json", "multipart", "stream", "gzip", "deflate", "rustls-tls"] }
-serde              = { version = "1",    features = ["derive"] }
-serde_json         = "1"
-clap               = { version = "4",    features = ["derive"] }
-anyhow             = "1"
-dotenvy            = "0.15"
-futures-util       = "0.3"
-thiserror          = "2"
-tracing            = "0.1"
-tracing-subscriber = { version = "0.3",  features = ["env-filter", "fmt"] }
-indicatif          = "0.17"
-config             = "0.14"
-ffmpeg-sidecar     = "2"
-uuid               = { version = "1",    features = ["v4"] }
-which              = "7"
-zip                = "2"
-walkdir            = "2"
-chrono             = { version = "0.4",  features = ["serde"] }
-hound              = "3"
-async-trait        = "0.1"
-base64             = "0.22"
-md5                = "0.7"
-sqlx               = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
-pgvector           = { version = "0.4", features = ["sqlx"] }
-
-# GPU pipeline (CapCut-style shader processing)
-wgpu               = { version = "22", features = ["wgsl"] }
-bytemuck           = { version = "1",  features = ["derive"] }
-pollster           = "0.3"
-
-# Optional: local GPU-accelerated Whisper via whisper.cpp
-whisper-rs = { version = "0.16", optional = true }
+[workspace.lints.clippy]
+# Standar linter untuk repositori Thoth — diinherit oleh semua member workspace.
+# Menggunakan beberapa rekomendasi ketat (pedantic) dengan prioritas lebih rendah.
+pedantic                 = { level = "warn", priority = -1 }
+module_name_repetitions  = "allow"
+missing_errors_doc        = "allow"
+missing_panics_doc        = "allow"
+must_use_candidate        = "allow"
+cast_possible_truncation  = "allow"
+cast_precision_loss       = "allow"
+cast_sign_loss            = "allow"
+too_many_lines            = "allow"
+struct_excessive_bools    = "allow"
+doc_markdown              = "allow"
+cast_lossless             = "allow"
+map_unwrap_or             = "allow"
+unwrap_used               = "warn"
+todo                      = "warn"
 
 [profile.release]
 opt-level = 3
 lto       = "thin"
 strip     = true
-
-[lints.clippy]
-# Standar linter untuk repositori Thoth
-# Membantu menjaga kualitas kode tanpa memperlambat pengembangan AI/Video
-
-# Menggunakan beberapa rekomendasi ketat (pedantic) dengan prioritas lebih rendah
-pedantic = { level = "warn", priority = -1 }
-
-# Allow (Matikan) peringatan pedantic yang terlalu berisik / kurang relevan untuk iterasi cepat:
-module_name_repetitions = "allow" # Kita sering mengulang nama modul seperti `video::VideoPlayer`
-missing_errors_doc      = "allow" # Dokumentasi error belum wajib untuk binary internal
-missing_panics_doc      = "allow"
-must_use_candidate      = "allow" # Tidak wajib menandai semua fungsi murni dengan #[must_use]
-cast_possible_truncation= "allow" # Sering terjadi saat konversi f32 <-> f64 atau usize <-> u32 di WGPU/Video
-cast_precision_loss     = "allow"
-cast_sign_loss          = "allow"
-too_many_lines          = "allow" # Beberapa modul pipeline AI memang butuh ratusan baris
-struct_excessive_bools  = "allow" # Konfigurasi sering punya banyak boolean flag
-doc_markdown            = "allow" # Terkadang menulis "WGPU" tanpa backtick di komentar itu wajar
-cast_lossless           = "allow" # Sama seperti cast_* lain: konversi numerik WGPU/video/audio sering pakai `as` demi ringkas
-map_unwrap_or           = "allow" # Gaya kontroversial bahkan di komunitas Rust sendiri; .map().unwrap_or() sudah cukup jelas
-
-# Lints terkait idiom Rust yang baik (menjadi warn/error)
-unwrap_used = "warn"      # Sebaiknya gunakan pattern matching atau ?. Boleh di-allow per fungsi bila terpaksa.
-todo = "warn"             # Mengingatkan agar TODO tidak tertinggal ke production
-

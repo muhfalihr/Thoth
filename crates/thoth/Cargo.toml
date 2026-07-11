@@ -1,0 +1,22 @@
+[package]
+name        = "thoth"
+version     = "0.1.0"
+edition     = "2024"
+description = "Thoth CLI + pipeline worker (spawned by thoth-server)"
+
+[[bin]]
+name = "thoth"
+path = "src/main.rs"
+
+# CUDA is opt-in: `cargo check`/`cargo run` work without a CUDA toolkit,
+# and build_cuda.bat enables the real GPU whisper via `-p thoth --features cuda`.
+[features]
+cuda = ["thoth-core/cuda"]
+
+[dependencies]
+thoth-core = { path = "../thoth-core" }
+tokio      = { version = "1", features = ["full"] }
+anyhow     = "1"
+
+[lints]
+workspace = true
