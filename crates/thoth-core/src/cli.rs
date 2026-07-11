@@ -28,6 +28,11 @@ pub enum ClipStyleArg {
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Emit newline-delimited ProgressEvent JSON on stdout (machine channel).
+    /// Human TTY output on stderr is unchanged. Used by thoth-server workers.
+    #[arg(long, global = true, default_value_t = false)]
+    pub progress_json: bool,
 }
 
 #[derive(Subcommand, Debug)]

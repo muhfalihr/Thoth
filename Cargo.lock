@@ -3358,6 +3358,15 @@ name = "thoth"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "thoth-core",
+ "tokio",
+]
+
+[[package]]
+name = "thoth-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bytemuck",

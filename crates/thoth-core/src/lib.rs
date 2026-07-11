@@ -302,6 +302,7 @@ pub async fn run_cli() -> Result<()> {
     tracing::debug!("Thoth starting...");
 
     let cli = Cli::parse();
+    util::progress::set_json_mode(cli.progress_json);
     tracing::debug!("CLI arguments parsed: {:?}", cli);
 
     let config = AppConfig::load().context("failed to load configuration")?;
