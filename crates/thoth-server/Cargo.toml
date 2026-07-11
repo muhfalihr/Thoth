@@ -1,0 +1,30 @@
+[package]
+name        = "thoth-server"
+version     = "0.1.0"
+edition     = "2024"
+description = "Thoth REST + SSE server (dashboard backend)"
+
+[[bin]]
+name = "thoth-server"
+path = "src/main.rs"
+
+[dependencies]
+# Core with NO cuda/local-whisper → server does not link Whisper/CUDA.
+thoth-core   = { path = "../thoth-core", default-features = false }
+tokio        = { version = "1", features = ["full"] }
+axum         = "0.7"
+tower        = "0.5"
+tower-http   = { version = "0.6", features = ["fs", "trace"] }
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+anyhow       = "1"
+thiserror    = "2"
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid         = { version = "1", features = ["v4"] }
+chrono       = { version = "0.4", features = ["serde"] }
+redb         = "2"
+futures-util = "0.3"
+
+[lints]
+workspace = true

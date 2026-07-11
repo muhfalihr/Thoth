@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members  = ["crates/thoth-core", "crates/thoth"]
+members  = ["crates/thoth-core", "crates/thoth", "crates/thoth-server"]
 
 [workspace.lints.clippy]
 # Standar linter untuk repositori Thoth — diinherit oleh semua member workspace.
