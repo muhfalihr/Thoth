@@ -51,17 +51,19 @@ impl JobStore {
         }
     }
 
-    pub async fn enqueue(&self, spec: &JobSpec, output_dir: &str) -> anyhow::Result<String> {
-        let id = uuid::Uuid::new_v4().to_string();
+    /// Insert a queued job. The caller supplies `id` so it can derive a matching
+    /// `output_dir` (the artifact route serves `output_root/<id>`) and hand the
+    /// id back to the client without a round-trip.
+    pub async fn enqueue(&self, id: &str, spec: &JobSpec, output_dir: &str) -> anyhow::Result<()> {
         let ts = now();
         sqlx::query(
             "INSERT INTO jobs (id, command, url, content_set, params, status, output_dir, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
         )
-        .bind(&id).bind(&spec.command).bind(&spec.url).bind(&spec.content_set)
+        .bind(id).bind(&spec.command).bind(&spec.url).bind(&spec.content_set)
         .bind(spec.params.to_string()).bind(output_dir).bind(&ts).bind(&ts)
         .execute(&self.pool).await?;
-        Ok(id)
+        Ok(())
     }
 
     pub async fn get(&self, id: &str) -> anyhow::Result<Option<JobRecord>> {
@@ -187,11 +189,16 @@ mod tests {
     fn run_spec(url: &str) -> JobSpec {
         JobSpec { command: "run".into(), url: Some(url.into()), content_set: None, params: serde_json::json!({}) }
     }
+    async fn enq(s: &JobStore, url: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        s.enqueue(&id, &run_spec(url), "out/j").await.unwrap();
+        id
+    }
 
     #[tokio::test]
     async fn enqueue_get_roundtrip() {
         let (s, dir) = fresh().await;
-        let id = s.enqueue(&run_spec("https://x/y"), "out/j").await.unwrap();
+        let id = enq(&s, "https://x/y").await;
         let rec = s.get(&id).await.unwrap().unwrap();
         assert_eq!(rec.status, JobStatus::Queued);
         assert_eq!(rec.spec.url.as_deref(), Some("https://x/y"));
@@ -202,7 +209,7 @@ mod tests {
     #[tokio::test]
     async fn claim_is_atomic_single_winner() {
         let (s, dir) = fresh().await;
-        let id = s.enqueue(&run_spec("u"), "out/j").await.unwrap();
+        let id = enq(&s, "u").await;
         let (a, b) = tokio::join!(s.claim_next("w1"), s.claim_next("w2"));
         let claims: Vec<_> = [a.unwrap(), b.unwrap()].into_iter().flatten().collect();
         assert_eq!(claims.len(), 1, "exactly one worker claims the job");
@@ -216,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn events_since_orders_and_resumes() {
         let (s, dir) = fresh().await;
-        let id = s.enqueue(&run_spec("u"), "out/j").await.unwrap();
+        let id = enq(&s, "u").await;
         let s1 = s.append_event(&id, "progress", Some("ingest"), Some(0.1), None).await.unwrap();
         let s2 = s.append_event(&id, "log", None, None, Some("hello")).await.unwrap();
         assert!(s2 > s1);
@@ -230,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn reap_marks_stale_running_failed() {
         let (s, dir) = fresh().await;
-        let id = s.enqueue(&run_spec("u"), "out/j").await.unwrap();
+        let id = enq(&s, "u").await;
         s.claim_next("w1").await.unwrap();
         // force a stale heartbeat well in the past
         sqlx::query("UPDATE jobs SET heartbeat_at=? WHERE id=?")

@@ -13,9 +13,11 @@ name = "thoth-server"
 path = "src/main.rs"
 
 [dependencies]
-# Only the shared wire types — the server links NONE of thoth-core's heavy deps
-# (ffmpeg/wgpu/CUDA/Whisper). The worker binary runs the pipeline out-of-process.
-thoth-types  = { path = "../thoth-types" }
+# The server links NO heavy deps (ffmpeg/wgpu/CUDA/Whisper) — only the shared
+# job types + SQLite. It and the worker are independent peers that meet solely
+# in the SQLite/WAL job database (see docs/…/worker-queue-sqlite-design.md).
+thoth-jobs   = { path = "../thoth-jobs" }
+sqlx         = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tokio        = { version = "1", features = ["full"] }
 axum         = "0.7"
 tower        = "0.5"
@@ -23,14 +25,11 @@ tower-http   = { version = "0.6", features = ["fs", "trace"] }
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 anyhow       = "1"
-thiserror    = "2"
 tracing      = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid         = { version = "1", features = ["v4"] }
 chrono       = { version = "0.4", features = ["serde"] }
-redb         = "2"
 futures-util = "0.3"
-tokio-util   = "0.7"
 async-stream = "0.3"
 
 [lints]

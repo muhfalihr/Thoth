@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use axum::{
     body::Body,
@@ -7,18 +7,16 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use tokio::sync::Mutex;
 
-use crate::executor::JobHandle;
-use crate::store::JobStore;
+use thoth_jobs::JobStore;
 
-/// Server-wide config shared with handlers.
+/// Server-wide config shared with handlers. The server no longer owns any job
+/// runtime state (no in-process worker handles) — the `JobStore` (shared SQLite
+/// DB) is the entire channel to the independent worker process.
 #[derive(Clone)]
 pub struct AppState {
     pub api_key: String,
     pub store: JobStore,
-    pub jobs: Arc<Mutex<HashMap<String, JobHandle>>>,
-    pub worker_bin: PathBuf,
     pub output_root: PathBuf,
 }
 

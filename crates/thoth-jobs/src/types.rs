@@ -6,7 +6,7 @@ use std::str::FromStr;
 pub enum JobStatus { Queued, Running, Succeeded, Failed, Cancelled }
 
 impl JobStatus {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             JobStatus::Queued => "queued",
             JobStatus::Running => "running",
@@ -15,7 +15,7 @@ impl JobStatus {
             JobStatus::Cancelled => "cancelled",
         }
     }
-    pub fn is_terminal(&self) -> bool {
+    pub fn is_terminal(self) -> bool {
         matches!(self, JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled)
     }
 }
