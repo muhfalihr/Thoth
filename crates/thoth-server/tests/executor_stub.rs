@@ -58,12 +58,11 @@ async fn executor_emits_progress_then_done() {
     };
     store.put(&rec).unwrap();
 
-    // spawn_job inserts the JobHandle into state.jobs synchronously before
-    // spawning the background task, so once the await returns, the handle
-    // is guaranteed present — no poll loop needed.
-    executor::spawn_job(state.clone(), rec.clone()).await;
-
-    let mut rx = state.jobs.lock().await.get("job1").unwrap().tx.subscribe();
+    // spawn_job returns a receiver created BEFORE the worker task starts, so it
+    // observes every event including the terminal one — deterministic even when
+    // the job finishes before we would otherwise subscribe (broadcast has no
+    // replay). This is what makes the test scheduling-independent.
+    let mut rx = executor::spawn_job(state.clone(), rec.clone()).await;
 
     let mut kinds = Vec::new();
     while let Ok(ev) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {

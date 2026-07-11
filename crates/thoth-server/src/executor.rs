@@ -1,8 +1,12 @@
+use std::collections::VecDeque;
 use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+/// How many trailing stderr lines to keep for failure diagnostics.
+const STDERR_TAIL_LINES: usize = 20;
 
 use thoth_core::util::progress::ProgressEvent;
 
@@ -50,11 +54,18 @@ fn worker_args(rec: &JobRecord) -> Vec<String> {
 /// Spawn the worker and drive its lifecycle in a background task.
 ///
 /// Inserts the `JobHandle` into `state.jobs` synchronously before spawning
-/// the background task, so that once this function returns, callers (and
-/// tests) are guaranteed to find the handle and can subscribe without a
-/// subscribe-vs-first-event race.
-pub async fn spawn_job(state: AppState, mut rec: JobRecord) {
-    let (tx, _rx) = tokio::sync::broadcast::channel::<SseEvent>(256);
+/// the background task, and returns a `broadcast::Receiver` created *before*
+/// the task starts. Because tokio `broadcast` does not replay past events,
+/// returning this pre-subscribed receiver is what guarantees the caller
+/// observes every event — including the terminal `done`/`error` — even for a
+/// job that finishes before the caller would otherwise subscribe. Later
+/// subscribers (reconnects) use the handle in `state.jobs` plus a `JobStore`
+/// snapshot to recover terminal state.
+pub async fn spawn_job(
+    state: AppState,
+    mut rec: JobRecord,
+) -> tokio::sync::broadcast::Receiver<SseEvent> {
+    let (tx, rx) = tokio::sync::broadcast::channel::<SseEvent>(256);
     let cancel = CancellationToken::new();
     let handle = JobHandle { tx: tx.clone(), cancel: cancel.clone() };
 
@@ -89,14 +100,23 @@ pub async fn spawn_job(state: AppState, mut rec: JobRecord) {
         let mut out_lines = BufReader::new(stdout).lines();
         let mut err_lines = BufReader::new(stderr).lines();
 
-        loop {
+        // Bounded tail of the worker's stderr, surfaced on failure.
+        let mut err_tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let mut cancelled = false;
+
+        // Drain BOTH streams until EOF so trailing stderr isn't lost before the
+        // exit status is read. Each branch is fused off (`if !*_done`) once its
+        // stream ends, so a finished stream can't hot-spin the select.
+        while !(stdout_done && stderr_done) {
             tokio::select! {
                 _ = cancel.cancelled() => {
                     let _ = child.start_kill();
-                    fail(&store, &tx, &mut rec, "cancelled");
+                    cancelled = true;
                     break;
                 }
-                line = out_lines.next_line() => {
+                line = out_lines.next_line(), if !stdout_done => {
                     match line {
                         Ok(Some(l)) => {
                             // stdout = structured progress NDJSON
@@ -118,25 +138,36 @@ pub async fn spawn_job(state: AppState, mut rec: JobRecord) {
                                 Err(_) => tracing::warn!("bad progress line dropped: {l}"),
                             }
                         }
-                        Ok(None) => break, // stdout closed → worker exiting
-                        Err(e) => { tracing::warn!("stdout read error: {e}"); break; }
+                        Ok(None) => stdout_done = true,
+                        Err(e) => { tracing::warn!("stdout read error: {e}"); stdout_done = true; }
                     }
                 }
-                line = err_lines.next_line() => {
-                    if let Ok(Some(l)) = line {
-                        let _ = tx.send(SseEvent {
-                            kind: "log".into(),
-                            job_id: rec.id.clone(),
-                            stage: None, pct: None,
-                            message: Some(l), ts: now(),
-                        });
+                line = err_lines.next_line(), if !stderr_done => {
+                    match line {
+                        Ok(Some(l)) => {
+                            if err_tail.len() == STDERR_TAIL_LINES {
+                                err_tail.pop_front();
+                            }
+                            err_tail.push_back(l.clone());
+                            let _ = tx.send(SseEvent {
+                                kind: "log".into(),
+                                job_id: rec.id.clone(),
+                                stage: None, pct: None,
+                                message: Some(l), ts: now(),
+                            });
+                        }
+                        Ok(None) => stderr_done = true,
+                        Err(e) => { tracing::warn!("stderr read error: {e}"); stderr_done = true; }
                     }
                 }
             }
         }
 
-        // Reap and set terminal status (unless cancel already set it).
-        if rec.status == JobStatus::Running {
+        // Terminal status. Store write always precedes the terminal broadcast,
+        // so a subscriber that reads a JobStore snapshot never misses it.
+        if cancelled {
+            fail(&store, &tx, &mut rec, "cancelled");
+        } else {
             match child.wait().await {
                 Ok(s) if s.success() => {
                     rec.status = JobStatus::Succeeded;
@@ -149,13 +180,23 @@ pub async fn spawn_job(state: AppState, mut rec: JobRecord) {
                         message: None, ts: now(),
                     });
                 }
-                Ok(s) => fail(&store, &tx, &mut rec, &format!("worker exited: {s}")),
+                Ok(s) => {
+                    let msg = if err_tail.is_empty() {
+                        format!("worker exited: {s}")
+                    } else {
+                        let tail: Vec<String> = err_tail.into_iter().collect();
+                        format!("worker exited: {s}\n--- stderr tail ---\n{}", tail.join("\n"))
+                    };
+                    fail(&store, &tx, &mut rec, &msg);
+                }
                 Err(e) => fail(&store, &tx, &mut rec, &format!("wait failed: {e}")),
             }
         }
 
         jobs.lock().await.remove(&rec.id);
     });
+
+    rx
 }
 
 fn fail(
