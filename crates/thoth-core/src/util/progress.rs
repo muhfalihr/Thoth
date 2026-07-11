@@ -23,10 +23,10 @@ pub fn set_json_mode(on: bool) {
     JSON_MODE.store(on, Ordering::Relaxed);
 }
 
-/// Emit one progress line to stdout when in JSON mode. No-op otherwise.
-pub fn emit_stage(stage: &str, pct: f32, message: &str) {
+/// Build the NDJSON progress line iff JSON mode is on. Pure + testable.
+fn progress_line(stage: &str, pct: f32, message: &str) -> Option<String> {
     if !JSON_MODE.load(Ordering::Relaxed) {
-        return;
+        return None;
     }
     let ev = ProgressEvent {
         stage: stage.to_owned(),
@@ -34,7 +34,12 @@ pub fn emit_stage(stage: &str, pct: f32, message: &str) {
         message: message.to_owned(),
         ts: chrono::Utc::now().to_rfc3339(),
     };
-    if let Ok(line) = serde_json::to_string(&ev) {
+    serde_json::to_string(&ev).ok()
+}
+
+/// Emit one progress line to stdout when in JSON mode. No-op otherwise.
+pub fn emit_stage(stage: &str, pct: f32, message: &str) {
+    if let Some(line) = progress_line(stage, pct, message) {
         println!("{line}"); // stdout = machine channel; logs go to stderr
     }
 }
@@ -184,18 +189,19 @@ mod tests {
     }
 
     #[test]
-    fn stage_header_emits_when_json_mode_on() {
-        // Just assert emit_stage builds a parseable line; stdout capture is
-        // covered by the server integration test (Task 5).
-        set_json_mode(true);
-        let ev = ProgressEvent {
-            stage: "ingest".to_owned(),
-            pct: 1.0 / 5.0,
-            message: "ingest".to_owned(),
-            ts: chrono::Utc::now().to_rfc3339(),
-        };
-        let line = serde_json::to_string(&ev).unwrap();
-        assert!(serde_json::from_str::<ProgressEvent>(&line).is_ok());
+    fn progress_line_respects_json_mode_gate() {
+        // Off → no line (the gate this task added).
         set_json_mode(false);
+        assert!(progress_line("ingest", 0.2, "a").is_none());
+
+        // On → a single-line ProgressEvent that parses back.
+        set_json_mode(true);
+        let line = progress_line("ingest", 0.2, "a").expect("json mode on → Some");
+        assert!(!line.contains('\n'));
+        let ev: ProgressEvent = serde_json::from_str(&line).unwrap();
+        assert_eq!(ev.stage, "ingest");
+        assert!((ev.pct - 0.2).abs() < 1e-6);
+
+        set_json_mode(false); // restore global for other tests
     }
 }
