@@ -1,8 +1,3 @@
-// ponytail: JobStore is consumed by the Task 5 executor / Task 6 routes —
-// not yet wired into main.rs, so cargo's dead_code lint doesn't see the
-// future callers.
-#![allow(dead_code)]
-
 use anyhow::Result;
 use redb::{Database, ReadableTable, TableDefinition};
 

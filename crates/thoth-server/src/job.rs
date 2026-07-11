@@ -1,8 +1,3 @@
-// ponytail: types produced here, consumed by the Task 5 executor / Task 6 SSE
-// route — not yet wired into main.rs, so cargo's dead_code lint doesn't see
-// the future callers.
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 /// What the browser asks the server to run.

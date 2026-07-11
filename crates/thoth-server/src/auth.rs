@@ -1,3 +1,5 @@
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+
 use axum::{
     body::Body,
     extract::State,
@@ -5,11 +7,19 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use tokio::sync::Mutex;
+
+use crate::executor::JobHandle;
+use crate::store::JobStore;
 
 /// Server-wide config shared with handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub api_key: String,
+    pub store: JobStore,
+    pub jobs: Arc<Mutex<HashMap<String, JobHandle>>>,
+    pub worker_bin: PathBuf,
+    pub output_root: PathBuf,
 }
 
 /// True iff `header` is `Bearer <key>` matching `key`. Shared by the
