@@ -22,6 +22,7 @@ local-whisper = ["dep:whisper-rs"]
 cuda          = ["local-whisper", "whisper-rs/cuda"]
 
 [dependencies]
+thoth-types        = { path = "../thoth-types" }
 tokio              = { version = "1",    features = ["full"] }
 tokio-util         = "0.7"
 reqwest            = { version = "0.12", features = ["json", "multipart", "stream", "gzip", "deflate", "rustls-tls"] }

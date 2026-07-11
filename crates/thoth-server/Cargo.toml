@@ -13,8 +13,9 @@ name = "thoth-server"
 path = "src/main.rs"
 
 [dependencies]
-# Core with NO cuda/local-whisper → server does not link Whisper/CUDA.
-thoth-core   = { path = "../thoth-core", default-features = false }
+# Only the shared wire types — the server links NONE of thoth-core's heavy deps
+# (ffmpeg/wgpu/CUDA/Whisper). The worker binary runs the pipeline out-of-process.
+thoth-types  = { path = "../thoth-types" }
 tokio        = { version = "1", features = ["full"] }
 axum         = "0.7"
 tower        = "0.5"

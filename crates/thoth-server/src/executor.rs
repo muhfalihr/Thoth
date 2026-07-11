@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 /// How many trailing stderr lines to keep for failure diagnostics.
 const STDERR_TAIL_LINES: usize = 20;
 
-use thoth_core::util::progress::ProgressEvent;
+use thoth_types::ProgressEvent;
 
 use crate::auth::AppState;
 use crate::job::{JobRecord, JobStatus, SseEvent};
@@ -165,6 +165,21 @@ pub async fn spawn_job(
         while !(stdout_done && stderr_done) {
             tokio::select! {
                 _ = cancel.cancelled() => {
+                    // Kill the whole worker PROCESS TREE, not just thoth.exe —
+                    // a run spawns ffmpeg (NVENC), whisper, python, bun as
+                    // children that `start_kill` alone would orphan (spec §5.8
+                    // "process group"). Windows has no tokio process-group kill,
+                    // so shell out to taskkill /T. start_kill is the fallback.
+                    // ponytail: Windows-only mechanism; this server runs on the
+                    // Windows CUDA box. Add a cfg branch if it ever runs elsewhere.
+                    if let Some(pid) = child.id() {
+                        let _ = tokio::process::Command::new("taskkill")
+                            .args(["/PID", &pid.to_string(), "/T", "/F"])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .await;
+                    }
                     let _ = child.start_kill();
                     cancelled = true;
                     break;

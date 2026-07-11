@@ -6,15 +6,10 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-/// One machine-readable progress record on the worker's stdout (NDJSON).
-/// job_id and event `type` are added by the server, not the worker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgressEvent {
-    pub stage: String,
-    pub pct: f32,
-    pub message: String,
-    pub ts: String,
-}
+/// The NDJSON progress wire type now lives in the leaf `thoth-types` crate so
+/// `thoth-server` can consume it without linking any of thoth-core's heavy deps.
+/// Re-exported here to keep the `util::progress::ProgressEvent` path stable.
+pub use thoth_types::ProgressEvent;
 
 static JSON_MODE: AtomicBool = AtomicBool::new(false);
 

@@ -3502,6 +3502,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "thiserror 2.0.18",
+ "thoth-types",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3527,7 +3528,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "thoth-core",
+ "thoth-types",
  "tokio",
  "tokio-util",
  "tower",
@@ -3535,6 +3536,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "thoth-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
