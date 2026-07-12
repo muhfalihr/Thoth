@@ -137,12 +137,16 @@ impl JobContext {
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::TempDir;
+
+    /// Unique throwaway base dir under the OS temp dir (no tempfile dep — the
+    /// brief's approach: uuid + std::env::temp_dir).
+    fn temp_base() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("thoth_test_{}", uuid::Uuid::new_v4()))
+    }
 
     #[test]
     fn test_job_context_nested_mode() {
-        let temp_dir = TempDir::new().unwrap();
-        let base_dir = temp_dir.path().to_path_buf();
+        let base_dir = temp_base();
         let job_id = "test_job_123".to_string();
 
         let ctx = JobContext::new(job_id.clone(), base_dir.clone()).unwrap();
@@ -161,8 +165,7 @@ mod tests {
 
     #[test]
     fn test_job_context_flat_mode() {
-        let temp_dir = TempDir::new().unwrap();
-        let base_dir = temp_dir.path().to_path_buf();
+        let base_dir = temp_base();
         let job_id = "test_job_flat".to_string();
 
         let ctx = JobContext::new_flat(job_id, base_dir.clone()).unwrap();
