@@ -483,232 +483,10 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Run(args) => {
-            let mut config = config;
-            if let Some(lang) = args.language {
-                config.whisper.language = lang;
-            }
-
-            if !args.keywords.is_empty() {
-                println!("{}", brand::field("Focus keywords", args.keywords.join(", ")));
-            }
-
-            // ── Resolve the main video URL ────────────────────────────────────
-            // Content discovery is handled upstream by scout. Thoth accepts
-            // either a direct --url (single-video default) or an scout content
-            // set via --content (main video + footage pool). It does not search.
-            let resolved_url: String = if let Some(ref u) = args.url {
-                u.clone()
-            } else if let Some(ref content_path) = args.content {
-                let set = ingest::content_search::load_content_set(content_path)?;
-
-                // A non-video MAIN still needs a downloadable URL for Stage 1 ingest;
-                // its cropped screenshot can't drive transcription. Surface it so the
-                // operator knows the image won't be used as the main (footage images
-                // ARE rendered as cards — see edit::enrichment::load_image_pool).
-                if !set.main_image_path.trim().is_empty() {
-                    tracing::warn!(
-                        "main.image_path set ({}) but the main is ingested from main.url — \
-                         the main screenshot is not used as a clip source (footage images are)",
-                        set.main_image_path
-                    );
-                }
-
-                // Count non-video footage posts that carry a usable crop screenshot —
-                // these become static image cards in the edit stage.
-                let image_posts = set.footage.iter()
-                    .filter(|f| !f.is_video && !f.image_path.trim().is_empty())
-                    .count();
-                if image_posts > 0 {
-                    tracing::info!("🖼️  {image_posts} non-video footage post(s) with cropped screenshots → image cards");
-                }
-
-                // Write the footage pool where the edit/narration stages read it
-                // (mirrors the old enrichment-pool location, base dir == output_dir).
-                let _ = std::fs::create_dir_all(&args.output_dir);
-                let enrich_path = args
-                    .output_dir
-                    .join(edit::enrichment::ENRICHMENT_FILE);
-                match serde_json::to_string_pretty(&set.footage) {
-                    Ok(j) => {
-                        if let Err(e) = std::fs::write(&enrich_path, j) {
-                            tracing::warn!("could not write footage pool {}: {e}", enrich_path.display());
-                        }
-                    }
-                    Err(e) => tracing::warn!("could not serialize footage pool: {e}"),
-                }
-
-                // ── Main video textual context (narration grounding) ─────────
-                // Title + platform caption of the MAIN video. The narration stage
-                // reads this so the script is grounded in the real topic even when
-                // the spoken transcript is empty (raw b-roll with no voiceover) —
-                // see PipelineRunner::generate_narration. Comments are added below.
-                if !set.figures.is_empty() {
-                    let names = set.figures.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
-                    tracing::info!("👤 scout figures: {names} → narration grounding");
-                }
-                if !set.main_title.trim().is_empty() || !set.main_description.trim().is_empty() || !set.figures.is_empty() {
-                    let ctx = ingest::content_search::MainContext {
-                        title: set.main_title.trim().to_string(),
-                        description: set.main_description.trim().to_string(),
-                        figures: set.figures.clone(),
-                        references: set.references.clone(),
-                        discourse: set.discourse.clone(),
-                    };
-                    let dest = args.output_dir.join(ingest::content_search::MAIN_CONTEXT_FILE);
-                    match serde_json::to_string_pretty(&ctx) {
-                        Ok(j) => {
-                            if let Err(e) = std::fs::write(&dest, j) {
-                                tracing::warn!("could not write main-context sidecar {}: {e}", dest.display());
-                            } else {
-                                tracing::info!("📝 scout main context: title+description → narration grounding");
-                            }
-                        }
-                        Err(e) => tracing::warn!("could not serialize main-context sidecar: {e}"),
-                    }
-                }
-
-                // ── Real subject profile (Beat-2 card) ────────────────────────
-                // scout supplies the factual handle/follower count + avatar URL.
-                // Download the avatar locally and persist a sidecar the edit stage
-                // reads to OVERRIDE the LLM's guessed character_* fields.
-                let img_client = reqwest::Client::new();
-                // Clear any sidecar left over from a previous run first — otherwise a
-                // content-set without `profile` would silently reuse the PREVIOUS run's
-                // profile card (wrong subject).
-                let _ = std::fs::remove_file(args.output_dir.join(edit::profile_card::PROFILE_FILE));
-                if let Some(p) = &set.profile {
-                    let avatar_path = download_image_to(
-                        &img_client,
-                        &p.avatar_url,
-                        &args.output_dir.join("profile_avatar"),
-                    )
-                    .await
-                    .map(|pb| pb.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                    let data = edit::profile_card::ProfileCardData {
-                        name: p.name.trim().to_string(),
-                        handle: p.handle.trim().trim_start_matches('@').to_string(),
-                        stats: p.followers.trim().to_string(),
-                        avatar_path,
-                        image_path: p.image_path.trim().to_string(),
-                    };
-                    let dest = args.output_dir.join(edit::profile_card::PROFILE_FILE);
-                    match serde_json::to_string_pretty(&data) {
-                        Ok(j) => {
-                            if let Err(e) = std::fs::write(&dest, j) {
-                                tracing::warn!("could not write profile sidecar {}: {e}", dest.display());
-                            } else {
-                                tracing::info!("🪪 scout profile: @{} ({})", data.handle, data.stats);
-                            }
-                        }
-                        Err(e) => tracing::warn!("could not serialize profile sidecar: {e}"),
-                    }
-                }
-
-                // ── Real viral comments (reaction beat) ───────────────────────
-                // Always clear any sidecar left over from a previous run first — otherwise
-                // a content-set with an empty `comments[]` would silently reuse the PREVIOUS
-                // run's comment cards (wrong topic) since the edit stage just reads whatever
-                // file is on disk.
-                let comments_dest = args.output_dir.join(edit::comment_card::COMMENTS_FILE);
-                let _ = std::fs::remove_file(&comments_dest);
-                if !set.comments.is_empty() {
-                    let mut pool: Vec<edit::comment_card::CommentData> = Vec::new();
-                    for c in &set.comments {
-                        if c.author.trim().is_empty() || c.text.trim().is_empty() {
-                            continue;
-                        }
-                        // Comment avatars are obsolete: comment cards now render from the
-                        // scout crop (`image_path` / has_crop). We no longer download the
-                        // per-comment avatar — a garbage avatar response (whitespace body with
-                        // an image/* type) produced a corrupt `-loop 1` PNG whose overlay
-                        // never got a frame and HUNG the whole render. Empty = crop or drawn card.
-                        pool.push(edit::comment_card::CommentData {
-                            author: c.author.trim().to_string(),
-                            text: c.text.trim().to_string(),
-                            likes: c.likes,
-                            avatar_path: String::new(),
-                            // Crop is a local PNG already produced by scout — pass the
-                            // path straight through (no download). Empty = drawn card.
-                            image_path: c.image_path.trim().to_string(),
-                            context: c.context.trim().to_string(),
-                        });
-                    }
-                    if !pool.is_empty() {
-                        match serde_json::to_string_pretty(&pool) {
-                            Ok(j) => {
-                                if let Err(e) = std::fs::write(&comments_dest, j) {
-                                    tracing::warn!("could not write comments sidecar {}: {e}", comments_dest.display());
-                                } else {
-                                    tracing::info!("💬 scout comments: {} card(s)", pool.len());
-                                }
-                            }
-                            Err(e) => tracing::warn!("could not serialize comments sidecar: {e}"),
-                        }
-                    }
-                }
-
-                tracing::info!(
-                    "📦 scout content set: main={} — {} footage item(s) → {}",
-                    set.main_url,
-                    set.footage.len(),
-                    enrich_path.display()
-                );
-                // NON-VIDEO MAIN (IG photo/slide, tweet image): no yt-dlp video exists. Render the
-                // cropped post image into a short still→video so the pipeline runs (ingest local-file
-                // branch → silent transcript → analyze whole-clip → narration grounding → edit). Guard
-                // on image_path presence (scout only crops non-video) so a video main never misfires.
-                let main_img = set.main_image_path.trim().to_string();
-                if !set.main_is_video && !main_img.is_empty() && std::path::Path::new(&main_img).exists() {
-                    let (sw, sh) = match args.layout {
-                        cli::OutputLayout::Horizontal => (1920u32, 1080u32),
-                        cli::OutputLayout::Square => (1080u32, 1080u32),
-                        cli::OutputLayout::Vertical => (1080u32, 1920u32),
-                    };
-                    let uploader = set.profile.as_ref().map(|p| p.handle.trim()).unwrap_or("");
-                    match synthesize_still_video(&main_img, &args.output_dir, &set.main_title, &set.main_description, uploader, sw, sh) {
-                        Some(p) => { tracing::info!("🖼️  MAIN non-video → still video: {}", p.display()); p.to_string_lossy().to_string() }
-                        None => { tracing::warn!("still-video synth failed → using main_url (may not be downloadable)"); set.main_url }
-                    }
-                } else {
-                    set.main_url
-                }
-            } else {
-                anyhow::bail!(
-                    "no input supplied — provide a single video with --url <URL>, \
-                     or an scout content set with --content <set.json>"
-                );
-            };
-
-            let runner = PipelineRunner::new(&config);
-            let _clips = runner
-                .run(
-                    &resolved_url,
-                    &args.output_dir,
-                    &args.provider,
-                    &args.model,
-                    args.max_clips,
-                    &args.layout,
-                    &args.keywords,
-                    &build_audio_opts(
-                        args.sfx_intro.clone(),
-                        args.bgm.clone(),
-                        args.bgm_volume,
-                        clip_style_from_arg(&args.clip_style),
-                        args.headline_dur,
-                        &args.font_dir,
-                        &args.font_bold,
-                        &args.font_regular,
-                        args.social_icon.clone(),
-                        args.social_icon_size,
-                        args.social_icon_min_size,
-                        args.social_icon_max_size,
-                    ),
-                    &args.social,
-                    args.resume.as_deref(),
-                    &args.style_profile,
-                )
-                .await?; // footer already printed by PipelineRunner::run (brand::FEATHER summary)
+            // Pipeline body extracted to `run_once` so the persistent `thoth
+            // worker` runs the exact same path with warm models already resident.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            run_once(args, config, &cancel).await?;
         }
 
         Commands::TrendAnalyze(args) => {
@@ -971,5 +749,248 @@ pub async fn run_cli() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Execute one full `run` pipeline with whatever models are already resident.
+/// Shared verbatim by the CLI `run` command and the `thoth worker` claim loop —
+/// the only difference is the installed progress sink (stdout vs the SQLite job
+/// DB) and who supplies `args`. `cancel` is checked at coarse stage boundaries
+/// (entry + before the heavy edit/render run); mid-pipeline interruption is a
+/// follow-up (needs the token threaded into PipelineRunner).
+pub async fn run_once(
+    args: cli::RunArgs,
+    config: AppConfig,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+            let mut config = config;
+            if let Some(lang) = args.language {
+                config.whisper.language = lang;
+            }
+
+            if !args.keywords.is_empty() {
+                println!("{}", brand::field("Focus keywords", args.keywords.join(", ")));
+            }
+
+            // ── Resolve the main video URL ────────────────────────────────────
+            // Content discovery is handled upstream by scout. Thoth accepts
+            // either a direct --url (single-video default) or an scout content
+            // set via --content (main video + footage pool). It does not search.
+            let resolved_url: String = if let Some(ref u) = args.url {
+                u.clone()
+            } else if let Some(ref content_path) = args.content {
+                let set = ingest::content_search::load_content_set(content_path)?;
+
+                // A non-video MAIN still needs a downloadable URL for Stage 1 ingest;
+                // its cropped screenshot can't drive transcription. Surface it so the
+                // operator knows the image won't be used as the main (footage images
+                // ARE rendered as cards — see edit::enrichment::load_image_pool).
+                if !set.main_image_path.trim().is_empty() {
+                    tracing::warn!(
+                        "main.image_path set ({}) but the main is ingested from main.url — \
+                         the main screenshot is not used as a clip source (footage images are)",
+                        set.main_image_path
+                    );
+                }
+
+                // Count non-video footage posts that carry a usable crop screenshot —
+                // these become static image cards in the edit stage.
+                let image_posts = set.footage.iter()
+                    .filter(|f| !f.is_video && !f.image_path.trim().is_empty())
+                    .count();
+                if image_posts > 0 {
+                    tracing::info!("🖼️  {image_posts} non-video footage post(s) with cropped screenshots → image cards");
+                }
+
+                // Write the footage pool where the edit/narration stages read it
+                // (mirrors the old enrichment-pool location, base dir == output_dir).
+                let _ = std::fs::create_dir_all(&args.output_dir);
+                let enrich_path = args
+                    .output_dir
+                    .join(edit::enrichment::ENRICHMENT_FILE);
+                match serde_json::to_string_pretty(&set.footage) {
+                    Ok(j) => {
+                        if let Err(e) = std::fs::write(&enrich_path, j) {
+                            tracing::warn!("could not write footage pool {}: {e}", enrich_path.display());
+                        }
+                    }
+                    Err(e) => tracing::warn!("could not serialize footage pool: {e}"),
+                }
+
+                // ── Main video textual context (narration grounding) ─────────
+                // Title + platform caption of the MAIN video. The narration stage
+                // reads this so the script is grounded in the real topic even when
+                // the spoken transcript is empty (raw b-roll with no voiceover) —
+                // see PipelineRunner::generate_narration. Comments are added below.
+                if !set.figures.is_empty() {
+                    let names = set.figures.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
+                    tracing::info!("👤 scout figures: {names} → narration grounding");
+                }
+                if !set.main_title.trim().is_empty() || !set.main_description.trim().is_empty() || !set.figures.is_empty() {
+                    let ctx = ingest::content_search::MainContext {
+                        title: set.main_title.trim().to_string(),
+                        description: set.main_description.trim().to_string(),
+                        figures: set.figures.clone(),
+                        references: set.references.clone(),
+                        discourse: set.discourse.clone(),
+                    };
+                    let dest = args.output_dir.join(ingest::content_search::MAIN_CONTEXT_FILE);
+                    match serde_json::to_string_pretty(&ctx) {
+                        Ok(j) => {
+                            if let Err(e) = std::fs::write(&dest, j) {
+                                tracing::warn!("could not write main-context sidecar {}: {e}", dest.display());
+                            } else {
+                                tracing::info!("📝 scout main context: title+description → narration grounding");
+                            }
+                        }
+                        Err(e) => tracing::warn!("could not serialize main-context sidecar: {e}"),
+                    }
+                }
+
+                // ── Real subject profile (Beat-2 card) ────────────────────────
+                // scout supplies the factual handle/follower count + avatar URL.
+                // Download the avatar locally and persist a sidecar the edit stage
+                // reads to OVERRIDE the LLM's guessed character_* fields.
+                let img_client = reqwest::Client::new();
+                // Clear any sidecar left over from a previous run first — otherwise a
+                // content-set without `profile` would silently reuse the PREVIOUS run's
+                // profile card (wrong subject).
+                let _ = std::fs::remove_file(args.output_dir.join(edit::profile_card::PROFILE_FILE));
+                if let Some(p) = &set.profile {
+                    let avatar_path = download_image_to(
+                        &img_client,
+                        &p.avatar_url,
+                        &args.output_dir.join("profile_avatar"),
+                    )
+                    .await
+                    .map(|pb| pb.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                    let data = edit::profile_card::ProfileCardData {
+                        name: p.name.trim().to_string(),
+                        handle: p.handle.trim().trim_start_matches('@').to_string(),
+                        stats: p.followers.trim().to_string(),
+                        avatar_path,
+                        image_path: p.image_path.trim().to_string(),
+                    };
+                    let dest = args.output_dir.join(edit::profile_card::PROFILE_FILE);
+                    match serde_json::to_string_pretty(&data) {
+                        Ok(j) => {
+                            if let Err(e) = std::fs::write(&dest, j) {
+                                tracing::warn!("could not write profile sidecar {}: {e}", dest.display());
+                            } else {
+                                tracing::info!("🪪 scout profile: @{} ({})", data.handle, data.stats);
+                            }
+                        }
+                        Err(e) => tracing::warn!("could not serialize profile sidecar: {e}"),
+                    }
+                }
+
+                // ── Real viral comments (reaction beat) ───────────────────────
+                // Always clear any sidecar left over from a previous run first — otherwise
+                // a content-set with an empty `comments[]` would silently reuse the PREVIOUS
+                // run's comment cards (wrong topic) since the edit stage just reads whatever
+                // file is on disk.
+                let comments_dest = args.output_dir.join(edit::comment_card::COMMENTS_FILE);
+                let _ = std::fs::remove_file(&comments_dest);
+                if !set.comments.is_empty() {
+                    let mut pool: Vec<edit::comment_card::CommentData> = Vec::new();
+                    for c in &set.comments {
+                        if c.author.trim().is_empty() || c.text.trim().is_empty() {
+                            continue;
+                        }
+                        // Comment avatars are obsolete: comment cards now render from the
+                        // scout crop (`image_path` / has_crop). We no longer download the
+                        // per-comment avatar — a garbage avatar response (whitespace body with
+                        // an image/* type) produced a corrupt `-loop 1` PNG whose overlay
+                        // never got a frame and HUNG the whole render. Empty = crop or drawn card.
+                        pool.push(edit::comment_card::CommentData {
+                            author: c.author.trim().to_string(),
+                            text: c.text.trim().to_string(),
+                            likes: c.likes,
+                            avatar_path: String::new(),
+                            // Crop is a local PNG already produced by scout — pass the
+                            // path straight through (no download). Empty = drawn card.
+                            image_path: c.image_path.trim().to_string(),
+                            context: c.context.trim().to_string(),
+                        });
+                    }
+                    if !pool.is_empty() {
+                        match serde_json::to_string_pretty(&pool) {
+                            Ok(j) => {
+                                if let Err(e) = std::fs::write(&comments_dest, j) {
+                                    tracing::warn!("could not write comments sidecar {}: {e}", comments_dest.display());
+                                } else {
+                                    tracing::info!("💬 scout comments: {} card(s)", pool.len());
+                                }
+                            }
+                            Err(e) => tracing::warn!("could not serialize comments sidecar: {e}"),
+                        }
+                    }
+                }
+
+                tracing::info!(
+                    "📦 scout content set: main={} — {} footage item(s) → {}",
+                    set.main_url,
+                    set.footage.len(),
+                    enrich_path.display()
+                );
+                // NON-VIDEO MAIN (IG photo/slide, tweet image): no yt-dlp video exists. Render the
+                // cropped post image into a short still→video so the pipeline runs (ingest local-file
+                // branch → silent transcript → analyze whole-clip → narration grounding → edit). Guard
+                // on image_path presence (scout only crops non-video) so a video main never misfires.
+                let main_img = set.main_image_path.trim().to_string();
+                if !set.main_is_video && !main_img.is_empty() && std::path::Path::new(&main_img).exists() {
+                    let (sw, sh) = match args.layout {
+                        cli::OutputLayout::Horizontal => (1920u32, 1080u32),
+                        cli::OutputLayout::Square => (1080u32, 1080u32),
+                        cli::OutputLayout::Vertical => (1080u32, 1920u32),
+                    };
+                    let uploader = set.profile.as_ref().map(|p| p.handle.trim()).unwrap_or("");
+                    match synthesize_still_video(&main_img, &args.output_dir, &set.main_title, &set.main_description, uploader, sw, sh) {
+                        Some(p) => { tracing::info!("🖼️  MAIN non-video → still video: {}", p.display()); p.to_string_lossy().to_string() }
+                        None => { tracing::warn!("still-video synth failed → using main_url (may not be downloadable)"); set.main_url }
+                    }
+                } else {
+                    set.main_url
+                }
+            } else {
+                anyhow::bail!(
+                    "no input supplied — provide a single video with --url <URL>, \
+                     or an scout content set with --content <set.json>"
+                );
+            };
+
+            let runner = PipelineRunner::new(&config);
+            let _clips = runner
+                .run(
+                    &resolved_url,
+                    &args.output_dir,
+                    &args.provider,
+                    &args.model,
+                    args.max_clips,
+                    &args.layout,
+                    &args.keywords,
+                    &build_audio_opts(
+                        args.sfx_intro.clone(),
+                        args.bgm.clone(),
+                        args.bgm_volume,
+                        clip_style_from_arg(&args.clip_style),
+                        args.headline_dur,
+                        &args.font_dir,
+                        &args.font_bold,
+                        &args.font_regular,
+                        args.social_icon.clone(),
+                        args.social_icon_size,
+                        args.social_icon_min_size,
+                        args.social_icon_max_size,
+                    ),
+                    &args.social,
+                    args.resume.as_deref(),
+                    &args.style_profile,
+                )
+                .await?; // footer already printed by PipelineRunner::run (brand::FEATHER summary)
     Ok(())
 }

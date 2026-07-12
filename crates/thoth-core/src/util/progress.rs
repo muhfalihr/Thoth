@@ -1,6 +1,7 @@
 use crate::brand;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -13,29 +14,38 @@ pub use thoth_types::ProgressEvent;
 
 static JSON_MODE: AtomicBool = AtomicBool::new(false);
 
+/// A progress sink — where each stage event goes. The `thoth worker` installs
+/// one that writes to the SQLite job DB; the CLI leaves it unset and falls back
+/// to stdout NDJSON under `--progress-json`.
+type Sink = Box<dyn Fn(ProgressEvent) + Send + Sync>;
+static SINK: RwLock<Option<Sink>> = RwLock::new(None);
+
+/// Redirect all `emit_stage` events to `sink` (worker → DB). Replaces any prior
+/// sink. Install `Box::new(|_| {})` to swallow events between jobs.
+pub fn set_sink(sink: Sink) {
+    *SINK.write().unwrap() = Some(sink);
+}
+
 /// Enable NDJSON progress on stdout (set by `--progress-json`).
 pub fn set_json_mode(on: bool) {
     JSON_MODE.store(on, Ordering::Relaxed);
 }
 
-/// Build the NDJSON progress line iff JSON mode is on. Pure + testable.
-fn progress_line(stage: &str, pct: f32, message: &str) -> Option<String> {
-    if !JSON_MODE.load(Ordering::Relaxed) {
-        return None;
-    }
+/// Emit one progress event: to the installed sink if any, else stdout NDJSON in
+/// JSON mode, else nothing. (Live indicatif bars are separate — see below.)
+pub fn emit_stage(stage: &str, pct: f32, message: &str) {
     let ev = ProgressEvent {
         stage: stage.to_owned(),
         pct,
         message: message.to_owned(),
         ts: chrono::Utc::now().to_rfc3339(),
     };
-    serde_json::to_string(&ev).ok()
-}
-
-/// Emit one progress line to stdout when in JSON mode. No-op otherwise.
-pub fn emit_stage(stage: &str, pct: f32, message: &str) {
-    if let Some(line) = progress_line(stage, pct, message) {
-        println!("{line}"); // stdout = machine channel; logs go to stderr
+    if let Some(sink) = SINK.read().unwrap().as_ref() {
+        sink(ev); // worker installs a DB sink
+    } else if JSON_MODE.load(Ordering::Relaxed) {
+        if let Ok(line) = serde_json::to_string(&ev) {
+            println!("{line}"); // stdout = machine channel; logs go to stderr
+        }
     }
 }
 
@@ -184,19 +194,23 @@ mod tests {
     }
 
     #[test]
-    fn progress_line_respects_json_mode_gate() {
-        // Off → no line (the gate this task added).
+    fn emit_stage_routes_to_installed_sink() {
+        // A sink (what the `thoth worker` installs) captures events regardless
+        // of JSON mode — this is the whole point of set_sink.
         set_json_mode(false);
-        assert!(progress_line("ingest", 0.2, "a").is_none());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        set_sink(Box::new(move |ev| seen2.lock().unwrap().push(ev)));
 
-        // On → a single-line ProgressEvent that parses back.
-        set_json_mode(true);
-        let line = progress_line("ingest", 0.2, "a").expect("json mode on → Some");
-        assert!(!line.contains('\n'));
-        let ev: ProgressEvent = serde_json::from_str(&line).unwrap();
-        assert_eq!(ev.stage, "ingest");
-        assert!((ev.pct - 0.2).abs() < 1e-6);
+        emit_stage("ingest", 0.2, "a");
 
-        set_json_mode(false); // restore global for other tests
+        let got = seen.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].stage, "ingest");
+        assert!((got[0].pct - 0.2).abs() < 1e-6);
+        drop(got);
+
+        // Restore global sink so other tests aren't affected.
+        *SINK.write().unwrap() = None;
     }
 }
