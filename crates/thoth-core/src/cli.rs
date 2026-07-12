@@ -28,6 +28,11 @@ pub enum ClipStyleArg {
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+
+    /// Emit newline-delimited ProgressEvent JSON on stdout (machine channel).
+    /// Human TTY output on stderr is unchanged. Used by thoth-server workers.
+    #[arg(long, global = true, default_value_t = false)]
+    pub progress_json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -59,6 +64,18 @@ pub enum Commands {
     ///   thoth scout run <url> --out set.json --per 2 --max 4
     ///   thoth scout validate <set.json>
     Scout(ScoutArgs),
+
+    /// Run as a persistent warm worker: pull queued jobs from the SQLite queue
+    /// and execute them in-process (models stay resident between jobs). Peer to
+    /// `thoth-server` — they share only the SQLite DB, no parent/child link.
+    Worker(WorkerArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct WorkerArgs {
+    /// Path to the shared SQLite job database (same file `thoth-server` opens).
+    #[arg(long, env = "THOTH_DB", default_value = "thoth.db")]
+    pub db: String,
 }
 
 #[derive(Parser, Debug)]

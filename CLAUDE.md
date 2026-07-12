@@ -61,6 +61,44 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
 - Setiap fitur baru harus graceful degrade jika disabled/unavailable
 - Log level: `info!` untuk progress penting, `warn!` untuk degradasi, `debug!` untuk detail
 
+## Kontrak Interface: thoth-core ↔ adapters
+
+`thoth-core` adalah SATU sumber kebenaran untuk tipe pipeline + orkestrasi.
+Setiap perubahan pada permukaan publiknya (signature/tipe) WAJIB menyesuaikan
+kedua adapter:
+1. `crates/thoth` (CLI + worker) — dipaksa oleh compiler.
+2. `crates/thoth-server` (REST/SSE) — dipaksa oleh compiler.
+3. `dashboard/src/api.ts` — TIDAK dipaksa compiler. WAJIB diperbarui manual agar
+   `JobSpec`/`JobRecord`/`SseEvent` di TS tetap cocok dengan tipe Rust. Ini satu-
+   satunya langkah yang harus dijaga tangan (utoipa/OpenAPI ditunda ke Fase 3).
+
+Worker channel: `thoth <cmd> --progress-json` mengeluarkan `ProgressEvent` NDJSON
+di stdout; log manusia tetap di stderr. Jangan campur keduanya.
+
+### Kontrak Interface: SQLite job-queue (thoth-server ↔ thoth worker)
+
+`thoth-server` (REST/SSE) dan `thoth worker` (engine hangat) adalah **dua proses
+peer yang independen** — tanpa parent/child, tanpa stdio antar-proses. Mereka
+berkomunikasi HANYA lewat satu file SQLite (WAL) bersama. Dua crate leaf adalah
+permukaan-kontrak antar keduanya:
+
+1. **`crates/thoth-jobs`** — skema SQLite + tipe `JobSpec`/`JobRecord`/`JobStatus`/
+   `JobEvent` + `JobStore` (enqueue/claim_next/append_event/finish/reap_stale/…).
+   Diimpor oleh **thoth-server DAN thoth-core (worker)** → perubahan signature
+   dipaksa compiler di kedua sisi.
+2. **`crates/thoth-types`** — `ProgressEvent` (leaf wire type; thoth-server tak
+   perlu link dep berat thoth-core).
+
+Aturan sinkronisasi:
+- **Perubahan skema SQL** WAJIB migration BARU di `crates/thoth-jobs/migrations/`
+  (jangan edit migration lama — DB yang sudah ada tak akan re-run).
+- **Perubahan tipe/method `thoth-jobs`** menyentuh KEDUA proses (compiler-enforced).
+- **`dashboard/src/api.ts`** TIDAK dipaksa compiler → update manual bila
+  `JobSpec`/`JobRecord`/`JobStatus`/`JobEvent` berubah (mis. status `cancelled`).
+- Worker memiliki proses anak-nya (ffmpeg/whisper/python) di dalam prosesnya
+  sendiri → cancel bersifat **kooperatif** via flag DB `cancel_requested`, BUKAN
+  taskkill/kill process-tree. Lintas-platform tanpa hack OS.
+
 ## Kontrak Content-Set dari scout
 
 Discovery 100% di layer **`scout/`** (script TypeScript di folder repo, jalan native via Bun, dijalankan langsung — lihat

@@ -67,4 +67,8 @@ set "CMAKE_GENERATOR=Ninja"
 :: 7. Jalankan Cargo Build
 echo.
 echo [INFO] Memulai proses build Cargo dengan fitur CUDA...
-cargo build --release --features cuda
+:: Workspace virtual: --features butuh target paket eksplisit. thoth (CLI/worker)
+:: link CUDA/Whisper; thoth-server sengaja tanpa CUDA (default-features=false).
+cargo build --release -p thoth --features cuda
+if errorlevel 1 exit /b 1
+cargo build --release -p thoth-server

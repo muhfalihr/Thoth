@@ -1,0 +1,63 @@
+[package]
+name        = "thoth-core"
+version     = "0.1.0"
+edition     = "2024"
+description = "Thoth core library — pipeline logic and shared types"
+
+[lib]
+name = "thoth_core"
+path = "src/lib.rs"
+# Doc comments here carry illustrative diagrams, ffmpeg filter strings, and TOML
+# snippets — not executable Rust. This crate was a [[bin]] its whole history and
+# never ran doctests; the lib split would otherwise try to compile them and fail.
+doctest = false
+
+[features]
+# Local Whisper via whisper.cpp bindings.
+# Requires: LLVM/Clang (for bindgen) + CUDA Toolkit 12.x (for GPU).
+#   Install LLVM: winget install LLVM.LLVM
+#   Install CUDA: https://developer.nvidia.com/cuda-downloads
+# Build with: cargo build --release --features local-whisper,cuda
+local-whisper = ["dep:whisper-rs"]
+cuda          = ["local-whisper", "whisper-rs/cuda"]
+
+[dependencies]
+thoth-types        = { path = "../thoth-types" }
+thoth-jobs         = { path = "../thoth-jobs" }
+tokio              = { version = "1",    features = ["full"] }
+tokio-util         = "0.7"
+reqwest            = { version = "0.12", features = ["json", "multipart", "stream", "gzip", "deflate", "rustls-tls"] }
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = "1"
+clap               = { version = "4",    features = ["derive", "env"] }
+anyhow             = "1"
+dotenvy            = "0.15"
+futures-util       = "0.3"
+thiserror          = "2"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3",  features = ["env-filter", "fmt"] }
+indicatif          = "0.17"
+config             = "0.14"
+ffmpeg-sidecar     = "2"
+uuid               = { version = "1",    features = ["v4"] }
+which              = "7"
+zip                = "2"
+walkdir            = "2"
+chrono             = { version = "0.4",  features = ["serde"] }
+hound              = "3"
+async-trait        = "0.1"
+base64             = "0.22"
+md5                = "0.7"
+sqlx               = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
+pgvector           = { version = "0.4", features = ["sqlx"] }
+
+# GPU pipeline (CapCut-style shader processing)
+wgpu               = { version = "22", features = ["wgsl"] }
+bytemuck           = { version = "1",  features = ["derive"] }
+pollster           = "0.3"
+
+# Optional: local GPU-accelerated Whisper via whisper.cpp
+whisper-rs = { version = "0.16", optional = true }
+
+[lints]
+workspace = true

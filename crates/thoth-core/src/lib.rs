@@ -1,26 +1,30 @@
 #![allow(dead_code, unused_imports)]
 
+//! Thoth core library: pipeline orchestration + shared types.
+//! Adapters (thoth CLI, thoth-server) depend on this crate.
+
 /*
  * Thoth - AI-Powered Short-Form Video Strategist
  * Copyright (c) 2026 Thoth. All Rights Reserved.
  * This software is PROPRIETARY. Unauthorized use is strictly prohibited.
  */
 
-mod analyze;
-mod cli;
-mod config;
-mod edit;
-mod gpu;
-mod ingest;
-mod narration;
-mod news;
-mod pipeline;
-mod reaction;
-mod rag;
-mod transcribe;
-mod util;
-mod log_style;
-mod brand;
+pub mod analyze;
+pub mod cli;
+pub mod config;
+pub mod edit;
+pub mod gpu;
+pub mod ingest;
+pub mod narration;
+pub mod news;
+pub mod pipeline;
+pub mod reaction;
+pub mod rag;
+pub mod transcribe;
+pub mod util;
+pub mod log_style;
+pub mod brand;
+pub mod worker;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -162,7 +166,7 @@ async fn download_ffmpeg_with_progress() -> Result<()> {
 
     tracing::info!("Unpacking FFmpeg...");
     extract_zip(archive_name, ".")?;
-    
+
     if std::path::Path::new(archive_name).exists() {
         std::fs::remove_file(archive_name)?;
     }
@@ -190,8 +194,8 @@ fn extract_zip(archive_path: &str, dest_dir: &str) -> Result<()> {
                     std::fs::create_dir_all(p)?;
                 }
             }
-            
-            // If it's ffmpeg.exe, we can flatten it to the root if desired, 
+
+            // If it's ffmpeg.exe, we can flatten it to the root if desired,
             // but let's just extract everything as-is first.
             let mut outfile = std::fs::File::create(&outpath)?;
             std::io::copy(&mut file, &mut outfile)?;
@@ -269,19 +273,9 @@ fn synthesize_still_video(
     Some(out)
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
-        let p = brand::p();
-        eprintln!("\n  {}{}{} {}{}{}", p.red, brand::ERR, p.reset, p.red, e, p.reset);
-        for cause in e.chain().skip(1) {
-            eprintln!("  {}{}{} {}caused by:{} {}", p.dim, brand::SPINE, p.reset, p.dim, p.reset, cause);
-        }
-        std::process::exit(1);
-    }
-}
-
-async fn run() -> Result<()> {
+/// CLI entry point. Parses args, bootstraps logging/ffmpeg/env, dispatches.
+/// (Body = the old `main.rs::run()` with `Cli::parse()` folded in.)
+pub async fn run_cli() -> Result<()> {
     // Load .env file if present
     dotenvy::dotenv().ok();
 
@@ -309,6 +303,7 @@ async fn run() -> Result<()> {
     tracing::debug!("Thoth starting...");
 
     let cli = Cli::parse();
+    util::progress::set_json_mode(cli.progress_json);
     tracing::debug!("CLI arguments parsed: {:?}", cli);
 
     let config = AppConfig::load().context("failed to load configuration")?;
@@ -408,7 +403,7 @@ async fn run() -> Result<()> {
             let output_dir = args.output_dir.clone();
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = JobContext::new(job_id, output_dir).context("failed to create job directories")?;
-            
+
             let mut config = config;
             if let Some(lang) = args.language {
                 config.whisper.language = lang;
@@ -489,6 +484,293 @@ async fn run() -> Result<()> {
         }
 
         Commands::Run(args) => {
+            // Pipeline body extracted to `run_once` so the persistent `thoth
+            // worker` runs the exact same path with warm models already resident.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            run_once(args, config, &cancel).await?;
+        }
+
+        Commands::TrendAnalyze(args) => {
+            use analyze::trend_analyzer::{profile_to_toml, TrendAnalyzeService};
+
+            let svc = TrendAnalyzeService::new(&config);
+            let profile = svc.run(
+                &args.url,
+                args.sample,
+                &args.provider.to_string(),
+                &args.output_dir,
+            ).await?;
+
+            // Save profile as TOML snippet
+            let toml_snippet = profile_to_toml(&args.output_profile, &profile);
+            let profile_file = args.output_dir.join(format!("{}.toml", args.output_profile));
+            tokio::fs::write(&profile_file, &toml_snippet).await
+                .context("failed to write profile file")?;
+
+            println!("\n{}", brand::ok("Trend analysis complete!"));
+            println!("{}", brand::field("Profile name", &args.output_profile));
+            println!("{}", brand::field("Description", &profile.description));
+            println!("{}", brand::field("subtitle_style", &profile.subtitle_style));
+            println!("{}", brand::field("clip_style", &profile.clip_style));
+            println!("{}", brand::field("sfx_vibe", &profile.sfx_vibe));
+            println!("{}", brand::field("bgm_vibe", &profile.bgm_vibe));
+            println!("{}", brand::field("overlay_style", &profile.overlay_style));
+            println!("{}", brand::field("Profile saved to", profile_file.display()));
+            println!("\nAdd to your config.toml:");
+            print!("{toml_snippet}");
+            println!("\nThen use with: --style-profile {}", args.output_profile);
+        }
+
+        Commands::Vocab(args) => {
+            use cli::VocabCommand;
+            use rag::vocab::{seed_defaults, seed_from_url, seed_kamus_alay, seed_openslr_stopwords, VocabCache};
+
+            // Build DB pool if configured
+            let pool = if config.vector_db.enabled && !config.vector_db.supabase_url.is_empty() {
+                match sqlx::PgPool::connect(&config.vector_db.supabase_url).await {
+                    Ok(p) => { println!("{}", brand::ok("Connected to Supabase")); Some(p) }
+                    Err(e) => { eprintln!("{}", brand::err(format!("Cannot connect to Supabase: {e}"))); None }
+                }
+            } else {
+                eprintln!("{}", brand::warn("vector_db.enabled = false or THOTH_SUPABASE_URL not set"));
+                None
+            };
+
+            match args.command {
+                VocabCommand::Seed { source, url, category, subcategory, language,
+                                     column, skip_header, label_filter } => {
+                    let pool = pool.context("Supabase connection required for seed")?;
+
+                    // ── URL mode: download from any URL ──────────────────────
+                    if let Some(ref u) = url {
+                        let cat = category.as_deref().unwrap_or_else(|| {
+                            eprintln!("{}", brand::warn("--category is required when using --url"));
+                            "tone_funny"
+                        });
+                        println!("{}", brand::field("Downloading from", u));
+                        println!("{}", brand::field("params", format!("category={cat}, language={language}, column={column}")));
+                        if let Some(ref f) = label_filter {
+                            println!("{}", brand::field("label_filter", f));
+                        }
+                        let n = seed_from_url(
+                            &pool, u, cat,
+                            subcategory.as_deref(),
+                            &language, column, skip_header,
+                            label_filter.as_deref(),
+                        ).await?;
+                        println!("{}", brand::ok(format!("Seeded {n} words from URL → category={cat}")));
+                        return Ok(());
+                    }
+
+                    // ── Named dataset mode ───────────────────────────────────
+                    match source.as_str() {
+                        "defaults" | "default" => {
+                            let n = seed_defaults(&pool).await?;
+                            println!("{}", brand::ok(format!("Seeded {n} default words to Supabase")));
+                        }
+                        "kamus-alay" => {
+                            let n = seed_kamus_alay(&pool, &language).await?;
+                            println!("{}", brand::ok(format!("Seeded {n} kamus-alay words (language={language})")));
+                        }
+                        "openslr-stopwords" => {
+                            let n = seed_openslr_stopwords(&pool, &language).await?;
+                            println!("{}", brand::ok(format!("Seeded {n} OpenSLR stop words (language={language})")));
+                        }
+                        other => {
+                            eprintln!("{}", brand::err(format!("Unknown source '{other}'.")));
+                            eprintln!("{}", brand::field("Available", "defaults, kamus-alay, openslr-stopwords"));
+                            eprintln!("{}", brand::field("Or use", "--url https://... --category tone_funny"));
+                        }
+                    }
+                }
+                VocabCommand::Add { category, word, subcategory, language, notes } => {
+                    let pool = pool.context("Supabase connection required")?;
+                    VocabCache::add_word(&pool, &category, subcategory.as_deref(), &word, &language, "manual", notes.as_deref()).await?;
+                    println!("{}", brand::ok(format!("Added '{word}' to category '{category}'")));
+                }
+                VocabCommand::List { category } => {
+                    let pool = pool.context("Supabase connection required")?;
+                    let words = VocabCache::list_category(&pool, &category).await?;
+                    if words.is_empty() {
+                        println!("(empty — run 'thoth vocab seed' first)");
+                    } else {
+                        println!("{}", brand::field("Category", format!("{category} ({} words)", words.len())));
+                        for (word, sub, lang, weight) in &words {
+                            let sub_str = sub.as_deref().map(|s| format!("[{s}]")).unwrap_or_default();
+                            println!("  {word}{sub_str} ({lang}, weight={weight:.1})");
+                        }
+                    }
+                }
+                VocabCommand::Review => {
+                    let pool = pool.context("Supabase connection required")?;
+                    let candidates = VocabCache::pending_candidates(&pool).await?;
+                    if candidates.is_empty() {
+                        println!("No pending word candidates to review.");
+                        return Ok(());
+                    }
+                    println!("{}", brand::field("Unreviewed word candidates", candidates.len()));
+                    for (word, cat, occ, ctx) in &candidates {
+                        let cat_str = cat.as_deref().unwrap_or("?");
+                        let ctx_str = ctx.as_deref().unwrap_or("").chars().take(60).collect::<String>();
+                        println!("\n  '{}' (appeared {}×, suggested: {})", word, occ, cat_str);
+                        if !ctx_str.is_empty() { println!("  context: \"{}...\"", ctx_str); }
+                        print!("  [a]pprove / [r]eject / [s]kip: ");
+                        use std::io::{Write, BufRead};
+                        std::io::stdout().flush()?;
+                        let mut input = String::new();
+                        std::io::stdin().lock().read_line(&mut input)?;
+                        match input.trim() {
+                            "a" | "approve" => {
+                                VocabCache::approve_candidate(&pool, word, cat_str, "id").await?;
+                                println!("  {}", brand::ok(format!("Approved → {cat_str}")));
+                            }
+                            "r" | "reject" => {
+                                VocabCache::reject_candidate(&pool, word).await?;
+                                eprintln!("  {}", brand::err("Rejected"));
+                            }
+                            _ => println!("  → Skipped"),
+                        }
+                    }
+                }
+                VocabCommand::Stats => {
+                    let pool = pool.context("Supabase connection required")?;
+                    let cache = VocabCache::load(Some(&pool), config.vector_db.vocab_cache_ttl_secs).await;
+                    println!("Vocabulary Cache Statistics:");
+                    println!("{}", brand::field("Source", if cache.from_db { "Supabase" } else { "Hardcoded defaults" }));
+                    println!("{}", brand::field("tone_funny", format!("{} words", cache.tone_funny.len())));
+                    println!("{}", brand::field("tone_serious", format!("{} words", cache.tone_serious.len())));
+                    println!("{}", brand::field("intro", format!("{} phrases", cache.intro.len())));
+                    println!("{}", brand::field("name_titles", format!("{} patterns", cache.name_titles.len())));
+                    println!("{}", brand::field("stop_words", format!("{} (id) + {} (en)", cache.stop_words_id.len(), cache.stop_words_en.len())));
+                    println!("{}", brand::field("energy_high", format!("{} words", cache.energy_high.len())));
+                    println!("{}", brand::field("energy_low", format!("{} words", cache.energy_low.len())));
+                    println!("{}", brand::field("vibes", format!("{} categories", cache.vibes.len())));
+                    for (vibe, words) in &cache.vibes {
+                        println!("    {vibe}: {} keywords", words.len());
+                    }
+                }
+                VocabCommand::Refresh => {
+                    println!("Cache will refresh automatically on next pipeline run.");
+                    println!("(TTL: {}s = {:.1} minutes)", config.vector_db.vocab_cache_ttl_secs, config.vector_db.vocab_cache_ttl_secs as f64 / 60.0);
+                }
+            }
+        }
+
+        Commands::Thumbnail(args) => {
+            let job = JobContext::new(args.job_id.clone(), args.output_dir.clone())
+                .context("failed to access job directory")?;
+
+            let moments_path = job.moments_path();
+            if !moments_path.exists() {
+                anyhow::bail!("Moments file not found: {}", moments_path.display());
+            }
+
+            let moments_raw = tokio::fs::read_to_string(&moments_path).await?;
+            let moments: crate::analyze::schema::ViralMomentList = serde_json::from_str(&moments_raw)
+                .context("failed to parse moments.json")?;
+
+            println!("{}", brand::field("Generating thumbnails", format!("{} clips in job '{}'", moments.moments.len(), args.job_id)));
+
+            let mut count = 0;
+            for (i, moment) in moments.moments.iter().enumerate() {
+                let slug = crate::util::fs::slugify(&moment.title);
+                let out_path = job.clip_path(i, &slug);
+                if !out_path.exists() {
+                    eprintln!("  {}", brand::warn(format!("clip missing, skipping: {}", out_path.display())));
+                    continue;
+                }
+
+                let thumb_path = out_path.with_extension("jpg");
+                let duration = moment.duration();
+
+                let optimal_time = if moment.overlay_at_sec > 0.0 {
+                    moment.overlay_at_sec + 0.5
+                } else if moment.sfx_at_sec > 0.0 {
+                    moment.sfx_at_sec
+                } else {
+                    duration / 2.0
+                };
+
+                let thumb_time = optimal_time.clamp(0.0, duration.max(0.1));
+
+                println!("  Generating thumbnail for clip {} at {:.1}s...", i + 1, thumb_time);
+
+                if let Err(e) = edit::ffmpeg::generate_thumbnail(&out_path, &thumb_path, thumb_time) {
+                    eprintln!("  {}", brand::err(format!("failed: {}", e)));
+                } else {
+                    println!("  {}", brand::ok(format!("saved: {}", thumb_path.display())));
+                    count += 1;
+                }
+            }
+            println!("{}", brand::ok(format!("Done — generated {count} thumbnails")));
+        }
+
+        Commands::Scout(args) => {
+            // ── Resolve scout/ directory ──────────────────────────────────
+            // The binary lives at <repo>/target/release/thoth.exe — the repo
+            // root is 2 levels up.  Fallback: try cwd/scout/ (when running
+            // from the repo root directly during development).
+            let scout_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent()?.parent()?.parent().map(|r| r.join("scout")))
+                .filter(|d| d.join("cli.ts").exists())
+                .or_else(|| {
+                    let cwd = std::env::current_dir().ok()?.join("scout");
+                    if cwd.join("cli.ts").exists() { Some(cwd) } else { None }
+                })
+                .ok_or_else(|| anyhow::anyhow!(
+                    "scout/cli.ts not found — run from the repo root or ensure \
+                     the thoth binary is in <repo>/target/release/"
+                ))?;
+
+            let cli_ts = scout_dir.join("cli.ts");
+
+            // ── Find Bun ─────────────────────────────────────────────────
+            let bun = which::which("bun").map_err(|_| anyhow::anyhow!(
+                "bun not found in PATH — scout requires Bun ≥1.2 \
+                 (https://bun.sh)"
+            ))?;
+
+            // ── Spawn: bun scout/cli.ts <args...> ────────────────────────
+            let status = std::process::Command::new(&bun)
+                .arg(&cli_ts)
+                .args(&args.args)
+                .current_dir(&scout_dir)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+                .with_context(|| format!(
+                    "failed to spawn bun {} {}",
+                    cli_ts.display(),
+                    args.args.join(" ")
+                ))?;
+
+            std::process::exit(status.code().unwrap_or(1));
+        }
+
+        Commands::Worker(args) => {
+            worker::run_worker(&args.db).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute one full `run` pipeline with whatever models are already resident.
+/// Shared verbatim by the CLI `run` command and the `thoth worker` claim loop —
+/// the only difference is the installed progress sink (stdout vs the SQLite job
+/// DB) and who supplies `args`. `cancel` is checked at coarse stage boundaries
+/// (entry + before the heavy edit/render run); mid-pipeline interruption is a
+/// follow-up (needs the token threaded into PipelineRunner).
+pub async fn run_once(
+    args: cli::RunArgs,
+    config: AppConfig,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
             let mut config = config;
             if let Some(lang) = args.language {
                 config.whisper.language = lang;
@@ -715,267 +997,5 @@ async fn run() -> Result<()> {
                     &args.style_profile,
                 )
                 .await?; // footer already printed by PipelineRunner::run (brand::FEATHER summary)
-        }
-
-        Commands::TrendAnalyze(args) => {
-            use analyze::trend_analyzer::{profile_to_toml, TrendAnalyzeService};
-
-            let svc = TrendAnalyzeService::new(&config);
-            let profile = svc.run(
-                &args.url,
-                args.sample,
-                &args.provider.to_string(),
-                &args.output_dir,
-            ).await?;
-
-            // Save profile as TOML snippet
-            let toml_snippet = profile_to_toml(&args.output_profile, &profile);
-            let profile_file = args.output_dir.join(format!("{}.toml", args.output_profile));
-            tokio::fs::write(&profile_file, &toml_snippet).await
-                .context("failed to write profile file")?;
-
-            println!("\n{}", brand::ok("Trend analysis complete!"));
-            println!("{}", brand::field("Profile name", &args.output_profile));
-            println!("{}", brand::field("Description", &profile.description));
-            println!("{}", brand::field("subtitle_style", &profile.subtitle_style));
-            println!("{}", brand::field("clip_style", &profile.clip_style));
-            println!("{}", brand::field("sfx_vibe", &profile.sfx_vibe));
-            println!("{}", brand::field("bgm_vibe", &profile.bgm_vibe));
-            println!("{}", brand::field("overlay_style", &profile.overlay_style));
-            println!("{}", brand::field("Profile saved to", profile_file.display()));
-            println!("\nAdd to your config.toml:");
-            print!("{toml_snippet}");
-            println!("\nThen use with: --style-profile {}", args.output_profile);
-        }
-
-        Commands::Vocab(args) => {
-            use cli::VocabCommand;
-            use rag::vocab::{seed_defaults, seed_from_url, seed_kamus_alay, seed_openslr_stopwords, VocabCache};
-
-            // Build DB pool if configured
-            let pool = if config.vector_db.enabled && !config.vector_db.supabase_url.is_empty() {
-                match sqlx::PgPool::connect(&config.vector_db.supabase_url).await {
-                    Ok(p) => { println!("{}", brand::ok("Connected to Supabase")); Some(p) }
-                    Err(e) => { eprintln!("{}", brand::err(format!("Cannot connect to Supabase: {e}"))); None }
-                }
-            } else {
-                eprintln!("{}", brand::warn("vector_db.enabled = false or THOTH_SUPABASE_URL not set"));
-                None
-            };
-
-            match args.command {
-                VocabCommand::Seed { source, url, category, subcategory, language,
-                                     column, skip_header, label_filter } => {
-                    let pool = pool.context("Supabase connection required for seed")?;
-
-                    // ── URL mode: download from any URL ──────────────────────
-                    if let Some(ref u) = url {
-                        let cat = category.as_deref().unwrap_or_else(|| {
-                            eprintln!("{}", brand::warn("--category is required when using --url"));
-                            "tone_funny"
-                        });
-                        println!("{}", brand::field("Downloading from", u));
-                        println!("{}", brand::field("params", format!("category={cat}, language={language}, column={column}")));
-                        if let Some(ref f) = label_filter {
-                            println!("{}", brand::field("label_filter", f));
-                        }
-                        let n = seed_from_url(
-                            &pool, u, cat,
-                            subcategory.as_deref(),
-                            &language, column, skip_header,
-                            label_filter.as_deref(),
-                        ).await?;
-                        println!("{}", brand::ok(format!("Seeded {n} words from URL → category={cat}")));
-                        return Ok(());
-                    }
-
-                    // ── Named dataset mode ───────────────────────────────────
-                    match source.as_str() {
-                        "defaults" | "default" => {
-                            let n = seed_defaults(&pool).await?;
-                            println!("{}", brand::ok(format!("Seeded {n} default words to Supabase")));
-                        }
-                        "kamus-alay" => {
-                            let n = seed_kamus_alay(&pool, &language).await?;
-                            println!("{}", brand::ok(format!("Seeded {n} kamus-alay words (language={language})")));
-                        }
-                        "openslr-stopwords" => {
-                            let n = seed_openslr_stopwords(&pool, &language).await?;
-                            println!("{}", brand::ok(format!("Seeded {n} OpenSLR stop words (language={language})")));
-                        }
-                        other => {
-                            eprintln!("{}", brand::err(format!("Unknown source '{other}'.")));
-                            eprintln!("{}", brand::field("Available", "defaults, kamus-alay, openslr-stopwords"));
-                            eprintln!("{}", brand::field("Or use", "--url https://... --category tone_funny"));
-                        }
-                    }
-                }
-                VocabCommand::Add { category, word, subcategory, language, notes } => {
-                    let pool = pool.context("Supabase connection required")?;
-                    VocabCache::add_word(&pool, &category, subcategory.as_deref(), &word, &language, "manual", notes.as_deref()).await?;
-                    println!("{}", brand::ok(format!("Added '{word}' to category '{category}'")));
-                }
-                VocabCommand::List { category } => {
-                    let pool = pool.context("Supabase connection required")?;
-                    let words = VocabCache::list_category(&pool, &category).await?;
-                    if words.is_empty() {
-                        println!("(empty — run 'thoth vocab seed' first)");
-                    } else {
-                        println!("{}", brand::field("Category", format!("{category} ({} words)", words.len())));
-                        for (word, sub, lang, weight) in &words {
-                            let sub_str = sub.as_deref().map(|s| format!("[{s}]")).unwrap_or_default();
-                            println!("  {word}{sub_str} ({lang}, weight={weight:.1})");
-                        }
-                    }
-                }
-                VocabCommand::Review => {
-                    let pool = pool.context("Supabase connection required")?;
-                    let candidates = VocabCache::pending_candidates(&pool).await?;
-                    if candidates.is_empty() {
-                        println!("No pending word candidates to review.");
-                        return Ok(());
-                    }
-                    println!("{}", brand::field("Unreviewed word candidates", candidates.len()));
-                    for (word, cat, occ, ctx) in &candidates {
-                        let cat_str = cat.as_deref().unwrap_or("?");
-                        let ctx_str = ctx.as_deref().unwrap_or("").chars().take(60).collect::<String>();
-                        println!("\n  '{}' (appeared {}×, suggested: {})", word, occ, cat_str);
-                        if !ctx_str.is_empty() { println!("  context: \"{}...\"", ctx_str); }
-                        print!("  [a]pprove / [r]eject / [s]kip: ");
-                        use std::io::{Write, BufRead};
-                        std::io::stdout().flush()?;
-                        let mut input = String::new();
-                        std::io::stdin().lock().read_line(&mut input)?;
-                        match input.trim() {
-                            "a" | "approve" => {
-                                VocabCache::approve_candidate(&pool, word, cat_str, "id").await?;
-                                println!("  {}", brand::ok(format!("Approved → {cat_str}")));
-                            }
-                            "r" | "reject" => {
-                                VocabCache::reject_candidate(&pool, word).await?;
-                                eprintln!("  {}", brand::err("Rejected"));
-                            }
-                            _ => println!("  → Skipped"),
-                        }
-                    }
-                }
-                VocabCommand::Stats => {
-                    let pool = pool.context("Supabase connection required")?;
-                    let cache = VocabCache::load(Some(&pool), config.vector_db.vocab_cache_ttl_secs).await;
-                    println!("Vocabulary Cache Statistics:");
-                    println!("{}", brand::field("Source", if cache.from_db { "Supabase" } else { "Hardcoded defaults" }));
-                    println!("{}", brand::field("tone_funny", format!("{} words", cache.tone_funny.len())));
-                    println!("{}", brand::field("tone_serious", format!("{} words", cache.tone_serious.len())));
-                    println!("{}", brand::field("intro", format!("{} phrases", cache.intro.len())));
-                    println!("{}", brand::field("name_titles", format!("{} patterns", cache.name_titles.len())));
-                    println!("{}", brand::field("stop_words", format!("{} (id) + {} (en)", cache.stop_words_id.len(), cache.stop_words_en.len())));
-                    println!("{}", brand::field("energy_high", format!("{} words", cache.energy_high.len())));
-                    println!("{}", brand::field("energy_low", format!("{} words", cache.energy_low.len())));
-                    println!("{}", brand::field("vibes", format!("{} categories", cache.vibes.len())));
-                    for (vibe, words) in &cache.vibes {
-                        println!("    {vibe}: {} keywords", words.len());
-                    }
-                }
-                VocabCommand::Refresh => {
-                    println!("Cache will refresh automatically on next pipeline run.");
-                    println!("(TTL: {}s = {:.1} minutes)", config.vector_db.vocab_cache_ttl_secs, config.vector_db.vocab_cache_ttl_secs as f64 / 60.0);
-                }
-            }
-        }
-
-        Commands::Thumbnail(args) => {
-            let job = JobContext::new(args.job_id.clone(), args.output_dir.clone())
-                .context("failed to access job directory")?;
-            
-            let moments_path = job.moments_path();
-            if !moments_path.exists() {
-                anyhow::bail!("Moments file not found: {}", moments_path.display());
-            }
-
-            let moments_raw = tokio::fs::read_to_string(&moments_path).await?;
-            let moments: crate::analyze::schema::ViralMomentList = serde_json::from_str(&moments_raw)
-                .context("failed to parse moments.json")?;
-
-            println!("{}", brand::field("Generating thumbnails", format!("{} clips in job '{}'", moments.moments.len(), args.job_id)));
-
-            let mut count = 0;
-            for (i, moment) in moments.moments.iter().enumerate() {
-                let slug = crate::util::fs::slugify(&moment.title);
-                let out_path = job.clip_path(i, &slug);
-                if !out_path.exists() {
-                    eprintln!("  {}", brand::warn(format!("clip missing, skipping: {}", out_path.display())));
-                    continue;
-                }
-
-                let thumb_path = out_path.with_extension("jpg");
-                let duration = moment.duration();
-                
-                let optimal_time = if moment.overlay_at_sec > 0.0 {
-                    moment.overlay_at_sec + 0.5
-                } else if moment.sfx_at_sec > 0.0 {
-                    moment.sfx_at_sec
-                } else {
-                    duration / 2.0
-                };
-                
-                let thumb_time = optimal_time.clamp(0.0, duration.max(0.1));
-                
-                println!("  Generating thumbnail for clip {} at {:.1}s...", i + 1, thumb_time);
-                
-                if let Err(e) = edit::ffmpeg::generate_thumbnail(&out_path, &thumb_path, thumb_time) {
-                    eprintln!("  {}", brand::err(format!("failed: {}", e)));
-                } else {
-                    println!("  {}", brand::ok(format!("saved: {}", thumb_path.display())));
-                    count += 1;
-                }
-            }
-            println!("{}", brand::ok(format!("Done — generated {count} thumbnails")));
-        }
-
-        Commands::Scout(args) => {
-            // ── Resolve scout/ directory ──────────────────────────────────
-            // The binary lives at <repo>/target/release/thoth.exe — the repo
-            // root is 2 levels up.  Fallback: try cwd/scout/ (when running
-            // from the repo root directly during development).
-            let scout_dir = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent()?.parent()?.parent().map(|r| r.join("scout")))
-                .filter(|d| d.join("cli.ts").exists())
-                .or_else(|| {
-                    let cwd = std::env::current_dir().ok()?.join("scout");
-                    if cwd.join("cli.ts").exists() { Some(cwd) } else { None }
-                })
-                .ok_or_else(|| anyhow::anyhow!(
-                    "scout/cli.ts not found — run from the repo root or ensure \
-                     the thoth binary is in <repo>/target/release/"
-                ))?;
-
-            let cli_ts = scout_dir.join("cli.ts");
-
-            // ── Find Bun ─────────────────────────────────────────────────
-            let bun = which::which("bun").map_err(|_| anyhow::anyhow!(
-                "bun not found in PATH — scout requires Bun ≥1.2 \
-                 (https://bun.sh)"
-            ))?;
-
-            // ── Spawn: bun scout/cli.ts <args...> ────────────────────────
-            let status = std::process::Command::new(&bun)
-                .arg(&cli_ts)
-                .args(&args.args)
-                .current_dir(&scout_dir)
-                .stdin(std::process::Stdio::inherit())
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
-                .status()
-                .with_context(|| format!(
-                    "failed to spawn bun {} {}",
-                    cli_ts.display(),
-                    args.args.join(" ")
-                ))?;
-
-            std::process::exit(status.code().unwrap_or(1));
-        }
-    }
-
     Ok(())
 }
