@@ -1,48 +1,112 @@
 # Thoth CLI Reference
 
-Dihasilkan dari `.\target\release\thoth.exe --help` (dan `--help` tiap subcommand),
-binary rilis `build_cuda.bat`. Update dokumen ini setiap kali `src/cli.rs` berubah.
+Generated from `thoth --help` (and each subcommand's `--help`). Keep this in sync
+with `crates/thoth-core/src/cli.rs` whenever the CLI surface changes.
+
+> On Windows the binary is `thoth.exe` (or `.\target\release\thoth.exe`); on
+> Linux/macOS it is `thoth` (or `./target/release/thoth`). The examples below use
+> the bare name `thoth` — assume it is on your `PATH` or prefix the release path.
 
 ```
 Thoth — AI short-form video strategist: source, narrate, and edit viral clips
 
-Usage: thoth.exe <COMMAND>
+Usage: thoth <COMMAND>
 ```
 
-| Command | Fungsi singkat |
+| Command | Purpose |
 |---|---|
-| [`ingest`](#ingest) | Download 1 video YouTube |
-| [`transcribe`](#transcribe) | Transkrip video via Whisper (CUDA) |
-| [`analyze`](#analyze) | Cari momen viral dari transkrip via LLM |
-| [`edit`](#edit) | Potong, reframe, burn subtitle jadi klip |
-| [`run`](#run) | **Pipeline penuh end-to-end** (ingest→transcribe→analyze→edit) |
-| [`trend-analyze`](#trend-analyze) | Analisis video trending → generate style profile |
-| [`vocab`](#vocab) | Kelola vocabulary dinamis (Supabase) |
-| [`thumbnail`](#thumbnail) | Generate ulang thumbnail dari job lama |
-| [`scout`](#scout) | Pass-through ke `scout/cli.ts` (TypeScript, sourcing konten) |
-| `help` | Cetak help (juga: `thoth <command> --help`) |
+| [`run`](#run) | **Full end-to-end pipeline** (ingest → transcribe → analyze → edit) |
+| [`ingest`](#ingest) | Download a single video |
+| [`transcribe`](#transcribe) | Transcribe a video with Whisper |
+| [`analyze`](#analyze) | Find viral moments from a transcript with an LLM |
+| [`edit`](#edit) | Cut, reframe, and burn subtitles into clips |
+| [`worker`](#worker) | Run as a persistent warm worker against the SQLite job queue |
+| [`trend-analyze`](#trend-analyze) | Analyze trending videos → generate a style profile |
+| [`vocab`](#vocab) | Manage the dynamic vocabulary (Supabase) |
+| [`thumbnail`](#thumbnail) | Regenerate thumbnails from a previous job |
+| [`scout`](#scout) | Pass-through to `scout/cli.ts` (TypeScript content sourcing) |
+| `help` | Print help (also: `thoth <command> --help`) |
 
-Global: `-h, --help` · `-V, --version`
+Global flags: `-h, --help` · `-V, --version`
+
+> For running the two-process server + worker deployment, see
+> **[RUNNING.md](RUNNING.md)**. For installation and build, see
+> **[INSTALL.md](INSTALL.md)**.
+
+---
+
+## `run`
+
+**The main pipeline** — end-to-end: ingest → transcribe → analyze → edit.
+
+```
+Usage: thoth run [OPTIONS] [URL]
+```
+
+**Arguments**
+
+| | Description |
+|---|---|
+| `[URL]` | Single video URL (default mode). Takes precedence over `--content`. |
+
+**Options**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--content <FILE>` | — | Content-set JSON from **scout** (`{main, footage, comments, ...}`) → narrator-driven mode. Discovery is handled by scout; Thoth does not search on its own. The footage list is written to `<output_dir>/content_enrichment.json` for the edit/narration stages. |
+| `-o, --output-dir <DIR>` | `./output` | Output directory for all job artifacts |
+| `--provider <PROVIDER>` | `novita` | LLM provider for analysis — see the [provider table](#provider-values) |
+| `--model <MODEL>` | `medium` | Whisper model size — `tiny` \| `base` \| `small` \| `medium` \| `large-v3` |
+| `--max-clips <N>` | `3` | Maximum number of viral clips to produce |
+| `--layout <LAYOUT>` | `vertical` | `vertical` (9:16) \| `horizontal` (16:9) \| `square` (1:1) |
+| `--language <LANG>` | auto | Transcription language code (e.g. `id`, `en`). Auto-detected if empty |
+| `--keywords <KEYWORDS>` | — | Focus-keyword override (comma-separated) — takes priority over automatic LLM extraction; usually unnecessary |
+| `--sfx-intro <FILE>` | — | SFX at the start of each clip |
+| `--bgm <FILE>` | — | Background music (looped, mixed low under the clip audio) |
+| `--bgm-volume <0.0–1.0>` | `0.12` (≈ −18 dB) | BGM volume |
+| `--clip-style <STYLE>` | `fade` | `fade` \| `flash` \| `zoom` \| `smooth` \| `none` |
+| `--social <HANDLE>` | `""` (auto from channel) | Social handle shown on the headline panel |
+| `--headline-dur <SEC>` | `4` | Headline-panel display duration |
+| `--font-dir <DIR>` | `assets/fonts` | Font folder (`Poppins-Bold.ttf` / `Poppins-Regular.ttf` auto-download if missing) |
+| `--font-bold <FILE>` | `Poppins-Bold.ttf` | Bold font for headline & subtitles (relative to `--font-dir`) |
+| `--font-regular <FILE>` | `Poppins-Regular.ttf` | Regular font for source-credit text |
+| `--social-icon <PNG>` | — | PNG icon replacing the `@handle` text on the headline panel |
+| `--social-icon-size <PX>` | `48` | Displayed icon size |
+| `--social-icon-min-size <PX>` | `16` | Minimum icon size |
+| `--social-icon-max-size <PX>` | `128` | Maximum icon size |
+| `--resume <JOB_ID>` | — | Resume a previously failed job (skips already-completed stages) |
+| `--style-profile <NAME>` | `auto` | Apply a named style profile from `config.toml [styles.profiles]` — overrides the LLM's per-clip `subtitle_style`/`clip_style`/`sfx_vibe`/`bgm_vibe`/`overlay_style`. `auto` lets the LLM decide per clip |
+
+```bash
+thoth run "https://youtu.be/xxxx"
+thoth run ./video.mp4 --max-clips 5 --layout vertical
+thoth run "https://youtu.be/xxxx" --style-profile tiktok_id_2025
+thoth run "https://youtu.be/xxxx" --provider claude --layout square
+thoth run --content scout/output/thoth_content_set.json --provider novita   # narrator-driven
+thoth run --resume <JOB_ID>
+```
+
+> **Narrator-driven mode**: run with `--content set.json` (or enable `[narration]`)
+> to build the video around a narrator voiceover. Use `--provider novita` for the
+> narration (the default `groq` is rate-limited and will fall back to clip-mode).
 
 ---
 
 ## `ingest`
 
-Download a YouTube video for processing.
+Download a video for processing.
 
 ```
-Usage: thoth.exe ingest [OPTIONS] <URL>
+Usage: thoth ingest [OPTIONS] <URL>
 ```
 
-**Argumen**
-| | Deskripsi |
+| Argument | Description |
 |---|---|
-| `<URL>` | YouTube URL to download |
+| `<URL>` | Video URL to download |
 
-**Opsi**
-| Flag | Default | Deskripsi |
+| Flag | Default | Description |
 |---|---|---|
-| `-o, --output-dir <OUTPUT_DIR>` | `./output` | Output directory for all job artifacts |
+| `-o, --output-dir <DIR>` | `./output` | Output directory for all job artifacts |
 | `--force` | — | Force re-download even if the file already exists |
 
 ```bash
@@ -54,21 +118,19 @@ thoth ingest "https://youtu.be/xxxx" --force -o ./output
 
 ## `transcribe`
 
-Transcribe a video file using Whisper (CUDA).
+Transcribe a video file using Whisper.
 
 ```
-Usage: thoth.exe transcribe [OPTIONS] <VIDEO_PATH>
+Usage: thoth transcribe [OPTIONS] <VIDEO_PATH>
 ```
 
-**Argumen**
-| | Deskripsi |
+| Argument | Description |
 |---|---|
 | `<VIDEO_PATH>` | Path to the source video file |
 
-**Opsi**
-| Flag | Default | Deskripsi |
+| Flag | Default | Description |
 |---|---|---|
-| `-o, --output-dir <OUTPUT_DIR>` | `./output` | Output directory for transcript JSON |
+| `-o, --output-dir <DIR>` | `./output` | Output directory for the transcript JSON |
 | `--model <MODEL>` | `medium` | Whisper model size — `tiny` \| `base` \| `small` \| `medium` \| `large-v3` |
 | `--language <LANGUAGE>` | auto | Language code (e.g. `id`, `en`). Auto-detects if empty |
 
@@ -83,42 +145,43 @@ thoth transcribe ./output/video.mp4 --model large-v3 --language id
 Identify viral moments using an LLM.
 
 ```
-Usage: thoth.exe analyze [OPTIONS] <TRANSCRIPT_PATH>
+Usage: thoth analyze [OPTIONS] <TRANSCRIPT_PATH>
 ```
 
-**Argumen**
-| | Deskripsi |
+| Argument | Description |
 |---|---|
-| `<TRANSCRIPT_PATH>` | Path to the transcript JSON file produced by `transcribe` |
+| `<TRANSCRIPT_PATH>` | Path to the transcript JSON produced by `transcribe` |
 
-**Opsi**
-| Flag | Default | Deskripsi |
+| Flag | Default | Description |
 |---|---|---|
-| `--provider <PROVIDER>` | `novita` | LLM provider — lihat [tabel provider](#provider-values-analyze--run--trend-analyze) |
+| `--provider <PROVIDER>` | `novita` | LLM provider — see the [provider table](#provider-values) |
 | `--max-clips <N>` | `3` | Maximum number of viral clips to find |
-| `--keywords <KEYWORDS>` | — | **[Override opsional]** Focus keywords, comma-separated (mis. `"prabowo,dollar,AI"`). Prioritas di atas ekstraksi otomatis LLM — biasanya TIDAK perlu diisi |
-| `--video-path <VIDEO_PATH>` | — | Path video sumber; jika di-set DAN `[vision] enabled = true`, analyze mengekstrak frame dan menilai tiap kandidat momen secara visual (humor/impact/novelty/engagement) sebelum memilih klip final |
-| `--title <TITLE>` | `""` | Judul video (opsional — metadata untuk RAG database) |
-| `--channel <CHANNEL>` | `""` | Nama channel/creator (opsional — metadata untuk RAG database) |
+| `--keywords <KEYWORDS>` | — | *[Optional override]* Focus keywords, comma-separated. Takes priority over automatic LLM extraction — usually unnecessary |
+| `--video-path <VIDEO_PATH>` | — | Source video path; if set **and** `[vision] enabled = true`, analyze extracts frames and scores each candidate moment visually (humor/impact/novelty/engagement) before picking the final clips |
+| `--title <TITLE>` | `""` | Video title (optional — metadata for the RAG database) |
+| `--channel <CHANNEL>` | `""` | Channel/creator name (optional — metadata for the RAG database) |
 
 ```bash
 thoth analyze ./output/transcript.json --provider claude --max-clips 5
 ```
 
-### Provider values (`analyze` / `run` / `trend-analyze`)
-| Provider | Catatan |
-|---|---|
-| `groq` | — |
-| `openai` | — |
-| `claude` | Anthropic — `claude-sonnet-4-5` \| `claude-opus-4-5` \| `claude-haiku-3-5`. Set `THOTH_CLAUDE_API_KEY` + opsional `claude_model` di `config.toml` |
-| `gemini` | Google — `gemini-2.0-flash` \| `gemini-1.5-pro` \| `gemini-2.5-pro`. Set `THOTH_GEMINI_API_KEY` (free key: aistudio.google.com/apikey) |
-| `vllm` | Self-hosted vLLM server (OpenAI-compatible). Set `vllm_base_url` + `vllm_model` di `config.toml` |
-| `ollama` | — |
-| `novita` **(default `analyze`/`run`)** | Cepat & murah, OpenAI-compatible. Model: `meta-llama/llama-3.3-70b-instruct`, `deepseek/deepseek-r1-turbo`, dll. Set `THOTH_NOVITA_API_KEY` |
-| `together` | OpenAI-compatible, pilihan model luas. Set `THOTH_TOGETHER_API_KEY` |
-| `fireworks` | OpenAI-compatible, open-source serving cepat. Set `THOTH_FIREWORKS_API_KEY` |
+### Provider values
 
-> `trend-analyze` memakai daftar provider yang sama tapi default-nya `gemini` (vision-capable untuk analisis gaya visual).
+Used by `analyze`, `run`, and `trend-analyze`.
+
+| Provider | Notes |
+|---|---|
+| `novita` **(default for `analyze`/`run`)** | Fast & cheap, OpenAI-compatible. Models: `meta-llama/llama-3.3-70b-instruct`, `deepseek/deepseek-r1-turbo`, etc. Set `THOTH_NOVITA_API_KEY` |
+| `groq` | OpenAI-compatible; also provides the Whisper API for `transcribe`. Rate-limited free tier |
+| `openai` | Set `THOTH_OPENAI_API_KEY` |
+| `claude` | Anthropic — `claude-sonnet-4-5` \| `claude-opus-4-5` \| `claude-haiku-3-5`. Set `THOTH_CLAUDE_API_KEY` + optional `claude_model` in `config.toml` |
+| `gemini` | Google — `gemini-2.0-flash` \| `gemini-1.5-pro` \| `gemini-2.5-pro`. Set `THOTH_GEMINI_API_KEY` |
+| `vllm` | Self-hosted vLLM server (OpenAI-compatible). Set `vllm_base_url` + `vllm_model` in `config.toml` |
+| `ollama` | Local Ollama server (OpenAI-compatible) |
+| `together` | OpenAI-compatible, wide model selection. Set `THOTH_TOGETHER_API_KEY` |
+| `fireworks` | OpenAI-compatible, fast open-source serving. Set `THOTH_FIREWORKS_API_KEY` |
+
+> `trend-analyze` uses the same provider list but defaults to `gemini` (vision-capable, for visual-style analysis).
 
 ---
 
@@ -127,45 +190,44 @@ thoth analyze ./output/transcript.json --provider claude --max-clips 5
 Cut, reframe, and burn subtitles into clips.
 
 ```
-Usage: thoth.exe edit [OPTIONS] <VIDEO_PATH> <MOMENTS_PATH> <TRANSCRIPT_PATH>
+Usage: thoth edit [OPTIONS] <VIDEO_PATH> <MOMENTS_PATH> <TRANSCRIPT_PATH>
 ```
 
-**Argumen**
-| | Deskripsi |
+| Argument | Description |
 |---|---|
 | `<VIDEO_PATH>` | Path to the source video file |
-| `<MOMENTS_PATH>` | Path to the viral moments JSON produced by `analyze` |
-| `<TRANSCRIPT_PATH>` | Path to the transcript JSON (untuk burn subtitle) |
+| `<MOMENTS_PATH>` | Path to the viral-moments JSON produced by `analyze` |
+| `<TRANSCRIPT_PATH>` | Path to the transcript JSON (for subtitle burn-in) |
 
-**Opsi**
-| Flag | Default | Deskripsi |
+| Flag | Default | Description |
 |---|---|---|
 | `--layout <LAYOUT>` | `vertical` | `vertical` (9:16 TikTok/Reels/Shorts) \| `horizontal` (16:9) \| `square` (1:1 IG feed) |
-| `-o, --output-dir <OUTPUT_DIR>` | `./output` | Output directory for rendered clips |
-| `--sfx-intro <FILE>` | — | SFX di awal tiap klip (MP3/WAV/AAC), di-mix dengan audio video |
-| `--bgm <FILE>` | — | BGM di-loop otomatis, mixed di volume rendah di bawah suara klip |
-| `--bgm-volume <0.0–1.0>` | `0.12` (≈ −18 dB) | Volume BGM |
-| `--clip-style <STYLE>` | `fade` | Transisi IN/OUT — lihat tabel di bawah |
-| `--social <HANDLE>` | `""` | Handle sosial media di kiri-atas panel headline (mis. `@namaakun`) |
-| `--source-channel <NAME>` | — | Nama channel/creator untuk source credit di panel headline |
-| `--headline-dur <SEC>` | `4` | Durasi tampil panel headline (detik) |
-| `--font-dir <DIR>` | `assets/fonts` | Folder font (`Poppins-Bold.ttf`/`Poppins-Regular.ttf` auto-download jika hilang) |
-| `--font-bold <FILE>` | `Poppins-Bold.ttf` | Font bold untuk headline & subtitle (relatif ke `--font-dir`) |
-| `--font-regular <FILE>` | `Poppins-Regular.ttf` | Font regular untuk teks source credit |
-| `--social-icon <PNG>` | — | Icon PNG menggantikan teks `@social_handle` di panel headline |
-| `--social-icon-size <PX>` | `48` | Ukuran tampil icon sosial |
-| `--social-icon-min-size <PX>` | `16` | Batas minimum ukuran icon |
-| `--social-icon-max-size <PX>` | `128` | Batas maksimum ukuran icon |
-| `--style-profile <NAME>` | `auto` | Terapkan style profile bernama dari `config.toml [styles.profiles]` — override `subtitle_style`/`clip_style`/`sfx_vibe`/`bgm_vibe`/`overlay_style` pilihan LLM. `auto` = biarkan LLM memutuskan per-klip |
+| `-o, --output-dir <DIR>` | `./output` | Output directory for rendered clips |
+| `--sfx-intro <FILE>` | — | SFX at the start of each clip (MP3/WAV/AAC), mixed with the video audio |
+| `--bgm <FILE>` | — | BGM, auto-looped, mixed low under the clip audio |
+| `--bgm-volume <0.0–1.0>` | `0.12` (≈ −18 dB) | BGM volume |
+| `--clip-style <STYLE>` | `fade` | IN/OUT transition — see the table below |
+| `--social <HANDLE>` | `""` | Social handle in the top-left of the headline panel (e.g. `@handle`) |
+| `--source-channel <NAME>` | — | Channel/creator name for source credit on the headline panel |
+| `--headline-dur <SEC>` | `4` | Headline-panel display duration (seconds) |
+| `--font-dir <DIR>` | `assets/fonts` | Font folder (`Poppins-Bold.ttf` / `Poppins-Regular.ttf` auto-download if missing) |
+| `--font-bold <FILE>` | `Poppins-Bold.ttf` | Bold font for headline & subtitles (relative to `--font-dir`) |
+| `--font-regular <FILE>` | `Poppins-Regular.ttf` | Regular font for source-credit text |
+| `--social-icon <PNG>` | — | PNG icon replacing the `@handle` text on the headline panel |
+| `--social-icon-size <PX>` | `48` | Displayed icon size |
+| `--social-icon-min-size <PX>` | `16` | Minimum icon size |
+| `--social-icon-max-size <PX>` | `128` | Maximum icon size |
+| `--style-profile <NAME>` | `auto` | Apply a named style profile from `config.toml [styles.profiles]` |
 
 ### `--clip-style` values
-| Value | Deskripsi |
+
+| Value | Description |
 |---|---|
-| `fade` **(default)** | Fade from/to black — cocok untuk semua konten |
-| `flash` | Flash from/to white — energik, cocok untuk meme/reaction |
-| `zoom` | Ken Burns zoom-in push di awal + fade out |
-| `smooth` | Fade panjang lembut (0.8s) — sinematik/profesional |
-| `none` | Tanpa transisi — instant cut |
+| `fade` **(default)** | Fade from/to black — works for any content |
+| `flash` | Flash from/to white — energetic, good for memes/reactions |
+| `zoom` | Ken Burns zoom-in push at the start + fade out |
+| `smooth` | Long, soft fade (0.8s) — cinematic/professional |
+| `none` | No transition — instant cut |
 
 ```bash
 thoth edit ./output/video.mp4 ./output/moments.json ./output/transcript.json \
@@ -174,56 +236,26 @@ thoth edit ./output/video.mp4 ./output/moments.json ./output/transcript.json \
 
 ---
 
-## `run`
+## `worker`
 
-**Pipeline utama** — end-to-end: ingest → transcribe → analyze → edit.
+Run as a persistent warm worker: pull queued jobs from the shared SQLite queue and
+execute them in-process (models stay resident between jobs). This is the engine
+half of the two-process server + worker deployment — see **[RUNNING.md](RUNNING.md)**
+for the full launch story.
 
 ```
-Usage: thoth.exe run [OPTIONS] [URL]
+Usage: thoth worker [OPTIONS]
 ```
 
-**Argumen**
-| | Deskripsi |
-|---|---|
-| `[URL]` | Single video URL (mode default). Punya prioritas di atas `--content`. Contoh: `thoth run --url https://youtu.be/abc` |
-
-**Opsi**
-| Flag | Default | Deskripsi |
-|---|---|---|
-| `--content <FILE>` | — | Content-set JSON dari **scout** (`{main, footage, comments, ...}`) → mode narrator-driven. Discovery ditangani scout, Thoth tidak lagi search sendiri. Footage list ditulis ke `<output_dir>/content_enrichment.json` untuk stage edit/narration |
-| `-o, --output-dir <DIR>` | `./output` | Output directory untuk semua artifact job |
-| `--provider <PROVIDER>` | `novita` | LLM provider untuk analisis — lihat [tabel provider](#provider-values-analyze--run--trend-analyze) |
-| `--model <MODEL>` | `medium` | Whisper model size — `tiny`\|`base`\|`small`\|`medium`\|`large-v3` |
-| `--max-clips <N>` | `3` | Jumlah maksimum klip viral yang dihasilkan |
-| `--layout <LAYOUT>` | `vertical` | `vertical`\|`horizontal`\|`square` |
-| `--language <LANG>` | auto | Kode bahasa transkripsi (mis. `id`, `en`) |
-| `--keywords <KEYWORDS>` | — | Override focus keyword (comma-separated) — prioritas di atas ekstraksi otomatis LLM |
-| `--sfx-intro <FILE>` | — | SFX di awal tiap klip |
-| `--bgm <FILE>` | — | BGM (looped, mixed rendah) |
-| `--bgm-volume <0.0–1.0>` | `0.12` | Volume BGM |
-| `--clip-style <STYLE>` | `fade` | `fade`\|`flash`\|`zoom`\|`smooth`\|`none` |
-| `--social <HANDLE>` | `""` (auto dari channel) | Handle sosial di panel headline |
-| `--headline-dur <SEC>` | `4` | Durasi panel headline |
-| `--font-dir <DIR>` | `assets/fonts` | Folder font |
-| `--font-bold <FILE>` | `Poppins-Bold.ttf` | Font bold |
-| `--font-regular <FILE>` | `Poppins-Regular.ttf` | Font regular |
-| `--social-icon <PNG>` | — | Icon PNG pengganti teks `@social_handle` |
-| `--social-icon-size <PX>` | `48` | Ukuran tampil icon |
-| `--social-icon-min-size <PX>` | `16` | Batas minimum |
-| `--social-icon-max-size <PX>` | `128` | Batas maksimum |
-| `--resume <JOB_ID>` | — | Lanjutkan job gagal sebelumnya (skip stage yang sudah selesai) |
-| `--style-profile <NAME>` | `auto` | Style profile bernama dari `config.toml [styles.profiles]` |
+| Flag | Default | Env | Description |
+|---|---|---|---|
+| `--db <DB>` | `thoth.db` | `THOTH_DB` | Path to the shared SQLite job database (the same file `thoth-server` opens) |
 
 ```bash
-thoth run "https://youtu.be/xxxx"
-thoth run ./video.mp4 --max-clips 5 --layout vertical
-thoth run "https://youtu.be/xxxx" --style-profile tiktok_id_2025
-thoth run "https://youtu.be/xxxx" --provider claude --layout square
-thoth run --content scout/output/thoth_content_set.json --provider novita   # narrator-driven, dari scout
-thoth run --resume <JOB_ID>
+thoth worker --db ./thoth.db
+# or:
+THOTH_DB=./thoth.db thoth worker
 ```
-
-> **Narrator-driven**: jalankan dengan `--content set.json` (atau aktifkan `[narration]`) untuk membangun video di sekitar voiceover narator. Gunakan `--provider novita` untuk narasi (default `groq` kena rate-limit → fallback clip-mode).
 
 ---
 
@@ -232,108 +264,108 @@ thoth run --resume <JOB_ID>
 Analyze trending videos to generate a reusable style profile.
 
 ```
-Usage: thoth.exe trend-analyze [OPTIONS] --output-profile <OUTPUT_PROFILE> <URL>
+Usage: thoth trend-analyze [OPTIONS] --output-profile <OUTPUT_PROFILE> <URL>
 ```
 
-**Argumen**
-| | Deskripsi |
+| Argument | Description |
 |---|---|
-| `<URL>` | URL sumber sample video. Contoh: TikTok hashtag `https://www.tiktok.com/tag/suratirta`, YouTube search `ytsearch5:trending shorts indonesia 2025`, atau video tunggal |
+| `<URL>` | Sample-video source URL. Examples: a hashtag page, a search query (e.g. `ytsearch5:trending shorts 2025`), or a single video |
 
-**Opsi**
-| Flag | Default | Deskripsi |
+| Flag | Default | Description |
 |---|---|---|
-| `--sample <N>` | `5` | Jumlah video sample yang di-download & dianalisis |
-| `--provider <PROVIDER>` | `gemini` | Vision LLM provider untuk analisis gaya: `gemini`\|`openai`\|`claude`\|`vllm` (lihat [tabel provider](#provider-values-analyze--run--trend-analyze)) |
-| `--output-profile <NAME>` | **wajib** | Nama style profile hasil generate (disimpan ke `config.toml` + `style_profiles/`) |
-| `--output-dir <DIR>` | `style_profiles` | Folder simpan sample clip yang di-download + profile hasil generate |
+| `--sample <N>` | `5` | Number of sample videos to download & analyze |
+| `--provider <PROVIDER>` | `gemini` | Vision LLM provider for style analysis: `gemini` \| `openai` \| `claude` \| `vllm` (see the [provider table](#provider-values)) |
+| `--output-profile <NAME>` | **required** | Name of the generated style profile (saved to `config.toml` + `style_profiles/`) |
+| `--output-dir <DIR>` | `style_profiles` | Folder for downloaded sample clips + the generated profile |
 
 ```bash
-thoth trend-analyze "https://www.tiktok.com/tag/suratirta" --sample 10 --output-profile tiktok_id_latest
+thoth trend-analyze "https://www.tiktok.com/tag/example" --sample 10 --output-profile tiktok_id_latest
 ```
 
 ---
 
 ## `vocab`
 
-Manage dynamic vocabulary (word lists stored in Supabase).
+Manage the dynamic vocabulary (word lists stored in Supabase).
 
 ```
-Usage: thoth.exe vocab <COMMAND>
+Usage: thoth vocab <COMMAND>
 ```
 
-| Subcommand | Fungsi |
+| Subcommand | Purpose |
 |---|---|
-| `add` | Tambah 1 kata ke kategori vocabulary |
-| `list` | List semua kata dalam 1 kategori |
-| `review` | Review kandidat kata auto-discovered (approve/reject) |
-| `seed` | Seed vocabulary ke Supabase dari dataset built-in atau URL |
-| `refresh` | Refresh cache vocabulary in-memory dari Supabase |
-| `stats` | Tampilkan statistik vocabulary |
+| `add` | Add one word to a vocabulary category |
+| `list` | List all words in a category |
+| `review` | Review auto-discovered candidate words (approve/reject) |
+| `seed` | Seed the vocabulary into Supabase from a built-in dataset or a URL |
+| `refresh` | Refresh the in-memory vocabulary cache from Supabase |
+| `stats` | Show vocabulary statistics |
 
 ### `vocab add`
+
 ```
-Usage: thoth.exe vocab add [OPTIONS] <CATEGORY> <WORD>
+Usage: thoth vocab add [OPTIONS] <CATEGORY> <WORD>
 ```
-| | Deskripsi |
+
+| | Description |
 |---|---|
-| `<CATEGORY>` | `tone_funny`\|`tone_serious`\|`intro`\|`name_titles`\|`stop_words`\|`energy_high`\|`energy_low`\|`vibe` |
-| `<WORD>` | Kata/frasa yang ditambahkan |
-| `--subcategory <SUB>` | Untuk `vibe`: `impact`\|`whoosh`\|`ding`\|`comedy`\|...; untuk `stop_words`: `id`\|`en` |
-| `--language <LANG>` | `id`\|`en`\|`mixed` (default `id`) |
-| `--notes <TEXT>` | Catatan opsional kenapa kata ini penting |
+| `<CATEGORY>` | `tone_funny` \| `tone_serious` \| `intro` \| `name_titles` \| `stop_words` \| `energy_high` \| `energy_low` \| `vibe` |
+| `<WORD>` | The word/phrase to add |
+| `--subcategory <SUB>` | For `vibe`: `impact` \| `whoosh` \| `ding` \| `comedy` \| …; for `stop_words`: `id` \| `en` |
+| `--language <LANG>` | `id` \| `en` \| `mixed` (default `id`) |
+| `--notes <TEXT>` | Optional note on why the word matters |
 
 ```bash
 thoth vocab add tone_funny "wkwkwk" --language id
 ```
 
 ### `vocab list`
-```
-Usage: thoth.exe vocab list <CATEGORY>
-```
+
 ```bash
 thoth vocab list tone_funny
 ```
 
 ### `vocab review`
+
+Interactive — review auto-discovered candidate words and approve/reject them one by one.
+
+```bash
+thoth vocab review
 ```
-Usage: thoth.exe vocab review
-```
-Interaktif — review kandidat kata yang ditemukan otomatis, approve/reject satu per satu.
 
 ### `vocab seed`
-```
-Usage: thoth.exe vocab seed [OPTIONS]
-```
-Dataset built-in: `defaults` (semua word list hardcoded — jalankan sekali setelah SQL setup),
-`kamus-alay` (slang Indonesia, ~3000 kata), `openslr-stopwords` (stop word Indonesia, ~758 kata).
-Atau `--url` untuk download dari URL file langsung — format didukung (auto-detect dari
-ekstensi/konten): `.txt` (1 kata/baris), `.csv`/`.tsv` (kolom pertama = kata, kedua opsional =
-label/terjemahan), `.json` (array string, atau array objek `{"word":..., "label":...}`).
 
-| Flag | Default | Deskripsi |
+```
+Usage: thoth vocab seed [OPTIONS]
+```
+
+Built-in datasets: `defaults` (all hardcoded word lists — run once after SQL setup),
+`kamus-alay` (Indonesian slang, ~3000 words), `openslr-stopwords` (Indonesian
+stop-words, ~758 words). Or use `--url` to download from a direct file URL. Supported
+formats (auto-detected from extension/content): `.txt` (one word per line),
+`.csv`/`.tsv` (first column = word, optional second = label/translation), `.json`
+(array of strings, or array of `{"word":…, "label":…}` objects).
+
+| Flag | Default | Description |
 |---|---|---|
-| `--source <SOURCE>` | `defaults` | `defaults`\|`kamus-alay`\|`openslr-stopwords` |
-| `--url <URL>` | — | Download dari URL alih-alih dataset built-in |
-| `--category <CATEGORY>` | — | Kategori target untuk kata dari `--url` (**wajib** jika `--url` dipakai) |
-| `--subcategory <SUB>` | — | Mis. nama vibe (`impact`) atau bahasa stop_words (`id`/`en`) |
-| `--language <LANG>` | `id` | Kode bahasa untuk kata yang di-seed |
-| `--column <N>` | `0` | Index kolom (0-based) yang dipakai sebagai kata, untuk CSV/TSV |
-| `--skip-header` | — | Skip baris header di CSV/TSV |
-| `--label-filter <TEXT>` | — | Filter: hanya seed baris yang kolom[1]-nya mengandung teks ini (CSV/TSV) |
+| `--source <SOURCE>` | `defaults` | `defaults` \| `kamus-alay` \| `openslr-stopwords` |
+| `--url <URL>` | — | Download from a URL instead of a built-in dataset |
+| `--category <CATEGORY>` | — | Target category for words from `--url` (**required** when `--url` is used) |
+| `--subcategory <SUB>` | — | e.g. a vibe name (`impact`) or a stop-words language (`id`/`en`) |
+| `--language <LANG>` | `id` | Language code for the seeded words |
+| `--column <N>` | `0` | 0-based column index to use as the word, for CSV/TSV |
+| `--skip-header` | — | Skip the header row in CSV/TSV |
+| `--label-filter <TEXT>` | — | Only seed rows whose column[1] contains this text (CSV/TSV) |
 
 ```bash
 thoth vocab seed --source defaults
 thoth vocab seed --url https://example.com/words.txt --category tone_funny
 ```
 
-### `vocab refresh`
+### `vocab refresh` / `vocab stats`
+
 ```bash
 thoth vocab refresh
-```
-
-### `vocab stats`
-```bash
 thoth vocab stats
 ```
 
@@ -341,21 +373,19 @@ thoth vocab stats
 
 ## `thumbnail`
 
-Generate thumbnails for previously rendered clips.
+Regenerate thumbnails for previously rendered clips.
 
 ```
-Usage: thoth.exe thumbnail [OPTIONS] <JOB_ID>
+Usage: thoth thumbnail [OPTIONS] <JOB_ID>
 ```
 
-**Argumen**
-| | Deskripsi |
+| Argument | Description |
 |---|---|
-| `<JOB_ID>` | ID job yang berisi output clips |
+| `<JOB_ID>` | ID of the job that contains the output clips |
 
-**Opsi**
-| Flag | Default | Deskripsi |
+| Flag | Default | Description |
 |---|---|---|
-| `-o, --output-dir <DIR>` | `./output` | Direktori tempat job disimpan |
+| `-o, --output-dir <DIR>` | `./output` | Directory where jobs are stored |
 
 ```bash
 thoth thumbnail <JOB_ID>
@@ -365,18 +395,17 @@ thoth thumbnail <JOB_ID>
 
 ## `scout`
 
-Run scout content-sourcing commands (TypeScript, requires Node ≥24).
+Run scout content-sourcing commands (TypeScript, requires Node ≥ 24).
 
-Delegates to `scout/cli.ts` — semua sub-command & flag scout diteruskan transparan
-(`trailing_var_arg`). Lihat dokumentasi lengkap di [README.md § `scout`](../README.md#scout--content-sourcing-typescript-pass-through)
-dan [scout/README.md](../scout/README.md).
+Delegates to `scout/cli.ts` — every scout subcommand & flag is forwarded transparently
+(`trailing_var_arg`). See [scout/README.md](../scout/README.md) for full documentation.
 
 ```
-Usage: thoth.exe scout [ARGS]...
+Usage: thoth scout [ARGS]...
 ```
 
-Available: `browser`, `discover`, `trending`, `run`, `comments`, `footage`, `figures`,
-`enrich`, `images`, `validate`, `pulse`, `topics`, `news`.
+Available subcommands: `browser`, `discover`, `trending`, `run`, `comments`, `footage`,
+`figures`, `enrich`, `images`, `validate`, `pulse`, `topics`, `news`.
 
 ```bash
 thoth scout browser status
@@ -387,5 +416,4 @@ thoth scout validate <set.json>
 
 ---
 
-*Dihasilkan 2026-07-07 dari binary rilis (`build_cuda.bat`, EXIT 0). Regenerasi manual:
-`.\target\release\thoth.exe <command> --help` untuk tiap subcommand di atas.*
+*Regenerate any section manually with `thoth <command> --help`.*
