@@ -27,7 +27,12 @@ async fn main() -> anyhow::Result<()> {
 
     let app = thoth_server::build_router(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
+    // Loopback:8787 by default; THOTH_ADDR overrides (e.g. "0.0.0.0:9000" to
+    // expose, or another port when 8787 is taken). Parsed as a SocketAddr.
+    let addr: SocketAddr = std::env::var("THOTH_ADDR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 8787)));
     tracing::info!("thoth-server listening on http://{addr} (db: {db_path})");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

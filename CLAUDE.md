@@ -75,6 +75,30 @@ kedua adapter:
 Worker channel: `thoth <cmd> --progress-json` mengeluarkan `ProgressEvent` NDJSON
 di stdout; log manusia tetap di stderr. Jangan campur keduanya.
 
+### Kontrak Interface: SQLite job-queue (thoth-server ↔ thoth worker)
+
+`thoth-server` (REST/SSE) dan `thoth worker` (engine hangat) adalah **dua proses
+peer yang independen** — tanpa parent/child, tanpa stdio antar-proses. Mereka
+berkomunikasi HANYA lewat satu file SQLite (WAL) bersama. Dua crate leaf adalah
+permukaan-kontrak antar keduanya:
+
+1. **`crates/thoth-jobs`** — skema SQLite + tipe `JobSpec`/`JobRecord`/`JobStatus`/
+   `JobEvent` + `JobStore` (enqueue/claim_next/append_event/finish/reap_stale/…).
+   Diimpor oleh **thoth-server DAN thoth-core (worker)** → perubahan signature
+   dipaksa compiler di kedua sisi.
+2. **`crates/thoth-types`** — `ProgressEvent` (leaf wire type; thoth-server tak
+   perlu link dep berat thoth-core).
+
+Aturan sinkronisasi:
+- **Perubahan skema SQL** WAJIB migration BARU di `crates/thoth-jobs/migrations/`
+  (jangan edit migration lama — DB yang sudah ada tak akan re-run).
+- **Perubahan tipe/method `thoth-jobs`** menyentuh KEDUA proses (compiler-enforced).
+- **`dashboard/src/api.ts`** TIDAK dipaksa compiler → update manual bila
+  `JobSpec`/`JobRecord`/`JobStatus`/`JobEvent` berubah (mis. status `cancelled`).
+- Worker memiliki proses anak-nya (ffmpeg/whisper/python) di dalam prosesnya
+  sendiri → cancel bersifat **kooperatif** via flag DB `cancel_requested`, BUKAN
+  taskkill/kill process-tree. Lintas-platform tanpa hack OS.
+
 ## Kontrak Content-Set dari scout
 
 Discovery 100% di layer **`scout/`** (script TypeScript di folder repo, jalan native via Bun, dijalankan langsung — lihat
