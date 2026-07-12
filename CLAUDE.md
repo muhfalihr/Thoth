@@ -18,13 +18,16 @@ File tersebut berisi:
 4. 🔵 **Beat-sync SFX** — Sinkronisasi SFX ke beat musik
 5. 🔵 **Full Adaptive Trend Learning** — Auto-update style dari TikTok/YT trending
 
-## Aturan Update Blueprint
+## Aturan Update Changelog & Blueprint
 
-Setiap kali ada implementasi baru atau perubahan status, **langsung update `BLUEPRINT.md`**:
+**Setiap perubahan (kode, config, docs, fix, apa pun) WAJIB dicatat di `CHANGELOG.md`, BUKAN di `BLUEPRINT.md`.**
+- Tambah entri pada kategori yang sesuai (`Added` / `Changed` / `Fixed`) di bawah tag rilis teratas — saat ini semua terkonsolidasi di `## [0.1.0]`; buat `## [Unreleased]` baru di atasnya hanya bila memang membuka siklus rilis berikutnya. Gaya Keep-a-Changelog.
+- Detail teknis mendalam sekalipun ditulis sebagai bullet Keep-a-Changelog di `CHANGELOG.md` — **jangan** lagi menambah baris `*Last updated:*` naratif panjang di `BLUEPRINT.md`.
+
+**`BLUEPRINT.md` HANYA diupdate saat _status implementasi_ berubah atau arsitektur berubah** — bukan untuk log perubahan harian:
 1. Ubah status dari ❌ → ✅ atau ⚠️
 2. Isi kolom "Implementasi" dan "File"
 3. Update persentase di tabel "Status Keseluruhan"
-4. Perbarui tanggal di baris terakhir file
 
 ## Stack Teknis
 
@@ -50,7 +53,7 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
    ```
    Jika ada test yang fail, perbaiki dulu sebelum melaporkan selesai.
 
-3. **Laporkan hasil** — baru setelah build ✅ dan test ✅ selesai, tandai task completed dan update BLUEPRINT.md.
+3. **Laporkan hasil** — baru setelah build ✅ dan test ✅ selesai, tandai task completed dan catat perubahan di `CHANGELOG.md` (lihat "Aturan Update Changelog & Blueprint").
 
 **Jangan** melaporkan fitur sebagai selesai hanya dari `cargo check` — harus full `build_cuda.bat`.
 
