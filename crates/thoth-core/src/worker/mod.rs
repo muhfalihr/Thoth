@@ -65,6 +65,8 @@ async fn execute_pipeline(job: JobRecord, config: AppConfig) -> anyhow::Result<(
     }
     argv.push("--output-dir".into());
     argv.push(job.output_dir.clone());
+    argv.push("--job-id".into());
+    argv.push(job.id.clone());
     // ponytail: spec.params is always {} from the server today; map its keys to
     // flags here if/when the REST API grows typed run knobs.
 
