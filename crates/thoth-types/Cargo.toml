@@ -1,6 +1,6 @@
 [package]
 name = "thoth-types"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 
 # Leaf crate: the wire types shared between the worker (thoth/thoth-core) and

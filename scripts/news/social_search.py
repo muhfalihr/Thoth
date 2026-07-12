@@ -19,7 +19,7 @@ Engines (selected with --engine):
                    automatically if Scrapling is not installed.
     auto         — Scrapling for tiktok/instagram if available, else Playwright.
 
-Design goals (mirrors the Animelorian style needs):
+Design goals (mirrors the montage-style enrichment needs):
     • collect MORE THAN ONE relevant clip across platforms for enrichment
     • be resilient to layout changes (multiple selector fallbacks + ytInitialData)
     • degrade gracefully: one platform/query failing never aborts the rest

@@ -504,20 +504,22 @@ max_dur_sec      = 10800                     # main video maksimal (3 jam)
 expand_keywords  = true
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Animelorian — Reaction-montage composite style
+# Montage — paper-grid composite style
 # ─────────────────────────────────────────────────────────────────────────────
-# Base = kanvas kertas hitam kusut; footage kejadian (main + hasil search) di-
-# composite sebagai KARTU di tengah, dan video memotong antar footage (montase).
-# Hook (clip pertama) tetap full-frame immersive. Opt-in; enabled=false = look lama.
-[animelorian]
-enabled              = true
-paper_bg             = "assets/ui/Paper-Grid-Background.mp4"   # primary background (grid graph-paper); Crumpled = transisi/secondary
-footage_scale_pct    = 88            # lebar kartu footage = % dari 1080 (margin kertas atas/bawah)
-hook_fullscreen      = true          # clip-0 (hook) tetap full-frame
-montage              = true          # intercut footage enrichment sbg kartu (enable-window)
-montage_segment_secs = 4.0           # irama ganti footage (detik)
-placement_variation  = true          # variasi posisi/skala/tilt ringan per beat
-montage_max_cuts     = 2             # footage berbeda per clip (densitas montase); 2–3 = lebih padat
+# Base = a paper-grid canvas; the footage (main + search results) is composited
+# as a CARD in the centre, and the video intercuts between footage clips (a
+# montage). The hook (first clip) stays full-frame and immersive. Opt-in;
+# enabled = false reverts to the legacy full-frame look.
+# (The [animelorian] section name is still accepted as a backward-compat alias.)
+[montage]
+enabled               = true
+paper_bg              = "assets/ui/Paper-Grid-Background.mp4"   # primary background (graph-paper grid)
+footage_scale_pct     = 88            # footage card width = % of 1080 (leaves top/bottom paper margin)
+hook_fullscreen       = true          # clip-0 (the hook) stays full-frame
+intercut              = true          # intercut enrichment footage as cards (montage on/off)
+intercut_segment_secs = 4.0           # cadence of the footage swap (seconds)
+placement_variation   = true          # slight per-beat variation in card position/scale/tilt
+intercut_max_cuts     = 2             # distinct footage clips per clip (montage density); 2–3 = denser
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Narration — narrator-driven spine (TTS jadi tulang punggung alur video)
