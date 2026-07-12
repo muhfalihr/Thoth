@@ -64,6 +64,18 @@ pub enum Commands {
     ///   thoth scout run <url> --out set.json --per 2 --max 4
     ///   thoth scout validate <set.json>
     Scout(ScoutArgs),
+
+    /// Run as a persistent warm worker: pull queued jobs from the SQLite queue
+    /// and execute them in-process (models stay resident between jobs). Peer to
+    /// `thoth-server` — they share only the SQLite DB, no parent/child link.
+    Worker(WorkerArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct WorkerArgs {
+    /// Path to the shared SQLite job database (same file `thoth-server` opens).
+    #[arg(long, env = "THOTH_DB", default_value = "thoth.db")]
+    pub db: String,
 }
 
 #[derive(Parser, Debug)]

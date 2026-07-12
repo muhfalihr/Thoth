@@ -24,6 +24,7 @@ pub mod transcribe;
 pub mod util;
 pub mod log_style;
 pub mod brand;
+pub mod worker;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -746,6 +747,10 @@ pub async fn run_cli() -> Result<()> {
                 ))?;
 
             std::process::exit(status.code().unwrap_or(1));
+        }
+
+        Commands::Worker(args) => {
+            worker::run_worker(&args.db).await?;
         }
     }
 
