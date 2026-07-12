@@ -11,7 +11,7 @@ export type JobSpec = {
   content_set?: string;
   params?: Record<string, unknown>;
 };
-export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type JobRecord = {
   id: string;
   spec: JobSpec;

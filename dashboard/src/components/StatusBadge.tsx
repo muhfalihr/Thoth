@@ -2,12 +2,13 @@ import type { JobStatus } from "@/api";
 import { cn } from "@/lib/utils";
 
 // Mirrors the CLI's own glyphs (src/brand.rs) so a Thoth CLI user reads
-// status at a glance: · queued, ▶ running, ✓ succeeded, ✗ failed.
+// status at a glance: · queued, ▶ running, ✓ succeeded, ✗ failed, ⊘ cancelled.
 const GLYPH: Record<JobStatus, string> = {
   queued: "·",
   running: "▶",
   succeeded: "✓",
   failed: "✗",
+  cancelled: "⊘",
 };
 
 const COLOR: Record<JobStatus, string> = {
@@ -15,6 +16,7 @@ const COLOR: Record<JobStatus, string> = {
   running: "text-status-running border-status-running/30 bg-status-running/10",
   succeeded: "text-status-succeeded border-status-succeeded/30 bg-status-succeeded/10",
   failed: "text-status-failed border-status-failed/30 bg-status-failed/10",
+  cancelled: "text-status-cancelled border-status-cancelled/30 bg-status-cancelled/10",
 };
 
 export function StatusBadge({ status }: { status: JobStatus }) {

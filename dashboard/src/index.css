@@ -51,6 +51,7 @@
     --color-status-running: var(--status-running);
     --color-status-succeeded: var(--status-succeeded);
     --color-status-failed: var(--status-failed);
+    --color-status-cancelled: var(--status-cancelled);
     --color-spine: var(--spine);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
@@ -94,11 +95,12 @@
     --sidebar-accent-foreground: #f0ede4;
     --sidebar-border: #2a2833;
     --sidebar-ring: #af87ff;
-    /* CLI-mirrored job status colors: queued=dim, running=cyan, succeeded=gold, failed=red */
+    /* CLI-mirrored job status colors: queued=dim, running=cyan, succeeded=gold, failed=red, cancelled=muted */
     --status-queued: #8b8794;
     --status-running: #22d3ee;
     --status-succeeded: #d7af5f;
     --status-failed: #ef4444;
+    --status-cancelled: #6f6b78;
     --spine: #af87ff;
 }
 
@@ -139,6 +141,7 @@
     --status-running: #22d3ee;
     --status-succeeded: #d7af5f;
     --status-failed: #ef4444;
+    --status-cancelled: #6f6b78;
     --spine: #af87ff;
 }
 
