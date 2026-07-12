@@ -48,6 +48,13 @@ pub async fn run_worker(db_path: &str) -> anyhow::Result<()> {
 async fn execute_pipeline(job: JobRecord, config: AppConfig) -> anyhow::Result<()> {
     use clap::Parser;
 
+    // `run` is the only job kind the queue drives. Fail loudly rather than
+    // silently running some other command's job as a `run` (create_job accepts
+    // any JobSpec.command string — this is the trust-boundary guard).
+    if job.spec.command != "run" {
+        anyhow::bail!("unsupported job command: {}", job.spec.command);
+    }
+
     let mut argv: Vec<String> = vec!["thoth-run".into()];
     if let Some(url) = &job.spec.url {
         argv.push(url.clone()); // positional url
