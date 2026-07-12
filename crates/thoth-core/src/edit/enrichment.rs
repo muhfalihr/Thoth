@@ -4,7 +4,7 @@
 //! to the pipeline base dir: every relevant clip/tweet/news/IG post found across
 //! platforms EXCEPT the main video. This module loads that file and exposes the
 //! subset usable as overlay cutaways — downloadable, relevance-verified videos —
-//! which is exactly what the Animelorian style needs (multiple relevant clips, not
+//! which is exactly what the Montage style needs (multiple relevant clips, not
 //! one fresh per-query search).
 
 use std::path::Path;

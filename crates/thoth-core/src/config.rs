@@ -43,9 +43,9 @@ pub struct AppConfig {
     /// Multi-platform content search (YouTube/TikTok/Twitter/IG/News).
     #[serde(default)]
     pub content_search: ContentSearchConfig,
-    /// Animelorian composite mode: crumpled-paper canvas + footage cards + montage.
-    #[serde(default)]
-    pub animelorian: AnimelorianConfig,
+    /// Montage composite mode: paper-grid canvas + footage cards + intercutting.
+    #[serde(default, alias = "animelorian")]
+    pub montage: MontageConfig,
     /// Narrator-driven video: one TTS narration becomes the audio spine + pacing.
     #[serde(default)]
     pub narration: NarrationConfig,
@@ -134,7 +134,7 @@ fn default_narr_struct_rag()        -> bool { true }
 fn default_narr_struct_rag_count()  -> u32  { 4 }
 fn default_narr_struct_rag_minsim() -> f32  { 0.0 }
 
-/// Animelorian "reaction montage" style — the signature look of the reference
+/// Montage "reaction montage" style — the signature look of the reference
 /// channel. Instead of a full-frame clip, content sits as a centred footage CARD
 /// on a crumpled black-paper canvas, and the video cuts between the main footage
 /// and relevant enrichment footage (a montage). The hook (first clip) stays
@@ -142,17 +142,17 @@ fn default_narr_struct_rag_minsim() -> f32  { 0.0 }
 /// `enabled = false`.
 ///
 /// ```toml
-/// [animelorian]
+/// [montage]
 /// enabled            = true
 /// paper_bg           = "assets/ui/Crumpled-Black-Paper-Stop-Motion-Anim.mp4"
 /// footage_scale_pct  = 88
 /// hook_fullscreen    = true
-/// montage            = true
-/// montage_segment_secs = 4.0
+/// intercut           = true
+/// intercut_segment_secs = 4.0
 /// placement_variation  = true
 /// ```
 #[derive(Debug, Deserialize, Clone)]
-pub struct AnimelorianConfig {
+pub struct MontageConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_anim_paper")]
@@ -161,31 +161,31 @@ pub struct AnimelorianConfig {
     pub footage_scale_pct: u32,
     #[serde(default = "default_anim_hook_fs")]
     pub hook_fullscreen: bool,
-    #[serde(default = "default_anim_montage")]
-    pub montage: bool,
-    #[serde(default = "default_anim_seg")]
-    pub montage_segment_secs: f64,
+    #[serde(default = "default_anim_montage", alias = "montage")]
+    pub intercut: bool,
+    #[serde(default = "default_anim_seg", alias = "montage_segment_secs")]
+    pub intercut_segment_secs: f64,
     #[serde(default = "default_anim_variation")]
     pub placement_variation: bool,
     /// Max DISTINCT footage cards shown per content clip (montage density). 1 = the
     /// single legacy cut; 2+ tiles extra relevant clips from the scout footage
     /// pool across the clip so the video keeps changing footage. Each extra cut is
     /// one more download, so keep it modest (2–3).
-    #[serde(default = "default_anim_max_cuts")]
-    pub montage_max_cuts: u32,
+    #[serde(default = "default_anim_max_cuts", alias = "montage_max_cuts")]
+    pub intercut_max_cuts: u32,
 }
 
-impl Default for AnimelorianConfig {
+impl Default for MontageConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             paper_bg: default_anim_paper(),
             footage_scale_pct: default_anim_scale(),
             hook_fullscreen: default_anim_hook_fs(),
-            montage: default_anim_montage(),
-            montage_segment_secs: default_anim_seg(),
+            intercut: default_anim_montage(),
+            intercut_segment_secs: default_anim_seg(),
             placement_variation: default_anim_variation(),
-            montage_max_cuts: default_anim_max_cuts(),
+            intercut_max_cuts: default_anim_max_cuts(),
         }
     }
 }
@@ -1799,5 +1799,33 @@ impl AppConfig {
             _ => "ggml-medium.bin",
         };
         self.whisper.model_dir.join(filename)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MontageConfig;
+
+    // The `[animelorian]` section and its old field names were renamed to
+    // `[montage]` / `intercut*`. serde aliases keep pre-rename config.toml files
+    // parsing unchanged — assert the old keys still map onto the new fields.
+    #[test]
+    fn montage_accepts_legacy_animelorian_field_names() {
+        let legacy = r#"{
+            "enabled": true,
+            "montage": false,
+            "montage_segment_secs": 3.5,
+            "montage_max_cuts": 5
+        }"#;
+        let cfg: MontageConfig = serde_json::from_str(legacy).unwrap();
+        assert!(!cfg.intercut, "old `montage` bool -> intercut");
+        assert!((cfg.intercut_segment_secs - 3.5).abs() < 1e-6);
+        assert_eq!(cfg.intercut_max_cuts, 5);
+
+        // New names parse too.
+        let modern = r#"{ "intercut": true, "intercut_max_cuts": 9 }"#;
+        let cfg: MontageConfig = serde_json::from_str(modern).unwrap();
+        assert!(cfg.intercut);
+        assert_eq!(cfg.intercut_max_cuts, 9);
     }
 }

@@ -1,4 +1,4 @@
-//! Narrator-driven narration (Animelorian spine).
+//! Narrator-driven narration (Montage spine).
 //!
 //! Generates ONE continuous narrator script (gossip-commentator style) for the
 //! whole video, synthesizes it to a voiceover with per-word timings, and returns

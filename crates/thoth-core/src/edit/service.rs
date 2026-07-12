@@ -759,12 +759,12 @@ impl<'a> EditService<'a> {
                     moment.subtitle_style.clone()
                 };
 
-            // ── Beat role (Animelorian narrative) ────────────────────────────
+            // ── Beat role (Montage narrative) ────────────────────────────
             // The video is ONE arc: clip 0 = HOOK (giant headline only, no running
             // subtitle while it shows), clips 1+ = CONTENT (subtitle + callouts, no
             // giant headline). Drives per-beat layer gating below.
             let is_hook    = i == 0;
-            let anim_on_clip = self.config.animelorian.enabled;
+            let anim_on_clip = self.config.montage.enabled;
             // Hook headline window — used to suppress the running subtitle while the
             // giant hook title is on screen (reference: hook = headline only).
             let hook_window = if is_hook && self.config.hook_title.enabled {
@@ -834,8 +834,8 @@ impl<'a> EditService<'a> {
             audio_clone.headline = headline;
 
             // ── Hook title (giant multi-colour scroll-stopper, first N seconds) ──
-            // Animelorian: the giant headline appears ONLY on the hook (clip 0) —
-            // content clips must NOT carry it. Non-Animelorian keeps legacy behaviour.
+            // Montage: the giant headline appears ONLY on the hook (clip 0) —
+            // content clips must NOT carry it. Non-Montage keeps legacy behaviour.
             if self.config.hook_title.enabled && (is_hook || !anim_on_clip) {
                 let hk = &self.config.hook_title;
                 let text = if !moment.headline.is_empty() {
@@ -857,7 +857,7 @@ impl<'a> EditService<'a> {
                 }
             }
 
-            // Animelorian has NO lower-third headline panel at all (the giant hook
+            // Montage has NO lower-third headline panel at all (the giant hook
             // title carries the message). Drop it on every clip in this mode.
             if anim_on_clip {
                 audio_clone.headline = None;
@@ -1092,10 +1092,10 @@ impl<'a> EditService<'a> {
             //   1. cross-platform enrichment pool (content_enrichment.json) — a
             //      curated, relevance-verified clip rotated per moment by index;
             //   2. per-moment `overlay_query` yt-dlp search (legacy fallback).
-            // ── Animelorian composite (paper canvas + footage card) ──────────
+            // ── Montage composite (paper canvas + footage card) ──────────
             // Active for CONTENT clips; the hook clip (i==0) stays full-frame
             // immersive when hook_fullscreen.
-            let anim_cfg = &self.config.animelorian;
+            let anim_cfg = &self.config.montage;
             let anim_on  = anim_cfg.enabled && !(is_hook && anim_cfg.hook_fullscreen);
             // Placement is FIXED & CONSISTENT (comfortable for viewers): the footage
             // card sits in the same centred band on every content clip — no random
@@ -1103,7 +1103,7 @@ impl<'a> EditService<'a> {
             // like ken-burns is a future option; position must stay stable.)
             let card_y_off = 0i32;
             if anim_on {
-                audio_clone.animelorian = Some(super::ffmpeg::AnimelorianRender {
+                audio_clone.montage = Some(super::ffmpeg::MontageRender {
                     paper_bg: anim_cfg.paper_bg.clone(),
                     footage_scale_pct: anim_cfg.footage_scale_pct,
                     card_y_offset: card_y_off,
@@ -1149,12 +1149,12 @@ impl<'a> EditService<'a> {
 
                 // Set overlay style.
                 if let Some(ref mut ov) = spec {
-                    if anim_on && anim_cfg.montage {
-                        // Animelorian montage: enrichment shown as a centred footage
+                    if anim_on && anim_cfg.intercut {
+                        // Montage montage: enrichment shown as a centred footage
                         // CARD (cuts main↔enrichment), not a corner Pip. Window =
                         // [seg, seg+seg] so the video changes footage mid-clip.
                         let clip_duration = end - start;
-                        let seg   = anim_cfg.montage_segment_secs.max(1.0);
+                        let seg   = anim_cfg.intercut_segment_secs.max(1.0);
                         let m_at  = seg.min((clip_duration - 1.0).max(0.0));
                         let m_dur = seg
                             .min(clip_duration - m_at)
@@ -1193,14 +1193,14 @@ impl<'a> EditService<'a> {
 
                 // ── Densify montage (Item 1): extra tiled footage cards ──────
                 // Beyond the single primary card (above, window [seg, 2·seg]), pull
-                // up to `montage_max_cuts − 1` MORE distinct clips from the footage
+                // up to `intercut_max_cuts − 1` MORE distinct clips from the footage
                 // pool and tile them at later windows so the footage keeps changing.
                 // Each is rendered as a centred FootageCard (cuts main↔footage).
-                if anim_on && anim_cfg.montage && !enrich_pool.is_empty() {
-                    let extra = anim_cfg.montage_max_cuts.saturating_sub(1) as usize;
+                if anim_on && anim_cfg.intercut && !enrich_pool.is_empty() {
+                    let extra = anim_cfg.intercut_max_cuts.saturating_sub(1) as usize;
                     if extra > 0 {
                         let clip_duration = end - start;
-                        let seg = anim_cfg.montage_segment_secs.max(1.0);
+                        let seg = anim_cfg.intercut_segment_secs.max(1.0);
                         let gap = (seg * 0.6).max(1.0); // base B-roll breathes between cuts
                         let mut win_start = seg * 2.0 + gap; // start after the primary card
                         let mut placed = 0usize;
@@ -1238,11 +1238,11 @@ impl<'a> EditService<'a> {
             // scout as stills) as centred cards on CONTENT clips. Independent of
             // the video-overlay gate above — image cards need no download. Rotate by
             // clip index so each content clip shows a different post.
-            if anim_on && anim_cfg.montage && !is_hook && !image_pool.is_empty() {
+            if anim_on && anim_cfg.intercut && !is_hook && !image_pool.is_empty() {
                 let clip_duration = end - start;
                 let at = (clip_duration * 0.5).min(clip_duration - 1.2).max(0.5);
                 if at + 1.0 < clip_duration {
-                    let seg = anim_cfg.montage_segment_secs.max(1.0);
+                    let seg = anim_cfg.intercut_segment_secs.max(1.0);
                     let dur = seg.min(clip_duration - at).max(1.0);
                     let cand = &image_pool[i % image_pool.len()];
                     audio_clone.image_cards.push(super::ffmpeg::ImageCardCue {
@@ -1805,11 +1805,11 @@ impl<'a> EditService<'a> {
         }
 
         // Paper canvas + MONTAGE: cut to relevant enrichment footage cards at
-        // intervals so the video keeps changing (Animelorian). Between cards the
+        // intervals so the video keeps changing (Montage). Between cards the
         // main event B-roll shows on the paper.
-        let anim = &self.config.animelorian;
+        let anim = &self.config.montage;
         if anim.enabled {
-            audio.animelorian = Some(super::ffmpeg::AnimelorianRender {
+            audio.montage = Some(super::ffmpeg::MontageRender {
                 paper_bg: anim.paper_bg.clone(),
                 footage_scale_pct: anim.footage_scale_pct,
                 card_y_offset: 0,
@@ -1818,7 +1818,7 @@ impl<'a> EditService<'a> {
             let has_img = !image_pool.is_empty();
             let overlay_cookie = self.overlay_cookie();
             if has_vid || has_img {
-                let seg = anim.montage_segment_secs.clamp(2.5, 6.0);
+                let seg = anim.intercut_segment_secs.clamp(2.5, 6.0);
                 let mut fcards = Vec::new();
                 let mut icards = Vec::new();
 

@@ -225,12 +225,12 @@ pub struct HeadlineImage {
     pub duration_sec: f64,
 }
 
-/// Per-clip Animelorian render directive. When `Some`, the clip is composited on
+/// Per-clip Montage render directive. When `Some`, the clip is composited on
 /// the crumpled-paper canvas with the source footage shown as a centred card
 /// (instead of the legacy full-frame/blur look). `None` = legacy look (also used
 /// for the hook clip when `hook_fullscreen = true`). Set by `edit/service.rs`.
 #[derive(Debug, Clone)]
-pub struct AnimelorianRender {
+pub struct MontageRender {
     /// Crumpled-paper background video (looped to clip length).
     pub paper_bg: PathBuf,
     /// Footage card width as % of frame width (≈88).
@@ -241,7 +241,7 @@ pub struct AnimelorianRender {
 
 /// One time-windowed footage CARD in a montage — a relevant clip shown centred on
 /// the paper canvas for `[at_sec, at_sec+duration_sec]`, cutting over the base
-/// B-roll. Chained so the video changes footage every few seconds (Animelorian).
+/// B-roll. Chained so the video changes footage every few seconds (Montage).
 #[derive(Debug, Clone)]
 pub struct FootageCardCue {
     pub path: PathBuf,
@@ -345,9 +345,9 @@ pub struct AudioOptions {
     /// `None` = no news image overlay (default, or when screenshot unavailable).
     pub news_overlay: Option<ImageOverlaySpec>,
 
-    /// Animelorian composite directive (paper canvas + footage card). `None` =
+    /// Montage composite directive (paper canvas + footage card). `None` =
     /// legacy full-frame look (and hook clips when `hook_fullscreen`).
-    pub animelorian: Option<AnimelorianRender>,
+    pub montage: Option<MontageRender>,
 
     /// Narrator voiceover spine. `Some` = narration drives the audio (event ducked).
     pub narration: Option<NarrationVoice>,
@@ -784,7 +784,7 @@ pub fn encode_clip_direct(
     let rel_start = start_sec - fast_seek;   // position within the fast-seeked stream
     let rel_end   = end_sec   - fast_seek;   // = rel_start + duration
 
-    // Animelorian paper-canvas input is appended LAST among inputs, so its index
+    // Montage paper-canvas input is appended LAST among inputs, so its index
     // equals the count of every input added before it (source + sfx/bgm/overlay/
     // news/cues/memes). Compute it here so build_video_filter can reference it.
     let paper_idx = {
@@ -799,9 +799,9 @@ pub fn encode_clip_direct(
         1 + has_sfx as usize + has_bgm as usize + has_overlay as usize
             + has_news as usize + n_cues + n_memes
     };
-    let anim_arg = audio.animelorian.as_ref().map(|a| (a, paper_idx));
+    let anim_arg = audio.montage.as_ref().map(|a| (a, paper_idx));
     // Narration is appended AFTER paper → its index sits one past the paper slot.
-    let narration_idx = paper_idx + audio.animelorian.is_some() as usize;
+    let narration_idx = paper_idx + audio.montage.is_some() as usize;
 
     let main_vf = build_video_filter(
         layout, ass_path, rel_start, rel_end,
@@ -916,7 +916,7 @@ pub fn encode_clip_direct(
         //   [1|2|3]   = overlay video (if overlay provided)
         //   [last]    = news image PNG (if news_overlay provided, always last)
         if has_sfx || has_bgm || has_overlay || has_news_image || has_cue_audio || has_meme
-            || audio.animelorian.is_some() || audio.narration.is_some()
+            || audio.montage.is_some() || audio.narration.is_some()
             || !audio.footage_cards.is_empty() || !audio.image_badges.is_empty()
             || !audio.image_cards.is_empty()
             || audio.comment_cards.iter().any(|c| c.has_crop())
@@ -1159,9 +1159,9 @@ pub fn encode_clip_direct(
             for m in &meme_cues {
                 a.extend(["-i".into(), m.path.to_string_lossy().to_string()]);
             }
-            // Animelorian paper-canvas — appended after every other input so its
+            // Montage paper-canvas — appended after every other input so its
             // index matches the precomputed `paper_idx`. Looped to clip length.
-            if let Some(anim) = &audio.animelorian {
+            if let Some(anim) = &audio.montage {
                 a.extend(["-stream_loop".into(), "-1".into(),
                           "-i".into(), anim.paper_bg.to_string_lossy().to_string()]);
             }
@@ -1448,9 +1448,9 @@ fn build_video_filter(
     profile:  Option<&super::profile_card::ProfileCard>,
     callouts: &[super::callout::Callout],
     comments: &[super::comment_card::CommentCard],
-    // Animelorian composite: (render directive, paper-bg input index). When set,
+    // Montage composite: (render directive, paper-bg input index). When set,
     // vertical clips render the footage as a centred card on the paper canvas.
-    anim:     Option<(&AnimelorianRender, usize)>,
+    anim:     Option<(&MontageRender, usize)>,
     // When true, the subtitle + hook burn-in is OMITTED here so the caller can
     // re-apply it as the ABSOLUTE topmost layer — after every footage / image /
     // meme / crop overlay. This keeps captions always readable on top of cutaways.
@@ -1532,7 +1532,7 @@ fn build_video_filter(
 
     // ── Assemble the full filtergraph ─────────────────────────────────────────
     match layout {
-        // Animelorian vertical: footage as a centred CARD on the crumpled-paper
+        // Montage vertical: footage as a centred CARD on the crumpled-paper
         // canvas (paper from input `paper_idx`), instead of the blurred-self bg.
         OutputLayout::Vertical if anim.is_some() => {
             let (render, paper_idx) = anim.unwrap();
@@ -1959,7 +1959,7 @@ fn build_overlay_filter(
             )
         }
 
-        // ── Centred footage card (Animelorian montage) ────────────────────────
+        // ── Centred footage card (Montage montage) ────────────────────────
         // Full-width centred card shown ONLY during [at, at+dur]; outside the
         // window the main footage card underneath is visible → a montage cut.
         OverlayStyle::FootageCard { scale_pct, y_offset } => {
@@ -2437,7 +2437,7 @@ mod tests {
         assert!(bc.contains("overlay=x=(W-w)/2:y=H-h-40"));
     }
 
-    // ── Animelorian composite mode ────────────────────────────────────────────
+    // ── Montage composite mode ────────────────────────────────────────────
 
     #[test]
     fn footage_card_centred_with_window() {
@@ -2471,8 +2471,8 @@ mod tests {
     }
 
     #[test]
-    fn animelorian_branch_composites_on_paper() {
-        let render = AnimelorianRender {
+    fn montage_branch_composites_on_paper() {
+        let render = MontageRender {
             paper_bg: PathBuf::from("paper.mp4"),
             footage_scale_pct: 88,
             card_y_offset: -120,
@@ -2492,7 +2492,7 @@ mod tests {
     }
 
     #[test]
-    fn animelorian_disabled_uses_blur_self() {
+    fn montage_disabled_uses_blur_self() {
         let font = FontConfig::default();
         let f = build_video_filter(
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,

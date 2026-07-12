@@ -95,7 +95,7 @@ pub enum OverlayStyle {
         scale_pct: u32,
     },
 
-    /// Centred footage CARD on the paper canvas — Animelorian montage.
+    /// Centred footage CARD on the paper canvas — Montage montage.
     /// The enrichment clip is shown large in the centre (same width as the main
     /// footage card) during its time window, so the video cuts main↔enrichment.
     /// Best for: reaction montage of multiple relevant clips.
@@ -130,7 +130,7 @@ pub struct OverlaySpec {
 ///
 /// Takes a URL already picked from the cross-platform enrichment pool
 /// (`content_enrichment.json`) — relevance-filtered YouTube/Instagram videos — and
-/// downloads it directly via yt-dlp. This is what powers the Animelorian
+/// downloads it directly via yt-dlp. This is what powers the Montage
 /// "multiple relevant clips" cutaway style.
 ///
 /// Cache key is `md5(url)` (variant slot 0). Returns `None` on any failure — an
