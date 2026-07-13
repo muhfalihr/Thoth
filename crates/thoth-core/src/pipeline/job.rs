@@ -9,11 +9,24 @@ use crate::util::fs::{ensure_dir, job_dir};
 pub struct JobContext {
     pub job_id: String,
     pub base_dir: PathBuf,
+    flat: bool,
 }
 
 impl JobContext {
     pub fn new(job_id: String, base_dir: PathBuf) -> Result<Self> {
-        let ctx = Self { job_id, base_dir };
+        Self::build(job_id, base_dir, false)
+    }
+
+    pub fn new_flat(job_id: String, base_dir: PathBuf) -> Result<Self> {
+        Self::build(job_id, base_dir, true)
+    }
+
+    fn build(job_id: String, base_dir: PathBuf, flat: bool) -> Result<Self> {
+        let ctx = Self {
+            job_id,
+            base_dir,
+            flat,
+        };
         ensure_dir(&ctx.root())?;
         ensure_dir(&ctx.source_dir())?;
         ensure_dir(&ctx.transcribe_dir())?;
@@ -23,7 +36,11 @@ impl JobContext {
     }
 
     pub fn root(&self) -> PathBuf {
-        job_dir(&self.base_dir, &self.job_id)
+        if self.flat {
+            self.base_dir.clone()
+        } else {
+            job_dir(&self.base_dir, &self.job_id)
+        }
     }
 
     pub fn source_dir(&self) -> PathBuf {
@@ -113,5 +130,60 @@ impl JobContext {
     /// Resolve a path that may be relative to the job root or absolute.
     pub fn resolve(&self, p: &Path) -> PathBuf {
         if p.is_absolute() { p.to_owned() } else { self.root().join(p) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Unique throwaway base dir under the OS temp dir (no tempfile dep — the
+    /// brief's approach: uuid + std::env::temp_dir).
+    fn temp_base() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("thoth_test_{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn test_job_context_nested_mode() {
+        let base_dir = temp_base();
+        let job_id = "test_job_123".to_string();
+
+        let ctx = JobContext::new(job_id.clone(), base_dir.clone()).unwrap();
+
+        // In nested mode, root should be base_dir/.thoth/job_id
+        let expected_root = base_dir.join(".thoth").join(&job_id);
+        assert_eq!(ctx.root(), expected_root);
+
+        // Verify the directory was created
+        assert!(fs::metadata(&ctx.root()).is_ok());
+        assert!(fs::metadata(&ctx.source_dir()).is_ok());
+        assert!(fs::metadata(&ctx.transcribe_dir()).is_ok());
+        assert!(fs::metadata(&ctx.analyze_dir()).is_ok());
+        assert!(fs::metadata(&ctx.clips_dir()).is_ok());
+    }
+
+    #[test]
+    fn test_job_context_flat_mode() {
+        let base_dir = temp_base();
+        let job_id = "test_job_flat".to_string();
+
+        let ctx = JobContext::new_flat(job_id, base_dir.clone()).unwrap();
+
+        // In flat mode, root should be base_dir directly (no .thoth wrapper)
+        assert_eq!(ctx.root(), base_dir);
+
+        // Verify the directories were created (under base_dir, not under .thoth)
+        assert!(fs::metadata(&ctx.root()).is_ok());
+        assert!(fs::metadata(&ctx.source_dir()).is_ok());
+        assert!(fs::metadata(&ctx.transcribe_dir()).is_ok());
+        assert!(fs::metadata(&ctx.analyze_dir()).is_ok());
+        assert!(fs::metadata(&ctx.clips_dir()).is_ok());
+
+        // Verify subdirs are directly under base_dir
+        assert_eq!(ctx.source_dir(), base_dir.join("source"));
+        assert_eq!(ctx.transcribe_dir(), base_dir.join("transcribe"));
+        assert_eq!(ctx.analyze_dir(), base_dir.join("analyze"));
+        assert_eq!(ctx.clips_dir(), base_dir.join("clips"));
     }
 }

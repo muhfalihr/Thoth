@@ -23,6 +23,17 @@ use crate::util::fs::ensure_dir;
 use job::JobContext;
 use state::PipelineState;
 
+/// Pick nested (`JobContext::new`, CLI default) vs flat (`JobContext::new_flat`,
+/// server-injected id) job root construction. Pulled out of `run()` so this
+/// selection is unit-testable without spinning up the full pipeline (network/ffmpeg IO).
+fn build_job_context(job_id_override: Option<&str>, job_id: String, output_dir: &Path) -> Result<JobContext> {
+    if job_id_override.is_some() {
+        JobContext::new_flat(job_id, output_dir.to_owned())
+    } else {
+        JobContext::new(job_id, output_dir.to_owned())
+    }
+}
+
 pub struct PipelineRunner<'a> {
     config: &'a AppConfig,
 }
@@ -45,15 +56,18 @@ impl<'a> PipelineRunner<'a> {
         social_name:        &str,
         resume_id:          Option<&str>,
         style_profile_name: &str,
+        job_id_override:    Option<&str>,
     ) -> Result<Vec<std::path::PathBuf>> {
         ensure_dir(output_dir)?;
 
-        // Create or load job state
-        let job_id = resume_id
+        // Create or load job state. An injected id (server) also selects a FLAT
+        // root; a bare CLI run mints a uuid and nests under `.thoth/<id>`.
+        let job_id = job_id_override
+            .or(resume_id)
             .map(|s| s.to_owned())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let job = JobContext::new(job_id.clone(), output_dir.to_owned())
+        let job = build_job_context(job_id_override, job_id.clone(), output_dir)
             .context("failed to create job directories")?;
 
         let mut state = if resume_id.is_some() && job.state_path().exists() {
@@ -589,5 +603,37 @@ impl<'a> PipelineRunner<'a> {
             }
         }
         if out.is_empty() { None } else { Some(out) }
+    }
+}
+
+#[cfg(test)]
+mod job_id_wiring_tests {
+    use super::*;
+
+    fn temp_base() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("thoth_run_wiring_{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn job_id_override_yields_flat_root_with_that_id() {
+        let base = temp_base();
+        let job = build_job_context(Some("srv-job-1"), "srv-job-1".to_owned(), &base).unwrap();
+
+        assert_eq!(job.job_id, "srv-job-1");
+        assert_eq!(job.root(), base); // flat: root == base_dir, no `.thoth/<id>` nesting
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn no_override_mints_nested_root() {
+        let base = temp_base();
+        let minted_id = uuid::Uuid::new_v4().to_string();
+        let job = build_job_context(None, minted_id.clone(), &base).unwrap();
+
+        assert_eq!(job.job_id, minted_id);
+        assert_eq!(job.root(), base.join(".thoth").join(&minted_id)); // nested (CLI default)
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

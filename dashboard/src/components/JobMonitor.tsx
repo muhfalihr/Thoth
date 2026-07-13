@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
-  fetchArtifact,
   getJob,
   streamJob,
   type JobRecord,
@@ -11,12 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LogPane, type LogLine } from "@/components/LogPane";
-
-// Well-known output filenames Thoth writes under a job's output_dir. There's
-// no artifact-listing endpoint yet, so this is a fixed guess list rather
-// than a directory browse — a 404 on click just means that file wasn't
-// produced for this run (e.g. a scout-only job has no final.mp4).
-const ARTIFACTS = ["final.mp4", "moments.json", "narration.json"];
+import { ReviewPanel } from "@/components/ReviewPanel";
 
 let seq = 0;
 function nextId() {
@@ -78,19 +72,6 @@ export function JobMonitor({ jobId }: { jobId: string | null }) {
     if (jobId) await cancelJob(jobId);
   }
 
-  async function handleArtifact(name: string) {
-    if (!jobId) return;
-    try {
-      const blob = await fetchArtifact(jobId, name);
-      window.open(URL.createObjectURL(blob), "_blank");
-    } catch {
-      setLines((prev) => [
-        ...prev,
-        { id: nextId(), ts: new Date().toISOString(), text: `artifact unavailable: ${name}`, kind: "error" },
-      ]);
-    }
-  }
-
   if (!jobId) {
     return (
       <Card className="flex h-full items-center justify-center py-3">
@@ -120,15 +101,10 @@ export function JobMonitor({ jobId }: { jobId: string | null }) {
           </div>
           <Progress value={(record?.pct ?? 0) * 100} />
           {record?.error && <p className="text-sm text-destructive">{record.error}</p>}
-          <div className="flex flex-wrap gap-2 pt-1">
-            {ARTIFACTS.map((name) => (
-              <Button key={name} variant="secondary" size="sm" onClick={() => handleArtifact(name)}>
-                {name}
-              </Button>
-            ))}
-          </div>
         </CardContent>
       </Card>
+
+      {record?.status === "succeeded" && jobId && <ReviewPanel jobId={jobId} />}
 
       <div className="min-h-0 flex-1">
         <LogPane lines={lines} />

@@ -3536,6 +3536,7 @@ dependencies = [
  "sqlx",
  "thoth-jobs",
  "tokio",
+ "toml",
  "tower",
  "tower-http",
  "tracing",

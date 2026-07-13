@@ -995,6 +995,7 @@ pub async fn run_once(
                     &args.social,
                     args.resume.as_deref(),
                     &args.style_profile,
+                    args.job_id.as_deref(),
                 )
                 .await?; // footer already printed by PipelineRunner::run (brand::FEATHER summary)
     Ok(())

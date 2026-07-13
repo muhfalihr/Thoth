@@ -21,6 +21,7 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
         api_key: "test-key".into(),
         store,
         output_root: tmp.clone(),
+        config_path: tmp.join("config.toml"),
     };
     (build_router(state), tmp)
 }
@@ -175,5 +176,180 @@ async fn sse_tails_events_and_resumes() {
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("\"type\":\"progress\""), "got: {text}");
     assert!(text.contains("\"type\":\"done\""), "got: {text}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn manifest_resolves_existing_artifacts() {
+    let (app, tmp) = build_test_app().await;
+    let id = "job-abc";
+    let job = tmp.join(id);
+    // Cover every sub-layout the handler mirrors from thoth-core — this test IS
+    // the drift guard for that coupling (spec §3b), so exercise all paths, not
+    // just video+moments.
+    std::fs::create_dir_all(job.join("clips")).unwrap();
+    std::fs::create_dir_all(job.join("analyze")).unwrap();
+    std::fs::create_dir_all(job.join("narration")).unwrap();
+    std::fs::create_dir_all(job.join("transcribe")).unwrap();
+    std::fs::write(job.join("clips/final_concat.mp4"), b"x").unwrap();
+    std::fs::write(job.join("analyze/moments.json"), b"{}").unwrap();
+    std::fs::write(job.join("narration/narration.mp3"), b"x").unwrap();
+    std::fs::write(job.join("transcribe/transcript.json"), b"{}").unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/api/jobs/{id}/manifest"))
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let m: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(m["video"], "clips/final_concat.mp4");
+    assert_eq!(m["moments"], "analyze/moments.json");
+    assert_eq!(m["narration"], "narration/narration.mp3");
+    assert_eq!(m["transcript"], "transcribe/transcript.json");
+    assert!(m.get("thumbnail").is_none()); // absent → omitted
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn manifest_video_falls_back_to_newest_clip() {
+    let (app, tmp) = build_test_app().await;
+    let id = "job-fallback";
+    let job = tmp.join(id);
+    std::fs::create_dir_all(job.join("clips")).unwrap();
+    // No final_concat.mp4 → handler must fall back to the newest clip_*.mp4.
+    std::fs::write(job.join("clips/clip_000.mp4"), b"x").unwrap();
+    std::fs::write(job.join("clips/clip_001.mp4"), b"x").unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/api/jobs/{id}/manifest"))
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let m: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // Some clip resolved (newest by mtime); relpath stays under clips/.
+    let v = m["video"].as_str().expect("video should resolve to a clip");
+    assert!(v.starts_with("clips/clip_") && v.ends_with(".mp4"), "got {v}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn manifest_rejects_traversal_id() {
+    let (app, tmp) = build_test_app().await;
+    // Percent-encoded `..` in the id segment must not escape output_root; the
+    // handler returns an empty manifest rather than probing outside the root.
+    let req = Request::builder()
+        .uri("/api/jobs/%2e%2e/manifest")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&body[..], b"{}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn manifest_empty_for_unknown_job() {
+    let (app, tmp) = build_test_app().await;
+    let req = Request::builder()
+        .uri("/api/jobs/nope/manifest")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&body[..], b"{}"); // all fields omitted
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn config_get_put_roundtrip_and_validation() {
+    let (app, tmp) = build_test_app().await;
+    let cfg = tmp.join("config.toml");
+    std::fs::write(&cfg, "[llm]\nprovider = \"novita\"\n").unwrap();
+
+    // GET returns the seeded text.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/config")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["text"].as_str().unwrap().contains("novita"), "body: {v}");
+
+    // PUT invalid TOML → 400, file unchanged.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config")
+                .header("authorization", "Bearer test-key")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"this = = broken"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert!(std::fs::read_to_string(&cfg).unwrap().contains("novita"));
+
+    // PUT valid TOML → 200, file updated.
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config")
+                .header("authorization", "Bearer test-key")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"[llm]\nprovider = \"groq\"\n"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(std::fs::read_to_string(&cfg).unwrap().contains("groq"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn style_profiles_lists_names() {
+    let (app, tmp) = build_test_app().await;
+    std::fs::write(
+        tmp.join("config.toml"),
+        "[styles.profiles.tiktok_id_2025]\nx = 1\n[styles.profiles.drama]\ny = 2\n",
+    )
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/style-profiles")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let names: Vec<String> = serde_json::from_slice(&body).unwrap();
+    assert!(names.contains(&"tiktok_id_2025".to_string()), "names: {names:?}");
+    assert!(names.contains(&"drama".to_string()), "names: {names:?}");
     let _ = std::fs::remove_dir_all(&tmp);
 }

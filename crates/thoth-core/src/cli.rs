@@ -347,6 +347,12 @@ pub struct RunArgs {
     /// Overrides per-clip LLM picks for subtitle_style, clip_style, sfx_vibe, bgm_vibe, overlay_style.
     #[arg(long, default_value = "auto")]
     pub style_profile: String,
+
+    /// Use this exact job id and treat `--output-dir` as the job root directly
+    /// (no `.thoth/<id>` wrapper). Set by the server worker so artifact paths
+    /// are deterministic. Omit for CLI runs — a random id is generated + nested.
+    #[arg(long)]
+    pub job_id: Option<String>,
 }
 
 /// Arguments for the `trend-analyze` subcommand.

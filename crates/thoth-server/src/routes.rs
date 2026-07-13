@@ -178,6 +178,125 @@ fn guess_content_type(path: &std::path::Path) -> &'static str {
     }
 }
 
+/// Relpaths (relative to `output_root/<id>`) of review artifacts that exist for
+/// a finished job. Every field is `None` until the file is produced, so an
+/// unfinished/absent job yields `{}`. Fetch each via `/api/artifacts/:id/<rel>`.
+#[derive(serde::Serialize, Default)]
+pub struct Manifest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moments: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
+}
+
+// ponytail: this mirrors the thoth-core JobPaths sub-layout (clips/ analyze/
+// narration/ transcribe/). The server has no dep on thoth-core, so nothing
+// forces them in sync — the integration test below guards against drift.
+pub async fn get_manifest(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Manifest> {
+    // Same trust boundary as get_artifact: the `:id` segment must be a single
+    // plain component. Reject `..`/backslash/absolute forms (incl. percent-
+    // encoded) so a crafted id can't probe files outside output_root. Invalid
+    // id → empty manifest (contract is always-200, absent job → {}).
+    if std::path::Path::new(&id)
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Json(Manifest::default());
+    }
+    let root = state.output_root.join(&id);
+    let rel = |p: &str| -> Option<String> {
+        root.join(p).is_file().then(|| p.to_string())
+    };
+
+    // Prefer the multi-clip concat; else newest single clip.
+    let video = rel("clips/final_concat.mp4").or_else(|| newest_clip(&root));
+    // Thumbnail shares the video's basename with a `.jpg` extension.
+    let thumbnail = video.as_deref().and_then(|v| {
+        let t = format!("{}.jpg", v.strip_suffix(".mp4")?);
+        root.join(&t).is_file().then_some(t)
+    });
+
+    Json(Manifest {
+        video,
+        thumbnail,
+        moments: rel("analyze/moments.json"),
+        narration: rel("narration/narration.mp3"),
+        transcript: rel("transcribe/transcript.json"),
+    })
+}
+
+/// Newest `clips/clip_*.mp4` as a relpath (single-clip runs have no concat).
+fn newest_clip(root: &std::path::Path) -> Option<String> {
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in std::fs::read_dir(root.join("clips")).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("clip_") && name.ends_with(".mp4") {
+            if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
+                if best.as_ref().map_or(true, |(t, _)| mtime > *t) {
+                    best = Some((mtime, format!("clips/{name}")));
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+#[derive(serde::Deserialize)]
+pub struct ConfigBody {
+    pub text: String,
+}
+
+/// Raw config.toml text (empty string if the file is absent).
+pub async fn get_config(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    Json(serde_json::json!({ "text": text }))
+}
+
+/// Validate as TOML, then overwrite config.toml. Invalid TOML → 400, no write.
+pub async fn put_config(
+    State(state): State<AppState>,
+    Json(body): Json<ConfigBody>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(e) = toml::from_str::<toml::Value>(&body.text) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        );
+    }
+    match std::fs::write(&state.config_path, &body.text) {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Names of the `[styles.profiles.*]` tables, for the dashboard dropdown.
+/// Parse error / missing section → empty list.
+pub async fn get_style_profiles(State(state): State<AppState>) -> Json<Vec<String>> {
+    let text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let names = toml::from_str::<toml::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.get("styles")?
+                .get("profiles")?
+                .as_table()
+                .map(|t| t.keys().cloned().collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    Json(names)
+}
+
 pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,

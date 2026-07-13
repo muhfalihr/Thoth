@@ -20,6 +20,14 @@ async fn main() -> anyhow::Result<()> {
         api_key,
         store,
         output_root,
+        // Hardcoded, NOT env-configurable: the worker reads config via
+        // AppConfig::load() → File::with_name("config") (cwd-relative
+        // config.toml) and does NOT honor any THOTH_CONFIG override. Deriving
+        // this path from env would let PUT /api/config write to a file the
+        // worker never reads, silently breaking the config round-trip. Both
+        // processes share a cwd, so this always resolves to the same file
+        // load() reads.
+        config_path: std::path::PathBuf::from("config.toml"),
     };
 
     // Liveness backstop: reclaim jobs whose independent worker crashed.
