@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Command;
 use tokio::sync::{Mutex, Notify};
 
 pub const SCOUT_CLI: &str = "scout/cli.ts";
@@ -30,7 +32,6 @@ pub enum Stream { Out, Err }
 #[derive(Clone, Debug, Serialize)]
 pub struct LogLine { pub seq: u64, pub stream: Stream, pub text: String }
 
-/// Signals the supervising task to kill the child (cancel).
 #[derive(Default, Deserialize)]
 pub struct DiscoverReq {
     #[serde(default)] pub max_per: Option<u32>,
@@ -63,6 +64,7 @@ pub struct ScoutRun {
     pub finished_at: Option<i64>,
     pub exit_code: Option<i32>,
     pub last_content_set: Option<PathBuf>,
+    /// Signals the supervising task to kill the child (cancel).
     pub cancel: Option<Arc<Notify>>,
 }
 
@@ -169,6 +171,112 @@ pub fn build_scout_args(
     }
 }
 
+pub fn cdp_base() -> String {
+    std::env::var("THOTH_CDP").unwrap_or_else(|_| "http://127.0.0.1:18800".to_string())
+}
+
+/// TCP-liveness probe of the CDP port.
+/// ponytail: port-open check, not a full `GET /json/version` — upgrade to an HTTP
+/// probe only if a listening-but-not-ready browser produces false positives.
+pub async fn cdp_attached() -> bool {
+    let base = cdp_base();
+    let hostport = base
+        .strip_prefix("http://")
+        .or_else(|| base.strip_prefix("https://"))
+        .unwrap_or(&base)
+        .trim_end_matches('/')
+        .to_string();
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tokio::net::TcpStream::connect(hostport),
+        ).await,
+        Ok(Ok(_))
+    )
+}
+
+/// Resolve the content-set path a `run` produces. Relative names land in
+/// `scout/output/` (matching scout's outPath()); absolute paths are honored.
+pub fn resolve_content_set(out: Option<&str>) -> PathBuf {
+    match out {
+        None => PathBuf::from(DEFAULT_CONTENT_SET),
+        Some(o) => {
+            let p = PathBuf::from(o);
+            if p.is_absolute() { p } else { PathBuf::from(SCOUT_OUTPUT_DIR).join(o) }
+        }
+    }
+}
+
+async fn read_pipe<R>(sup: ScoutSupervisor, reader: R, stream: Stream)
+where R: tokio::io::AsyncRead + Unpin {
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        sup.lock().await.push_line(stream, line);
+    }
+}
+
+/// Spawn `program args`, stream both pipes into the run, and wait for exit or
+/// cancel. Assumes the caller already `try_begin`'d the slot. Records a Failed
+/// run (with the error text) if the process can't be spawned.
+pub async fn spawn_command(sup: &ScoutSupervisor, program: &str, args: Vec<String>) {
+    let cancel = { sup.lock().await.cancel.clone() };
+    let mut child = match Command::new(program)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let mut run = sup.lock().await;
+            run.push_line(Stream::Err, format!("spawn failed: {program}: {e}"));
+            run.finish(Some(-1));
+            return;
+        }
+    };
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut readers = Vec::new();
+    if let Some(o) = stdout { readers.push(tokio::spawn(read_pipe(sup.clone(), o, Stream::Out))); }
+    if let Some(e) = stderr { readers.push(tokio::spawn(read_pipe(sup.clone(), e, Stream::Err))); }
+
+    let exit_code: Option<i32> = if let Some(notify) = cancel {
+        tokio::select! {
+            status = child.wait() => status.ok().and_then(|s| s.code()),
+            _ = notify.notified() => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                { sup.lock().await.push_line(Stream::Err, "cancelled".into()); }
+                Some(-1)
+            }
+        }
+    } else {
+        child.wait().await.ok().and_then(|s| s.code())
+    };
+
+    for r in readers { let _ = r.await; } // drain remaining buffered lines
+    sup.lock().await.finish(exit_code);
+}
+
+/// Begin a run (Err == Busy) then supervise it in a detached task (202 semantics).
+pub async fn start(sup: &ScoutSupervisor, kind: ScoutKind, args_after_cli: Vec<String>)
+    -> Result<(), ()>
+{
+    { sup.lock().await.try_begin(kind)?; }
+    let mut argv = vec![SCOUT_CLI.to_string()];
+    argv.extend(args_after_cli);
+    let sup2 = sup.clone();
+    tokio::spawn(async move { spawn_command(&sup2, "bun", argv).await; });
+    Ok(())
+}
+
+/// Notify the current run to cancel. False if nothing is running.
+pub async fn cancel(sup: &ScoutSupervisor) -> bool {
+    let notify = { sup.lock().await.cancel.clone() };
+    match notify { Some(n) => { n.notify_one(); true } None => false }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +342,71 @@ mod tests {
         assert_eq!(v["status"], "running");
         assert!(v["started_at"].is_i64());
         assert!(v["exit_code"].is_null());
+    }
+
+    // A cross-platform "print two lines then exit 0" command.
+    fn echo_cmd() -> (&'static str, Vec<String>) {
+        if cfg!(windows) {
+            ("cmd", vec!["/C".into(), "echo out1&& echo out2".into()])
+        } else {
+            ("sh", vec!["-c".into(), "echo out1; echo out2".into()])
+        }
+    }
+
+    // A command that blocks long enough to be cancelled.
+    fn sleep_cmd() -> (&'static str, Vec<String>) {
+        if cfg!(windows) {
+            ("cmd", vec!["/C".into(), "ping -n 30 127.0.0.1 > NUL".into()])
+        } else {
+            ("sh", vec!["-c".into(), "sleep 30".into()])
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_captures_lines_and_finishes_done() {
+        let sup = new_supervisor();
+        { sup.lock().await.try_begin(ScoutKind::Discover).unwrap(); }
+        let (p, a) = echo_cmd();
+        spawn_command(&sup, p, a).await;
+        let run = sup.lock().await;
+        assert_eq!(run.status, ScoutStatus::Done);
+        assert_eq!(run.exit_code, Some(0));
+        // monotonic seq, at least our two echoed lines
+        let texts: Vec<_> = run.lines.iter().map(|l| l.text.trim().to_string()).collect();
+        assert!(texts.iter().any(|t| t == "out1"));
+        assert!(texts.iter().any(|t| t == "out2"));
+        for (i, l) in run.lines.iter().enumerate() { assert_eq!(l.seq as usize, i); }
+    }
+
+    #[tokio::test]
+    async fn cancel_kills_and_marks_failed() {
+        let sup = new_supervisor();
+        let notify = { sup.lock().await.try_begin(ScoutKind::Run).unwrap() };
+        let (p, a) = sleep_cmd();
+        let sup2 = sup.clone();
+        let handle = tokio::spawn(async move { spawn_command(&sup2, p, a).await });
+        // give it a moment to spawn, then cancel
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        notify.notify_one();
+        handle.await.unwrap();
+        assert_eq!(sup.lock().await.status, ScoutStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn spawn_error_marks_failed() {
+        let sup = new_supervisor();
+        { sup.lock().await.try_begin(ScoutKind::Browser).unwrap(); }
+        spawn_command(&sup, "definitely-not-a-real-binary-xyz", vec![]).await;
+        let run = sup.lock().await;
+        assert_eq!(run.status, ScoutStatus::Failed);
+        assert!(run.lines.iter().any(|l| l.stream == Stream::Err));
+    }
+
+    #[tokio::test]
+    async fn cdp_attached_false_on_dead_port() {
+        // Nothing listens here.
+        unsafe { std::env::set_var("THOTH_CDP", "http://127.0.0.1:1"); }
+        assert!(!cdp_attached().await);
+        unsafe { std::env::remove_var("THOTH_CDP"); }
     }
 }
