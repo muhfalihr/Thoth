@@ -18,8 +18,10 @@ pub struct AppState {
     pub api_key: String,
     pub store: JobStore,
     pub output_root: PathBuf,
-    /// Path to config.toml (THOTH_CONFIG env, else ./config.toml). Read/written
-    /// by the config endpoints; matches AppConfig::load()'s cwd-relative lookup.
+    /// Path to config.toml, read/written by the config endpoints. Hardcoded to
+    /// cwd-relative `config.toml` to match AppConfig::load()'s `File::with_name`
+    /// lookup exactly — the worker ignores any override, so this must not be
+    /// env-configurable or a UI edit could land in a file no job ever reads.
     pub config_path: PathBuf,
 }
 
