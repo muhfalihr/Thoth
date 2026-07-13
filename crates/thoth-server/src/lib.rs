@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod reaper;
 pub mod routes;
+pub mod scout;
 
 use axum::{
     middleware,
