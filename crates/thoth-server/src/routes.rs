@@ -202,6 +202,16 @@ pub async fn get_manifest(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Json<Manifest> {
+    // Same trust boundary as get_artifact: the `:id` segment must be a single
+    // plain component. Reject `..`/backslash/absolute forms (incl. percent-
+    // encoded) so a crafted id can't probe files outside output_root. Invalid
+    // id → empty manifest (contract is always-200, absent job → {}).
+    if std::path::Path::new(&id)
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Json(Manifest::default());
+    }
     let root = state.output_root.join(&id);
     let rel = |p: &str| -> Option<String> {
         root.join(p).is_file().then(|| p.to_string())
