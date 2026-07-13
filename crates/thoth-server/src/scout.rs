@@ -405,6 +405,9 @@ mod tests {
     #[tokio::test]
     async fn cdp_attached_false_on_dead_port() {
         // Nothing listens here.
+        // ponytail: process-global env mutation, sound only because this is the
+        // ONLY test that touches THOTH_CDP. If another test ever reads
+        // cdp_base()/cdp_attached() concurrently, serialize them (e.g. serial_test).
         unsafe { std::env::set_var("THOTH_CDP", "http://127.0.0.1:1"); }
         assert!(!cdp_attached().await);
         unsafe { std::env::remove_var("THOTH_CDP"); }
