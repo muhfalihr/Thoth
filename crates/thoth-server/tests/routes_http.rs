@@ -177,3 +177,43 @@ async fn sse_tails_events_and_resumes() {
     assert!(text.contains("\"type\":\"done\""), "got: {text}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[tokio::test]
+async fn manifest_resolves_existing_artifacts() {
+    let (app, tmp) = build_test_app().await;
+    let id = "job-abc";
+    let job = tmp.join(id);
+    std::fs::create_dir_all(job.join("clips")).unwrap();
+    std::fs::create_dir_all(job.join("analyze")).unwrap();
+    std::fs::write(job.join("clips/final_concat.mp4"), b"x").unwrap();
+    std::fs::write(job.join("analyze/moments.json"), b"{}").unwrap();
+
+    let req = Request::builder()
+        .uri(format!("/api/jobs/{id}/manifest"))
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let m: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(m["video"], "clips/final_concat.mp4");
+    assert_eq!(m["moments"], "analyze/moments.json");
+    assert!(m.get("narration").is_none()); // absent → omitted
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn manifest_empty_for_unknown_job() {
+    let (app, tmp) = build_test_app().await;
+    let req = Request::builder()
+        .uri("/api/jobs/nope/manifest")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(&body[..], b"{}"); // all fields omitted
+    let _ = std::fs::remove_dir_all(&tmp);
+}

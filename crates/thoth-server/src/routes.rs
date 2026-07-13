@@ -178,6 +178,68 @@ fn guess_content_type(path: &std::path::Path) -> &'static str {
     }
 }
 
+/// Relpaths (relative to `output_root/<id>`) of review artifacts that exist for
+/// a finished job. Every field is `None` until the file is produced, so an
+/// unfinished/absent job yields `{}`. Fetch each via `/api/artifacts/:id/<rel>`.
+#[derive(serde::Serialize, Default)]
+pub struct Manifest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moments: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
+}
+
+// ponytail: this mirrors the thoth-core JobPaths sub-layout (clips/ analyze/
+// narration/ transcribe/). The server has no dep on thoth-core, so nothing
+// forces them in sync — the integration test below guards against drift.
+pub async fn get_manifest(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Manifest> {
+    let root = state.output_root.join(&id);
+    let rel = |p: &str| -> Option<String> {
+        root.join(p).is_file().then(|| p.to_string())
+    };
+
+    // Prefer the multi-clip concat; else newest single clip.
+    let video = rel("clips/final_concat.mp4").or_else(|| newest_clip(&root));
+    // Thumbnail shares the video's basename with a `.jpg` extension.
+    let thumbnail = video.as_deref().and_then(|v| {
+        let t = format!("{}.jpg", v.strip_suffix(".mp4")?);
+        root.join(&t).is_file().then_some(t)
+    });
+
+    Json(Manifest {
+        video,
+        thumbnail,
+        moments: rel("analyze/moments.json"),
+        narration: rel("narration/narration.mp3"),
+        transcript: rel("transcribe/transcript.json"),
+    })
+}
+
+/// Newest `clips/clip_*.mp4` as a relpath (single-clip runs have no concat).
+fn newest_clip(root: &std::path::Path) -> Option<String> {
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in std::fs::read_dir(root.join("clips")).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("clip_") && name.ends_with(".mp4") {
+            if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
+                if best.as_ref().map_or(true, |(t, _)| mtime > *t) {
+                    best = Some((mtime, format!("clips/{name}")));
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
 pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,

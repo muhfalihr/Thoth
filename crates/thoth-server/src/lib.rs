@@ -19,6 +19,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/jobs/:id", get(routes::get_job))
         .route("/jobs/:id/cancel", post(routes::cancel_job))
         .route("/artifacts/:id/*path", get(routes::get_artifact))
+        .route("/jobs/:id/manifest", get(routes::get_manifest))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,
