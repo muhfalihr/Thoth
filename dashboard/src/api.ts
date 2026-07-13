@@ -84,3 +84,16 @@ export async function fetchArtifact(jobId: string, relPath: string): Promise<Blo
   if (!r.ok) throw new Error(`fetchArtifact ${r.status}`);
   return r.blob();
 }
+
+export type Manifest = {
+  video?: string;
+  thumbnail?: string;
+  moments?: string;
+  narration?: string;
+  transcript?: string;
+};
+
+export async function getManifest(id: string): Promise<Manifest> {
+  const r = await fetch(`/api/jobs/${id}/manifest`, { headers: H });
+  return r.ok ? r.json() : {};
+}
