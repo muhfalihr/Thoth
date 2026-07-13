@@ -15,9 +15,10 @@ use tokio_util::sync::CancellationToken;
 pub async fn run_worker(db_path: &str) -> anyhow::Result<()> {
     let store = JobStore::connect(db_path).await?;
     let worker_id = uuid::Uuid::new_v4().to_string();
-    // Config is loaded once and cloned per job — models/warm state live in the
-    // process, not in AppConfig (which is just parsed settings).
-    let config = AppConfig::load()?;
+    // Config is re-read per job (below) so dashboard edits apply without a
+    // worker restart. The warm CUDA/Whisper models live in the process, not in
+    // AppConfig, so re-parsing settings each job is cheap.
+    let mut config = AppConfig::load()?;
     tracing::info!("worker {worker_id} online, db={db_path}");
 
     let mut backoff = Duration::from_millis(250);
@@ -29,6 +30,7 @@ pub async fn run_worker(db_path: &str) -> anyhow::Result<()> {
             }
             Some(job) => {
                 backoff = Duration::from_millis(250);
+                config = pick_config(AppConfig::load(), &config);
                 let cfg = config.clone();
                 // Clone the job into the future so nothing borrowed from `&job`
                 // has to outlive the closure (the FnOnce(&JobRecord)->Fut seam
@@ -195,6 +197,20 @@ fn push_params(argv: &mut Vec<String>, params: &serde_json::Value) {
     }
 }
 
+/// Pick the config for the next job: prefer a fresh load, else fall back to the
+/// last good config (never fail a job because the operator saved a mid-edit
+/// config.toml). Generic so the fallback branch is unit-testable without
+/// constructing an AppConfig.
+fn pick_config<T: Clone>(loaded: anyhow::Result<T>, prev: &T) -> T {
+    match loaded {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!("config reload failed, using last good config: {e}");
+            prev.clone()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +278,12 @@ mod tests {
             .iter()
             .any(|e| e.kind == "done"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pick_config_prefers_fresh_else_prev() {
+        assert_eq!(pick_config::<i32>(Ok(2), &1), 2);
+        assert_eq!(pick_config::<i32>(Err(anyhow::anyhow!("boom")), &1), 1);
     }
 
     #[tokio::test]
