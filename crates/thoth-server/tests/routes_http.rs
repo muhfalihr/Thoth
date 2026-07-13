@@ -21,6 +21,7 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
         api_key: "test-key".into(),
         store,
         output_root: tmp.clone(),
+        config_path: tmp.join("config.toml"),
     };
     (build_router(state), tmp)
 }
@@ -266,5 +267,89 @@ async fn manifest_empty_for_unknown_job() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
     assert_eq!(&body[..], b"{}"); // all fields omitted
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn config_get_put_roundtrip_and_validation() {
+    let (app, tmp) = build_test_app().await;
+    let cfg = tmp.join("config.toml");
+    std::fs::write(&cfg, "[llm]\nprovider = \"novita\"\n").unwrap();
+
+    // GET returns the seeded text.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/config")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["text"].as_str().unwrap().contains("novita"), "body: {v}");
+
+    // PUT invalid TOML → 400, file unchanged.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config")
+                .header("authorization", "Bearer test-key")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"this = = broken"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert!(std::fs::read_to_string(&cfg).unwrap().contains("novita"));
+
+    // PUT valid TOML → 200, file updated.
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/config")
+                .header("authorization", "Bearer test-key")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"[llm]\nprovider = \"groq\"\n"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(std::fs::read_to_string(&cfg).unwrap().contains("groq"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn style_profiles_lists_names() {
+    let (app, tmp) = build_test_app().await;
+    std::fs::write(
+        tmp.join("config.toml"),
+        "[styles.profiles.tiktok_id_2025]\nx = 1\n[styles.profiles.drama]\ny = 2\n",
+    )
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/style-profiles")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let names: Vec<String> = serde_json::from_slice(&body).unwrap();
+    assert!(names.contains(&"tiktok_id_2025".to_string()), "names: {names:?}");
+    assert!(names.contains(&"drama".to_string()), "names: {names:?}");
     let _ = std::fs::remove_dir_all(&tmp);
 }

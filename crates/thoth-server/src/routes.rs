@@ -250,6 +250,53 @@ fn newest_clip(root: &std::path::Path) -> Option<String> {
     best.map(|(_, p)| p)
 }
 
+#[derive(serde::Deserialize)]
+pub struct ConfigBody {
+    pub text: String,
+}
+
+/// Raw config.toml text (empty string if the file is absent).
+pub async fn get_config(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    Json(serde_json::json!({ "text": text }))
+}
+
+/// Validate as TOML, then overwrite config.toml. Invalid TOML → 400, no write.
+pub async fn put_config(
+    State(state): State<AppState>,
+    Json(body): Json<ConfigBody>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if let Err(e) = toml::from_str::<toml::Value>(&body.text) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        );
+    }
+    match std::fs::write(&state.config_path, &body.text) {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        ),
+    }
+}
+
+/// Names of the `[styles.profiles.*]` tables, for the dashboard dropdown.
+/// Parse error / missing section → empty list.
+pub async fn get_style_profiles(State(state): State<AppState>) -> Json<Vec<String>> {
+    let text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let names = toml::from_str::<toml::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.get("styles")?
+                .get("profiles")?
+                .as_table()
+                .map(|t| t.keys().cloned().collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    Json(names)
+}
+
 pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,

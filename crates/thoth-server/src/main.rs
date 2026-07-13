@@ -20,6 +20,9 @@ async fn main() -> anyhow::Result<()> {
         api_key,
         store,
         output_root,
+        config_path: std::env::var("THOTH_CONFIG")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("config.toml")),
     };
 
     // Liveness backstop: reclaim jobs whose independent worker crashed.

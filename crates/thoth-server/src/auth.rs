@@ -18,6 +18,9 @@ pub struct AppState {
     pub api_key: String,
     pub store: JobStore,
     pub output_root: PathBuf,
+    /// Path to config.toml (THOTH_CONFIG env, else ./config.toml). Read/written
+    /// by the config endpoints; matches AppConfig::load()'s cwd-relative lookup.
+    pub config_path: PathBuf,
 }
 
 /// True iff `header` is `Bearer <key>` matching `key`. Shared by the
