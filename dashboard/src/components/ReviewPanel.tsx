@@ -34,10 +34,19 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
   const [moments, setMoments] = useState<Moment[] | null>(null);
   const [momentsErr, setMomentsErr] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [dlErr, setDlErr] = useState<string | null>(null);
 
   useEffect(() => {
     let dead = false;
     let objUrl: string | null = null;
+    // Clear prior job's content so switching jobs doesn't flash stale data
+    // while the new manifest is in flight.
+    setManifest(null);
+    setVideoUrl(null);
+    setMoments(null);
+    setMomentsErr(null);
+    setErr(null);
+    setDlErr(null);
     getManifest(jobId).then(async (m) => {
       if (dead) return;
       setManifest(m);
@@ -70,11 +79,15 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
   }, [jobId]);
 
   async function download(rel: string) {
-    const blob = await fetchArtifact(jobId, rel);
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
-    // Revoke after the new tab has had a tick to claim it (avoids per-click leak).
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    try {
+      const blob = await fetchArtifact(jobId, rel);
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      // Revoke after the new tab has had a tick to claim it (avoids per-click leak).
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      setDlErr(`${rel} unavailable`);
+    }
   }
 
   if (!manifest) return null;
@@ -129,6 +142,8 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
             ))}
           </div>
         )}
+
+        {dlErr && <p className="text-xs text-destructive">{dlErr}</p>}
 
         <div className="flex flex-wrap gap-2">
           {manifest.transcript && (
