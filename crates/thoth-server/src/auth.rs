@@ -23,6 +23,9 @@ pub struct AppState {
     /// lookup exactly — the worker ignores any override, so this must not be
     /// env-configurable or a UI edit could land in a file no job ever reads.
     pub config_path: PathBuf,
+    /// Single-slot supervisor for the interactive scout discovery pipeline.
+    /// In-memory; independent of the render job queue. See scout.rs.
+    pub scout: crate::scout::ScoutSupervisor,
 }
 
 /// True iff `header` is `Bearer <key>` matching `key`. Shared by the
