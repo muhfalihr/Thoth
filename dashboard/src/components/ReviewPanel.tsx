@@ -22,13 +22,17 @@ type Moment = {
   visual_score?: VisualScore | null;
 };
 
-const SCORE_KEYS: (keyof VisualScore)[] = ["humor", "visual_impact", "novelty", "engagement"];
+// Only the numeric score fields — excludes `note` so bar widths type as `number`
+// without a cast (a stray `note` in this loop would then be a compile error).
+type ScoreKey = "humor" | "visual_impact" | "novelty" | "engagement";
+const SCORE_KEYS: ScoreKey[] = ["humor", "visual_impact", "novelty", "engagement"];
 
 /** Post-run Review: play the final video, inspect moments + scores (0–10). */
 export function ReviewPanel({ jobId }: { jobId: string }) {
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [moments, setMoments] = useState<Moment[] | null>(null);
+  const [momentsErr, setMomentsErr] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,8 +44,9 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
       if (m.video) {
         try {
           const blob = await fetchArtifact(jobId, m.video);
+          if (dead) return; // don't create an object URL nobody will revoke
           objUrl = URL.createObjectURL(blob);
-          if (!dead) setVideoUrl(objUrl);
+          setVideoUrl(objUrl);
         } catch {
           if (!dead) setErr("final video unavailable");
         }
@@ -52,7 +57,9 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
           const data = JSON.parse(await blob.text()) as { moments?: Moment[] };
           if (!dead) setMoments(data.moments ?? []);
         } catch {
-          if (!dead) setMoments([]);
+          // Distinguish a corrupt/unreadable moments.json from "0 moments":
+          // the former surfaces a notice, the latter renders nothing.
+          if (!dead) setMomentsErr("moments.json unreadable");
         }
       }
     });
@@ -64,7 +71,10 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
 
   async function download(rel: string) {
     const blob = await fetchArtifact(jobId, rel);
-    window.open(URL.createObjectURL(blob), "_blank");
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    // Revoke after the new tab has had a tick to claim it (avoids per-click leak).
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
   if (!manifest) return null;
@@ -79,6 +89,10 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
           <video controls src={videoUrl} className="w-full max-h-80 rounded bg-black" />
         ) : (
           <p className="text-xs text-muted-foreground">{err ?? "render not available"}</p>
+        )}
+
+        {momentsErr && (
+          <p className="text-xs text-destructive">{momentsErr}</p>
         )}
 
         {moments && moments.length > 0 && (
@@ -101,7 +115,7 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
                         <div className="h-2 flex-1 rounded bg-muted">
                           <div
                             className="h-2 rounded bg-primary"
-                            style={{ width: `${(m.visual_score![k] as number) * 10}%` }}
+                            style={{ width: `${m.visual_score![k] * 10}%` }}
                           />
                         </div>
                         <span className="w-6 text-right tabular-nums">{m.visual_score![k]}</span>
@@ -110,6 +124,7 @@ export function ReviewPanel({ jobId }: { jobId: string }) {
                   </div>
                 )}
                 <p className="mt-1 text-muted-foreground">{m.reason}</p>
+                {m.hook && <p className="mt-0.5 italic text-muted-foreground">“{m.hook}”</p>}
               </div>
             ))}
           </div>
