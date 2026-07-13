@@ -9,101 +9,6 @@ use crate::config::AppConfig;
 use thoth_jobs::{JobRecord, JobStatus, JobStore};
 use tokio_util::sync::CancellationToken;
 
-/// Map JSON params to CLI flags. Known keys are converted to --flag value pairs;
-/// unknown keys are silently skipped.
-fn push_params(argv: &mut Vec<String>, params: &serde_json::Value) {
-    if !params.is_object() {
-        return;
-    }
-
-    let obj = params.as_object().unwrap();
-
-    // Scalar string/enum flags: key exists → push "--key" and stringified value
-    for (key, val) in [
-        ("provider", "provider"),
-        ("model", "model"),
-        ("layout", "layout"),
-        ("clip_style", "clip-style"),
-        ("keywords", "keywords"),
-        ("style_profile", "style-profile"),
-        ("social", "social"),
-        ("source_channel", "source-channel"),
-        ("font_bold", "font-bold"),
-        ("font_regular", "font-regular"),
-    ] {
-        if let Some(v) = obj.get(key) {
-            if let Some(s) = v.as_str() {
-                argv.push(format!("--{}", val));
-                argv.push(s.to_string());
-            }
-        }
-    }
-
-    // Numeric flags
-    if let Some(v) = obj.get("max_clips") {
-        if let Some(n) = v.as_u64() {
-            argv.push("--max-clips".into());
-            argv.push(n.to_string());
-        }
-    }
-    if let Some(v) = obj.get("bgm_volume") {
-        if let Some(n) = v.as_f64() {
-            argv.push("--bgm-volume".into());
-            argv.push(n.to_string());
-        }
-    }
-    if let Some(v) = obj.get("headline_dur") {
-        if let Some(n) = v.as_f64() {
-            argv.push("--headline-dur".into());
-            argv.push(n.to_string());
-        }
-    }
-    if let Some(v) = obj.get("social_icon_size") {
-        if let Some(n) = v.as_u64() {
-            argv.push("--social-icon-size".into());
-            argv.push(n.to_string());
-        }
-    }
-    if let Some(v) = obj.get("social_icon_min_size") {
-        if let Some(n) = v.as_u64() {
-            argv.push("--social-icon-min-size".into());
-            argv.push(n.to_string());
-        }
-    }
-    if let Some(v) = obj.get("social_icon_max_size") {
-        if let Some(n) = v.as_u64() {
-            argv.push("--social-icon-max-size".into());
-            argv.push(n.to_string());
-        }
-    }
-
-    // Path flags
-    if let Some(v) = obj.get("sfx_intro") {
-        if let Some(s) = v.as_str() {
-            argv.push("--sfx-intro".into());
-            argv.push(s.to_string());
-        }
-    }
-    if let Some(v) = obj.get("bgm") {
-        if let Some(s) = v.as_str() {
-            argv.push("--bgm".into());
-            argv.push(s.to_string());
-        }
-    }
-    if let Some(v) = obj.get("font_dir") {
-        if let Some(s) = v.as_str() {
-            argv.push("--font-dir".into());
-            argv.push(s.to_string());
-        }
-    }
-    if let Some(v) = obj.get("social_icon") {
-        if let Some(s) = v.as_str() {
-            argv.push("--social-icon".into());
-            argv.push(s.to_string());
-        }
-    }
-}
-
 /// The claim loop. Runs forever: atomically claim the oldest queued job, run it,
 /// repeat. Backs off (250ms → 2s) while the queue is empty so an idle worker
 /// isn't hot-spinning the DB.
@@ -233,6 +138,63 @@ where
     crate::util::progress::set_sink(Box::new(|_| {}));
 }
 
+/// Translate a job's `spec.params` JSON into `thoth run` CLI flags, appended to
+/// `argv`. Only known keys are mapped (unknown ignored — forward-compat); the
+/// `extra_args` array is appended verbatim as an escape hatch for any flag not
+/// surfaced here. Flag names MUST match `RunArgs` (cli.rs) — the unit test
+/// round-trips through `RunArgs::try_parse_from` to catch drift.
+fn push_params(argv: &mut Vec<String>, params: &serde_json::Value) {
+    // (json key, cli flag) for scalar values (string / int / float).
+    const SCALAR: &[(&str, &str)] = &[
+        ("provider", "--provider"),
+        ("model", "--model"),
+        ("max_clips", "--max-clips"),
+        ("layout", "--layout"),
+        ("language", "--language"),
+        ("clip_style", "--clip-style"),
+        ("style_profile", "--style-profile"),
+        ("social", "--social"),
+        ("bgm", "--bgm"),
+        ("bgm_volume", "--bgm-volume"),
+        ("sfx_intro", "--sfx-intro"),
+        ("headline_dur", "--headline-dur"),
+    ];
+    let scalar = |v: &serde_json::Value| -> Option<String> {
+        v.as_str()
+            .map(str::to_string)
+            .or_else(|| v.as_i64().map(|n| n.to_string()))
+            .or_else(|| v.as_f64().map(|n| n.to_string()))
+    };
+    for (key, flag) in SCALAR {
+        if let Some(val) = params.get(key).and_then(&scalar) {
+            if !val.is_empty() {
+                argv.push((*flag).to_string());
+                argv.push(val);
+            }
+        }
+    }
+    // keywords: string[] → --keywords a,b,c  (clap value_delimiter = ',')
+    if let Some(arr) = params.get("keywords").and_then(|v| v.as_array()) {
+        let joined = arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        if !joined.is_empty() {
+            argv.push("--keywords".to_string());
+            argv.push(joined);
+        }
+    }
+    // extra_args: string[] appended verbatim (escape hatch for any other flag).
+    if let Some(arr) = params.get("extra_args").and_then(|v| v.as_array()) {
+        for a in arr.iter().filter_map(|v| v.as_str()) {
+            if !a.is_empty() {
+                argv.push(a.to_string());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,57 +221,32 @@ mod tests {
     #[test]
     fn push_params_maps_known_keys_and_parses() {
         use clap::Parser;
-
-        // Test: scalar params are mapped to flags and parse successfully
-        let mut argv = vec!["thoth-run".into(), "https://test.com".into()];
         let params = serde_json::json!({
-            "provider": "groq",
-            "model": "small",
-            "max_clips": 5,
-            "layout": "horizontal",
-            "bgm_volume": 0.5,
-            "headline_dur": 3.5,
-            "social_icon_size": 64,
-            "social_icon_min_size": 24,
-            "social_icon_max_size": 96,
-            "clip_style": "flash",
-            "keywords": "ai,tech",
-            "style_profile": "trendy",
-            "unknown_key": "ignored"
+            "provider": "novita",
+            "max_clips": 3,
+            "layout": "vertical",
+            "keywords": ["prabowo", "AI"],
+            "bgm_volume": 0.2,
+            "style_profile": "tiktok_id_2025",
+            "extra_args": ["--social-icon", "x.png"]
         });
-
+        let mut argv = vec![
+            "thoth-run".to_string(),
+            "https://x.test".to_string(),
+            "--output-dir".to_string(),
+            "out".to_string(),
+            "--job-id".to_string(),
+            "id1".to_string(),
+        ];
         push_params(&mut argv, &params);
-
-        // Verify flags are in argv
-        assert!(argv.contains(&"--provider".into()));
-        assert!(argv.contains(&"groq".into()));
-        assert!(argv.contains(&"--model".into()));
-        assert!(argv.contains(&"small".into()));
-        assert!(argv.contains(&"--max-clips".into()));
-        assert!(argv.contains(&"5".into()));
-        assert!(argv.contains(&"--layout".into()));
-        assert!(argv.contains(&"horizontal".into()));
-        assert!(argv.contains(&"--bgm-volume".into()));
-        assert!(argv.contains(&"0.5".into()));
-        assert!(argv.contains(&"--headline-dur".into()));
-        assert!(argv.contains(&"3.5".into()));
-        assert!(argv.contains(&"--social-icon-size".into()));
-        assert!(argv.contains(&"64".into()));
-        assert!(argv.contains(&"--clip-style".into()));
-        assert!(argv.contains(&"flash".into()));
-        assert!(argv.contains(&"--keywords".into()));
-        assert!(argv.contains(&"ai,tech".into()));
-        assert!(argv.contains(&"--style-profile".into()));
-        assert!(argv.contains(&"trendy".into()));
-
-        // Verify it parses successfully through RunArgs
-        let result = crate::cli::RunArgs::try_parse_from(&argv);
-        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
-        let args = result.unwrap();
-        assert_eq!(args.url, Some("https://test.com".into()));
-        assert_eq!(args.max_clips, 5);
-        assert!((args.bgm_volume - 0.5).abs() < 0.001);
-        assert_eq!(args.headline_dur, 3.5);
+        assert!(argv.windows(2).any(|w| w[0] == "--provider" && w[1] == "novita"));
+        assert!(argv.windows(2).any(|w| w[0] == "--max-clips" && w[1] == "3"));
+        assert!(argv.windows(2).any(|w| w[0] == "--layout" && w[1] == "vertical"));
+        assert!(argv.windows(2).any(|w| w[0] == "--keywords" && w[1] == "prabowo,AI"));
+        assert!(argv.windows(2).any(|w| w[0] == "--style-profile" && w[1] == "tiktok_id_2025"));
+        assert!(argv.windows(2).any(|w| w[0] == "--social-icon" && w[1] == "x.png"));
+        // The whole argv must still parse as RunArgs — guards flag-name drift.
+        crate::cli::RunArgs::try_parse_from(&argv).expect("params argv must parse as RunArgs");
     }
 
     #[tokio::test]
