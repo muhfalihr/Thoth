@@ -97,3 +97,54 @@ export async function getManifest(id: string): Promise<Manifest> {
   const r = await fetch(`/api/jobs/${id}/manifest`, { headers: H });
   return r.ok ? r.json() : {};
 }
+
+// Per-run knobs the dashboard sends in JobSpec.params. Mirrors the flag mapping
+// in crates/thoth-core/src/worker/mod.rs::push_params — keep in sync by hand.
+export type RunParams = {
+  provider?: string;
+  model?: string;
+  max_clips?: number;
+  layout?: string;
+  language?: string;
+  keywords?: string[];
+  clip_style?: string;
+  style_profile?: string;
+  social?: string;
+  bgm?: string;
+  bgm_volume?: number;
+  sfx_intro?: string;
+  headline_dur?: number;
+  extra_args?: string[];
+};
+
+// Static enum value lists — mirror the Rust enums in cli.rs (LlmProviderName,
+// WhisperModelSize, OutputLayout, ClipStyleArg). Update when a variant is added.
+export const PROVIDERS = [
+  "groq", "openai", "claude", "gemini", "vllm", "ollama", "novita", "together", "fireworks",
+] as const;
+export const WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"] as const;
+export const LAYOUTS = ["vertical", "horizontal", "square"] as const;
+export const CLIP_STYLES = ["fade", "flash", "zoom", "smooth", "none"] as const;
+
+export async function getStyleProfiles(): Promise<string[]> {
+  const r = await fetch("/api/style-profiles", { headers: H });
+  return r.ok ? r.json() : [];
+}
+
+export async function getConfig(): Promise<string> {
+  const r = await fetch("/api/config", { headers: H });
+  if (!r.ok) return "";
+  const j = await r.json();
+  return typeof j.text === "string" ? j.text : "";
+}
+
+export async function putConfig(text: string): Promise<{ ok: boolean; error?: string }> {
+  const r = await fetch("/api/config", {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify({ text }),
+  });
+  if (r.ok) return { ok: true };
+  const j = await r.json().catch(() => ({}));
+  return { ok: false, error: typeof j.error === "string" ? j.error : `PUT ${r.status}` };
+}
