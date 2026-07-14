@@ -13,7 +13,15 @@ import {
 const COMMANDS = ["run"] as const;
 
 /** Builds a JobSpec (url + content-set + per-run params) and starts a run. */
-export function RunForm({ onCreated }: { onCreated: (jobId: string) => void }) {
+export function RunForm({
+  onCreated,
+  initialContentSet,
+  onConsumed,
+}: {
+  onCreated: (jobId: string) => void;
+  initialContentSet?: string;
+  onConsumed?: () => void;
+}) {
   const [command, setCommand] = useState<string>("run");
   const [url, setUrl] = useState("");
   const [contentSet, setContentSet] = useState("");
@@ -111,6 +119,18 @@ export function RunForm({ onCreated }: { onCreated: (jobId: string) => void }) {
         value={value} onChange={(e) => set(e.target.value)} />
     </div>
   );
+
+  // One-shot prefill from a "Send to render" hand-off (sub-project D). RunForm
+  // remounts on each entry to the Runs view, so mount is the right moment to
+  // consume the pending path; the empty dep array captures it exactly once.
+  useEffect(() => {
+    if (initialContentSet) {
+      setContentSet(initialContentSet);
+      setShowOpts(true); // reveal params so provider can be set before Run
+      onConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <form onSubmit={handleSubmit}
