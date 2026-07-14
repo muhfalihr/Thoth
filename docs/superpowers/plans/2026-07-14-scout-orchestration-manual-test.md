@@ -52,10 +52,14 @@ below is the part machines can't verify: that the buttons drive a real scout run
    with `{"error": ..., "busy_kind": ...}` — the supervisor holds exactly one slot (mirrors the
    one browser tab).
 
-7. **Cancel.** Start a **Discover**, then click **Cancel** mid-run. The child process is killed
-   cooperatively (tokio `select!` → `child.kill()`), a "cancelled" line lands in the log, and the
-   run status goes **failed** with a non-zero exit code. The next command can start immediately
-   (slot released).
+7. **Cancel.** Start a **Discover**, then click **Cancel** mid-run. The whole process **tree** is
+   killed (tokio `select!` → `taskkill /PID <pid> /T /F` on Windows; on Unix the child leads its own
+   process group (`process_group(0)`) and cancel sends `kill -9 -<pgid>` to the whole group — the real
+   pipeline runs in a grandchild the `bun cli.ts` dispatcher spawns, so `child.kill()` alone would
+   not reach it). A "cancelled" line lands in the log, the run status goes **failed** with a
+   non-zero exit code, and the browser tab stops being driven. The next command can start
+   immediately — the reader-drain is timeout-bounded so the single slot is always released, even if
+   a dying grandchild briefly holds the pipe open.
 
 8. **Reconnect / resume.** Reload the dashboard mid-run: the log pane re-opens the SSE stream
    from `since=0` and repaints the run's lines; the status pill reflects the still-running command.

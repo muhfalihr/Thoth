@@ -220,11 +220,17 @@ where R: tokio::io::AsyncRead + Unpin {
 /// run (with the error text) if the process can't be spawned.
 pub async fn spawn_command(sup: &ScoutSupervisor, program: &str, args: Vec<String>) {
     let cancel = { sup.lock().await.cancel.clone() };
-    let mut child = match Command::new(program)
-        .args(&args)
+    let mut cmd = Command::new(program);
+    cmd.args(&args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stderr(std::process::Stdio::piped());
+    // On Unix, make the child lead its own process group (pgid == pid) so cancel
+    // can kill the whole group in one signal — the grandchild pipeline and its
+    // descendants (ffmpeg/whisper) inherit the group. On Windows `taskkill /T`
+    // walks the tree instead, so no group is needed there.
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let mut child = match cmd.spawn()
     {
         Ok(c) => c,
         Err(e) => {
@@ -235,6 +241,7 @@ pub async fn spawn_command(sup: &ScoutSupervisor, program: &str, args: Vec<Strin
         }
     };
 
+    let child_pid = child.id(); // captured for tree-kill on cancel (grandchild)
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let mut readers = Vec::new();
@@ -245,6 +252,13 @@ pub async fn spawn_command(sup: &ScoutSupervisor, program: &str, args: Vec<Strin
         tokio::select! {
             status = child.wait() => status.ok().and_then(|s| s.code()),
             _ = notify.notified() => {
+                // Kill the tree FIRST (while parent links are intact), then reap
+                // the dispatcher. child.kill() only hits `bun scout/cli.ts`; the
+                // real pipeline runs in a grandchild it spawned via
+                // spawnSync(stdio:'inherit') (scout/cli.ts:65), so we must kill
+                // the tree or the grandchild keeps driving the browser tab and
+                // holding the pipe write-end open.
+                if let Some(pid) = child_pid { kill_tree(pid).await; }
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 { sup.lock().await.push_line(Stream::Err, "cancelled".into()); }
@@ -255,8 +269,38 @@ pub async fn spawn_command(sup: &ScoutSupervisor, program: &str, args: Vec<Strin
         child.wait().await.ok().and_then(|s| s.code())
     };
 
-    for r in readers { let _ = r.await; } // drain remaining buffered lines
+    // Bound the drain: a killed grandchild may briefly still hold the pipe
+    // write-end, so an unbounded `r.await` could never see EOF and finish()
+    // would never run — wedging the single slot Running forever. The timeout
+    // guarantees the slot is always freed.
+    for r in readers {
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), r).await;
+    }
     sup.lock().await.finish(exit_code);
+}
+
+/// Kill the whole process tree rooted at `pid`. Mirrors scout's own teardown
+/// (`scout/lib/browser.ts:323` `taskkill /T /F`) — required because the scout
+/// work runs in a grandchild that `child.kill()` cannot reach.
+async fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .await;
+    }
+    #[cfg(not(windows))]
+    {
+        // The child leads its own process group (process_group(0) at spawn), so
+        // the negative pgid signals the whole group — grandchild pipeline and
+        // all its descendants die together, matching taskkill /T on Windows.
+        let _ = Command::new("kill")
+            .arg("-9")
+            .arg(format!("-{pid}"))
+            .output()
+            .await;
+    }
 }
 
 /// Begin a run (Err == Busy) then supervise it in a detached task (202 semantics).
