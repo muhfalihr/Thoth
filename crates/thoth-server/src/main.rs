@@ -28,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
         // processes share a cwd, so this always resolves to the same file
         // load() reads.
         config_path: std::path::PathBuf::from("config.toml"),
+        scout: thoth_server::scout::new_supervisor(),
     };
 
     // Liveness backstop: reclaim jobs whose independent worker crashed.

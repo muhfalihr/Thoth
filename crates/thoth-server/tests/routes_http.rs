@@ -22,6 +22,7 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
         store,
         output_root: tmp.clone(),
         config_path: tmp.join("config.toml"),
+        scout: thoth_server::scout::new_supervisor(),
     };
     (build_router(state), tmp)
 }
@@ -325,6 +326,103 @@ async fn config_get_put_roundtrip_and_validation() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     assert!(std::fs::read_to_string(&cfg).unwrap().contains("groq"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_status_idle_shape() {
+    let (app, tmp) = build_test_app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/scout/status")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["browser_attached"].is_boolean(), "body: {v}");
+    assert!(v["cdp_base"].as_str().unwrap().contains("18800"), "body: {v}");
+    assert!(v["run"].is_null(), "body: {v}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_run_missing_url_is_400() {
+    let (app, tmp) = build_test_app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/scout/run")
+                .header("authorization", "Bearer test-key")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_cancel_when_idle_is_409() {
+    let (app, tmp) = build_test_app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/scout/cancel")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_topics_absent_is_empty_array() {
+    let (app, tmp) = build_test_app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/scout/topics")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v.is_array(), "body: {v}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_stream_wrong_token_is_401() {
+    // Only the immediate-rejection path is safe to test here: a valid token
+    // against an idle/running run would block on the SSE loop under oneshot.
+    let (app, tmp) = build_test_app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/scout/stream?token=wrong")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

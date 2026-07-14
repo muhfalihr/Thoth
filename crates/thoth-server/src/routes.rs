@@ -10,6 +10,7 @@ use futures_util::stream::Stream;
 use serde::Deserialize;
 
 use crate::auth::AppState;
+use crate::scout::{self, DiscoverReq, RunReq, ScoutKind, ValidateReq};
 use thoth_jobs::{JobRecord, JobSpec, JobStatus};
 
 #[derive(Deserialize)]
@@ -162,6 +163,53 @@ pub async fn stream_job(
     Ok(Sse::new(stream))
 }
 
+#[derive(Deserialize)]
+pub struct ScoutStreamQuery {
+    pub token: String,
+    #[serde(default)]
+    pub since: u64,
+}
+
+/// SSE relay for the in-memory scout run log. Same shape as `stream_job` but
+/// polls `state.scout` (a live process's stdout lines) instead of the SQLite
+/// job-events table — there's no DB row for scout runs, just the supervisor's
+/// `Vec<LogLine>`.
+///
+/// Mounted OUTSIDE the bearer layer (EventSource can't send headers); it
+/// self-authenticates via `?token=<api_key>`.
+pub async fn scout_stream(
+    State(state): State<AppState>,
+    Query(q): Query<ScoutStreamQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    if q.token != state.api_key {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let mut next = q.since;
+    let scout = state.scout.clone();
+    let stream = async_stream::stream! {
+        loop {
+            let (batch, terminal) = {
+                let run = scout.lock().await;
+                let batch: Vec<_> = run.lines.iter().filter(|l| l.seq >= next).cloned().collect();
+                let terminal = matches!(run.status, scout::ScoutStatus::Done | scout::ScoutStatus::Failed);
+                (batch, terminal)
+            };
+            let empty = batch.is_empty();
+            for line in batch {
+                next = line.seq + 1;
+                let data = serde_json::to_string(&line).unwrap_or_default();
+                yield Ok(Event::default().id(line.seq.to_string()).data(data));
+            }
+            if terminal && empty {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    };
+    Ok(Sse::new(stream))
+}
+
 /// Extension → content-type. Not exhaustive — just the artifact kinds Thoth
 /// produces (video, images, subtitle/metadata sidecars). Falls back to
 /// octet-stream, which every browser handles as a download.
@@ -295,6 +343,123 @@ pub async fn get_style_profiles(State(state): State<AppState>) -> Json<Vec<Strin
         })
         .unwrap_or_default();
     Json(names)
+}
+
+pub async fn scout_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let attached = scout::cdp_attached().await;
+    let run = state.scout.lock().await.status_dto();
+    Json(serde_json::json!({
+        "browser_attached": attached,
+        "cdp_base": scout::cdp_base(),
+        "run": run,
+    }))
+}
+
+fn busy(kind: Option<ScoutKind>) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({ "error": "a scout command is already running", "busy_kind": kind })),
+    )
+}
+
+fn accepted() -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::ACCEPTED, Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn scout_browser_start(
+    State(state): State<AppState>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let kind = state.scout.lock().await.kind;
+    match scout::start(&state.scout, ScoutKind::Browser, vec![]).await {
+        Ok(()) => accepted(),
+        Err(()) => busy(kind),
+    }
+}
+
+pub async fn scout_discover(
+    State(state): State<AppState>,
+    Json(req): Json<DiscoverReq>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let args = scout::build_scout_args(ScoutKind::Discover, Some(&req), None, None);
+    let kind = state.scout.lock().await.kind;
+    match scout::start(&state.scout, ScoutKind::Discover, args[1..].to_vec()).await {
+        Ok(()) => accepted(),
+        Err(()) => busy(kind),
+    }
+}
+
+pub async fn scout_run(
+    State(state): State<AppState>,
+    Json(req): Json<RunReq>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if req.url.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "url required" })),
+        );
+    }
+    // Remember where this run writes its content-set BEFORE spawning.
+    let cs = scout::resolve_content_set(req.out.as_deref());
+    let args = scout::build_scout_args(ScoutKind::Run, None, Some(&req), None);
+    let kind = state.scout.lock().await.kind;
+    match scout::start(&state.scout, ScoutKind::Run, args[1..].to_vec()).await {
+        Ok(()) => {
+            state.scout.lock().await.last_content_set = Some(cs);
+            accepted()
+        }
+        Err(()) => busy(kind),
+    }
+}
+
+pub async fn scout_validate(
+    State(state): State<AppState>,
+    Json(req): Json<ValidateReq>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if req.set.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "set required" })),
+        );
+    }
+    let args = scout::build_scout_args(ScoutKind::Validate, None, None, Some(&req));
+    let kind = state.scout.lock().await.kind;
+    match scout::start(&state.scout, ScoutKind::Validate, args[1..].to_vec()).await {
+        Ok(()) => accepted(),
+        Err(()) => busy(kind),
+    }
+}
+
+pub async fn scout_cancel(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    if scout::cancel(&state.scout).await {
+        accepted()
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "no scout command running" })),
+        )
+    }
+}
+
+/// Raw parse of `reel_topics.json`; `[]` if absent, unreadable, or not a JSON array.
+pub async fn scout_topics() -> Json<serde_json::Value> {
+    let text = std::fs::read_to_string(scout::TOPICS_FILE).unwrap_or_default();
+    let v = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .filter(|v| v.is_array())
+        .unwrap_or_else(|| serde_json::json!([]));
+    Json(v)
+}
+
+pub async fn scout_content_set(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let path = state
+        .scout
+        .lock()
+        .await
+        .last_content_set
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(scout::DEFAULT_CONTENT_SET));
+    let exists = path.exists();
+    Json(serde_json::json!({ "path": path.to_string_lossy(), "exists": exists }))
 }
 
 pub async fn get_artifact(

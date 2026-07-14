@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod reaper;
 pub mod routes;
+pub mod scout;
 
 use axum::{
     middleware,
@@ -25,6 +26,14 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::get_config).put(routes::put_config),
         )
         .route("/style-profiles", get(routes::get_style_profiles))
+        .route("/scout/status", get(routes::scout_status))
+        .route("/scout/browser/start", post(routes::scout_browser_start))
+        .route("/scout/discover", post(routes::scout_discover))
+        .route("/scout/run", post(routes::scout_run))
+        .route("/scout/validate", post(routes::scout_validate))
+        .route("/scout/cancel", post(routes::scout_cancel))
+        .route("/scout/topics", get(routes::scout_topics))
+        .route("/scout/content-set", get(routes::scout_content_set))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,
@@ -32,7 +41,9 @@ pub fn build_router(state: AppState) -> Router {
 
     // SSE is OUTSIDE the header-auth layer (EventSource can't send headers);
     // it authenticates via ?token= inside the handler.
-    let api = api.route("/jobs/:id/stream", get(routes::stream_job));
+    let api = api
+        .route("/jobs/:id/stream", get(routes::stream_job))
+        .route("/scout/stream", get(routes::scout_stream));
 
     Router::new()
         .route("/health", get(|| async { "ok" }))

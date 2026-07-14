@@ -148,3 +148,87 @@ export async function putConfig(text: string): Promise<{ ok: boolean; error?: st
   const j = await r.json().catch(() => ({}));
   return { ok: false, error: typeof j.error === "string" ? j.error : `PUT ${r.status}` };
 }
+
+// ---- Scout orchestration (Operator Console sub-project B) ----
+// Hand-synced to crates/thoth-server/src/scout.rs + routes.rs::scout_*.
+// Keep byte-aligned when the Rust route bodies change.
+export type ScoutKind = "browser" | "discover" | "run" | "validate";
+export type ScoutRunStatus = "idle" | "running" | "done" | "failed";
+export type ScoutRunSummary = {
+  kind: ScoutKind;
+  status: ScoutRunStatus;
+  started_at: number | null;
+  exit_code: number | null;
+};
+export type ScoutStatus = {
+  browser_attached: boolean;
+  cdp_base: string;
+  run: ScoutRunSummary | null;
+};
+// reel_topics.json entries are returned raw; these are the fields the UI reads.
+export type ScoutTopic = { url: string; title?: string; score?: number; platform?: string };
+export type ScoutLogLine = { seq: number; stream: "out" | "err"; text: string };
+
+export type ScoutDiscoverBody = {
+  max_per?: number;
+  hours?: number;
+  include?: string;
+  tiktok?: boolean;
+};
+export type ScoutRunBody = {
+  url: string;
+  out?: string;
+  per?: number;
+  max?: number;
+  cap?: number;
+  no_comments?: boolean;
+};
+
+/** 202 -> {ok:true}; 409 (busy) / 400 -> {ok:false,status}. */
+export type ScoutAck = { ok: boolean; status: number; error?: string };
+
+async function scoutPost(path: string, body?: unknown): Promise<ScoutAck> {
+  const r = await fetch(path, { method: "POST", headers: H, body: JSON.stringify(body ?? {}) });
+  if (r.ok) return { ok: true, status: r.status };
+  const j = await r.json().catch(() => ({}));
+  return { ok: false, status: r.status, error: typeof j.error === "string" ? j.error : undefined };
+}
+
+export async function scoutStatus(): Promise<ScoutStatus | null> {
+  const r = await fetch("/api/scout/status", { headers: H });
+  return r.ok ? r.json() : null;
+}
+export function scoutStartBrowser(): Promise<ScoutAck> {
+  return scoutPost("/api/scout/browser/start");
+}
+export function scoutDiscover(body: ScoutDiscoverBody): Promise<ScoutAck> {
+  return scoutPost("/api/scout/discover", body);
+}
+export function scoutRun(body: ScoutRunBody): Promise<ScoutAck> {
+  return scoutPost("/api/scout/run", body);
+}
+export function scoutValidate(set: string): Promise<ScoutAck> {
+  return scoutPost("/api/scout/validate", { set });
+}
+export function scoutCancel(): Promise<ScoutAck> {
+  return scoutPost("/api/scout/cancel");
+}
+export async function scoutTopics(): Promise<ScoutTopic[]> {
+  const r = await fetch("/api/scout/topics", { headers: H });
+  return r.ok ? r.json() : [];
+}
+export async function scoutContentSet(): Promise<{ path: string; exists: boolean }> {
+  const r = await fetch("/api/scout/content-set", { headers: H });
+  return r.ok ? r.json() : { path: "", exists: false };
+}
+
+/** Live scout log tail. Mirrors streamJob; resumes from `since`. */
+export function streamScout(since: number, onLine: (l: ScoutLogLine) => void): EventSource {
+  const es = new EventSource(
+    `/api/scout/stream?token=${encodeURIComponent(KEY)}&since=${since}`,
+  );
+  es.onmessage = (m) => {
+    try { onLine(JSON.parse(m.data) as ScoutLogLine); } catch { /* drop */ }
+  };
+  return es;
+}
