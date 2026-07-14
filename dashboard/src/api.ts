@@ -232,3 +232,52 @@ export function streamScout(since: number, onLine: (l: ScoutLogLine) => void): E
   };
   return es;
 }
+
+// ---- Content-set curation (Operator Console sub-project C) ----
+// Hand-synced to crates/thoth-server/src/routes.rs::scout_content_set_data /
+// scout_content_set_save / scout_output_file.
+
+export type ContentSetData = {
+  path: string;
+  exists: boolean;
+  output_root: string;
+  // Opaque JSON — kept verbatim for lossless save; only pruned/edited in place.
+  content: any | null;
+  error: string | null;
+};
+
+export async function getContentSetData(): Promise<ContentSetData> {
+  const r = await fetch("/api/scout/content-set/data", { headers: H });
+  return r.json();
+}
+
+export async function putContentSet(
+  content: unknown,
+): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const r = await fetch("/api/scout/content-set", {
+    method: "PUT",
+    headers: H,
+    body: JSON.stringify(content),
+  });
+  if (r.ok) return r.json();
+  const e = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  return { ok: false, error: e.error ?? `HTTP ${r.status}` };
+}
+
+/** Map an absolute local `image_path` to a servable, token-authed image URL.
+ *  Robust to Windows separators: strip the `output_root` prefix if present, else
+ *  fall back to the `/scout/output/` marker, else the bare basename under the root. */
+export function scoutImageUrl(imagePath: string, outputRoot: string): string {
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const np = norm(imagePath);
+  const root = norm(outputRoot).replace(/\/+$/, "");
+  let tail: string;
+  if (root && np.toLowerCase().startsWith(root.toLowerCase() + "/")) {
+    tail = np.slice(root.length + 1);
+  } else {
+    const marker = "/scout/output/";
+    const i = np.toLowerCase().lastIndexOf(marker);
+    tail = i >= 0 ? np.slice(i + marker.length) : np.replace(/^.*\//, "");
+  }
+  return `/api/scout/output/${tail}?token=${encodeURIComponent(KEY)}`;
+}
