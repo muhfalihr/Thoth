@@ -530,3 +530,64 @@ async fn content_set_data_malformed_flags_error() {
     assert!(v["content"].is_null());
     assert_eq!(v["error"], "malformed");
 }
+
+#[tokio::test]
+async fn content_set_put_round_trips_losslessly() {
+    let p = tmp_json_path();
+    std::fs::write(&p, "{}").unwrap(); // pre-existing file to overwrite
+    let app = app_with_content_set(p.clone()).await;
+    // Body carries a field the Rust side never models (discourse) + unknown key.
+    let payload =
+        r#"{"main":{"title":"Hi","description":"D"},"footage":[{"url":"u","relevance":9}],"comments":[],"figures":[],"references":[],"discourse":{"themes":["a"]},"unknown_future":true}"#;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/scout/content-set")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .body(Body::from(payload))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // File on disk equals the input byte-for-byte (no field drop, no reformat).
+    let on_disk = std::fs::read_to_string(&p).unwrap();
+    assert_eq!(on_disk, payload);
+}
+
+#[tokio::test]
+async fn content_set_put_rejects_non_object() {
+    let app = app_with_content_set(tmp_json_path()).await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/scout/content-set")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .body(Body::from("[1,2,3]"))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn content_set_put_rejects_missing_main_or_bad_array() {
+    // missing `main`
+    let app = app_with_content_set(tmp_json_path()).await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/scout/content-set")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"footage":[]}"#))
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::BAD_REQUEST);
+
+    // `footage` present but not an array
+    let app2 = app_with_content_set(tmp_json_path()).await;
+    let req2 = Request::builder()
+        .method("PUT")
+        .uri("/api/scout/content-set")
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"main":{},"footage":"nope"}"#))
+        .unwrap();
+    assert_eq!(app2.oneshot(req2).await.unwrap().status(), StatusCode::BAD_REQUEST);
+}

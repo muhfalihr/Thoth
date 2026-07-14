@@ -33,7 +33,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/scout/validate", post(routes::scout_validate))
         .route("/scout/cancel", post(routes::scout_cancel))
         .route("/scout/topics", get(routes::scout_topics))
-        .route("/scout/content-set", get(routes::scout_content_set))
+        .route(
+            "/scout/content-set",
+            get(routes::scout_content_set).put(routes::scout_content_set_save),
+        )
         .route("/scout/content-set/data", get(routes::scout_content_set_data))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

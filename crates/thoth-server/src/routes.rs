@@ -504,6 +504,48 @@ pub async fn scout_content_set_data(State(state): State<AppState>) -> Json<serde
     }
 }
 
+/// PUT /api/scout/content-set — overwrite the current content-set in place.
+/// Parses a COPY of the body only to shape-guard it, then persists the received
+/// bytes verbatim (no re-serialize) so formatting, key order, and any field the
+/// Rust side does not model all survive. Renderability is confirmed separately by
+/// the client re-running `scout validate` after a successful save.
+pub async fn scout_content_set_save(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let bad = |m: &str| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": m })),
+        )
+    };
+    let v: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| bad(&format!("invalid JSON: {e}")))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| bad("content-set must be a JSON object"))?;
+    if !obj.contains_key("main") {
+        return Err(bad("content-set is missing `main`"));
+    }
+    for key in ["footage", "comments", "figures", "references"] {
+        if let Some(field) = obj.get(key) {
+            if !field.is_array() {
+                return Err(bad(&format!("`{key}` must be an array")));
+            }
+        }
+    }
+    let path = current_content_set_path(&state).await;
+    tokio::fs::write(&path, &body).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("write failed: {e}") })),
+        )
+    })?;
+    Ok(Json(serde_json::json!({
+        "ok": true, "path": path.to_string_lossy(),
+    })))
+}
+
 pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,
