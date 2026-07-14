@@ -39,10 +39,12 @@ export function Discovery() {
 
   // When a run finishes, refresh topics + content-set.
   useEffect(() => {
+    let alive = true;
     if (status?.run && status.run.status !== "running") {
-      scoutTopics().then(setTopics);
-      scoutContentSet().then(setContentSet);
+      scoutTopics().then((t) => { if (alive) setTopics(t); });
+      scoutContentSet().then((c) => { if (alive) setContentSet(c); });
     }
+    return () => { alive = false; };
   }, [status?.run?.status]);
 
   // Live log stream while running.
