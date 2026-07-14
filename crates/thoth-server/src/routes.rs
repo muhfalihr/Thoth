@@ -170,6 +170,16 @@ pub struct ScoutStreamQuery {
     pub since: u64,
 }
 
+/// Query auth for the image route: `<img>` cannot send the bearer header, so this
+/// route self-authenticates via `?token=` (mirrors `ScoutStreamQuery`). `token` is
+/// optional so a request with NO query string reaches the handler (→ 401) instead of
+/// being rejected as a 400 by the extractor before auth runs.
+#[derive(Deserialize)]
+pub struct ImgToken {
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
 /// SSE relay for the in-memory scout run log. Same shape as `stream_job` but
 /// polls `state.scout` (a live process's stdout lines) instead of the SQLite
 /// job-events table — there's no DB row for scout runs, just the supervisor's
@@ -571,4 +581,31 @@ pub async fn get_artifact(
         [(axum::http::header::CONTENT_TYPE, content_type)],
         bytes,
     ))
+}
+
+/// GET /api/scout/output/*path — serve a local scout artifact (crop PNGs, post-crop
+/// images) to the browser. Token-guarded via `?token=`; path is confined to
+/// `scout/output/` by a `Component::Normal` traversal guard (mirrors `get_artifact`).
+/// `<img>` cannot send the bearer header, so this route mounts OUTSIDE the bearer layer.
+pub async fn scout_output_file(
+    State(state): State<AppState>,
+    Path(rel): Path<String>,
+    Query(q): Query<ImgToken>,
+) -> Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), StatusCode> {
+    if q.token.as_deref() != Some(state.api_key.as_str()) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let rel_path = std::path::Path::new(&rel);
+    if rel_path
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let full = std::path::Path::new(scout::SCOUT_OUTPUT_DIR).join(rel_path);
+    let bytes = tokio::fs::read(&full)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let content_type = guess_content_type(&full);
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
 }

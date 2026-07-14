@@ -47,7 +47,8 @@ pub fn build_router(state: AppState) -> Router {
     // it authenticates via ?token= inside the handler.
     let api = api
         .route("/jobs/:id/stream", get(routes::stream_job))
-        .route("/scout/stream", get(routes::scout_stream));
+        .route("/scout/stream", get(routes::scout_stream))
+        .route("/scout/output/*path", get(routes::scout_output_file));
 
     Router::new()
         .route("/health", get(|| async { "ok" }))

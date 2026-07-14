@@ -591,3 +591,39 @@ async fn content_set_put_rejects_missing_main_or_bad_array() {
         .unwrap();
     assert_eq!(app2.oneshot(req2).await.unwrap().status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn scout_output_requires_token() {
+    let app = app_with_content_set(tmp_json_path()).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/scout/output/crops/x.png") // no ?token=
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn scout_output_wrong_token_is_401() {
+    let app = app_with_content_set(tmp_json_path()).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/scout/output/crops/x.png?token=nope")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn scout_output_valid_token_missing_file_is_404() {
+    // Valid token passes auth + traversal guard, then the read misses -> 404.
+    // (Proves the happy path reaches the filesystem; real serving is covered in
+    // the manual-integration doc.)
+    let app = app_with_content_set(tmp_json_path()).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/scout/output/crops/does-not-exist.png?token=test-key")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
+}
