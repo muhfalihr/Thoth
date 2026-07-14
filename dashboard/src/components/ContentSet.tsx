@@ -27,18 +27,24 @@ export function ContentSet() {
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [lines, setLines] = useState<ScoutLogLine[]>([]);
   const esRef = useRef<EventSource | null>(null);
 
   // Load the content-set once on mount.
   useEffect(() => {
     let alive = true;
-    getContentSetData().then((d) => {
-      if (!alive) return;
-      setData(d);
-      setContent(d.content);
-      setDirty(false);
-    });
+    getContentSetData()
+      .then((d) => {
+        if (!alive) return;
+        setData(d);
+        setContent(d.content);
+        setDirty(false);
+      })
+      .catch((e) => {
+        // A failed initial fetch must not leave the view stuck on "Loading…".
+        if (alive) setLoadErr(String(e));
+      });
     return () => {
       alive = false;
     };
@@ -49,8 +55,12 @@ export function ContentSet() {
   useEffect(() => {
     let alive = true;
     const tick = async () => {
-      const s = await scoutStatus();
-      if (alive) setRunning(s?.run?.status === "running");
+      try {
+        const s = await scoutStatus();
+        if (alive) setRunning(s?.run?.status === "running");
+      } catch {
+        // Transient status blip — keep the previous running state.
+      }
     };
     tick();
     const id = setInterval(tick, 3000);
@@ -103,7 +113,16 @@ export function ContentSet() {
     setLines([]);
     esRef.current?.close();
     esRef.current = streamScout(0, (l) => setLines((prev) => [...prev, l]));
-    await scoutValidate(res.path ?? data?.path ?? "");
+    const ack = await scoutValidate(res.path ?? data?.path ?? "");
+    // Surface a rejected validate (e.g. 409 slot-busy) instead of leaving the
+    // footer stuck on "Saved. Validating…" with no signal.
+    if (!ack.ok) {
+      setNotice(
+        ack.status === 409
+          ? "Saved. Validate skipped — scout is busy; try again shortly."
+          : `Saved, but validate failed${ack.error ? `: ${ack.error}` : ""}.`,
+      );
+    }
     // Repaint from the canonical file after the write.
     const fresh = await getContentSetData();
     setData(fresh);
@@ -118,6 +137,12 @@ export function ContentSet() {
     kind: l.stream === "err" ? "error" : "log",
   }));
 
+  if (loadErr)
+    return (
+      <div className="p-4 text-destructive">
+        Couldn't load the content-set: {loadErr}
+      </div>
+    );
   if (!data) return <div className="p-4 text-muted-foreground">Loading…</div>;
   if (!data.exists)
     return (
@@ -139,6 +164,7 @@ export function ContentSet() {
   const comments: Comment[] = Array.isArray(content.comments) ? content.comments : [];
   const figures: Figure[] = Array.isArray(content.figures) ? content.figures : [];
   const references: Reference[] = Array.isArray(content.references) ? content.references : [];
+  const mainImg = imgSrc(main.thumbnail ?? main.image_path);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -147,9 +173,9 @@ export function ContentSet() {
         <section className="rounded border border-border bg-card p-3">
           <h3 className="mb-2 font-semibold">Main</h3>
           <div className="flex gap-3">
-            {imgSrc(main.thumbnail ?? main.image_path) && (
+            {mainImg && (
               <img
-                src={imgSrc(main.thumbnail ?? main.image_path)}
+                src={mainImg}
                 alt=""
                 className="h-24 w-24 shrink-0 rounded object-cover"
               />
@@ -175,10 +201,12 @@ export function ContentSet() {
         <section>
           <h3 className="mb-2 font-semibold">Footage ({footage.length})</h3>
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-            {footage.map((f, i) => (
-              <div key={i} className="relative rounded border border-border bg-card p-2">
-                {imgSrc(f.thumbnail ?? f.image_path) && (
-                  <img src={imgSrc(f.thumbnail ?? f.image_path)} alt="" className="mb-1 h-20 w-full rounded object-cover" />
+            {footage.map((f, i) => {
+              const src = imgSrc(f.thumbnail ?? f.image_path);
+              return (
+              <div key={`${f.url ?? "f"}-${i}`} className="relative rounded border border-border bg-card p-2">
+                {src && (
+                  <img src={src} alt="" className="mb-1 h-20 w-full rounded object-cover" />
                 )}
                 <div className="truncate text-xs">{f.title ?? f.url}</div>
                 <div className="text-xs text-muted-foreground">{f.platform}</div>
@@ -189,7 +217,8 @@ export function ContentSet() {
                   ✕
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
@@ -197,10 +226,12 @@ export function ContentSet() {
         <section>
           <h3 className="mb-2 font-semibold">Comments ({comments.length})</h3>
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-            {comments.map((c, i) => (
-              <div key={i} className="relative rounded border border-border bg-card p-2">
-                {imgSrc(c.image_path) && (
-                  <img src={imgSrc(c.image_path)} alt="" className="mb-1 w-full rounded object-contain" />
+            {comments.map((c, i) => {
+              const src = imgSrc(c.image_path);
+              return (
+              <div key={`${c.image_path ?? c.author ?? "c"}-${i}`} className="relative rounded border border-border bg-card p-2">
+                {src && (
+                  <img src={src} alt="" className="mb-1 w-full rounded object-contain" />
                 )}
                 <div className="truncate text-xs">{c.author}</div>
                 <div className="line-clamp-2 text-xs text-muted-foreground">{c.text}</div>
@@ -211,7 +242,8 @@ export function ContentSet() {
                   ✕
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
@@ -220,7 +252,7 @@ export function ContentSet() {
           <div>
             <h3 className="mb-2 font-semibold">Figures ({figures.length})</h3>
             {figures.map((f, i) => (
-              <div key={i} className="mb-1 flex items-center justify-between rounded border border-border bg-card px-2 py-1">
+              <div key={`${f.name ?? "fig"}-${i}`} className="mb-1 flex items-center justify-between rounded border border-border bg-card px-2 py-1">
                 <span className="truncate text-xs">
                   {f.name} <span className="text-muted-foreground">· {f.kind} · {f.role}</span>
                 </span>
@@ -231,7 +263,7 @@ export function ContentSet() {
           <div>
             <h3 className="mb-2 font-semibold">References ({references.length})</h3>
             {references.map((r, i) => (
-              <div key={i} className="mb-1 flex items-center justify-between rounded border border-border bg-card px-2 py-1">
+              <div key={`${r.term ?? "ref"}-${i}`} className="mb-1 flex items-center justify-between rounded border border-border bg-card px-2 py-1">
                 <span className="truncate text-xs">
                   {r.term} <span className="text-muted-foreground">· {r.kind}</span>
                 </span>

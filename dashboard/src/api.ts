@@ -251,13 +251,20 @@ export async function getContentSetData(): Promise<ContentSetData> {
   return r.json();
 }
 
+// NOTE on losslessness: the *server* persists received bytes verbatim, but this
+// UI path is only lossless for JSON *fields*, not byte-formatting. `content`
+// came from r.json() → structuredClone, so (a) we re-serialize with 2-space
+// indent to keep the on-disk file human/diff-friendly (original whitespace/key
+// order is not otherwise recoverable), and (b) any JSON number > 2^53 (e.g. a
+// 64-bit ID stored as a *number*, not a string) has already been coerced to an
+// f64 by r.json() and may round. Scout stores IDs as strings, so this is latent.
 export async function putContentSet(
   content: unknown,
 ): Promise<{ ok: boolean; path?: string; error?: string }> {
   const r = await fetch("/api/scout/content-set", {
     method: "PUT",
     headers: H,
-    body: JSON.stringify(content),
+    body: JSON.stringify(content, null, 2),
   });
   if (r.ok) return r.json();
   const e = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
@@ -279,5 +286,8 @@ export function scoutImageUrl(imagePath: string, outputRoot: string): string {
     const i = np.toLowerCase().lastIndexOf(marker);
     tail = i >= 0 ? np.slice(i + marker.length) : np.replace(/^.*\//, "");
   }
-  return `/api/scout/output/${tail}?token=${encodeURIComponent(KEY)}`;
+  // Encode each path segment (a space/#/?/% in a filename would break the URL)
+  // while preserving the "/" separators of a nested tail like "crops/x.png".
+  const enc = tail.split("/").map(encodeURIComponent).join("/");
+  return `/api/scout/output/${enc}?token=${encodeURIComponent(KEY)}`;
 }
