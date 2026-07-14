@@ -409,6 +409,24 @@ async fn scout_topics_absent_is_empty_array() {
 }
 
 #[tokio::test]
+async fn scout_stream_wrong_token_is_401() {
+    // Only the immediate-rejection path is safe to test here: a valid token
+    // against an idle/running run would block on the SSE loop under oneshot.
+    let (app, tmp) = build_test_app().await;
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/scout/stream?token=wrong")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
 async fn style_profiles_lists_names() {
     let (app, tmp) = build_test_app().await;
     std::fs::write(

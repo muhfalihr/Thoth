@@ -41,7 +41,9 @@ pub fn build_router(state: AppState) -> Router {
 
     // SSE is OUTSIDE the header-auth layer (EventSource can't send headers);
     // it authenticates via ?token= inside the handler.
-    let api = api.route("/jobs/:id/stream", get(routes::stream_job));
+    let api = api
+        .route("/jobs/:id/stream", get(routes::stream_job))
+        .route("/scout/stream", get(routes::scout_stream));
 
     Router::new()
         .route("/health", get(|| async { "ok" }))

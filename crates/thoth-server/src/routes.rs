@@ -163,6 +163,53 @@ pub async fn stream_job(
     Ok(Sse::new(stream))
 }
 
+#[derive(Deserialize)]
+pub struct ScoutStreamQuery {
+    pub token: String,
+    #[serde(default)]
+    pub since: u64,
+}
+
+/// SSE relay for the in-memory scout run log. Same shape as `stream_job` but
+/// polls `state.scout` (a live process's stdout lines) instead of the SQLite
+/// job-events table — there's no DB row for scout runs, just the supervisor's
+/// `Vec<LogLine>`.
+///
+/// Mounted OUTSIDE the bearer layer (EventSource can't send headers); it
+/// self-authenticates via `?token=<api_key>`.
+pub async fn scout_stream(
+    State(state): State<AppState>,
+    Query(q): Query<ScoutStreamQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    if q.token != state.api_key {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let mut next = q.since;
+    let scout = state.scout.clone();
+    let stream = async_stream::stream! {
+        loop {
+            let (batch, terminal) = {
+                let run = scout.lock().await;
+                let batch: Vec<_> = run.lines.iter().filter(|l| l.seq >= next).cloned().collect();
+                let terminal = matches!(run.status, scout::ScoutStatus::Done | scout::ScoutStatus::Failed);
+                (batch, terminal)
+            };
+            let empty = batch.is_empty();
+            for line in batch {
+                next = line.seq + 1;
+                let data = serde_json::to_string(&line).unwrap_or_default();
+                yield Ok(Event::default().id(line.seq.to_string()).data(data));
+            }
+            if terminal && empty {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    };
+    Ok(Sse::new(stream))
+}
+
 /// Extension → content-type. Not exhaustive — just the artifact kinds Thoth
 /// produces (video, images, subtitle/metadata sidecars). Falls back to
 /// octet-stream, which every browser handles as a download.
