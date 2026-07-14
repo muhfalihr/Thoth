@@ -11,6 +11,13 @@ import { Button } from "@/components/ui/button";
 export default function App() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [view, setView] = useState<"runs" | "config" | "discovery" | "contentset">("runs");
+  // Sub-project D: one-shot content-set path handed from the Content-Set view to
+  // RunForm (cleared by RunForm.onConsumed once consumed on mount).
+  const [pendingContentSet, setPendingContentSet] = useState<string | null>(null);
+  const handleSendToRender = (path: string) => {
+    setPendingContentSet(path);
+    setView("runs");
+  };
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
@@ -29,10 +36,14 @@ export default function App() {
       ) : view === "discovery" ? (
         <Discovery />
       ) : view === "contentset" ? (
-        <ContentSet />
+        <ContentSet onSendToRender={handleSendToRender} />
       ) : (
         <>
-          <RunForm onCreated={setSelectedJobId} />
+          <RunForm
+            onCreated={setSelectedJobId}
+            initialContentSet={pendingContentSet ?? undefined}
+            onConsumed={() => setPendingContentSet(null)}
+          />
           <div className="flex min-h-0 flex-1 gap-3 p-3">
             <div className="w-72 shrink-0">
               <JobList selectedId={selectedJobId} onSelect={setSelectedJobId} />

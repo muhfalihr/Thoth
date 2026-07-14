@@ -20,7 +20,7 @@ type Comment = { author?: string; text?: string; likes?: number; image_path?: st
 type Figure = { name?: string; kind?: string; role?: string; description?: string };
 type Reference = { term?: string; kind?: string; summary?: string };
 
-export function ContentSet() {
+export function ContentSet({ onSendToRender }: { onSendToRender: (path: string) => void }) {
   const [data, setData] = useState<ContentSetData | null>(null);
   const [content, setContent] = useState<any | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -97,15 +97,15 @@ export function ContentSet() {
       c.main[field] = value;
     });
 
-  const save = async () => {
-    if (!content) return;
+  const save = async (): Promise<boolean> => {
+    if (!content) return false;
     setSaving(true);
     setNotice(null);
     const res = await putContentSet(content);
     setSaving(false);
     if (!res.ok) {
       setNotice(res.error ?? "save failed");
-      return;
+      return false;
     }
     setDirty(false);
     setNotice("Saved. Validating…");
@@ -128,6 +128,19 @@ export function ContentSet() {
     setData(fresh);
     setContent(fresh.content);
     setDirty(false);
+    return true; // putContentSet succeeded — safe to hand off to render
+  };
+
+  // Sub-project D: save the on-screen edits (if any) then hand the canonical
+  // content-set path to RunForm via the lifted App state. A running scout or an
+  // empty/missing set disables the trigger; a failed save aborts the hand-off.
+  const sendToRender = async () => {
+    if (!data?.path || !content || running) return;
+    if (dirty) {
+      const ok = await save();
+      if (!ok) return; // save failed → stay put; notice already shown
+    }
+    onSendToRender(data.path);
   };
 
   const logLines: LogLine[] = lines.map((l) => ({
@@ -278,6 +291,13 @@ export function ContentSet() {
       <div className="flex items-center gap-3 border-t border-border p-3">
         <Button onClick={save} disabled={!dirty || saving || running}>
           {saving ? "Saving…" : "Save"}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={sendToRender}
+          disabled={saving || running || !data?.path || !content}
+        >
+          Send to render →
         </Button>
         {dirty && <span className="text-xs text-muted-foreground">unsaved changes</span>}
         {running && <span className="text-xs text-muted-foreground">scout busy — save disabled</span>}
