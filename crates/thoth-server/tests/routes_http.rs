@@ -451,3 +451,82 @@ async fn style_profiles_lists_names() {
     assert!(names.contains(&"drama".to_string()), "names: {names:?}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// --- content-set editor (sub-project C) test harness -------------------------
+async fn app_with_content_set(cs: std::path::PathBuf) -> axum::Router {
+    let tmp = std::env::temp_dir().join(format!("thoth-cs-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let scout = thoth_server::scout::new_supervisor();
+    scout.lock().await.last_content_set = Some(cs);
+    let state = AppState {
+        api_key: "test-key".into(),
+        store,
+        output_root: tmp.clone(),
+        config_path: tmp.join("config.toml"),
+        scout,
+    };
+    build_router(state)
+}
+
+async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+fn tmp_json_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("cs-{}.json", uuid::Uuid::new_v4()))
+}
+
+#[tokio::test]
+async fn content_set_data_missing_reports_not_exists() {
+    let app = app_with_content_set(tmp_json_path()).await; // path never created
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/scout/content-set/data")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["exists"], false);
+    assert!(v["content"].is_null());
+    assert!(v["error"].is_null());
+}
+
+#[tokio::test]
+async fn content_set_data_exists_returns_verbatim_content() {
+    let p = tmp_json_path();
+    std::fs::write(&p, r#"{"main":{"title":"T"},"footage":[],"discourse":{"themes":["x"]}}"#).unwrap();
+    let app = app_with_content_set(p).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/scout/content-set/data")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let v = body_json(app.oneshot(req).await.unwrap()).await;
+    assert_eq!(v["exists"], true);
+    assert_eq!(v["content"]["main"]["title"], "T");
+    assert_eq!(v["content"]["discourse"]["themes"][0], "x");
+}
+
+#[tokio::test]
+async fn content_set_data_malformed_flags_error() {
+    let p = tmp_json_path();
+    std::fs::write(&p, "{ not json").unwrap();
+    let app = app_with_content_set(p).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/scout/content-set/data")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+    let v = body_json(app.oneshot(req).await.unwrap()).await;
+    assert_eq!(v["exists"], true);
+    assert!(v["content"].is_null());
+    assert_eq!(v["error"], "malformed");
+}

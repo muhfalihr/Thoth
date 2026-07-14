@@ -462,6 +462,48 @@ pub async fn scout_content_set(State(state): State<AppState>) -> Json<serde_json
     Json(serde_json::json!({ "path": path.to_string_lossy(), "exists": exists }))
 }
 
+/// Resolve the content-set path the operator is working on: the last one a scout
+/// command produced (`last_content_set`), else the canonical default. Shared by the
+/// data + save handlers so they always agree on which file is "current".
+async fn current_content_set_path(state: &AppState) -> std::path::PathBuf {
+    state
+        .scout
+        .lock()
+        .await
+        .last_content_set
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from(scout::DEFAULT_CONTENT_SET))
+}
+
+/// GET /api/scout/content-set/data — read the current content-set for editing.
+/// Returns the verbatim parsed JSON (`content`) plus `output_root` so the client can
+/// turn absolute local `image_path`s into servable URLs. `content` is null with
+/// `error="malformed"` when the file exists but is not valid JSON; `exists=false`
+/// when it is absent (not an error).
+pub async fn scout_content_set_data(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let path = current_content_set_path(&state).await;
+    let path_str = path.to_string_lossy().into_owned();
+    let output_root = std::env::current_dir()
+        .map(|d| d.join(scout::SCOUT_OUTPUT_DIR).to_string_lossy().into_owned())
+        .unwrap_or_else(|_| scout::SCOUT_OUTPUT_DIR.to_string());
+    match tokio::fs::read_to_string(&path).await {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(content) => Json(serde_json::json!({
+                "path": path_str, "exists": true, "output_root": output_root,
+                "content": content, "error": serde_json::Value::Null,
+            })),
+            Err(_) => Json(serde_json::json!({
+                "path": path_str, "exists": true, "output_root": output_root,
+                "content": serde_json::Value::Null, "error": "malformed",
+            })),
+        },
+        Err(_) => Json(serde_json::json!({
+            "path": path_str, "exists": false, "output_root": output_root,
+            "content": serde_json::Value::Null, "error": serde_json::Value::Null,
+        })),
+    }
+}
+
 pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,
