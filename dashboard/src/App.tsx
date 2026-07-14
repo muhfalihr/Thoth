@@ -4,12 +4,13 @@ import { JobList } from "@/components/JobList";
 import { JobMonitor } from "@/components/JobMonitor";
 import { ConfigEditor } from "@/components/ConfigEditor";
 import { Discovery } from "@/components/Discovery";
+import { ContentSet } from "@/components/ContentSet";
 import { Button } from "@/components/ui/button";
 
-/** Cockpit shell with a Runs/Config/Discovery view toggle. */
+/** Cockpit shell with a Runs/Config/Discovery/Content Set view toggle. */
 export default function App() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [view, setView] = useState<"runs" | "config" | "discovery">("runs");
+  const [view, setView] = useState<"runs" | "config" | "discovery" | "contentset">("runs");
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
@@ -20,11 +21,15 @@ export default function App() {
           onClick={() => setView("config")}>Config</Button>
         <Button size="sm" variant={view === "discovery" ? "default" : "ghost"}
           onClick={() => setView("discovery")}>Discovery</Button>
+        <Button size="sm" variant={view === "contentset" ? "default" : "ghost"}
+          onClick={() => setView("contentset")}>Content Set</Button>
       </div>
       {view === "config" ? (
         <ConfigEditor />
       ) : view === "discovery" ? (
         <Discovery />
+      ) : view === "contentset" ? (
+        <ContentSet />
       ) : (
         <>
           <RunForm onCreated={setSelectedJobId} />
