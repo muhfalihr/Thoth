@@ -1,7 +1,9 @@
 # Scout Orchestration Engine (Operator Console sub-project B) — Design
 
 Date: 2026-07-14
-Status: approved (design), spec under user review
+Status: IMPLEMENTED (2026-07-14) — see BLUEPRINT.md Update 2026-07-14 + plan
+`docs/superpowers/plans/2026-07-14-scout-orchestration.md` (7-task TDD, subagent-driven).
+Manual integration: `docs/superpowers/plans/2026-07-14-scout-orchestration-manual-test.md`.
 Initiative: Full Operator Console (A -> B -> C -> D). Sub-project A (render parity + config
 editor) is merged (`59eb39a`). This is **B**.
 
