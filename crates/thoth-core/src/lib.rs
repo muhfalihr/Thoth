@@ -13,6 +13,7 @@ pub mod analyze;
 pub mod cli;
 pub mod config;
 pub mod edit;
+pub mod execution;
 pub mod gpu;
 pub mod ingest;
 pub mod narration;
