@@ -1,5 +1,11 @@
+mod validation;
+
 pub mod types;
 pub use types::*;
+pub use validation::{
+    JobValidationError, PROTECTED_EXTRA_FLAGS, SCALAR_PARAM_FLAGS, scalar_param_flag,
+    validate_job_spec,
+};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::Row;
