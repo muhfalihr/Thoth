@@ -1,9 +1,10 @@
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
@@ -13,7 +14,30 @@ pub struct Cancelled;
 #[derive(Clone)]
 pub struct JobExecutionContext {
     cancellation: CancellationToken,
-    active_root_pids: Arc<Mutex<HashSet<u32>>>,
+    registry: Arc<Mutex<Registry>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct ChildKey {
+    pid: u32,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RegistryLifecycle {
+    Accepting,
+    Terminating,
+}
+
+struct Registry {
+    lifecycle: RegistryLifecycle,
+    next_generation: u64,
+    children: HashMap<ChildKey, Arc<ChildControl>>,
+}
+
+struct ChildControl {
+    cancel: CancellationToken,
+    completed: CancellationToken,
 }
 
 impl JobExecutionContext {
@@ -21,7 +45,11 @@ impl JobExecutionContext {
     pub fn new() -> Self {
         Self {
             cancellation: CancellationToken::new(),
-            active_root_pids: Arc::new(Mutex::new(HashSet::new())),
+            registry: Arc::new(Mutex::new(Registry {
+                lifecycle: RegistryLifecycle::Accepting,
+                next_generation: 0,
+                children: HashMap::new(),
+            })),
         }
     }
 
@@ -43,18 +71,66 @@ impl JobExecutionContext {
     }
 
     pub fn spawn(&self, command: &mut Command) -> Result<SupervisedChild> {
+        self.check_cancelled()?;
         configure_process_group(command);
         command.kill_on_drop(true);
-        let child = command.spawn()?;
+
+        // Spawning while holding this short synchronous lock makes closing the
+        // registry linearizable: a spawn is either fully registered or rejected.
+        let mut registry = lock_registry(&self.registry);
+        if registry.lifecycle == RegistryLifecycle::Terminating {
+            return Err(Cancelled.into());
+        }
+        let generation = allocate_generation(&mut registry.next_generation)?;
+
+        #[cfg(windows)]
+        let process_tree = WindowsJob::new()?;
+        let mut child = command.spawn()?;
         let pid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("spawned child has no process ID"))?;
-        lock_pids(&self.active_root_pids).insert(pid);
+
+        #[cfg(windows)]
+        if let Err(error) = process_tree.assign(&child) {
+            let _ = child.start_kill();
+            return Err(error.context("could not assign spawned process to its owned Job Object"));
+        }
+
+        let key = ChildKey { pid, generation };
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let control = Arc::new(ChildControl {
+            cancel: CancellationToken::new(),
+            completed: CancellationToken::new(),
+        });
+        registry.children.insert(key, Arc::clone(&control));
+        drop(registry);
+
+        let (result_tx, result_rx) = oneshot::channel();
+        let registry = Arc::clone(&self.registry);
+        let global_cancellation = self.cancellation.clone();
+        let monitor_control = Arc::clone(&control);
+        tokio::spawn(async move {
+            let outcome = monitor_child(
+                child,
+                pid,
+                global_cancellation,
+                monitor_control.cancel.clone(),
+                #[cfg(windows)]
+                process_tree,
+            )
+            .await;
+            remove_exact_child(&registry, key, &monitor_control);
+            monitor_control.completed.cancel();
+            let _ = result_tx.send(outcome);
+        });
+
         Ok(SupervisedChild {
-            child,
             pid,
-            cancellation: self.cancellation.clone(),
-            active_root_pids: Arc::clone(&self.active_root_pids),
+            stdout,
+            stderr,
+            control,
+            result: Some(result_rx),
         })
     }
 
@@ -68,19 +144,22 @@ impl JobExecutionContext {
     }
 
     pub async fn terminate_all(&self) {
-        let pids = lock_pids(&self.active_root_pids)
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        for pid in pids {
-            terminate_process_tree(pid).await;
-            unregister(&self.active_root_pids, pid);
+        let controls = {
+            let mut registry = lock_registry(&self.registry);
+            registry.lifecycle = RegistryLifecycle::Terminating;
+            registry.children.values().cloned().collect::<Vec<_>>()
+        };
+        for control in &controls {
+            control.cancel.cancel();
+        }
+        for control in controls {
+            control.completed.cancelled().await;
         }
     }
 
     #[cfg(test)]
     fn active_child_count(&self) -> usize {
-        lock_pids(&self.active_root_pids).len()
+        lock_registry(&self.registry).children.len()
     }
 }
 
@@ -91,23 +170,33 @@ impl Default for JobExecutionContext {
 }
 
 pub struct SupervisedChild {
-    child: Child,
     pid: u32,
-    cancellation: CancellationToken,
-    active_root_pids: Arc<Mutex<HashSet<u32>>>,
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Option<tokio::process::ChildStderr>,
+    control: Arc<ChildControl>,
+    result: Option<oneshot::Receiver<Result<ExitStatus>>>,
 }
 
 impl SupervisedChild {
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.pid
+    }
+
+    pub fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
+        self.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<tokio::process::ChildStderr> {
+        self.stderr.take()
+    }
+
     pub async fn output(mut self) -> Result<Output> {
         let mut stdout = self
-            .child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| anyhow::anyhow!("supervised child stdout is not piped"))?;
         let mut stderr = self
-            .child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| anyhow::anyhow!("supervised child stderr is not piped"))?;
 
         let read_stdout = async {
@@ -134,134 +223,206 @@ impl SupervisedChild {
     }
 
     pub async fn wait(mut self) -> Result<ExitStatus> {
-        let cancellation = self.cancellation.clone();
-        let result = tokio::select! {
-            status = self.child.wait() => status.map_err(Into::into),
-            () = cancellation.cancelled() => {
-                terminate_child_tree(self.pid, &mut self.child).await;
-                Err(Cancelled.into())
-            }
-        };
-        unregister(&self.active_root_pids, self.pid);
-        result
+        self.result
+            .take()
+            .expect("supervised child result receiver is present")
+            .await
+            .map_err(|_| anyhow::anyhow!("process monitor ended without an outcome"))?
     }
 }
 
 impl Drop for SupervisedChild {
     fn drop(&mut self) {
-        let was_active = lock_pids(&self.active_root_pids).remove(&self.pid);
-        if was_active {
-            terminate_process_tree_blocking(self.pid);
-        }
+        self.control.cancel.cancel();
     }
 }
 
-#[cfg(windows)]
-fn terminate_process_tree_blocking(pid: u32) {
-    match std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+async fn monitor_child(
+    mut child: Child,
+    pid: u32,
+    global_cancellation: CancellationToken,
+    local_cancellation: CancellationToken,
+    #[cfg(windows)] process_tree: WindowsJob,
+) -> Result<ExitStatus> {
+    #[cfg(windows)]
     {
-        Ok(status) if status.success() => {}
-        Ok(status) => tracing::warn!(pid, %status, "dropped process-tree cleanup command failed"),
-        Err(error) => {
-            tracing::warn!(pid, %error, "could not run dropped process-tree cleanup command");
-        }
+        monitor_windows_child(
+            &mut child,
+            pid,
+            &process_tree,
+            global_cancellation,
+            local_cancellation,
+        )
+        .await
     }
-}
-
-#[cfg(unix)]
-fn terminate_process_tree_blocking(pid: u32) {
-    signal_process_group(pid, libc::SIGTERM);
-    std::thread::sleep(std::time::Duration::from_millis(750));
-    signal_process_group(pid, libc::SIGKILL);
-}
-
-#[cfg(windows)]
-async fn terminate_child_tree(pid: u32, child: &mut Child) {
-    terminate_process_tree(pid).await;
-
-    match tokio::time::timeout(std::time::Duration::from_millis(500), child.wait()).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => tracing::warn!(pid, %error, "could not wait for terminated root process"),
-        Err(_) => {
-            tracing::warn!(pid, "terminated root process did not exit promptly");
-            if let Err(error) = child.kill().await {
-                tracing::warn!(pid, %error, "could not kill root process");
-            }
-        }
+    #[cfg(unix)]
+    {
+        monitor_unix_child(&mut child, pid, global_cancellation, local_cancellation).await
     }
 }
 
 #[cfg(windows)]
-async fn terminate_process_tree(pid: u32) {
-    let mut taskkill = Command::new("taskkill");
-    taskkill
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    match tokio::time::timeout(std::time::Duration::from_secs(1), taskkill.status()).await {
-        Ok(Ok(status)) if status.success() => {}
-        Ok(Ok(status)) => tracing::warn!(pid, %status, "process-tree cleanup command failed"),
-        Ok(Err(error)) => tracing::warn!(pid, %error, "could not run process-tree cleanup command"),
-        Err(_) => tracing::warn!(pid, "process-tree cleanup command timed out"),
-    }
-}
+async fn monitor_windows_child(
+    child: &mut Child,
+    pid: u32,
+    process_tree: &WindowsJob,
+    global_cancellation: CancellationToken,
+    local_cancellation: CancellationToken,
+) -> Result<ExitStatus> {
+    let root_status = tokio::select! {
+        biased;
+        () = global_cancellation.cancelled() => {
+            return cancelled_after_cleanup(pid, cleanup_windows_tree(pid, process_tree, Some(child)).await);
+        }
+        () = local_cancellation.cancelled() => {
+            return cancelled_after_cleanup(pid, cleanup_windows_tree(pid, process_tree, Some(child)).await);
+        }
+        status = child.wait() => status?,
+    };
 
-#[cfg(unix)]
-async fn terminate_child_tree(pid: u32, child: &mut Child) {
-    signal_process_group(pid, libc::SIGTERM);
-    let root_reaped =
-        match tokio::time::timeout(std::time::Duration::from_millis(750), child.wait()).await {
-            Ok(Ok(_)) => true,
-            Ok(Err(error)) => {
-                tracing::warn!(pid, %error, "could not wait for terminated root process");
-                true
+    // A root can exit while descendants remain. Keep the owned Job Object and
+    // defer the normal outcome until the tree empties or cancellation wins.
+    while process_tree.has_active_processes()? {
+        tokio::select! {
+            biased;
+            () = global_cancellation.cancelled() => {
+                return cancelled_after_cleanup(pid, cleanup_windows_tree(pid, process_tree, None).await);
             }
-            Err(_) => false,
-        };
-
-    // The root may honor SIGTERM while one of its descendants ignores it. Always
-    // finish the group cleanup after the grace period, even when the root reaps early.
-    signal_process_group(pid, libc::SIGKILL);
-    if !root_reaped && let Err(error) = child.wait().await {
-        tracing::warn!(pid, %error, "could not wait for killed root process");
+            () = local_cancellation.cancelled() => {
+                return cancelled_after_cleanup(pid, cleanup_windows_tree(pid, process_tree, None).await);
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+        }
     }
+    Ok(root_status)
 }
 
 #[cfg(unix)]
-async fn terminate_process_tree(pid: u32) {
-    signal_process_group(pid, libc::SIGTERM);
+async fn monitor_unix_child(
+    child: &mut Child,
+    pid: u32,
+    global_cancellation: CancellationToken,
+    local_cancellation: CancellationToken,
+) -> Result<ExitStatus> {
+    let root_status = tokio::select! {
+        biased;
+        () = global_cancellation.cancelled() => {
+            return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, Some(child)).await);
+        }
+        () = local_cancellation.cancelled() => {
+            return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, Some(child)).await);
+        }
+        status = child.wait() => status?,
+    };
+
+    while process_group_exists(pid) {
+        tokio::select! {
+            biased;
+            () = global_cancellation.cancelled() => {
+                return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, None).await);
+            }
+            () = local_cancellation.cancelled() => {
+                return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, None).await);
+            }
+            () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+        }
+    }
+    Ok(root_status)
+}
+
+#[cfg(unix)]
+async fn cleanup_unix_tree(pid: u32, child: Option<&mut Child>) -> Result<()> {
+    let term = signal_process_group(pid, libc::SIGTERM);
+    // The root handle is deliberately not waited or polled during this grace
+    // period. That keeps the process-group identity reserved until final SIGKILL.
     tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-    signal_process_group(pid, libc::SIGKILL);
+    let kill = signal_process_group(pid, libc::SIGKILL);
+    let wait = match child {
+        Some(child) => child.wait().await.map(|_| ()).map_err(Into::into),
+        None => Ok(()),
+    };
+    combine_cleanup_results([term, kill, wait])
 }
 
 #[cfg(unix)]
-fn signal_process_group(pid: u32, signal: libc::c_int) {
+fn signal_process_group(pid: u32, signal: libc::c_int) -> Result<()> {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
-        tracing::warn!(pid, "process ID does not fit platform pid_t");
-        return;
+        anyhow::bail!("process ID does not fit platform pid_t");
     };
     // SAFETY: negative PIDs address the process group created at spawn, and `kill`
     // neither dereferences pointers nor transfers memory ownership.
-    if unsafe { libc::kill(-pid, signal) } != 0 {
+    if unsafe { libc::kill(-pid, signal) } == 0 {
+        return Ok(());
+    }
+    {
         let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            tracing::warn!(pid, %error, "could not signal process group");
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(error.into())
         }
     }
 }
 
-fn lock_pids(pids: &Mutex<HashSet<u32>>) -> std::sync::MutexGuard<'_, HashSet<u32>> {
-    pids.lock()
+#[cfg(unix)]
+fn process_group_exists(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal zero performs only an existence/permission check.
+    if unsafe { libc::kill(-pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn lock_registry(registry: &Mutex<Registry>) -> std::sync::MutexGuard<'_, Registry> {
+    registry
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn unregister(pids: &Mutex<HashSet<u32>>, pid: u32) {
-    lock_pids(pids).remove(&pid);
+fn allocate_generation(next_generation: &mut u64) -> Result<u64> {
+    let generation = *next_generation;
+    *next_generation = next_generation
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("child generation counter exhausted"))?;
+    Ok(generation)
+}
+
+fn remove_exact_child(registry: &Mutex<Registry>, key: ChildKey, expected: &Arc<ChildControl>) {
+    let mut registry = lock_registry(registry);
+    if registry
+        .children
+        .get(&key)
+        .is_some_and(|current| Arc::ptr_eq(current, expected))
+    {
+        registry.children.remove(&key);
+    }
+}
+
+fn combine_cleanup_results<const N: usize>(results: [Result<()>; N]) -> Result<()> {
+    let failures = results
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|error| format!("{error:#}"))
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(failures.join("; "))
+    }
+}
+
+fn cancelled_after_cleanup(pid: u32, cleanup: Result<()>) -> Result<ExitStatus> {
+    match cleanup {
+        Ok(()) => Err(Cancelled.into()),
+        Err(error) => {
+            tracing::warn!(pid, error = %error, "process-tree cleanup failed");
+            Err(anyhow::Error::new(Cancelled)
+                .context(format!("process-tree cleanup failed: {error:#}")))
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -291,6 +452,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+    use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
 
     struct ProcessGuard(u32);
@@ -383,6 +545,119 @@ mod tests {
         Ok(())
     }
 
+    const LARGE_PIPE_PAYLOAD: usize = 256 * 1024;
+
+    #[cfg(windows)]
+    fn large_output_command() -> Command {
+        let mut command = Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "[Console]::Out.Write('o' * {LARGE_PIPE_PAYLOAD}); \
+                 [Console]::Error.Write('e' * {LARGE_PIPE_PAYLOAD})"
+            ),
+        ]);
+        command
+    }
+
+    #[cfg(unix)]
+    fn large_output_command() -> Command {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            &format!(
+                "head -c {LARGE_PIPE_PAYLOAD} /dev/zero | tr '\\0' o; \
+                 head -c {LARGE_PIPE_PAYLOAD} /dev/zero | tr '\\0' e >&2"
+            ),
+        ]);
+        command
+    }
+
+    #[tokio::test]
+    async fn output_drains_payloads_larger_than_pipe_capacity() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            context.output(&mut large_output_command()),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("large piped output deadlocked"))??;
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), LARGE_PIPE_PAYLOAD);
+        assert_eq!(output.stderr.len(), LARGE_PIPE_PAYLOAD);
+        assert!(output.stdout.iter().all(|byte| *byte == b'o'));
+        assert!(output.stderr.iter().all(|byte| *byte == b'e'));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn streamed_command() -> Command {
+        let mut command = Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            "Write-Output 'ready-output'; [Console]::Error.WriteLine('ready-error'); Start-Sleep 30",
+        ]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+    }
+
+    #[cfg(unix)]
+    fn streamed_command() -> Command {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'ready-output\\n'; printf 'ready-error\\n' >&2; sleep 30",
+        ]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+    }
+
+    #[tokio::test]
+    async fn streamed_pipes_remain_usable_with_supervised_wait() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let mut child = context.spawn(&mut streamed_command())?;
+        let _guard = ProcessGuard(child.id());
+        let stdout = child
+            .take_stdout()
+            .ok_or_else(|| anyhow::anyhow!("streamed stdout missing"))?;
+        let stderr = child
+            .take_stderr()
+            .ok_or_else(|| anyhow::anyhow!("streamed stderr missing"))?;
+        assert!(child.take_stdout().is_none());
+        assert!(child.take_stderr().is_none());
+
+        let mut stdout_reader = BufReader::new(stdout);
+        let mut stderr_reader = BufReader::new(stderr);
+        let mut stdout_line = String::new();
+        let mut stderr_line = String::new();
+        let (stdout_read, stderr_read) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                stdout_reader.read_line(&mut stdout_line),
+                stderr_reader.read_line(&mut stderr_line),
+            )
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("streamed lines timed out"))?;
+        stdout_read?;
+        stderr_read?;
+        assert_eq!(stdout_line.trim(), "ready-output");
+        assert_eq!(stderr_line.trim(), "ready-error");
+
+        context.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .map_err(|_| anyhow::anyhow!("streamed wait cancellation timed out"))?;
+        let error = match result {
+            Ok(status) => anyhow::bail!("cancelled streamed child exited with {status}"),
+            Err(error) => error,
+        };
+        assert!(is_cancelled(&error));
+        Ok(())
+    }
+
     #[cfg(windows)]
     fn long_running_command() -> Command {
         let mut command = Command::new("powershell");
@@ -402,9 +677,32 @@ mod tests {
         command
     }
 
+    #[cfg(windows)]
+    fn exiting_root_with_child_command(child_pid_path: &std::path::Path) -> Command {
+        let script = format!(
+            "$child = Start-Process powershell -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 30') -PassThru; \
+             Set-Content -NoNewline -Path '{}' -Value $child.Id; exit 0",
+            child_pid_path.display()
+        );
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", &script]);
+        command
+    }
+
     #[cfg(unix)]
     fn parent_with_child_command(child_pid_path: &std::path::Path) -> Command {
         let script = format!("sleep 30 & echo $! > '{}'; wait", child_pid_path.display());
+        let mut command = Command::new("sh");
+        command.args(["-c", &script]);
+        command
+    }
+
+    #[cfg(unix)]
+    fn exiting_root_with_child_command(child_pid_path: &std::path::Path) -> Command {
+        let script = format!(
+            "sleep 30 & echo $! > '{}'; exit 0",
+            child_pid_path.display()
+        );
         let mut command = Command::new("sh");
         command.args(["-c", &script]);
         command
@@ -552,4 +850,309 @@ mod tests {
         assert_process_exits(child_pid).await;
         Ok(())
     }
+
+    #[tokio::test]
+    async fn cancellation_cleans_descendant_after_root_already_exited() -> Result<()> {
+        let child_pid_path = std::env::temp_dir().join(format!(
+            "thoth-exited-root-tree-{}.pid",
+            uuid::Uuid::new_v4()
+        ));
+        let _file_guard = FileGuard(child_pid_path.clone());
+        let context = JobExecutionContext::new();
+        let root = context.spawn(&mut exiting_root_with_child_command(&child_pid_path))?;
+        let root_pid = root.id();
+        let _root_guard = ProcessGuard(root_pid);
+        let child_pid = read_child_pid(&child_pid_path).await;
+        let _child_guard = ProcessGuard(child_pid);
+        assert_process_exits(root_pid).await;
+        assert!(process_is_alive(child_pid));
+
+        context.cancel();
+        let result = root.wait().await;
+        let error = match result {
+            Ok(status) => anyhow::bail!("cancelled exited root returned normal status {status}"),
+            Err(error) => error,
+        };
+        assert!(is_cancelled(&error));
+        assert_process_exits(child_pid).await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_termination_owns_all_children_and_closes_spawn() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let child_a = context.spawn(&mut long_running_command())?;
+        let child_b = context.spawn(&mut long_running_command())?;
+        let child_c = context.spawn(&mut long_running_command())?;
+        let pids = [child_a.id(), child_b.id(), child_c.id()];
+        let _guards = pids.map(ProcessGuard);
+
+        let repeated = context.clone();
+        let ((), (), result_a, result_b, result_c) = tokio::join!(
+            context.terminate_all(),
+            repeated.terminate_all(),
+            child_a.wait(),
+            child_b.wait(),
+            child_c.wait(),
+        );
+
+        for result in [result_a, result_b, result_c] {
+            let error = match result {
+                Ok(status) => anyhow::bail!("terminated child returned normal status {status}"),
+                Err(error) => error,
+            };
+            assert!(is_cancelled(&error));
+        }
+        let error = match context.spawn(&mut long_running_command()) {
+            Ok(child) => {
+                let _guard = ProcessGuard(child.id());
+                drop(child);
+                anyhow::bail!("closed registry accepted a new process");
+            }
+            Err(error) => error,
+        };
+        assert!(is_cancelled(&error));
+        for pid in pids {
+            assert_process_exits(pid).await;
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_live_child_is_nonblocking() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let child = context.spawn(&mut long_running_command())?;
+        let _guard = ProcessGuard(child.id());
+
+        let started = Instant::now();
+        drop(child);
+
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "drop blocked the current-thread runtime for {:?}",
+            started.elapsed()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generation_exhaustion_is_rejected() {
+        let mut next_generation = u64::MAX;
+        let error = allocate_generation(&mut next_generation)
+            .expect_err("generation exhaustion must not wrap or reuse an identity");
+        assert!(error.to_string().contains("generation"));
+    }
+
+    #[test]
+    fn cleanup_failure_preserves_typed_cancellation() {
+        let result = cancelled_after_cleanup(
+            42,
+            Err(anyhow::anyhow!("forced process-tree cleanup failure")),
+        );
+        let error = result.expect_err("cancellation must never become a normal exit status");
+        assert!(is_cancelled(&error));
+        assert!(
+            error
+                .to_string()
+                .contains("forced process-tree cleanup failure")
+        );
+    }
+
+    #[test]
+    fn stale_monitor_cannot_remove_an_exact_generation() {
+        let key = ChildKey {
+            pid: 42,
+            generation: 7,
+        };
+        let registered = Arc::new(ChildControl {
+            cancel: CancellationToken::new(),
+            completed: CancellationToken::new(),
+        });
+        let stale = Arc::new(ChildControl {
+            cancel: CancellationToken::new(),
+            completed: CancellationToken::new(),
+        });
+        let registry = Mutex::new(Registry {
+            lifecycle: RegistryLifecycle::Accepting,
+            next_generation: 8,
+            children: HashMap::from([(key, Arc::clone(&registered))]),
+        });
+
+        remove_exact_child(&registry, key, &stale);
+        assert!(lock_registry(&registry).children.contains_key(&key));
+        remove_exact_child(&registry, key, &registered);
+        assert!(!lock_registry(&registry).children.contains_key(&key));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn spawn_racing_registry_close_is_rejected_or_owned() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let barrier = Arc::new(tokio::sync::Barrier::new(9));
+        let mut spawners = Vec::new();
+        for _ in 0..8 {
+            let context = context.clone();
+            let barrier = Arc::clone(&barrier);
+            spawners.push(tokio::spawn(async move {
+                barrier.wait().await;
+                context.spawn(&mut long_running_command())
+            }));
+        }
+        barrier.wait().await;
+        context.terminate_all().await;
+
+        for spawner in spawners {
+            match spawner.await? {
+                Ok(child) => {
+                    let pid = child.id();
+                    let _guard = ProcessGuard(pid);
+                    let error = child
+                        .wait()
+                        .await
+                        .expect_err("a spawn accepted before close must be owned by termination");
+                    assert!(is_cancelled(&error));
+                    assert_process_exits(pid).await;
+                }
+                Err(error) => assert!(is_cancelled(&error)),
+            }
+        }
+        assert_eq!(context.active_child_count(), 0);
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+struct WindowsJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+// SAFETY: kernel HANDLE values may be transferred between threads; ownership is
+// unique to this wrapper and CloseHandle is called exactly once in Drop.
+unsafe impl Send for WindowsJob {}
+#[cfg(windows)]
+// SAFETY: the owned kernel object supports thread-safe query/termination calls;
+// this wrapper exposes no mutation of the HANDLE value itself.
+unsafe impl Sync for WindowsJob {}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn new() -> Result<Self> {
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let job = Self { handle };
+        let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let success = unsafe {
+            SetInformationJobObject(
+                job.handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&information).cast(),
+                std::mem::size_of_val(&information) as u32,
+            )
+        };
+        if success == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(job)
+    }
+
+    fn assign(&self, child: &Child) -> Result<()> {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        let process = child
+            .raw_handle()
+            .ok_or_else(|| anyhow::anyhow!("spawned child has no process handle"))?;
+        let success = unsafe { AssignProcessToJobObject(self.handle, process.cast()) };
+        if success == 0 {
+            Err(std::io::Error::last_os_error().into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn terminate(&self) -> Result<()> {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        if unsafe { TerminateJobObject(self.handle, 1) } == 0 {
+            Err(std::io::Error::last_os_error().into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn has_active_processes(&self) -> Result<bool> {
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+            QueryInformationJobObject,
+        };
+        let mut information = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        let success = unsafe {
+            QueryInformationJobObject(
+                self.handle,
+                JobObjectBasicAccountingInformation,
+                std::ptr::from_mut(&mut information).cast(),
+                std::mem::size_of_val(&information) as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if success == 0 {
+            Err(std::io::Error::last_os_error().into())
+        } else {
+            Ok(information.ActiveProcesses > 0)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn cleanup_windows_tree(
+    pid: u32,
+    process_tree: &WindowsJob,
+    child: Option<&mut Child>,
+) -> Result<()> {
+    let mut taskkill = Command::new("taskkill");
+    taskkill
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let taskkill_result = match tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        taskkill.status(),
+    )
+    .await
+    {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => Err(anyhow::anyhow!("taskkill exited with {status}")),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Err(anyhow::anyhow!("taskkill timed out")),
+    };
+    let job_result = process_tree.terminate();
+    let tree_result = if taskkill_result.is_ok() || job_result.is_ok() {
+        Ok(())
+    } else {
+        combine_cleanup_results([taskkill_result, job_result])
+    };
+    let wait_result = match child {
+        Some(child) => tokio::time::timeout(std::time::Duration::from_secs(1), child.wait())
+            .await
+            .map_err(|_| anyhow::anyhow!("terminated root process did not exit promptly"))?
+            .map(|_| ())
+            .map_err(Into::into),
+        None => Ok(()),
+    };
+    combine_cleanup_results([tree_result, wait_result])
 }
