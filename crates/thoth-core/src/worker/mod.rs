@@ -117,23 +117,23 @@ where
     let result = run_fn(&job).await;
     hb.abort();
 
-    match result {
-        Ok(()) => {
-            let _ = store.finish(&id, JobStatus::Succeeded, None).await;
-            let _ = store.append_event(&id, "done", None, Some(1.0), None).await;
-        }
+    let (status, event_kind, detail) = match result {
+        Ok(()) => (JobStatus::Succeeded, "done", None),
         Err(e)
             if store.is_cancel_requested(&id).await.unwrap_or(false)
                 || e.to_string().contains("cancelled") =>
         {
-            let _ = store.finish(&id, JobStatus::Cancelled, Some("cancelled")).await;
-            let _ = store.append_event(&id, "error", None, None, Some("cancelled")).await;
+            (JobStatus::Cancelled, "error", Some("cancelled".to_string()))
         }
-        Err(e) => {
-            let msg = e.to_string();
-            let _ = store.finish(&id, JobStatus::Failed, Some(&msg)).await;
-            let _ = store.append_event(&id, "error", None, None, Some(&msg)).await;
-        }
+        Err(e) => (JobStatus::Failed, "error", Some(e.to_string())),
+    };
+    match store
+        .finish_running(&id, status, detail.as_deref(), event_kind, detail.as_deref())
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(job_id = %id, "job finalization lost status race"),
+        Err(error) => tracing::error!(job_id = %id, %error, "job finalization failed"),
     }
 
     // Idle the sink between jobs (worker never uses stdout NDJSON).
@@ -271,12 +271,9 @@ mod tests {
         run_one(&store, "w1", job, |_j| async { Ok(()) }).await; // stub pipeline
 
         assert_eq!(store.get(&id).await.unwrap().unwrap().status, JobStatus::Succeeded);
-        assert!(store
-            .events_since(&id, 0)
-            .await
-            .unwrap()
-            .iter()
-            .any(|e| e.kind == "done"));
+        let events = store.events_since(&id, 0).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "done");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -294,6 +291,21 @@ mod tests {
         run_one(&store, "w1", job, |_j| async { anyhow::bail!("cancelled") }).await;
 
         assert_eq!(store.get(&id).await.unwrap().unwrap().status, JobStatus::Cancelled);
+        let events = store.events_since(&id, 0).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failed_run_marks_failed_and_emits_one_error() {
+        let (dir, store, id, job) = store_with_claimed_job().await;
+        run_one(&store, "w1", job, |_j| async { anyhow::bail!("pipeline failed") }).await;
+
+        assert_eq!(store.get(&id).await.unwrap().unwrap().status, JobStatus::Failed);
+        let events = store.events_since(&id, 0).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

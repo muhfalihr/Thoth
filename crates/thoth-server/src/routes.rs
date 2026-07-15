@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::auth::AppState;
 use crate::scout::{self, DiscoverReq, RunReq, ScoutKind, ValidateReq};
-use thoth_jobs::{JobRecord, JobSpec, JobStatus};
+use thoth_jobs::{CancelRequestOutcome, JobRecord, JobSpec};
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
@@ -61,42 +61,25 @@ pub async fn get_job(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-/// Cancel a job. A queued job is finished immediately (it never started);
-/// a running job gets a cooperative cancel flag the worker polls (there is no
+/// Cancel a job. A queued job is cancelled atomically (it never started); a
+/// running job gets a cooperative cancel flag the worker polls (there is no
 /// process to signal — the worker is an independent peer). Terminal jobs 409.
 pub async fn cancel_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    let job = state
+    match state
         .store
-        .get(&id)
+        .request_cancel(&id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    match job.status {
-        JobStatus::Queued => {
-            state
-                .store
-                .finish(&id, JobStatus::Cancelled, Some("cancelled before start"))
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            state
-                .store
-                .append_event(&id, "error", None, None, Some("cancelled"))
-                .await
-                .ok();
-        }
-        JobStatus::Running => {
-            state
-                .store
-                .request_cancel(&id)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        }
-        _ => return Err(StatusCode::CONFLICT),
+    {
+        CancelRequestOutcome::QueuedCancelled
+        | CancelRequestOutcome::RunningRequested
+        | CancelRequestOutcome::AlreadyRequested => Ok(StatusCode::ACCEPTED),
+        CancelRequestOutcome::Terminal(_) => Err(StatusCode::CONFLICT),
+        CancelRequestOutcome::NotFound => Err(StatusCode::NOT_FOUND),
     }
-    Ok(StatusCode::ACCEPTED)
 }
 
 /// SSE relay: tail `job_events` by autoincrement `seq`. This is the entire

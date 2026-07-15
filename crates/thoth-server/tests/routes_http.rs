@@ -27,6 +27,25 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
     (build_router(state), tmp)
 }
 
+fn cancel_job_request(id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/jobs/{id}/cancel"))
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn enqueue_test_job(store: &thoth_jobs::JobStore, id: &str) {
+    let spec = thoth_jobs::JobSpec {
+        command: "run".into(),
+        url: Some("https://x.test".into()),
+        content_set: None,
+        params: serde_json::json!({}),
+    };
+    store.enqueue(id, &spec, "out/job").await.unwrap();
+}
+
 #[tokio::test]
 async fn create_job_without_key_is_unauthorized() {
     let (app, tmp) = build_test_app().await;
@@ -62,6 +81,107 @@ async fn create_job_with_key_returns_201_and_job_id() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(json["job_id"].is_string(), "body: {json}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_queued_is_accepted_and_emits_one_cancelled_event() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "queued-job").await;
+
+    let res = app.oneshot(cancel_job_request("queued-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        store.get("queued-job").await.unwrap().unwrap().status,
+        thoth_jobs::JobStatus::Cancelled
+    );
+    let events = store.events_since("queued-job", 0).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "cancelled");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_running_is_accepted_and_sets_flag() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "running-job").await;
+    store.claim_next("worker-1").await.unwrap().unwrap();
+
+    let res = app.oneshot(cancel_job_request("running-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    let job = store.get("running-job").await.unwrap().unwrap();
+    assert_eq!(job.status, thoth_jobs::JobStatus::Running);
+    assert!(job.cancel_requested);
+    assert!(store.events_since("running-job", 0).await.unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_repeated_running_request_is_accepted() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "repeated-job").await;
+    store.claim_next("worker-1").await.unwrap().unwrap();
+
+    let first = app
+        .clone()
+        .oneshot(cancel_job_request("repeated-job"))
+        .await
+        .unwrap();
+    let second = app.oneshot(cancel_job_request("repeated-job")).await.unwrap();
+
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    assert_eq!(second.status(), StatusCode::ACCEPTED);
+    let job = store.get("repeated-job").await.unwrap().unwrap();
+    assert_eq!(job.status, thoth_jobs::JobStatus::Running);
+    assert!(job.cancel_requested);
+    assert!(store.events_since("repeated-job", 0).await.unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_terminal_returns_conflict() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "terminal-job").await;
+    store.claim_next("worker-1").await.unwrap().unwrap();
+    store
+        .finish_running(
+            "terminal-job",
+            thoth_jobs::JobStatus::Succeeded,
+            None,
+            "done",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let res = app.oneshot(cancel_job_request("terminal-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(store.events_since("terminal-job", 0).await.unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_missing_returns_not_found() {
+    let (app, tmp) = build_test_app().await;
+
+    let res = app.oneshot(cancel_job_request("missing-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
