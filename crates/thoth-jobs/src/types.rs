@@ -5,6 +5,15 @@ use std::str::FromStr;
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus { Queued, Running, Succeeded, Failed, Cancelled }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelRequestOutcome {
+    QueuedCancelled,
+    RunningRequested,
+    AlreadyRequested,
+    Terminal(JobStatus),
+    NotFound,
+}
+
 impl JobStatus {
     pub fn as_str(self) -> &'static str {
         match self {
