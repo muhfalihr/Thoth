@@ -7,8 +7,10 @@ pub use validation::{
     validate_job_spec,
 };
 
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{str::FromStr, time::Duration};
 
 #[derive(Clone)]
@@ -23,8 +25,47 @@ fn now() -> String {
 fn is_sqlite_busy(error: &sqlx::Error) -> bool {
     error
         .as_database_error()
-        .and_then(|error| error.code())
+        .and_then(sqlx::error::DatabaseError::code)
         .is_some_and(|code| code == "5" || code == "517")
+}
+
+const CANCEL_BUSY_MAX_ATTEMPTS: usize = 4;
+const CANCEL_BUSY_BACKOFF: Duration = Duration::from_millis(5);
+
+#[cfg(test)]
+static CANCEL_BUSY_RETRIES: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+fn record_cancel_busy_retry() {
+    CANCEL_BUSY_RETRIES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+fn record_cancel_busy_retry() {}
+
+#[cfg(test)]
+fn reset_cancel_busy_retries() {
+    CANCEL_BUSY_RETRIES.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn cancel_busy_retries() -> usize {
+    CANCEL_BUSY_RETRIES.load(Ordering::Relaxed)
+}
+
+async fn backoff_after_cancel_busy(
+    tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+    error: sqlx::Error,
+    busy_attempts: &mut usize,
+) -> Result<(), sqlx::Error> {
+    record_cancel_busy_retry();
+    let _ = tx.rollback().await;
+    *busy_attempts += 1;
+    if *busy_attempts >= CANCEL_BUSY_MAX_ATTEMPTS {
+        return Err(error);
+    }
+    tokio::time::sleep(CANCEL_BUSY_BACKOFF * (*busy_attempts as u32)).await;
+    Ok(())
 }
 
 impl JobStore {
@@ -132,6 +173,7 @@ impl JobStore {
     }
 
     pub async fn request_cancel(&self, id: &str) -> anyhow::Result<CancelRequestOutcome> {
+        let mut busy_attempts = 0;
         loop {
             let mut tx = self.pool.begin().await?;
             let state: Option<(String, i64)> =
@@ -160,7 +202,7 @@ impl JobStore {
                 {
                     Ok(result) => result,
                     Err(error) if is_sqlite_busy(&error) => {
-                        let _ = tx.rollback().await;
+                        backoff_after_cancel_busy(tx, error, &mut busy_attempts).await?;
                         continue;
                     }
                     Err(error) => return Err(error.into()),
@@ -191,7 +233,7 @@ impl JobStore {
             {
                 Ok(result) => result,
                 Err(error) if is_sqlite_busy(&error) => {
-                    let _ = tx.rollback().await;
+                    backoff_after_cancel_busy(tx, error, &mut busy_attempts).await?;
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -220,7 +262,23 @@ impl JobStore {
         event_kind: &str,
         message: Option<&str>,
     ) -> anyhow::Result<bool> {
-        anyhow::ensure!(status.is_terminal(), "finish_running requires a terminal status");
+        self.finish_running_transaction(id, status, error, event_kind, message, None)
+            .await
+    }
+
+    async fn finish_running_transaction(
+        &self,
+        id: &str,
+        status: JobStatus,
+        error: Option<&str>,
+        event_kind: &str,
+        message: Option<&str>,
+        stale_before: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            status.is_terminal(),
+            "finish_running requires a terminal status"
+        );
         let mut tx = self.pool.begin().await?;
         let ts = now();
         let pct = if status == JobStatus::Succeeded {
@@ -228,17 +286,33 @@ impl JobStore {
         } else {
             None
         };
-        let result = sqlx::query(
-            "UPDATE jobs SET status=?, error=?, finished_at=?, updated_at=?, pct=COALESCE(?, pct) WHERE id=? AND status='running'",
-        )
-        .bind(status.as_str())
-        .bind(error)
-        .bind(&ts)
-        .bind(&ts)
-        .bind(pct)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+        let result = if let Some(cutoff) = stale_before {
+            sqlx::query(
+                "UPDATE jobs SET status=?, error=?, finished_at=?, updated_at=?, pct=COALESCE(?, pct)
+                 WHERE id=? AND status='running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)",
+            )
+            .bind(status.as_str())
+            .bind(error)
+            .bind(&ts)
+            .bind(&ts)
+            .bind(pct)
+            .bind(id)
+            .bind(cutoff)
+            .execute(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                "UPDATE jobs SET status=?, error=?, finished_at=?, updated_at=?, pct=COALESCE(?, pct) WHERE id=? AND status='running'",
+            )
+            .bind(status.as_str())
+            .bind(error)
+            .bind(&ts)
+            .bind(&ts)
+            .bind(pct)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+        };
         if result.rows_affected() == 0 {
             tx.commit().await?;
             return Ok(false);
@@ -279,7 +353,14 @@ impl JobStore {
         for id in ids {
             let message = "worker died (stale heartbeat)";
             if self
-                .finish_running(&id, JobStatus::Failed, Some(message), "error", Some(message))
+                .finish_running_transaction(
+                    &id,
+                    JobStatus::Failed,
+                    Some(message),
+                    "error",
+                    Some(message),
+                    Some(&cutoff),
+                )
                 .await?
             {
                 reaped.push(id);
@@ -422,6 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_cancel_rereads_after_losing_terminal_race() {
+        reset_cancel_busy_retries();
         let dir = std::env::temp_dir().join(format!("thoth-jobs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("t.db");
@@ -467,6 +549,50 @@ mod tests {
         let events = first.events_since(&id, 0).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "cancelled");
+        assert!(
+            cancel_busy_retries() > 0,
+            "test must exercise the BUSY retry path"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn cancel_persistent_busy_returns_error_within_retry_budget() {
+        let dir = std::env::temp_dir().join(format!("thoth-jobs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let holder = JobStore::connect(db.to_str().unwrap()).await.unwrap();
+        let id = enq(&holder, "u").await;
+        let contender_options = SqliteConnectOptions::from_str(db.to_str().unwrap())
+            .unwrap()
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_millis(1));
+        let contender = JobStore {
+            pool: SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(contender_options)
+                .await
+                .unwrap(),
+        };
+
+        let mut write_lock = holder.pool.begin().await.unwrap();
+        sqlx::query("UPDATE jobs SET updated_at=updated_at WHERE id=?")
+            .bind(&id)
+            .execute(&mut *write_lock)
+            .await
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let result =
+            tokio::time::timeout(Duration::from_millis(250), contender.request_cancel(&id))
+                .await
+                .expect("request_cancel exceeded retry budget");
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("database is locked"));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        drop(write_lock);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -564,7 +690,7 @@ mod tests {
         for _ in 0..5 {
             held.push(reaper_store.pool.acquire().await.unwrap());
         }
-        let reaper = {
+        let reaper_task = {
             let store = reaper_store.clone();
             tokio::spawn(async move { store.reap_stale(30).await })
         };
@@ -586,8 +712,8 @@ mod tests {
         drop(blocker);
         drop(held);
 
-        let reaped = reaper.await.unwrap().unwrap();
-        assert!(reaped.is_empty());
+        let reaped_ids = reaper_task.await.unwrap().unwrap();
+        assert!(reaped_ids.is_empty());
         assert_eq!(
             finisher_store.get(&id).await.unwrap().unwrap().status,
             JobStatus::Succeeded
@@ -595,6 +721,59 @@ mod tests {
         let events = finisher_store.events_since(&id, 0).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "complete");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reaper_does_not_fail_job_with_refreshed_heartbeat() {
+        let dir = std::env::temp_dir().join(format!("thoth-jobs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let reaper_store = JobStore::connect(db.to_str().unwrap()).await.unwrap();
+        let heartbeat_store = JobStore::connect(db.to_str().unwrap()).await.unwrap();
+        let id = enq(&reaper_store, "u").await;
+        reaper_store.claim_next("w1").await.unwrap();
+        sqlx::query("UPDATE jobs SET heartbeat_at=? WHERE id=?")
+            .bind("2000-01-01T00:00:00+00:00")
+            .bind(&id)
+            .execute(&reaper_store.pool)
+            .await
+            .unwrap();
+
+        let mut held = Vec::new();
+        for _ in 0..5 {
+            held.push(reaper_store.pool.acquire().await.unwrap());
+        }
+        let reaper_task = {
+            let store = reaper_store.clone();
+            tokio::spawn(async move { store.reap_stale(30).await })
+        };
+        tokio::task::yield_now().await;
+        let blocker = {
+            let pool = reaper_store.pool.clone();
+            tokio::spawn(async move { pool.acquire().await.unwrap() })
+        };
+        tokio::task::yield_now().await;
+        drop(held.pop());
+        let blocker = blocker.await.unwrap();
+
+        heartbeat_store.heartbeat(&id).await.unwrap();
+        drop(blocker);
+        drop(held);
+
+        let reaped_ids = reaper_task.await.unwrap().unwrap();
+        assert!(reaped_ids.is_empty());
+        assert_eq!(
+            heartbeat_store.get(&id).await.unwrap().unwrap().status,
+            JobStatus::Running
+        );
+        assert!(
+            heartbeat_store
+                .events_since(&id, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
