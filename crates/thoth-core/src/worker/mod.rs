@@ -156,6 +156,19 @@ where
     let result = run_fn(Arc::new(job), context.clone()).await;
     watcher.abort();
     let _ = watcher.await;
+
+    // This final read linearizes cancellation against pipeline completion: a
+    // `RunningRequested` committed before it is observed wins and cancels this
+    // context. A request committed later competes with `finish_running`'s
+    // terminal CAS under the store's normal semantics.
+    match store.is_cancel_requested(&id).await {
+        Ok(true) => context.cancel(),
+        Ok(false) => {}
+        Err(error) => {
+            tracing::error!(job_id = %id, %error, "final cancellation observation failed");
+        }
+    }
+
     hb.abort();
     let _ = hb.await;
     context.terminate_all().await;
@@ -420,7 +433,11 @@ mod tests {
 
         let events = store.events_since(&id, 0).await.unwrap();
         assert_eq!(events.len(), 1);
-        assert!(store.get(&id).await.unwrap().unwrap().status.is_terminal());
+        assert_eq!(
+            store.get(&id).await.unwrap().unwrap().status,
+            JobStatus::Cancelled
+        );
+        assert_eq!(events[0].kind, "cancelled");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
