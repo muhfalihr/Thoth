@@ -10,11 +10,12 @@
 //! `render` returns `Err` and the caller falls back to the ASS renderer.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::Serialize;
+use tokio::process::Command;
 
 use super::error::EditError;
+use crate::execution::JobExecutionContext;
 
 /// Drop-shadow parameters for the PNG renderer.
 #[derive(Debug, Clone, Serialize)]
@@ -57,7 +58,12 @@ impl HeadlinePngSpec {
     ///
     /// `python_cmd` is the interpreter (e.g. "python"); `script` points at
     /// `scripts/render/render_headline.py`.
-    pub fn render(&self, python_cmd: &str, script: &Path) -> Result<PathBuf, EditError> {
+    pub async fn render(
+        &self,
+        execution: &JobExecutionContext,
+        python_cmd: &str,
+        script: &Path,
+    ) -> Result<PathBuf, EditError> {
         let out_path = PathBuf::from(&self.out);
         let spec_path = out_path.with_extension("spec.json");
 
@@ -72,13 +78,11 @@ impl HeadlinePngSpec {
             )));
         }
 
-        let output = Command::new(python_cmd)
-            .arg(script)
-            .arg(&spec_path)
-            .output()
-            .map_err(|e| EditError::SubtitleError(format!(
-                "failed to spawn '{python_cmd}': {e}"
-            )))?;
+        let mut command = Command::new(python_cmd);
+        command.arg(script).arg(&spec_path);
+        let output = execution.output(&mut command).await.map_err(|error| {
+            EditError::from_execution(error, format!("failed to spawn '{python_cmd}'"))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -101,4 +105,115 @@ impl HeadlinePngSpec {
 /// Resolve the Python interpreter: `$THOTH_PYTHON` if set, else `python`.
 pub fn python_cmd() -> String {
     std::env::var("THOTH_PYTHON").unwrap_or_else(|_| "python".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::execution::JobExecutionContext;
+
+    fn spec(out: PathBuf) -> HeadlinePngSpec {
+        HeadlinePngSpec {
+            text: String::new(),
+            width: 1,
+            height: 1,
+            font_path: String::new(),
+            font_size: 1,
+            palette: Vec::new(),
+            stroke_width: 0,
+            stroke_color: String::new(),
+            line_spacing: 0.0,
+            text_align: String::new(),
+            margin_l: 0,
+            max_lines: 0,
+            margin_v: 0,
+            max_width_ratio: 0.0,
+            uppercase: false,
+            shadow: HeadlineShadow {
+                dx: 0,
+                dy: 0,
+                blur: 0.0,
+                color: String::new(),
+                alpha: 0,
+            },
+            out: out.to_string_lossy().into_owned(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn write_blocking_script(path: &Path) {
+        std::fs::write(
+            path,
+            "Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n\
+             Set marker = fso.CreateTextFile(WScript.Arguments(0) & \".started\", True)\r\n\
+             marker.Close\r\n\
+             WScript.Sleep 30000\r\n",
+        )
+        .expect("write headline helper script");
+    }
+
+    #[cfg(windows)]
+    fn renderer_command() -> &'static str {
+        "wscript.exe"
+    }
+
+    #[cfg(unix)]
+    fn write_blocking_script(path: &Path) {
+        std::fs::write(path, "printf started > \"$1.started\"\nsleep 30\n")
+            .expect("write headline helper script");
+    }
+
+    #[cfg(unix)]
+    fn renderer_command() -> &'static str {
+        "sh"
+    }
+
+    #[tokio::test]
+    async fn headline_renderer_honors_cancellation() {
+        let base = std::env::temp_dir().join(format!(
+            "thoth-headline-cancellation-{}",
+            uuid::Uuid::new_v4()
+        ));
+        #[cfg(windows)]
+        let script = base.with_extension("vbs");
+        #[cfg(unix)]
+        let script = base.with_extension("sh");
+        let out = base.with_extension("png");
+        let spec_path = out.with_extension("spec.json");
+        let marker = PathBuf::from(format!("{}.started", spec_path.display()));
+        write_blocking_script(&script);
+
+        let execution = JobExecutionContext::new();
+        let task_execution = execution.clone();
+        let task_script = script.clone();
+        let task_spec = spec(out.clone());
+        let task = tokio::spawn(async move {
+            task_spec
+                .render(&task_execution, renderer_command(), &task_script)
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("headline helper must start");
+        execution.cancel();
+
+        let error = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("cancelled headline helper must be reaped within two seconds")
+            .expect("headline task must not panic")
+            .expect_err("cancelled headline helper must fail");
+        assert!(matches!(error, EditError::Cancelled(_)));
+
+        let _ = std::fs::remove_file(marker);
+        let _ = std::fs::remove_file(spec_path);
+        let _ = std::fs::remove_file(script);
+        let _ = std::fs::remove_file(out);
+    }
 }

@@ -35,13 +35,14 @@ use crate::gpu::processor::{ClipJob, GpuProcessor};
 ///
 /// `ass_path` is the clip's subtitle path; the hook artifacts are siblings
 /// (`*.hook.png` / `*.hook.ass`).
-fn build_hook_overlay(
+async fn build_hook_overlay(
     hk: &crate::config::HookTitleConfig,
     text: &str,
     duration_sec: f64,
     layout: &OutputLayout,
     ass_path: &Path,
-) -> (Option<super::ffmpeg::HeadlineImage>, Option<PathBuf>) {
+    execution: &JobExecutionContext,
+) -> Result<(Option<super::ffmpeg::HeadlineImage>, Option<PathBuf>), EditError> {
     let (w, h) = match layout {
         OutputLayout::Vertical   => (1080u32, 1920u32),
         OutputLayout::Horizontal => (1920u32, 1080u32),
@@ -77,12 +78,16 @@ fn build_hook_overlay(
             out: png_path.to_string_lossy().to_string(),
         };
         let script = Path::new("scripts/render/render_headline.py");
-        match spec.render(&super::headline_png::python_cmd(), script) {
+        match spec
+            .render(execution, &super::headline_png::python_cmd(), script)
+            .await
+        {
             Ok(p) => {
                 info!("       💥 Hook title PNG: \"{}\" ({:.1}s, {} colours, Pillow)",
                       text, duration_sec, hk.palette.len());
-                return (Some(super::ffmpeg::HeadlineImage { path: p, duration_sec }), None);
+                return Ok((Some(super::ffmpeg::HeadlineImage { path: p, duration_sec }), None));
             }
+            Err(error @ EditError::Cancelled(_)) => return Err(error),
             Err(e) => warn!("hook title PNG render failed ({e}) — falling back to ASS"),
         }
     }
@@ -105,11 +110,11 @@ fn build_hook_overlay(
         Ok(()) => {
             info!("       💥 Hook title: \"{}\" ({:.1}s, {} colours, ASS)",
                   text, duration_sec, hk.palette.len());
-            (None, Some(ass))
+            Ok((None, Some(ass)))
         }
         Err(e) => {
             warn!("hook title generation failed: {e}");
-            (None, None)
+            Ok((None, None))
         }
     }
 }
@@ -695,6 +700,7 @@ impl<'a> EditService<'a> {
                     pb_clips.finish_with_message("narrator-driven video rendered".to_owned());
                     return Ok(EditResult { output_clips, completed_at: Utc::now() });
                 }
+                Err(error @ EditError::Cancelled(_)) => return Err(error.into()),
                 Err(e) => warn!("narration render failed ({e}) — falling back to per-clip edit"),
             }
         }
@@ -868,7 +874,15 @@ impl<'a> EditService<'a> {
                 if !text.trim().is_empty() {
                     let clip_dur = end - start;
                     let duration_sec = hk.duration_sec.min(clip_dur - 0.2).max(0.5);
-                    let (png, ass) = build_hook_overlay(hk, &text, duration_sec, layout, &ass_path);
+                    let (png, ass) = build_hook_overlay(
+                        hk,
+                        &text,
+                        duration_sec,
+                        layout,
+                        &ass_path,
+                        &self.execution,
+                    )
+                    .await?;
                     if png.is_some() || ass.is_some() {
                         audio_clone.hook_title_png = png;
                         audio_clone.hook_title_ass = ass;
@@ -1849,7 +1863,15 @@ impl<'a> EditService<'a> {
             // Fallback: the giant hook title (PNG or ASS) over the footage.
             if !cover_done {
                 let hk = &self.config.hook_title;
-                let (png, ass) = build_hook_overlay(hk, &hook, hook_dur, layout, &ass_path);
+                let (png, ass) = build_hook_overlay(
+                    hk,
+                    &hook,
+                    hook_dur,
+                    layout,
+                    &ass_path,
+                    self.execution,
+                )
+                .await?;
                 audio.hook_title_png = png;
                 audio.hook_title_ass = ass;
             }
