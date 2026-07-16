@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::config::AppConfig;
-use crate::execution::JobExecutionContext;
+use crate::execution::{run_cooperative_item, JobExecutionContext};
 use crate::pipeline::job::JobContext;
 use crate::transcribe::model::{Transcript, WhisperSegment};
 use crate::util::progress::{spinner, stage_done};
@@ -582,7 +582,7 @@ impl<'a> AnalyzeService<'a> {
             );
             final_moments = self
                 .visual_rerank(final_moments, vp, &transcript, max_clips)
-                .await;
+                .await?;
             self.execution.check_cancelled()?;
         } else {
             final_moments.truncate(max_clips);
@@ -944,7 +944,7 @@ impl<'a> AnalyzeService<'a> {
         video_path:   &Path,
         transcript:   &Transcript,
         max_clips:    usize,
-    ) -> Vec<ViralMoment> {
+    ) -> Result<Vec<ViralMoment>> {
         let cfg      = &self.config.vision;
         let analyzer = VisualAnalyzer::new(cfg, &self.config.llm);
         let n        = moments.len();
@@ -959,12 +959,13 @@ impl<'a> AnalyzeService<'a> {
         // provider rate limit — unbounded fan-out would 429, which is slower than serial).
         let concurrency = cfg.concurrency.max(1);
         let items: Vec<(usize, ViralMoment)> = moments.drain(..).enumerate().collect();
-        let scored: Vec<(f32, ViralMoment)> = stream::iter(items)
+        let scored: Result<Vec<(f32, ViralMoment)>> = stream::iter(items)
             .map(|(idx, mut moment)| {
                 let analyzer   = &analyzer;
                 let this       = &*self;
                 let frames_dir = &frames_dir;
                 async move {
+                run_cooperative_item(this.execution, || async {
             // Text rank score: #1 LLM pick = 1.0, last = ≈0
             let text_score = (n - idx) as f32 / n as f32;
 
@@ -985,6 +986,7 @@ impl<'a> AnalyzeService<'a> {
             } else {
                 Vec::new()
             };
+            this.execution.check_cancelled()?;
             let scene_ts_opt = if scene_ts.is_empty() { None } else { Some(scene_ts.as_slice()) };
             let frames = extract_frames(
                 video_path,
@@ -995,11 +997,13 @@ impl<'a> AnalyzeService<'a> {
                 &moment_frames_dir,
                 scene_ts_opt,
             ).await;
+            this.execution.check_cancelled()?;
 
             // Call vision LLM — returns None on any error
             let vis_raw = analyzer.score_moment(
                 &frames, &segment_text, moment.start_sec, moment.end_sec,
             ).await;
+            this.execution.check_cancelled()?;
 
             let vis_score = vis_raw.as_ref().map(|s| s.combined()).unwrap_or(0.0);
             let combined  = text_score * (1.0 - weight) + vis_score * weight;
@@ -1021,13 +1025,22 @@ impl<'a> AnalyzeService<'a> {
             }
 
             moment.visual_score = vis_raw;
-            (combined, moment)
+            Ok((combined, moment))
+                }).await
                 }
             })
             .buffer_unordered(concurrency)
-            .collect()
-            .await;
-        let mut scored = scored;
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>();
+        let mut scored = match scored {
+            Ok(scored) => scored,
+            Err(error) => {
+                cleanup_frames(&frames_dir);
+                return Err(error);
+            }
+        };
 
         // Clean up all frame files
         cleanup_frames(&frames_dir);
@@ -1041,7 +1054,7 @@ impl<'a> AnalyzeService<'a> {
             scored.len()
         );
 
-        scored.into_iter().map(|(_, m)| m).collect()
+        Ok(scored.into_iter().map(|(_, m)| m).collect())
     }
 
     fn build_provider(&self, name: &str) -> Result<Box<dyn LlmProvider>, AnalyzeError> {

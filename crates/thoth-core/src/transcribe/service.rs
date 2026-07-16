@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use futures_util::stream::{self, StreamExt};
 
 use crate::config::AppConfig;
-use crate::execution::JobExecutionContext;
+use crate::execution::{run_cooperative_item, JobExecutionContext};
 use crate::pipeline::job::JobContext;
 use crate::util::progress::{spinner, stage_done};
 
@@ -125,7 +125,7 @@ impl<'a> TranscribeService<'a> {
         wav_path: &Path,
         #[cfg_attr(not(feature = "local-whisper"), allow(unused_variables))]
         model_size: &str,
-    ) -> Result<Transcript, TranscribeError> {
+    ) -> Result<Transcript> {
         #[cfg(feature = "local-whisper")]
         {
             let model_path = self.config.whisper_model_path(Some(model_size));
@@ -134,13 +134,13 @@ impl<'a> TranscribeService<'a> {
             }
 
             info!("using local whisper [{model_size}] (CUDA-accelerated)");
-            local::run_local_whisper(
+            Ok(local::run_local_whisper(
                 wav_path,
                 &model_path,
                 self.config.whisper.n_threads,
                 &self.config.whisper.language,
             )
-            .await
+            .await?)
         }
 
         #[cfg(not(feature = "local-whisper"))]
@@ -218,14 +218,14 @@ impl<'a> TranscribeService<'a> {
         Ok(())
     }
 
-    async fn transcribe_via_groq(&self, wav_path: &Path) -> Result<Transcript, TranscribeError> {
+    async fn transcribe_via_groq(&self, wav_path: &Path) -> Result<Transcript> {
         if self.config.llm.groq_api_key.is_empty() {
             return Err(TranscribeError::InitFailed(
                 "THOTH_GROQ_API_KEY is not set.\n\
                  Set it via: $env:THOTH_GROQ_API_KEY = \"gsk_...\"\n\
                  Or add to your .env file."
                     .to_owned(),
-            ));
+            ).into());
         }
 
         // ── Step 1: Compress WAV → MP3 ───────────────────────────────────────
@@ -318,7 +318,7 @@ impl<'a> TranscribeService<'a> {
         &self,
         mp3_path: &Path,
         total_duration_secs: f64,
-    ) -> Result<Transcript, TranscribeError> {
+    ) -> Result<Transcript> {
         let n_chunks = (total_duration_secs / CHUNK_DURATION_SECS).ceil() as usize;
         let chunk_dir = mp3_path.parent().unwrap_or(std::path::Path::new("."));
 
@@ -337,19 +337,22 @@ impl<'a> TranscribeService<'a> {
             );
 
             let chunk_path = chunk_dir.join(format!("chunk_{chunk_idx:03}.mp3"));
-            let status = crate::util::ffmpeg::command()
-                .args([
-                    "-y",
-                    "-ss", &format!("{chunk_start:.3}"),
-                    "-t",  &format!("{chunk_dur:.3}"),
-                    "-i",  &mp3_path.to_string_lossy(),
-                    "-c",  "copy",
-                    &chunk_path.to_string_lossy(),
-                ])
-                .spawn()
-                .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?
-                .wait()
-                .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?;
+            let status = run_cooperative_item(self.execution, || async {
+                let status = crate::util::ffmpeg::command()
+                    .args([
+                        "-y",
+                        "-ss", &format!("{chunk_start:.3}"),
+                        "-t",  &format!("{chunk_dur:.3}"),
+                        "-i",  &mp3_path.to_string_lossy(),
+                        "-c",  "copy",
+                        &chunk_path.to_string_lossy(),
+                    ])
+                    .spawn()
+                    .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?
+                    .wait()
+                    .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?;
+                Ok(status)
+            }).await?;
 
             if !status.success() || !chunk_path.exists() {
                 break; // Past end of file — done
@@ -367,26 +370,30 @@ impl<'a> TranscribeService<'a> {
         let mut indexed_results: Vec<(usize, Transcript)> =
             stream::iter(chunk_metas)
                 .map(|meta| async move {
-                    let pb = spinner(&format!(
-                        "[{}/{}] Uploading chunk {:.0}s–{:.0}s ({:.1} MB)…",
-                        meta.idx + 1, total, meta.start, meta.end, meta.mb
-                    ));
-                    let result = this.groq_upload(&meta.path, meta.start).await;
-                    pb.finish_and_clear();
-                    // Bersihkan chunk setelah upload selesai
-                    let _ = tokio::fs::remove_file(&meta.path).await;
-                    result.map(|t| (meta.idx, t))
+                    run_cooperative_item(this.execution, || async {
+                        let pb = spinner(&format!(
+                            "[{}/{}] Uploading chunk {:.0}s–{:.0}s ({:.1} MB)…",
+                            meta.idx + 1, total, meta.start, meta.end, meta.mb
+                        ));
+                        let transcript = this.groq_upload(&meta.path, meta.start).await?;
+                        this.execution.check_cancelled()?;
+                        pb.finish_and_clear();
+                        // Bersihkan chunk setelah upload selesai
+                        let _ = tokio::fs::remove_file(&meta.path).await;
+                        Ok((meta.idx, transcript))
+                    }).await
                 })
                 .buffer_unordered(3)
                 .collect::<Vec<_>>()
                 .await
                 .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>>>()?;
 
         // ── Fase 3: Sort by idx → dedup overlap → flatten ────────────────────────
         indexed_results.sort_by_key(|(idx, _)| *idx);
         let mut all_segments: Vec<WhisperSegment> = Vec::new();
         for (_, mut chunk_transcript) in indexed_results {
+            self.execution.check_cancelled()?;
             // Deduplicate: drop segments that overlap with the previous chunk's last segment
             if let Some(prev_last) = all_segments.last() {
                 let min_start = prev_last.end_ms;

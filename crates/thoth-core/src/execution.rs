@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::future::Future;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
@@ -162,6 +163,23 @@ impl Default for JobExecutionContext {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Run one independently cancellable unit of a longer stage. Callers use this at
+/// item boundaries so a cancellation prevents the next expensive unit from
+/// starting while preserving [`Cancelled`] in the error chain.
+pub(crate) async fn run_cooperative_item<T, F, Fut>(
+    execution: &JobExecutionContext,
+    item: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    execution.check_cancelled()?;
+    let result = item().await?;
+    execution.check_cancelled()?;
+    Ok(result)
 }
 
 pub struct SupervisedChild {
@@ -553,6 +571,33 @@ mod tests {
                 .chain()
                 .any(|cause| cause.downcast_ref::<Cancelled>().is_some())
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_context_stops_before_next_cooperative_item() {
+        let execution = JobExecutionContext::new();
+        let entered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first_entered = std::sync::Arc::clone(&entered);
+        let first_execution = execution.clone();
+
+        let error = async {
+            run_cooperative_item(&execution, move || async move {
+                first_entered.lock().unwrap().push("first");
+                first_execution.cancel();
+                Ok(())
+            })
+            .await?;
+            run_cooperative_item(&execution, || async {
+                entered.lock().unwrap().push("second");
+                Ok(())
+            })
+            .await
+        }
+        .await
+        .unwrap_err();
+
+        assert!(is_cancelled(&error));
+        assert_eq!(*entered.lock().unwrap(), vec!["first"]);
     }
 
     #[test]

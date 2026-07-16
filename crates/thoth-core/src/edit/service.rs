@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use crate::analyze::schema::ViralMomentList;
 use crate::analyze::provider::{build_llm_provider, LlmProvider};
 use crate::config::AppConfig;
-use crate::execution::JobExecutionContext;
+use crate::execution::{run_cooperative_item, JobExecutionContext};
 use crate::transcribe::model::WordTimestamp;
 use crate::util::beat_detect;
 use crate::pipeline::job::JobContext;
@@ -1138,15 +1138,17 @@ impl<'a> EditService<'a> {
                 let mut spec = if has_enrich_pool {
                     let cand = &enrich_pool[i % enrich_pool.len()];
                     overlay_source = format!("{} [{}]", cand.url, cand.platform);
-                    fetch_overlay_from_url(
-                        &cand.url,
-                        at_clamped,
-                        dur_clamped,
-                        &self.config.overlay,
-                        &overlay_ytdlp,
-                        &ffmpeg_dir,
-                        overlay_cookie.as_ref(),
-                    ).await
+                    run_cooperative_item(self.execution, || async {
+                        Ok(fetch_overlay_from_url(
+                            &cand.url,
+                            at_clamped,
+                            dur_clamped,
+                            &self.config.overlay,
+                            &overlay_ytdlp,
+                            &ffmpeg_dir,
+                            overlay_cookie.as_ref(),
+                        ).await)
+                    }).await?
                 } else {
                     None
                 };
@@ -1213,6 +1215,7 @@ impl<'a> EditService<'a> {
                         let mut win_start = seg * 2.0 + gap; // start after the primary card
                         let mut placed = 0usize;
                         for k in 0..extra {
+                            self.execution.check_cancelled()?;
                             if win_start + 1.0 >= clip_duration { break; }
                             let dur = seg
                                 .min(clip_duration - win_start)
@@ -1220,11 +1223,13 @@ impl<'a> EditService<'a> {
                                 .max(1.0);
                             // Rotate to clips DIFFERENT from the primary (i % len).
                             let cand = &enrich_pool[(i + 1 + k) % enrich_pool.len()];
-                            if let Some(fspec) = fetch_overlay_from_url(
-                                &cand.url, win_start, dur,
-                                &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
-                                overlay_cookie.as_ref(),
-                            ).await {
+                            if let Some(fspec) = run_cooperative_item(self.execution, || async {
+                                Ok(fetch_overlay_from_url(
+                                    &cand.url, win_start, dur,
+                                    &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
+                                    overlay_cookie.as_ref(),
+                                ).await)
+                            }).await? {
                                 audio_clone.footage_cards.push(super::ffmpeg::FootageCardCue {
                                     path:         fspec.path,
                                     at_sec:       win_start,
