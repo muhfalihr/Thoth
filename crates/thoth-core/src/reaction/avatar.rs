@@ -263,7 +263,7 @@ async fn create_sadtalker_segment(
     // SadTalker can take 1-3 minutes on GPU — use generous timeout.
     let stdout = run_command(execution, cmd, "sadtalker", 300)
         .await
-        .map_err(|e| ReactionError::Tts(e.to_string()))?;
+        .map_err(ReactionError::from_news_error)?;
 
     let env: serde_json::Value = serde_json::from_str(
         stdout.trim().find('{').map(|i| &stdout[i..]).unwrap_or(stdout.trim())

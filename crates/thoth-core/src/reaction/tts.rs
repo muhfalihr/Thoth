@@ -180,8 +180,9 @@ async fn synthesize_edge_timed(
         .arg("--rate").arg("+6%")
         .arg("--output").arg(output_path);
 
-    let stdout = run_command(execution, cmd, "tts_narrate", 120).await
-        .map_err(|e| ReactionError::Tts(e.to_string()))?;
+    let stdout = run_command(execution, cmd, "tts_narrate", 120)
+        .await
+        .map_err(ReactionError::from_news_error)?;
 
     #[derive(Deserialize)]
     struct W { word: String, start_ms: i64, end_ms: i64 }
@@ -285,8 +286,9 @@ async fn synthesize_edge(
 
     debug!("TTS (edge): voice={}", reaction_cfg.tts.edge_voice);
 
-    let stdout = run_command(execution, cmd, "tts_edge", 60).await
-        .map_err(|e| ReactionError::Tts(e.to_string()))?;
+    let stdout = run_command(execution, cmd, "tts_edge", 60)
+        .await
+        .map_err(ReactionError::from_news_error)?;
 
     parse_tts_envelope(&stdout, output_path)
 }

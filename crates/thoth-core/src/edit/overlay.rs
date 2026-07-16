@@ -455,10 +455,10 @@ async fn download_clip_direct(
 
     let mut command = tokio::process::Command::new(&bin);
     command.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    let result = tokio::time::timeout(Duration::from_secs(60), execution.status(&mut command)).await;
+    let result = execution.status_with_timeout(&mut command, Duration::from_secs(60)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
-    matches!(result, Ok(Ok(s)) if s.success())
+    matches!(result, Ok(s) if s.success())
 }
 
 /// Download only the OPENING `max_dur` seconds of a specific video URL.
@@ -501,10 +501,10 @@ async fn download_clip_section(
 
     let mut command = tokio::process::Command::new(&bin);
     command.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    let result = tokio::time::timeout(Duration::from_secs(90), execution.status(&mut command)).await;
+    let result = execution.status_with_timeout(&mut command, Duration::from_secs(90)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
-    matches!(result, Ok(Ok(s)) if s.success())
+    matches!(result, Ok(s) if s.success())
 }
 
 /// Download a single overlay clip via yt-dlp search query.
@@ -551,10 +551,10 @@ async fn download_clip_variant(
 
     let mut command = tokio::process::Command::new(&bin);
     command.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    let result = tokio::time::timeout(Duration::from_secs(60), execution.status(&mut command)).await;
+    let result = execution.status_with_timeout(&mut command, Duration::from_secs(60)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
-    matches!(result, Ok(Ok(s)) if s.success())
+    matches!(result, Ok(s) if s.success())
 }
 
 fn find_downloaded(prefix: &Path) -> Option<PathBuf> {

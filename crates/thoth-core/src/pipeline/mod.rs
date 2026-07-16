@@ -473,8 +473,7 @@ impl<'a> PipelineRunner<'a> {
             self.config.narration.target_secs,
             &structure_refs,
         )
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+        .await?;
 
         // Persist word timings for the edit stage.
         let words_json = serde_json::to_string(&narr.words).unwrap_or_else(|_| "[]".into());

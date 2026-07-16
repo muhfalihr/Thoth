@@ -234,11 +234,11 @@ async fn download_sample_videos(
         .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let status = tokio::time::timeout(Duration::from_secs(300), execution.status(&mut command)).await;
+    let status = execution.status_with_timeout(&mut command, Duration::from_secs(300)).await;
 
     match status {
-        Ok(Ok(s)) if s.success() => {}
-        Ok(Ok(s)) => {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
             let code = s.code().unwrap_or(-1);
             // Codes 1 and 101 = partial success (some items failed, others may have succeeded)
             if code == 1 || code == 101 {
@@ -247,8 +247,8 @@ async fn download_sample_videos(
                 anyhow::bail!("yt-dlp exited with code {code}");
             }
         }
-        Ok(Err(e)) => return Err(e),
-        Err(_) => anyhow::bail!("yt-dlp timed out"),
+        Err(error) if error.downcast_ref::<crate::execution::CommandTimedOut>().is_some() => anyhow::bail!("yt-dlp timed out"),
+        Err(error) => return Err(error),
     }
 
     // Collect downloaded video files (any format yt-dlp produced)

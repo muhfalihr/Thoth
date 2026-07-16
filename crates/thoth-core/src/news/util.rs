@@ -50,10 +50,16 @@ pub async fn run_command(
     timeout_secs: u64,
 ) -> Result<String, NewsError> {
     let grace = Duration::from_secs(timeout_secs + 10);
-    let output = match tokio::time::timeout(grace, execution.output(&mut cmd)).await {
-        Ok(r) => r?,
-        Err(_) => return Err(NewsError::Search(format!("{label}: timed out after {}s", grace.as_secs()))),
-    };
+    let output = execution
+        .output_with_timeout(&mut cmd, grace)
+        .await
+        .map_err(|error| {
+            if error.downcast_ref::<crate::execution::CommandTimedOut>().is_some() {
+                NewsError::Search(format!("{label}: timed out after {}s", grace.as_secs()))
+            } else {
+                NewsError::Execution(error)
+            }
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(NewsError::Search(format!(

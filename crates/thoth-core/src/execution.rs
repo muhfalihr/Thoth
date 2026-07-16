@@ -12,6 +12,10 @@ use tokio_util::sync::CancellationToken;
 #[error("job cancelled")]
 pub struct Cancelled;
 
+#[derive(Debug, thiserror::Error)]
+#[error("supervised command timed out")]
+pub struct CommandTimedOut;
+
 #[derive(Clone)]
 pub struct JobExecutionContext {
     cancellation: CancellationToken,
@@ -135,8 +139,51 @@ impl JobExecutionContext {
         self.spawn(command)?.output().await
     }
 
+    pub async fn output_with_timeout(
+        &self,
+        command: &mut Command,
+        timeout: std::time::Duration,
+    ) -> Result<Output> {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = self.spawn(command)?;
+        match tokio::time::timeout(timeout, child.output()).await {
+            Ok(output) => output,
+            Err(_) => {
+                // If job cancellation won the race, preserve its concrete type
+                // rather than relabeling it as a command timeout.
+                if self.cancellation.is_cancelled() {
+                    child.control.completed.cancelled().await;
+                    return Err(Cancelled.into());
+                }
+                child.cancel();
+                child.control.completed.cancelled().await;
+                Err(CommandTimedOut.into())
+            }
+        }
+    }
+
     pub async fn status(&self, command: &mut Command) -> Result<ExitStatus> {
         self.spawn(command)?.status().await
+    }
+
+    pub async fn status_with_timeout(
+        &self,
+        command: &mut Command,
+        timeout: std::time::Duration,
+    ) -> Result<ExitStatus> {
+        let mut child = self.spawn(command)?;
+        match tokio::time::timeout(timeout, child.status()).await {
+            Ok(status) => status,
+            Err(_) => {
+                if self.cancellation.is_cancelled() {
+                    child.control.completed.cancelled().await;
+                    return Err(Cancelled.into());
+                }
+                child.cancel();
+                child.control.completed.cancelled().await;
+                Err(CommandTimedOut.into())
+            }
+        }
     }
 
     pub async fn terminate_all(&self) {
@@ -204,7 +251,7 @@ impl SupervisedChild {
         self.stderr.take()
     }
 
-    pub async fn output(mut self) -> Result<Output> {
+    pub async fn output(&mut self) -> Result<Output> {
         let mut stdout = self
             .take_stdout()
             .ok_or_else(|| anyhow::anyhow!("supervised child stdout is not piped"))?;
@@ -222,7 +269,7 @@ impl SupervisedChild {
             stderr.read_to_end(&mut bytes).await?;
             std::io::Result::Ok(bytes)
         };
-        let (status, stdout, stderr) = tokio::join!(self.wait(), read_stdout, read_stderr);
+        let (status, stdout, stderr) = tokio::join!(self.wait_ref(), read_stdout, read_stderr);
 
         Ok(Output {
             status: status?,
@@ -231,11 +278,19 @@ impl SupervisedChild {
         })
     }
 
-    pub async fn status(self) -> Result<ExitStatus> {
-        self.wait().await
+    pub async fn status(&mut self) -> Result<ExitStatus> {
+        self.wait_ref().await
     }
 
     pub async fn wait(mut self) -> Result<ExitStatus> {
+        self.wait_ref().await
+    }
+
+    pub fn cancel(&self) {
+        self.control.cancel.cancel();
+    }
+
+    async fn wait_ref(&mut self) -> Result<ExitStatus> {
         self.result
             .take()
             .expect("supervised child result receiver is present")
@@ -603,12 +658,19 @@ mod tests {
     #[tokio::test]
     async fn supervised_streaming_child_is_reaped() -> Result<()> {
         let context = JobExecutionContext::new();
-        let mut child = crate::ingest::YtDlpArgs::new("powershell")
-            .extra(&[
+        #[cfg(windows)]
+        let (bin, args) = (
+            "powershell",
+            vec![
                 "-NoProfile",
                 "-Command",
                 "Write-Output 'started'; Start-Sleep -Seconds 30",
-            ])
+            ],
+        );
+        #[cfg(unix)]
+        let (bin, args) = ("sh", vec!["-c", "printf 'started\\n'; sleep 30"]);
+        let mut child = crate::ingest::YtDlpArgs::new(bin)
+            .extra(&args)
             .spawn_with_streams(&context)?;
         let pid = child.id();
         let _guard = ProcessGuard(pid);
@@ -627,6 +689,41 @@ mod tests {
 
         assert!(is_cancelled(&error));
         assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(context.active_child_count(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn timed_supervised_output_reaps_before_reporting_timeout() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let pid_path = std::env::temp_dir().join(format!("thoth-timeout-{}.pid", uuid::Uuid::new_v4()));
+        let _file_guard = FileGuard(pid_path.clone());
+        let mut command = parent_with_child_command(&pid_path);
+
+        let error = context
+            .output_with_timeout(&mut command, Duration::from_secs(1))
+            .await
+            .expect_err("long-running output must time out");
+        let pid = read_child_pid(&pid_path).await;
+
+        assert!(!is_cancelled(&error));
+        assert_process_exits(pid).await;
+        assert_eq!(context.active_child_count(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancelled_supervised_output_is_not_reported_as_timeout() -> Result<()> {
+        let context = JobExecutionContext::new();
+        context.cancel();
+        let mut command = long_running_command();
+
+        let error = context
+            .output_with_timeout(&mut command, Duration::from_secs(1))
+            .await
+            .expect_err("pre-cancelled context must not run the command");
+
+        assert!(is_cancelled(&error));
         assert_eq!(context.active_child_count(), 0);
         Ok(())
     }
@@ -906,7 +1003,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_terminates_a_long_lived_child_with_typed_error() -> Result<()> {
         let context = JobExecutionContext::new();
-        let child = context.spawn(&mut long_running_command())?;
+        let mut child = context.spawn(&mut long_running_command())?;
         let _guard = ProcessGuard(child.pid);
         let started = Instant::now();
 
@@ -946,7 +1043,7 @@ mod tests {
             std::env::temp_dir().join(format!("thoth-process-tree-{}.pid", uuid::Uuid::new_v4()));
         let _file_guard = FileGuard(child_pid_path.clone());
         let context = JobExecutionContext::new();
-        let parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
+        let mut parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
         let root_pid = parent.pid;
         let _root_guard = ProcessGuard(root_pid);
         let child_pid = read_child_pid(&child_pid_path).await;
@@ -977,7 +1074,7 @@ mod tests {
         ));
         let _file_guard = FileGuard(child_pid_path.clone());
         let context = JobExecutionContext::new();
-        let parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
+        let mut parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
         let root_pid = parent.pid;
         let _root_guard = ProcessGuard(root_pid);
         let child_pid = read_child_pid(&child_pid_path).await;
