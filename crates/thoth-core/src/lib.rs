@@ -236,7 +236,8 @@ fn move_ffmpeg_to_root(dest_dir: &str) -> Result<()> {
 /// can drive the normal pipeline. The cropped post image is fit+padded to the layout and held for
 /// `secs`; a sibling `.info.json` carries the real title/description/uploader so the ingest stage
 /// reports correct metadata (and the analyze whole-clip fallback + narration grounding take over).
-/// Returns the mp4 path, or None on any ffmpeg failure (caller falls back to the post URL).
+/// Returns the mp4 path, or `None` on an ordinary ffmpeg failure (caller falls back to the post
+/// URL); cancellation is returned as an error so the job stops promptly.
 async fn synthesize_still_video(
     execution: &JobExecutionContext,
     img: &str, out_dir: &std::path::Path, title: &str, description: &str, uploader: &str,

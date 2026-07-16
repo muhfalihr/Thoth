@@ -498,6 +498,16 @@ fn narrator_overlay_result<T>(result: Result<T>) -> std::result::Result<T, EditE
     }
 }
 
+/// Keep GPU enhancements best-effort, except that job cancellation must stop
+/// the owning edit path instead of being logged as a recoverable GPU failure.
+fn propagate_gpu_cancellation(error: anyhow::Error) -> Result<anyhow::Error> {
+    if crate::execution::is_cancelled(&error) {
+        Err(error)
+    } else {
+        Ok(error)
+    }
+}
+
 impl<'a> EditService<'a> {
     pub fn new(
         config: &'a AppConfig,
@@ -1626,8 +1636,9 @@ impl<'a> EditService<'a> {
                                 ));
                                 info!("GPU concat complete: {}", concat_path.display());
                             }
-                            Err(e) => {
-                                warn!("GPU concat failed: {e}");
+                            Err(error) => {
+                                let error = propagate_gpu_cancellation(error)?;
+                                warn!("GPU concat failed: {error}");
                                 sp.finish_with_message("  ✗ GPU concat failed");
                             }
                         }
@@ -1670,7 +1681,10 @@ impl<'a> EditService<'a> {
                                         graded += 1;
                                     }
                                 }
-                                Err(e) => warn!("GPU color grading clip {i}: {e}"),
+                                Err(error) => {
+                                    let error = propagate_gpu_cancellation(error)?;
+                                    warn!("GPU color grading clip {i}: {error}");
+                                }
                             }
                         }
 
@@ -2261,6 +2275,16 @@ impl<'a> EditService<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_cancellation_is_returned_instead_of_continuing_best_effort_fallback() {
+        let error = propagate_gpu_cancellation(anyhow::Error::new(
+            crate::execution::Cancelled,
+        ))
+        .expect_err("cancelled GPU work must stop the owning edit path");
+
+        assert!(crate::execution::is_cancelled(&error));
+    }
 
     #[test]
     fn narrator_overlay_cancellation_reaches_the_owning_edit_path() {
