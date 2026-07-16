@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::{Arc, Mutex};
@@ -84,17 +84,12 @@ impl JobExecutionContext {
         let generation = allocate_generation(&mut registry.next_generation)?;
 
         #[cfg(windows)]
-        let process_tree = WindowsJob::new()?;
+        let (mut child, process_tree) = spawn_windows_child(command)?;
+        #[cfg(unix)]
         let mut child = command.spawn()?;
         let pid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("spawned child has no process ID"))?;
-
-        #[cfg(windows)]
-        if let Err(error) = process_tree.assign(&child) {
-            let _ = child.start_kill();
-            return Err(error.context("could not assign spawned process to its owned Job Object"));
-        }
 
         let key = ChildKey { pid, generation };
         let stdout = child.stdout.take();
@@ -304,44 +299,76 @@ async fn monitor_unix_child(
     global_cancellation: CancellationToken,
     local_cancellation: CancellationToken,
 ) -> Result<ExitStatus> {
-    let root_status = tokio::select! {
-        biased;
-        () = global_cancellation.cancelled() => {
-            return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, Some(child)).await);
+    loop {
+        if observe_unix_root_exit_without_reaping(pid)? {
+            return finish_exited_unix_tree(pid, child).await;
         }
-        () = local_cancellation.cancelled() => {
-            return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, Some(child)).await);
-        }
-        status = child.wait() => status?,
-    };
 
-    while process_group_exists(pid) {
         tokio::select! {
             biased;
             () = global_cancellation.cancelled() => {
-                return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, None).await);
+                return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, child).await);
             }
             () = local_cancellation.cancelled() => {
-                return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, None).await);
+                return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, child).await);
             }
-            () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+            () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
         }
     }
-    Ok(root_status)
 }
 
 #[cfg(unix)]
-async fn cleanup_unix_tree(pid: u32, child: Option<&mut Child>) -> Result<()> {
+async fn cleanup_unix_tree(pid: u32, child: &mut Child) -> Result<()> {
+    if observe_unix_root_exit_without_reaping(pid)? {
+        return finish_exited_unix_tree(pid, child).await.map(|_| ());
+    }
+
     let term = signal_process_group(pid, libc::SIGTERM);
     // The root handle is deliberately not waited or polled during this grace
     // period. That keeps the process-group identity reserved until final SIGKILL.
     tokio::time::sleep(std::time::Duration::from_millis(750)).await;
     let kill = signal_process_group(pid, libc::SIGKILL);
-    let wait = match child {
-        Some(child) => child.wait().await.map(|_| ()).map_err(Into::into),
-        None => Ok(()),
-    };
+    let wait = child.wait().await.map(|_| ()).map_err(Into::into);
     combine_cleanup_results([term, kill, wait])
+}
+
+#[cfg(unix)]
+async fn finish_exited_unix_tree(pid: u32, child: &mut Child) -> Result<ExitStatus> {
+    // `waitid(..., WNOWAIT)` established that the leader is an unreaped zombie.
+    // Its PID/PGID identity therefore remains reserved through this final signal.
+    let cleanup = signal_process_group(pid, libc::SIGKILL);
+    let status = child.wait().await;
+    cleanup?;
+    status.map_err(Into::into)
+}
+
+#[cfg(unix)]
+fn observe_unix_root_exit_without_reaping(pid: u32) -> Result<bool> {
+    let pid = libc::id_t::try_from(pid)
+        .map_err(|_| anyhow::anyhow!("process ID does not fit platform id_t"))?;
+    let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: `information` points to writable storage for one `siginfo_t` and
+    // WNOWAIT explicitly leaves a matching child in waitable (unreaped) state.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid,
+            information.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EINTR) {
+            return Ok(false);
+        }
+        return Err(error).context("waitid failed while observing supervised root");
+    }
+
+    // SAFETY: a successful waitid call initializes the supplied siginfo_t. With
+    // WNOHANG and no state change, POSIX requires si_pid to be cleared to zero.
+    let information = unsafe { information.assume_init() };
+    Ok(unsafe { information.si_pid() } != 0)
 }
 
 #[cfg(unix)]
@@ -362,18 +389,6 @@ fn signal_process_group(pid: u32, signal: libc::c_int) -> Result<()> {
             Err(error.into())
         }
     }
-}
-
-#[cfg(unix)]
-fn process_group_exists(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    // SAFETY: signal zero performs only an existence/permission check.
-    if unsafe { libc::kill(-pid, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 fn lock_registry(registry: &Mutex<Registry>) -> std::sync::MutexGuard<'_, Registry> {
@@ -434,10 +449,16 @@ fn configure_process_group(command: &mut Command) {
 #[cfg(windows)]
 fn configure_process_group(command: &mut Command) {
     use std::os::windows::process::CommandExt;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     command
         .as_std_mut()
-        .creation_flags(CREATE_NEW_PROCESS_GROUP);
+        .creation_flags(windows_supervised_creation_flags());
+}
+
+#[cfg(windows)]
+const fn windows_supervised_creation_flags() -> u32 {
+    use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED
 }
 
 #[must_use]
@@ -708,6 +729,17 @@ mod tests {
         command
     }
 
+    #[cfg(unix)]
+    fn exiting_root_with_child_status_command(child_pid_path: &std::path::Path) -> Command {
+        let script = format!(
+            "sleep 30 & echo $! > '{}'; exit 23",
+            child_pid_path.display()
+        );
+        let mut command = Command::new("sh");
+        command.args(["-c", &script]);
+        command
+    }
+
     async fn read_child_pid(path: &std::path::Path) -> u32 {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -864,7 +896,19 @@ mod tests {
         let _root_guard = ProcessGuard(root_pid);
         let child_pid = read_child_pid(&child_pid_path).await;
         let _child_guard = ProcessGuard(child_pid);
+        #[cfg(windows)]
         assert_process_exits(root_pid).await;
+        #[cfg(unix)]
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if observe_unix_root_exit_without_reaping(root_pid)? {
+                    return Result::<()>::Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("root exit was not observed without reaping"))??;
         assert!(process_is_alive(child_pid));
 
         context.cancel();
@@ -874,6 +918,58 @@ mod tests {
             Err(error) => error,
         };
         assert!(is_cancelled(&error));
+        assert_process_exits(child_pid).await;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn waitid_observes_root_exit_without_reaping_it() -> Result<()> {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 23"]);
+        configure_process_group(&mut command);
+        let mut child = command.spawn()?;
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("test root had no PID"))?;
+        let _guard = ProcessGuard(pid);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if observe_unix_root_exit_without_reaping(pid)? {
+                    return Result::<()>::Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("waitid did not observe root exit"))??;
+
+        assert!(process_is_alive(pid), "waitid unexpectedly reaped the root");
+        let status = child.wait().await?;
+        assert_eq!(status.code(), Some(23));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn normal_exited_root_cleans_group_before_preserving_status() -> Result<()> {
+        let child_pid_path = std::env::temp_dir().join(format!(
+            "thoth-normal-exited-root-tree-{}.pid",
+            uuid::Uuid::new_v4()
+        ));
+        let _file_guard = FileGuard(child_pid_path.clone());
+        let context = JobExecutionContext::new();
+        let root = context.spawn(&mut exiting_root_with_child_status_command(&child_pid_path))?;
+        let _root_guard = ProcessGuard(root.id());
+        let child_pid = read_child_pid(&child_pid_path).await;
+        let _child_guard = ProcessGuard(child_pid);
+        let started = Instant::now();
+
+        let status = root.wait().await?;
+
+        assert_eq!(status.code(), Some(23));
+        assert!(started.elapsed() < Duration::from_millis(500));
         assert_process_exits(child_pid).await;
         Ok(())
     }
@@ -1018,6 +1114,54 @@ mod tests {
         assert_eq!(context.active_child_count(), 0);
         Ok(())
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_spawn_policy_requires_suspended_process_group() {
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+        let flags = windows_supervised_creation_flags();
+
+        assert_eq!(flags & CREATE_NEW_PROCESS_GROUP, CREATE_NEW_PROCESS_GROUP);
+        assert_eq!(flags & CREATE_SUSPENDED, CREATE_SUSPENDED);
+        assert_eq!(flags, CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn immediately_exiting_roots_cannot_escape_job_ownership() -> Result<()> {
+        const ROOT_COUNT: usize = 8;
+        let mut jobs = Vec::new();
+
+        for _ in 0..ROOT_COUNT {
+            let child_pid_path = std::env::temp_dir().join(format!(
+                "thoth-atomic-job-ownership-{}.pid",
+                uuid::Uuid::new_v4()
+            ));
+            let context = JobExecutionContext::new();
+            let root = context.spawn(&mut exiting_root_with_child_command(&child_pid_path))?;
+            jobs.push((context, root, child_pid_path));
+        }
+
+        for (context, root, child_pid_path) in jobs {
+            let _file_guard = FileGuard(child_pid_path.clone());
+            let root_pid = root.id();
+            let _root_guard = ProcessGuard(root_pid);
+            let child_pid = read_child_pid(&child_pid_path).await;
+            let _child_guard = ProcessGuard(child_pid);
+            assert!(process_is_alive(child_pid));
+
+            context.cancel();
+            let error = root
+                .wait()
+                .await
+                .expect_err("cancelled fast root must not return normal status");
+            assert!(is_cancelled(&error));
+            assert_process_exits(child_pid).await;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -1033,6 +1177,105 @@ unsafe impl Send for WindowsJob {}
 // SAFETY: the owned kernel object supports thread-safe query/termination calls;
 // this wrapper exposes no mutation of the HANDLE value itself.
 unsafe impl Sync for WindowsJob {}
+
+#[cfg(windows)]
+struct OwnedWindowsHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedWindowsHandle {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn spawn_windows_child(command: &mut Command) -> Result<(Child, WindowsJob)> {
+    let process_tree = WindowsJob::new()?;
+    let child = command.spawn()?;
+
+    if let Err(error) = process_tree.assign(&child) {
+        return Err(abort_suspended_spawn(&child, error)
+            .context("could not assign suspended root to its owned Job Object"));
+    }
+    if let Err(error) = resume_suspended_root(&child) {
+        return Err(abort_suspended_spawn(&child, error)
+            .context("could not resume Job-owned suspended root"));
+    }
+
+    Ok((child, process_tree))
+}
+
+#[cfg(windows)]
+fn abort_suspended_spawn(child: &Child, launch_error: anyhow::Error) -> anyhow::Error {
+    match terminate_and_wait_windows_process(child) {
+        Ok(()) => launch_error,
+        Err(cleanup_error) => launch_error.context(format!(
+            "failed to terminate suspended root after launch failure: {cleanup_error:#}"
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn terminate_and_wait_windows_process(child: &Child) -> Result<()> {
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
+
+    let process = child
+        .raw_handle()
+        .ok_or_else(|| anyhow::anyhow!("spawned child has no process handle"))?;
+    if unsafe { TerminateProcess(process.cast(), 1) } == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("TerminateProcess failed for suspended root");
+    }
+    match unsafe { WaitForSingleObject(process.cast(), 5_000) } {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_TIMEOUT => anyhow::bail!("timed out waiting for terminated suspended root"),
+        _ => Err(std::io::Error::last_os_error())
+            .context("WaitForSingleObject failed for suspended root"),
+    }
+}
+
+#[cfg(windows)]
+fn resume_suspended_root(child: &Child) -> Result<()> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    let pid = child
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("spawned child has no process ID"))?;
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error()).context("could not enumerate root threads");
+    }
+    let snapshot = OwnedWindowsHandle(snapshot);
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..THREADENTRY32::default()
+    };
+    let mut has_entry = unsafe { Thread32First(snapshot.0, &mut entry) } != 0;
+    while has_entry {
+        if entry.th32OwnerProcessID == pid {
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+            if thread.is_null() {
+                return Err(std::io::Error::last_os_error())
+                    .context("could not open suspended root thread");
+            }
+            let thread = OwnedWindowsHandle(thread);
+            if unsafe { ResumeThread(thread.0) } == u32::MAX {
+                return Err(std::io::Error::last_os_error())
+                    .context("ResumeThread failed for suspended root");
+            }
+            return Ok(());
+        }
+        has_entry = unsafe { Thread32Next(snapshot.0, &mut entry) } != 0;
+    }
+    anyhow::bail!("suspended root primary thread was not found")
+}
 
 #[cfg(windows)]
 impl WindowsJob {
