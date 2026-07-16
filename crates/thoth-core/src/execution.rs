@@ -300,7 +300,17 @@ async fn monitor_unix_child(
     local_cancellation: CancellationToken,
 ) -> Result<ExitStatus> {
     loop {
+        if cancellation_requested(&global_cancellation, &local_cancellation) {
+            return cancelled_after_cleanup(pid, cleanup_unix_tree(pid, child).await);
+        }
+
         if observe_unix_root_exit_without_reaping(pid)? {
+            if cancellation_requested(&global_cancellation, &local_cancellation) {
+                return cancelled_after_cleanup(
+                    pid,
+                    finish_exited_unix_tree(pid, child).await.map(|_| ()),
+                );
+            }
             return finish_exited_unix_tree(pid, child).await;
         }
 
@@ -315,6 +325,14 @@ async fn monitor_unix_child(
             () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
         }
     }
+}
+
+#[cfg(any(unix, test))]
+fn cancellation_requested(
+    global_cancellation: &CancellationToken,
+    local_cancellation: &CancellationToken,
+) -> bool {
+    global_cancellation.is_cancelled() || local_cancellation.is_cancelled()
 }
 
 #[cfg(unix)]
@@ -535,6 +553,21 @@ mod tests {
                 .chain()
                 .any(|cause| cause.downcast_ref::<Cancelled>().is_some())
         );
+    }
+
+    #[test]
+    fn cancellation_precedence_detects_either_ready_token() {
+        let global = CancellationToken::new();
+        let local = CancellationToken::new();
+        assert!(!cancellation_requested(&global, &local));
+
+        global.cancel();
+        assert!(cancellation_requested(&global, &local));
+
+        let global = CancellationToken::new();
+        let local = CancellationToken::new();
+        local.cancel();
+        assert!(cancellation_requested(&global, &local));
     }
 
     #[cfg(windows)]
