@@ -1423,27 +1423,19 @@ impl<'a> EditService<'a> {
                 bgm_label,
             );
 
-            let video_path_clone = video_path.to_owned();
-            let ass_path_clone   = ass_path.clone();
-            let out_path_clone   = out_path.clone();
-            let layout_clone     = layout.clone();
-            let cfg_clone        = self.config.ffmpeg.clone();
-
-            tokio::task::spawn_blocking(move || {
-                encode_clip_direct(
-                    &video_path_clone,
-                    start, end,
-                    &ass_path_clone,
-                    &layout_clone,
-                    &out_path_clone,
-                    &cfg_clone,
-                    None,       // no intro card
-                    &audio_clone,
-                )
-            })
-            .await
-            .map_err(|e| EditError::FfmpegFailed(e.to_string()))??;
-            self.execution.check_cancelled()?;
+            encode_clip_direct(
+                &self.execution,
+                video_path,
+                start,
+                end,
+                &ass_path,
+                &layout,
+                &out_path,
+                &self.config.ffmpeg,
+                None, // no intro card
+                &audio_clone,
+            )
+            .await?;
 
             let out_mb = std::fs::metadata(&out_path)
                 .map(|m| m.len() as f64 / 1_048_576.0)
@@ -1461,14 +1453,14 @@ impl<'a> EditService<'a> {
                         if let Some(ref seg_path) = enrichment.avatar_video_path {
                             if seg_path.exists() && self.config.reaction.position == "post_roll" {
                                 let concat_tmp = out_path.with_extension("concat_tmp.mp4");
-                                let concat_result = tokio::task::spawn_blocking({
-                                    let main  = out_path.clone();
-                                    let seg   = seg_path.clone();
-                                    let tmp   = concat_tmp.clone();
-                                    let cfg   = self.config.ffmpeg.clone();
-                                    move || concat_post_roll(&main, &seg, &tmp, &cfg)
-                                }).await
-                                .map_err(|e| EditError::FfmpegFailed(e.to_string()))?;
+                                let concat_result = concat_post_roll(
+                                    &self.execution,
+                                    &out_path,
+                                    seg_path,
+                                    &concat_tmp,
+                                    &self.config.ffmpeg,
+                                )
+                                .await;
 
                                 match concat_result {
                                     Ok(()) => {
@@ -1477,6 +1469,7 @@ impl<'a> EditService<'a> {
                                             .map_err(EditError::Io)?;
                                         info!("       📎 Post-roll appended → {}", out_path.display());
                                     }
+                                    Err(error @ EditError::Cancelled(_)) => return Err(error.into()),
                                     Err(e) => {
                                         warn!("post-roll concat failed (clip kept as-is): {e}");
                                         let _ = std::fs::remove_file(&concat_tmp);
@@ -1506,11 +1499,17 @@ impl<'a> EditService<'a> {
             
             let sp_thumb = sub_spinner(&mp, &format!("Generating thumbnail at {:.1}s…", thumb_time));
             let mut final_thumb_path = None;
-            let thumb_result = tokio::task::spawn_blocking({
-                let p = out_path.clone(); let t = thumb_path.clone();
-                move || generate_thumbnail(&p, &t, thumb_time)
-            }).await.map_err(|e| EditError::FfmpegFailed(e.to_string()))?;
+            let thumb_result = generate_thumbnail(
+                &self.execution,
+                &out_path,
+                &thumb_path,
+                thumb_time,
+            )
+            .await;
             if let Err(e) = thumb_result {
+                if matches!(&e, EditError::Cancelled(_)) {
+                    return Err(e.into());
+                }
                 warn!("failed to generate thumbnail: {}", e);
                 sp_thumb.finish_with_message("  ✗ thumbnail failed");
             } else {
@@ -1784,13 +1783,24 @@ impl<'a> EditService<'a> {
                     let at = (start + cover_cfg.subject_at_sec).clamp(start, (end - 0.1).max(start));
                     // Dodge mirror/kaleidoscope TRANSITION frames (subject appears doubled on the cover)
                     // by picking the least-symmetric frame in a small window around the chosen moment.
-                    // Both pick_cover_frame_time and generate_thumbnail are blocking (std::process::Command)
-                    // — run via spawn_blocking to avoid stalling the Tokio worker thread.
-                    let vp = video_path.to_owned(); let sf = subject_frame.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let at = super::ffmpeg::pick_cover_frame_time(&vp, at, start, end);
-                        let _ = super::ffmpeg::generate_thumbnail(&vp, &sf, at);
-                    }).await;
+                    let at = super::ffmpeg::pick_cover_frame_time(
+                        &self.execution,
+                        video_path,
+                        at,
+                        start,
+                        end,
+                    )
+                    .await;
+                    if let Err(error @ EditError::Cancelled(_)) = super::ffmpeg::generate_thumbnail(
+                        &self.execution,
+                        video_path,
+                        &subject_frame,
+                        at,
+                    )
+                    .await
+                    {
+                        return Err(error);
+                    }
                 }
                 let cover_dur = cover_cfg.duration_sec.min(dur - 0.2).max(0.5);
                 // Detailed topic description (beyond the short hook) → grounds the AI scene in what the
@@ -2183,27 +2193,31 @@ impl<'a> EditService<'a> {
               if loop_source { format!(" (looped from {video_dur:.0}s source)") } else { String::new() },
               hook);
 
-        // 5) Encode (blocking ffmpeg) — run via spawn_blocking to avoid stalling the async runtime.
-        let enc_vp    = video_path.to_owned();
-        let enc_ass   = ass_path.clone();
-        let enc_out   = out_path.clone();
-        let enc_lay   = layout.clone();
-        let enc_cfg   = self.config.ffmpeg.clone();
-        let enc_audio = audio.clone();
-        tokio::task::spawn_blocking(move || {
-            super::ffmpeg::encode_clip_direct(
-                &enc_vp, start, end, &enc_ass, &enc_lay, &enc_out,
-                &enc_cfg, None, &enc_audio,
-            )
-        })
-        .await
-        .map_err(|e| EditError::FfmpegFailed(e.to_string()))??;
+        super::ffmpeg::encode_clip_direct(
+            &self.execution,
+            video_path,
+            start,
+            end,
+            &ass_path,
+            &layout,
+            &out_path,
+            &self.config.ffmpeg,
+            None,
+            &audio,
+        )
+        .await?;
 
         let thumb = out_path.with_extension("jpg");
-        let thumb2 = thumb.clone(); let enc_out2 = out_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            super::ffmpeg::generate_thumbnail(&enc_out2, &thumb2, 1.0)
-        }).await;
+        if let Err(error @ EditError::Cancelled(_)) = super::ffmpeg::generate_thumbnail(
+            &self.execution,
+            &out_path,
+            &thumb,
+            1.0,
+        )
+        .await
+        {
+            return Err(error);
+        }
 
         Ok(ClipOutput {
             clip_index: 0,

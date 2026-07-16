@@ -237,10 +237,12 @@ fn move_ffmpeg_to_root(dest_dir: &str) -> Result<()> {
 /// `secs`; a sibling `.info.json` carries the real title/description/uploader so the ingest stage
 /// reports correct metadata (and the analyze whole-clip fallback + narration grounding take over).
 /// Returns the mp4 path, or None on any ffmpeg failure (caller falls back to the post URL).
-fn synthesize_still_video(
+async fn synthesize_still_video(
+    execution: &JobExecutionContext,
     img: &str, out_dir: &std::path::Path, title: &str, description: &str, uploader: &str,
     w: u32, h: u32,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>> {
+    execution.check_cancelled()?;
     let secs = 45.0_f64;
     let out = out_dir.join("main_still.mp4");
     let ffmpeg = ffmpeg_sidecar::paths::ffmpeg_path();
@@ -250,20 +252,27 @@ fn synthesize_still_video(
     );
     // Include a SILENT audio track (anullsrc) — the transcribe stage extracts audio.wav, which fails
     // on a video with no audio stream. Silence → empty transcript → narration grounds on context.
-    let status = std::process::Command::new(&ffmpeg)
-        .args([
-            "-y", "-loop", "1", "-framerate", "30", "-t", &secs.to_string(), "-i", img,
-            "-f", "lavfi", "-t", &secs.to_string(), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-            "-vf", &vf, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-shortest",
-            out.to_str()?,
-        ])
+    let args = vec![
+        "-y".into(), "-loop".into(), "1".into(), "-framerate".into(), "30".into(),
+        "-t".into(), secs.to_string(), "-i".into(), img.into(),
+        "-f".into(), "lavfi".into(), "-t".into(), secs.to_string(), "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+        "-vf".into(), vf, "-c:v".into(), "libx264".into(), "-preset".into(),
+        "veryfast".into(), "-pix_fmt".into(), "yuv420p".into(), "-c:a".into(),
+        "aac".into(), "-shortest".into(), out.to_string_lossy().to_string(),
+    ];
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
+        .args(args)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    let status = match execution.status(&mut command).await {
+        Ok(status) => status,
+        Err(error) if execution::is_cancelled(&error) => return Err(error),
+        Err(_) => return Ok(None),
+    };
     if !status.success() || !out.exists() {
-        return None;
+        return Ok(None);
     }
     // Sidecar info.json → IngestService::load_info_json reads title/duration/uploader/description.
     let info = serde_json::json!({
@@ -272,7 +281,7 @@ fn synthesize_still_video(
         "uploader": uploader, "description": description.trim(),
     });
     let _ = std::fs::write(out.with_extension("info.json"), info.to_string());
-    Some(out)
+    Ok(Some(out))
 }
 
 /// CLI entry point. Parses args, bootstraps logging/ffmpeg/env, dispatches.
@@ -664,6 +673,7 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Thumbnail(args) => {
+            let execution = JobExecutionContext::new();
             let job = JobContext::new(args.job_id.clone(), args.output_dir.clone())
                 .context("failed to access job directory")?;
 
@@ -702,7 +712,14 @@ pub async fn run_cli() -> Result<()> {
 
                 println!("  Generating thumbnail for clip {} at {:.1}s...", i + 1, thumb_time);
 
-                if let Err(e) = edit::ffmpeg::generate_thumbnail(&out_path, &thumb_path, thumb_time) {
+                if let Err(e) = edit::ffmpeg::generate_thumbnail(
+                    &execution,
+                    &out_path,
+                    &thumb_path,
+                    thumb_time,
+                )
+                .await
+                {
                     eprintln!("  {}", brand::err(format!("failed: {}", e)));
                 } else {
                     println!("  {}", brand::ok(format!("saved: {}", thumb_path.display())));
@@ -957,7 +974,18 @@ pub async fn run_once(
                         cli::OutputLayout::Vertical => (1080u32, 1920u32),
                     };
                     let uploader = set.profile.as_ref().map(|p| p.handle.trim()).unwrap_or("");
-                    match synthesize_still_video(&main_img, &args.output_dir, &set.main_title, &set.main_description, uploader, sw, sh) {
+                    match synthesize_still_video(
+                        execution,
+                        &main_img,
+                        &args.output_dir,
+                        &set.main_title,
+                        &set.main_description,
+                        uploader,
+                        sw,
+                        sh,
+                    )
+                    .await?
+                    {
                         Some(p) => { tracing::info!("🖼️  MAIN non-video → still video: {}", p.display()); p.to_string_lossy().to_string() }
                         None => { tracing::warn!("still-video synth failed → using main_url (may not be downloadable)"); set.main_url }
                     }

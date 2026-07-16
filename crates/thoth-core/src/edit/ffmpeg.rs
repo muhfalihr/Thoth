@@ -4,6 +4,7 @@ use std::process::Stdio;
 use tracing::{debug, info, warn};
 
 use crate::config::FfmpegConfig;
+use crate::execution::JobExecutionContext;
 
 use super::error::EditError;
 use super::fonts::FontConfig;
@@ -768,7 +769,8 @@ fn build_cover_overlay(
 /// ```
 ///
 /// When `intro` is `None`, a simple `-vf / -af` command is used (same as before).
-pub fn encode_clip_direct(
+pub async fn encode_clip_direct(
+    execution: &JobExecutionContext,
     source: &Path,
     start_sec: f64,
     end_sec: f64,
@@ -1402,7 +1404,7 @@ pub fn encode_clip_direct(
     ]);
 
     debug!("encode_clip_direct: ffmpeg {}", args.join(" "));
-    run_ffmpeg(&args)
+    run_ffmpeg(execution, &args).await
 }
 
 /// Build the subtitle (+ hook title) burn-in filter chain, with NO leading comma.
@@ -2116,46 +2118,29 @@ fn build_encoder(cfg: &FfmpegConfig) -> (String, Vec<String>) {
     }
 }
 
-/// Wait for `child` to exit, killing it if it runs longer than `timeout`.
-/// Returns `Ok(Some(status))` on normal exit, `Ok(None)` if it was killed for
-/// exceeding the timeout. Polls rather than blocks so a runaway child can't hang us.
-fn wait_or_kill(
-    child: &mut std::process::Child,
-    timeout: std::time::Duration,
-) -> std::io::Result<Option<std::process::ExitStatus>> {
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait()? {
-            Some(s) => return Ok(Some(s)),
-            None => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Ok(None);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
-        }
-    }
-}
-
-fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
+async fn run_ffmpeg(execution: &JobExecutionContext, args: &[String]) -> Result<(), EditError> {
     let binary = if let Ok(p) = std::env::var("FFMPEG_PATH") {
         std::path::PathBuf::from(p)
     } else {
         ffmpeg_sidecar::paths::ffmpeg_path()
     };
 
+    run_ffmpeg_with_binary(execution, &binary, args).await
+}
+
+async fn run_ffmpeg_with_binary(
+    execution: &JobExecutionContext,
+    binary: &Path,
+    args: &[String],
+) -> Result<(), EditError> {
+
     debug!("ffmpeg {}", args.join(" "));
 
-    let mut child = std::process::Command::new(&binary)
+    let mut command = tokio::process::Command::new(binary);
+    command
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| EditError::FfmpegFailed(format!(
-            "failed to spawn FFmpeg at '{}': {e}", binary.display()
-        )))?;
+        .stderr(Stdio::piped());
 
     // ponytail: watchdog. A runaway ffmpeg — e.g. a `-stream_loop -1` graph that
     // never reaches EOF under some input combo — otherwise pegs one core forever and
@@ -2168,33 +2153,24 @@ fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
             .filter(|&n| n > 0)
             .unwrap_or(300),
     );
-    // Drain stderr in a side thread so ffmpeg never blocks on a full pipe while we poll.
-    let stderr_pipe = child.stderr.take();
-    let drain = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        if let Some(mut p) = stderr_pipe { let _ = p.read_to_end(&mut buf); }
-        buf
-    });
-    let status = match wait_or_kill(&mut child, timeout) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            warn!(
-                "FFmpeg exceeded {}s — killed as runaway render. Full command:\nffmpeg {}",
-                timeout.as_secs(), args.join(" ")
-            );
-            let _ = drain.join();
-            return Err(EditError::FfmpegFailed(format!(
-                "FFmpeg timed out after {}s (runaway render; full command in log above)",
-                timeout.as_secs()
-            )));
+    let output = match execution.output_with_timeout(&mut command, timeout).await {
+        Ok(output) => output,
+        Err(error) => {
+            if error.is::<crate::execution::CommandTimedOut>() {
+                warn!(
+                    "FFmpeg exceeded {}s — terminated as runaway render. Full command:\nffmpeg {}",
+                    timeout.as_secs(), args.join(" ")
+                );
+            }
+            return Err(EditError::from_execution(
+                error,
+                format!("failed to run FFmpeg at '{}'", binary.display()),
+            ));
         }
-        Err(e) => return Err(EditError::FfmpegFailed(format!("FFmpeg wait failed: {e}"))),
     };
-    let stderr_bytes = drain.join().unwrap_or_default();
 
-    if !status.success() {
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: String = stderr
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -2208,11 +2184,11 @@ fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
 
         warn!("FFmpeg stderr:\n{tail}");
         return Err(EditError::FfmpegFailed(format!(
-            "FFmpeg exited with code {:?}. Error:\n{}", status.code(), tail
+            "FFmpeg exited with code {:?}. Error:\n{}", output.status.code(), tail
         )));
     }
 
-    let stderr = String::from_utf8_lossy(&stderr_bytes);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     for line in stderr.lines() {
         if line.contains("matches no streams") || line.contains("Output file #0 does not contain") {
             warn!("[ffmpeg] {line}");
@@ -2223,7 +2199,12 @@ fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
 }
 
 /// Generate a thumbnail frame from the video at `time_sec`.
-pub fn generate_thumbnail(video_path: &Path, thumb_path: &Path, time_sec: f64) -> Result<(), EditError> {
+pub async fn generate_thumbnail(
+    execution: &JobExecutionContext,
+    video_path: &Path,
+    thumb_path: &Path,
+    time_sec: f64,
+) -> Result<(), EditError> {
     let args = vec![
         "-y".into(),
         "-ss".into(), format!("{time_sec:.3}"),
@@ -2233,13 +2214,13 @@ pub fn generate_thumbnail(video_path: &Path, thumb_path: &Path, time_sec: f64) -
         thumb_path.to_string_lossy().to_string(),
     ];
     debug!("generate_thumbnail: ffmpeg {}", args.join(" "));
-    run_ffmpeg(&args)
+    run_ffmpeg(execution, &args).await
 }
 
 /// Mean left↔right asymmetry of one frame: 0 = perfectly mirror-symmetric, higher = natural.
 /// Extracts a tiny 64×64 grayscale frame and compares each pixel to its horizontal mirror. Returns
 /// `INFINITY` when scoring fails (so a failure never makes a frame look "more symmetric" / rejected).
-fn frame_asymmetry(video_path: &Path, time_sec: f64) -> f64 {
+async fn frame_asymmetry(execution: &JobExecutionContext, video_path: &Path, time_sec: f64) -> f64 {
     let tmp = std::env::temp_dir().join(format!(
         "thoth_sym_{}_{}.gray", std::process::id(), (time_sec * 1000.0) as u64));
     let args = vec![
@@ -2250,7 +2231,7 @@ fn frame_asymmetry(video_path: &Path, time_sec: f64) -> f64 {
         "-f".into(), "rawvideo".into(),
         tmp.to_string_lossy().to_string(),
     ];
-    if run_ffmpeg(&args).is_err() { return f64::INFINITY; }
+    if run_ffmpeg(execution, &args).await.is_err() { return f64::INFINITY; }
     let buf = match std::fs::read(&tmp) { Ok(b) => b, Err(_) => return f64::INFINITY };
     let _ = std::fs::remove_file(&tmp);
     let (w, h) = (64usize, 64usize);
@@ -2271,7 +2252,13 @@ fn frame_asymmetry(video_path: &Path, time_sec: f64) -> f64 {
 /// dodge transition/kaleidoscope frames that duplicate the subject (the cover then shows a doubled
 /// face). Samples a small ±1.5 s window so it stays on the intended subject moment. Falls back to
 /// `preferred` when the window is too short or scoring fails.
-pub fn pick_cover_frame_time(video_path: &Path, preferred: f64, start: f64, end: f64) -> f64 {
+pub async fn pick_cover_frame_time(
+    execution: &JobExecutionContext,
+    video_path: &Path,
+    preferred: f64,
+    start: f64,
+    end: f64,
+) -> f64 {
     let lo = (preferred - 1.5).max(start);
     let hi = (preferred + 1.5).min((end - 0.1).max(start));
     if hi - lo < 0.4 { return preferred; }
@@ -2279,7 +2266,7 @@ pub fn pick_cover_frame_time(video_path: &Path, preferred: f64, start: f64, end:
     let (mut best, mut best_score) = (preferred, -1.0f64);
     for i in 0..=steps {
         let t = lo + (hi - lo) * (i as f64 / steps as f64);
-        let s = frame_asymmetry(video_path, t);
+        let s = frame_asymmetry(execution, video_path, t).await;
         if s.is_finite() && s > best_score { best_score = s; best = t; }
     }
     best
@@ -2293,7 +2280,8 @@ pub fn pick_cover_frame_time(video_path: &Path, preferred: f64, start: f64, end:
 ///
 /// Audio streams are required in both inputs; the function fails if either is
 /// missing an audio track.
-pub fn concat_post_roll(
+pub async fn concat_post_roll(
+    execution: &JobExecutionContext,
     main_clip:      &Path,
     avatar_segment: &Path,
     output:         &Path,
@@ -2330,39 +2318,40 @@ pub fn concat_post_roll(
     ]);
 
     debug!("concat_post_roll: {} + {} → {}", main_clip.display(), avatar_segment.display(), output.display());
-    run_ffmpeg(&args)
+    run_ffmpeg(execution, &args).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn cue(at: f64, dur: f64, vol: f32) -> AssetSfxCue {
-        AssetSfxCue { path: PathBuf::from("assets/sfx/x.mp3"), at_sec: at, duration_sec: dur, volume: vol }
+    #[tokio::test]
+    async fn blocking_media_wrapper_honors_cancellation() {
+        use std::time::Duration;
+
+        let execution = crate::execution::JobExecutionContext::new();
+        let args = vec![
+            "-NoProfile".into(),
+            "-Command".into(),
+            "Start-Sleep -Seconds 30".into(),
+        ];
+        let waiting_execution = execution.clone();
+        let waiting = tokio::spawn(async move {
+            run_ffmpeg_with_binary(&waiting_execution, Path::new("powershell"), &args).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        execution.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("cancelled wrapper must return promptly")
+            .expect("wrapper task must not panic");
+        assert!(matches!(result, Err(EditError::Cancelled(_))), "{result:?}");
     }
 
-    // The watchdog must kill a process that outlives its timeout (the runaway-ffmpeg
-    // path) and let a quick one exit normally. `ping` is a portable Windows sleeper.
-    #[test]
-    fn wait_or_kill_terminates_runaway() {
-        use std::time::{Duration, Instant};
-        // Long-runner (~19s): must be killed well before it finishes.
-        let mut long = std::process::Command::new("ping")
-            .args(["127.0.0.1", "-n", "20"])
-            .stdout(std::process::Stdio::null())
-            .spawn().expect("spawn ping");
-        let t0 = Instant::now();
-        let r = wait_or_kill(&mut long, Duration::from_millis(400)).unwrap();
-        assert!(r.is_none(), "runaway should be killed → None");
-        assert!(t0.elapsed() < Duration::from_secs(5), "kill must be prompt");
-
-        // Quick-runner: must exit on its own, not be killed.
-        let mut quick = std::process::Command::new("ping")
-            .args(["127.0.0.1", "-n", "1"])
-            .stdout(std::process::Stdio::null())
-            .spawn().expect("spawn ping");
-        let r = wait_or_kill(&mut quick, Duration::from_secs(10)).unwrap();
-        assert!(r.is_some(), "quick process should exit normally → Some");
+    fn cue(at: f64, dur: f64, vol: f32) -> AssetSfxCue {
+        AssetSfxCue { path: PathBuf::from("assets/sfx/x.mp3"), at_sec: at, duration_sec: dur, volume: vol }
     }
 
     #[test]
