@@ -2,6 +2,9 @@ use std::io;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
+    #[error(transparent)]
+    Cancelled(#[from] crate::execution::Cancelled),
+
     #[error("FFmpeg process failed: {0}")]
     FfmpegFailed(String),
 

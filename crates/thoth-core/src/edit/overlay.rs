@@ -145,13 +145,13 @@ pub async fn fetch_overlay_from_url(
     ytdlp_path: &str,
     ffmpeg_dir: &str,
     cookie:     Option<&crate::ingest::CookieSource>,
-) -> Option<OverlaySpec> {
+) -> Result<Option<OverlaySpec>> {
     let url = url.trim();
-    if url.is_empty() { return None; }
+    if url.is_empty() { return Ok(None); }
 
     if let Err(e) = tokio::fs::create_dir_all(&cfg.cache_dir).await {
         warn!("overlay: cannot create cache dir: {e}");
-        return None;
+        return Ok(None);
     }
 
     // Cache by URL hash so the same enrichment clip is downloaded only once.
@@ -163,33 +163,37 @@ pub async fn fetch_overlay_from_url(
         // so a max-duration *filter* (download_clip_direct) would reject them.
         let ok = download_clip_section(
             execution, ytdlp_path, url, &tmp_prefix, cfg.max_duration, ffmpeg_dir, cookie,
-        ).await;
+        ).await?;
         if !ok {
             warn!("overlay: enrichment download failed for {url}");
-            return None;
+            return Ok(None);
         }
         if let Some(raw) = find_downloaded(&tmp_prefix) {
-            if trim_clip(execution, &raw, &dest, cfg.max_duration, ffmpeg_dir).await.is_ok() {
-                let _ = tokio::fs::remove_file(&raw).await;
-            } else {
-                let _ = tokio::fs::rename(&raw, &dest).await;
+            match trim_clip(execution, &raw, &dest, cfg.max_duration, ffmpeg_dir).await {
+                Ok(()) => {
+                    let _ = tokio::fs::remove_file(&raw).await;
+                }
+                Err(error) if crate::execution::is_cancelled(&error) => return Err(error),
+                Err(_) => {
+                    let _ = tokio::fs::rename(&raw, &dest).await;
+                }
             }
         } else {
             warn!("overlay: enrichment clip not found on disk after download ({url})");
-            return None;
+            return Ok(None);
         }
     }
 
     if dest.exists() {
         debug!("overlay: using enrichment clip for {url}: {}", dest.display());
-        Some(OverlaySpec {
+        Ok(Some(OverlaySpec {
             path: dest,
             at_sec,
             duration_sec: duration,
             style: OverlayStyle::FullScreen, // style resolved in service.rs
-        })
+        }))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -433,7 +437,7 @@ async fn download_clip_direct(
     ffmpeg_dir:  &str,
     variant_idx: usize,
     cookie:      Option<&crate::ingest::CookieSource>,
-) -> bool {
+) -> Result<bool> {
     let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
 
     let builder = crate::ingest::YtDlpArgs::new(ytdlp)
@@ -463,7 +467,7 @@ async fn download_clip_direct(
     let result = execution.status_with_timeout(&mut command, Duration::from_secs(60)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
-    matches!(result, Ok(s) if s.success())
+    supervised_overlay_status(result)
 }
 
 /// Download only the OPENING `max_dur` seconds of a specific video URL.
@@ -480,7 +484,7 @@ async fn download_clip_section(
     max_dur:    f64,
     ffmpeg_dir: &str,
     cookie:     Option<&crate::ingest::CookieSource>,
-) -> bool {
+) -> Result<bool> {
     let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
     // Grab a little extra so trim_clip has headroom to land on a clean keyframe.
     let secs = ((max_dur + 2.0) as u64).max(2);
@@ -509,7 +513,7 @@ async fn download_clip_section(
     let result = execution.status_with_timeout(&mut command, Duration::from_secs(90)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
-    matches!(result, Ok(s) if s.success())
+    supervised_overlay_status(result)
 }
 
 /// Download a single overlay clip via yt-dlp search query.
@@ -526,7 +530,7 @@ async fn download_clip_variant(
     label:       &str,
     variant_idx: usize,
     cookie:      Option<&crate::ingest::CookieSource>,
-) -> bool {
+) -> Result<bool> {
     let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
 
     let builder = crate::ingest::YtDlpArgs::new(ytdlp)
@@ -559,7 +563,15 @@ async fn download_clip_variant(
     let result = execution.status_with_timeout(&mut command, Duration::from_secs(60)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
-    matches!(result, Ok(s) if s.success())
+    supervised_overlay_status(result)
+}
+
+fn supervised_overlay_status(result: Result<std::process::ExitStatus>) -> Result<bool> {
+    match result {
+        Ok(status) => Ok(status.success()),
+        Err(error) if crate::execution::is_cancelled(&error) => Err(error),
+        Err(_) => Ok(false),
+    }
 }
 
 fn find_downloaded(prefix: &Path) -> Option<PathBuf> {
@@ -573,6 +585,21 @@ fn find_downloaded(prefix: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supervised_overlay_cancellation_is_not_soft_failed() {
+        let error = supervised_overlay_status(Err(anyhow::Error::new(
+            crate::execution::Cancelled,
+        )))
+        .expect_err("cancelled overlay must not be converted to false");
+
+        assert!(crate::execution::is_cancelled(&error));
+    }
 }
 
 async fn trim_clip(execution: &JobExecutionContext, src: &Path, dest: &Path, max_dur: f64, ffmpeg_dir: &str) -> Result<()> {

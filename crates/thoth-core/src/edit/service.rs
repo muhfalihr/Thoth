@@ -479,6 +479,18 @@ pub struct EditService<'a> {
     execution: &'a JobExecutionContext,
 }
 
+/// Preserve typed cancellation when the narrator renderer crosses from its
+/// additive overlay fetch into the `EditError` API.
+fn narrator_overlay_result<T>(result: Result<T>) -> std::result::Result<T, EditError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) if crate::execution::is_cancelled(&error) => {
+            Err(EditError::Cancelled(crate::execution::Cancelled))
+        }
+        Err(error) => Err(EditError::FfmpegFailed(format!("overlay fetch: {error:#}"))),
+    }
+}
+
 impl<'a> EditService<'a> {
     pub fn new(
         config: &'a AppConfig,
@@ -1139,7 +1151,7 @@ impl<'a> EditService<'a> {
                     let cand = &enrich_pool[i % enrich_pool.len()];
                     overlay_source = format!("{} [{}]", cand.url, cand.platform);
                     run_cooperative_item(self.execution, || async {
-                        Ok(fetch_overlay_from_url(
+                        fetch_overlay_from_url(
                             self.execution,
                             &cand.url,
                             at_clamped,
@@ -1148,7 +1160,8 @@ impl<'a> EditService<'a> {
                             &overlay_ytdlp,
                             &ffmpeg_dir,
                             overlay_cookie.as_ref(),
-                        ).await)
+                        )
+                        .await
                     }).await?
                 } else {
                     None
@@ -1226,12 +1239,13 @@ impl<'a> EditService<'a> {
                             // Rotate to clips DIFFERENT from the primary (i % len).
                             let cand = &enrich_pool[(i + 1 + k) % enrich_pool.len()];
                             if let Some(fspec) = run_cooperative_item(self.execution, || async {
-                                Ok(fetch_overlay_from_url(
+                                fetch_overlay_from_url(
                                     self.execution,
                                     &cand.url, win_start, dur,
                                     &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
                                     overlay_cookie.as_ref(),
-                                ).await)
+                                )
+                                .await
                             }).await? {
                                 audio_clone.footage_cards.push(super::ffmpeg::FootageCardCue {
                                     path:         fspec.path,
@@ -1931,11 +1945,13 @@ impl<'a> EditService<'a> {
                         }
                         Kind::Video => {
                             let cand = &enrich_pool[cands[ci].idx];
-                            if let Some(spec) = super::overlay::fetch_overlay_from_url(
-                                self.execution,
-                                &cand.url, wt, wdur, &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
-                                overlay_cookie.as_ref(),
-                            ).await {
+                            if let Some(spec) = narrator_overlay_result(
+                                super::overlay::fetch_overlay_from_url(
+                                    self.execution,
+                                    &cand.url, wt, wdur, &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
+                                    overlay_cookie.as_ref(),
+                                ).await,
+                            )? {
                                 fcards.push(super::ffmpeg::FootageCardCue {
                                     path: spec.path, at_sec: wt, duration_sec: wdur, scale_pct: anim.footage_scale_pct,
                                 });
@@ -2194,5 +2210,23 @@ impl<'a> EditService<'a> {
             duration_secs: dur,
             layout: layout.to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrator_overlay_cancellation_reaches_the_owning_edit_path() {
+        let error = narrator_overlay_result::<Option<super::super::overlay::OverlaySpec>>(Err(
+            anyhow::Error::new(crate::execution::Cancelled),
+        ))
+        .expect_err("cancelled overlay must not be converted to a skipped narrator card");
+
+        let EditError::Cancelled(cancelled) = error else {
+            panic!("narrator overlay cancellation must remain typed");
+        };
+        assert!(crate::execution::is_cancelled(&anyhow::Error::new(cancelled)));
     }
 }

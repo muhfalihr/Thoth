@@ -146,7 +146,7 @@ impl JobExecutionContext {
     ) -> Result<Output> {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = self.spawn(command)?;
-        match tokio::time::timeout(timeout, child.output()).await {
+        match tokio::time::timeout(timeout, child.output_ref()).await {
             Ok(output) => output,
             Err(_) => {
                 // If job cancellation won the race, preserve its concrete type
@@ -172,7 +172,7 @@ impl JobExecutionContext {
         timeout: std::time::Duration,
     ) -> Result<ExitStatus> {
         let mut child = self.spawn(command)?;
-        match tokio::time::timeout(timeout, child.status()).await {
+        match tokio::time::timeout(timeout, child.wait_ref()).await {
             Ok(status) => status,
             Err(_) => {
                 if self.cancellation.is_cancelled() {
@@ -251,7 +251,11 @@ impl SupervisedChild {
         self.stderr.take()
     }
 
-    pub async fn output(&mut self) -> Result<Output> {
+    pub async fn output(mut self) -> Result<Output> {
+        self.output_ref().await
+    }
+
+    async fn output_ref(&mut self) -> Result<Output> {
         let mut stdout = self
             .take_stdout()
             .ok_or_else(|| anyhow::anyhow!("supervised child stdout is not piped"))?;
@@ -278,7 +282,7 @@ impl SupervisedChild {
         })
     }
 
-    pub async fn status(&mut self) -> Result<ExitStatus> {
+    pub async fn status(mut self) -> Result<ExitStatus> {
         self.wait_ref().await
     }
 
@@ -1003,7 +1007,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_terminates_a_long_lived_child_with_typed_error() -> Result<()> {
         let context = JobExecutionContext::new();
-        let mut child = context.spawn(&mut long_running_command())?;
+        let child = context.spawn(&mut long_running_command())?;
         let _guard = ProcessGuard(child.pid);
         let started = Instant::now();
 
@@ -1043,7 +1047,7 @@ mod tests {
             std::env::temp_dir().join(format!("thoth-process-tree-{}.pid", uuid::Uuid::new_v4()));
         let _file_guard = FileGuard(child_pid_path.clone());
         let context = JobExecutionContext::new();
-        let mut parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
+        let parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
         let root_pid = parent.pid;
         let _root_guard = ProcessGuard(root_pid);
         let child_pid = read_child_pid(&child_pid_path).await;
@@ -1074,7 +1078,7 @@ mod tests {
         ));
         let _file_guard = FileGuard(child_pid_path.clone());
         let context = JobExecutionContext::new();
-        let mut parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
+        let parent = context.spawn(&mut parent_with_child_command(&child_pid_path))?;
         let root_pid = parent.pid;
         let _root_guard = ProcessGuard(root_pid);
         let child_pid = read_child_pid(&child_pid_path).await;
