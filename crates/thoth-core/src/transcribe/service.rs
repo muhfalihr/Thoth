@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use futures_util::stream::{self, StreamExt};
 
 use crate::config::AppConfig;
-use crate::execution::{run_cooperative_item, JobExecutionContext};
+use crate::execution::JobExecutionContext;
 use crate::pipeline::job::JobContext;
 use crate::util::progress::{spinner, stage_done};
 
@@ -40,6 +40,13 @@ pub struct TranscribeService<'a> {
     execution: &'a JobExecutionContext,
 }
 
+fn supervised_ffmpeg_command(command: &mut FfmpegCommand) -> tokio::process::Command {
+    let command = command.as_inner();
+    let mut supervised = tokio::process::Command::new(command.get_program());
+    supervised.args(command.get_args());
+    supervised
+}
+
 impl<'a> TranscribeService<'a> {
     pub fn new(
         config: &'a AppConfig,
@@ -53,8 +60,8 @@ impl<'a> TranscribeService<'a> {
         &self,
         video_path: &Path,
         model_size: &str,
-    ) -> Result<TranscribeResult> {
-        self.execution.check_cancelled()?;
+    ) -> Result<TranscribeResult, TranscribeError> {
+        self.check_cancelled("start transcription")?;
         let t0 = Instant::now();
 
         // ── Step 1: Try YouTube transcript first (instant, no API cost) ──────
@@ -64,7 +71,7 @@ impl<'a> TranscribeService<'a> {
         // We prefer this over Whisper when available.
         let t_infer = Instant::now();
         let (transcript, model_used) = if let Some(yt) = self.try_youtube_transcript().await {
-            self.execution.check_cancelled()?;
+            self.check_cancelled("load YouTube transcript")?;
             let infer_secs = t_infer.elapsed().as_secs_f64();
             info!(
                 "YouTube transcript loaded in {:.1}s — {} segments",
@@ -76,7 +83,7 @@ impl<'a> TranscribeService<'a> {
             // ── Step 2: Extract audio + run Whisper ─────────────────────────
             let wav_path = self.job.source_dir().join("audio.wav");
             self.extract_audio(video_path, &wav_path).await?;
-            self.execution.check_cancelled()?;
+            self.check_cancelled("extract audio")?;
 
             let wav_mb = std::fs::metadata(&wav_path)
                 .map(|m| m.len() as f64 / 1_048_576.0)
@@ -84,14 +91,14 @@ impl<'a> TranscribeService<'a> {
             info!("audio extracted: {wav_mb:.1} MB ({wav_path:?})");
 
             let transcript = self.transcribe(&wav_path, model_size).await?;
-            self.execution.check_cancelled()?;
+            self.check_cancelled("transcribe audio")?;
             (transcript, model_size.to_owned())
         };
         let infer_secs = t_infer.elapsed().as_secs_f64();
 
         // Step 3: Save transcript JSON
         let transcript_path = self.job.transcript_path();
-        self.execution.check_cancelled()?;
+        self.check_cancelled("save transcript")?;
         let json = serde_json::to_string_pretty(&transcript).map_err(|e| {
             TranscribeError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
         })?;
@@ -125,7 +132,7 @@ impl<'a> TranscribeService<'a> {
         wav_path: &Path,
         #[cfg_attr(not(feature = "local-whisper"), allow(unused_variables))]
         model_size: &str,
-    ) -> Result<Transcript> {
+    ) -> Result<Transcript, TranscribeError> {
         #[cfg(feature = "local-whisper")]
         {
             let model_path = self.config.whisper_model_path(Some(model_size));
@@ -134,13 +141,13 @@ impl<'a> TranscribeService<'a> {
             }
 
             info!("using local whisper [{model_size}] (CUDA-accelerated)");
-            Ok(local::run_local_whisper(
+            local::run_local_whisper(
                 wav_path,
                 &model_path,
                 self.config.whisper.n_threads,
                 &self.config.whisper.language,
             )
-            .await?)
+            .await
         }
 
         #[cfg(not(feature = "local-whisper"))]
@@ -218,14 +225,14 @@ impl<'a> TranscribeService<'a> {
         Ok(())
     }
 
-    async fn transcribe_via_groq(&self, wav_path: &Path) -> Result<Transcript> {
+    async fn transcribe_via_groq(&self, wav_path: &Path) -> Result<Transcript, TranscribeError> {
         if self.config.llm.groq_api_key.is_empty() {
             return Err(TranscribeError::InitFailed(
                 "THOTH_GROQ_API_KEY is not set.\n\
                  Set it via: $env:THOTH_GROQ_API_KEY = \"gsk_...\"\n\
                  Or add to your .env file."
                     .to_owned(),
-            ).into());
+            ));
         }
 
         // ── Step 1: Compress WAV → MP3 ───────────────────────────────────────
@@ -276,20 +283,20 @@ impl<'a> TranscribeService<'a> {
             MP3_BITRATE
         ));
 
-        let status = crate::util::ffmpeg::command()
-            .args([
-                "-y",
-                "-i",
-                &wav_path.to_string_lossy(),
-                "-ac", "1",
-                "-ar", "16000",
-                "-b:a", MP3_BITRATE,
-                &mp3_path.to_string_lossy(),
-            ])
-            .spawn()
-            .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?
-            .wait()
-            .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?;
+        let mut ffmpeg = crate::util::ffmpeg::command();
+        ffmpeg.args([
+            "-y",
+            "-i",
+            &wav_path.to_string_lossy(),
+            "-ac", "1",
+            "-ar", "16000",
+            "-b:a", MP3_BITRATE,
+            &mp3_path.to_string_lossy(),
+        ]);
+        let mut command = supervised_ffmpeg_command(&mut ffmpeg);
+        let status = self.execution.status(&mut command).await.map_err(|error| {
+            TranscribeError::from_execution(error, "compress WAV to MP3".to_owned())
+        })?;
 
         pb.finish_and_clear();
 
@@ -318,7 +325,7 @@ impl<'a> TranscribeService<'a> {
         &self,
         mp3_path: &Path,
         total_duration_secs: f64,
-    ) -> Result<Transcript> {
+    ) -> Result<Transcript, TranscribeError> {
         let n_chunks = (total_duration_secs / CHUNK_DURATION_SECS).ceil() as usize;
         let chunk_dir = mp3_path.parent().unwrap_or(std::path::Path::new("."));
 
@@ -337,22 +344,19 @@ impl<'a> TranscribeService<'a> {
             );
 
             let chunk_path = chunk_dir.join(format!("chunk_{chunk_idx:03}.mp3"));
-            let status = run_cooperative_item(self.execution, || async {
-                let status = crate::util::ffmpeg::command()
-                    .args([
-                        "-y",
-                        "-ss", &format!("{chunk_start:.3}"),
-                        "-t",  &format!("{chunk_dur:.3}"),
-                        "-i",  &mp3_path.to_string_lossy(),
-                        "-c",  "copy",
-                        &chunk_path.to_string_lossy(),
-                    ])
-                    .spawn()
-                    .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?
-                    .wait()
-                    .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?;
-                Ok(status)
-            }).await?;
+            let mut ffmpeg = crate::util::ffmpeg::command();
+            ffmpeg.args([
+                "-y",
+                "-ss", &format!("{chunk_start:.3}"),
+                "-t",  &format!("{chunk_dur:.3}"),
+                "-i",  &mp3_path.to_string_lossy(),
+                "-c",  "copy",
+                &chunk_path.to_string_lossy(),
+            ]);
+            let mut command = supervised_ffmpeg_command(&mut ffmpeg);
+            let status = self.execution.status(&mut command).await.map_err(|error| {
+                TranscribeError::from_execution(error, "extract MP3 chunk".to_owned())
+            })?;
 
             if !status.success() || !chunk_path.exists() {
                 break; // Past end of file — done
@@ -370,30 +374,28 @@ impl<'a> TranscribeService<'a> {
         let mut indexed_results: Vec<(usize, Transcript)> =
             stream::iter(chunk_metas)
                 .map(|meta| async move {
-                    run_cooperative_item(this.execution, || async {
-                        let pb = spinner(&format!(
-                            "[{}/{}] Uploading chunk {:.0}s–{:.0}s ({:.1} MB)…",
-                            meta.idx + 1, total, meta.start, meta.end, meta.mb
-                        ));
-                        let transcript = this.groq_upload(&meta.path, meta.start).await?;
-                        this.execution.check_cancelled()?;
-                        pb.finish_and_clear();
-                        // Bersihkan chunk setelah upload selesai
-                        let _ = tokio::fs::remove_file(&meta.path).await;
-                        Ok((meta.idx, transcript))
-                    }).await
+                    let pb = spinner(&format!(
+                        "[{}/{}] Uploading chunk {:.0}s–{:.0}s ({:.1} MB)…",
+                        meta.idx + 1, total, meta.start, meta.end, meta.mb
+                    ));
+                    let result = this.groq_upload(&meta.path, meta.start).await;
+                    pb.finish_and_clear();
+                    // Bersihkan chunk setelah upload selesai
+                    let _ = tokio::fs::remove_file(&meta.path).await;
+                    this.check_cancelled("upload Groq chunk")?;
+                    result.map(|transcript| (meta.idx, transcript))
                 })
                 .buffer_unordered(3)
                 .collect::<Vec<_>>()
                 .await
                 .into_iter()
-                .collect::<Result<Vec<_>>>()?;
+                .collect::<Result<Vec<_>, _>>()?;
 
         // ── Fase 3: Sort by idx → dedup overlap → flatten ────────────────────────
         indexed_results.sort_by_key(|(idx, _)| *idx);
         let mut all_segments: Vec<WhisperSegment> = Vec::new();
         for (_, mut chunk_transcript) in indexed_results {
-            self.execution.check_cancelled()?;
+            self.check_cancelled("merge transcription chunks")?;
             // Deduplicate: drop segments that overlap with the previous chunk's last segment
             if let Some(prev_last) = all_segments.last() {
                 let min_start = prev_last.end_ms;
@@ -556,24 +558,24 @@ impl<'a> TranscribeService<'a> {
         let t0 = Instant::now();
         let pb = spinner("Extracting audio — converting to 16 kHz mono WAV…");
 
-        let status = crate::util::ffmpeg::command()
-            .args([
-                "-y",
-                "-i",
-                &video_path.to_string_lossy(),
-                "-vn",
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                "-f",
-                "wav",
-                &wav_path.to_string_lossy(),
-            ])
-            .spawn()
-            .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?
-            .wait()
-            .map_err(|e| TranscribeError::AudioExtraction(e.to_string()))?;
+        let mut ffmpeg = crate::util::ffmpeg::command();
+        ffmpeg.args([
+            "-y",
+            "-i",
+            &video_path.to_string_lossy(),
+            "-vn",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-f",
+            "wav",
+            &wav_path.to_string_lossy(),
+        ]);
+        let mut command = supervised_ffmpeg_command(&mut ffmpeg);
+        let status = self.execution.status(&mut command).await.map_err(|error| {
+            TranscribeError::from_execution(error, "extract audio".to_owned())
+        })?;
 
         pb.finish_and_clear();
 
@@ -585,6 +587,12 @@ impl<'a> TranscribeService<'a> {
 
         info!("audio extraction done in {:.1}s", t0.elapsed().as_secs_f64());
         Ok(())
+    }
+
+    fn check_cancelled(&self, operation: &str) -> Result<(), TranscribeError> {
+        self.execution
+            .check_cancelled()
+            .map_err(|error| TranscribeError::from_execution(error, operation.to_owned()))
     }
 }
 
