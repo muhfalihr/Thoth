@@ -17,3 +17,13 @@ pub enum EditError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 }
+
+impl EditError {
+    pub(crate) fn from_execution(error: anyhow::Error, operation: String) -> Self {
+        if crate::execution::is_cancelled(&error) {
+            Self::Cancelled(crate::execution::Cancelled)
+        } else {
+            Self::SubtitleError(format!("{operation}: {error:#}"))
+        }
+    }
+}

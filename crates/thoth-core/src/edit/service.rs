@@ -116,10 +116,10 @@ fn build_hook_overlay(
 
 /// Build the AI cover intro (Novita bg + rembg cutout + headline text) via the
 /// Python script. Reuses the hook-title styling (palette/font/stroke/shadow) so
-/// the cover text matches the rest of the brand. Returns `None` on any failure so
-/// the caller falls back to the normal hook title.
+/// the cover text matches the rest of the brand. Ordinary failures return `None`
+/// so the caller falls back to the normal hook title; cancellation stays typed.
 #[allow(clippy::too_many_arguments)]
-fn build_cover(
+async fn build_cover(
     cfg: &crate::config::CoverConfig,
     hk: &crate::config::HookTitleConfig,
     headline: &str,
@@ -133,7 +133,8 @@ fn build_cover(
     chat_base_url: &str,
     vision_model: &str,
     vision_base_url: &str,
-) -> Option<super::ffmpeg::HeadlineImage> {
+    execution: &JobExecutionContext,
+) -> Result<Option<super::ffmpeg::HeadlineImage>, EditError> {
     let (w, h) = match layout {
         OutputLayout::Vertical   => (1080u32, 1920u32),
         OutputLayout::Horizontal => (1920u32, 1080u32),
@@ -208,15 +209,16 @@ fn build_cover(
         out: out.to_string_lossy().to_string(),
     };
     let script = Path::new("scripts/render/render_cover.py");
-    match spec.render(&super::headline_png::python_cmd(), script) {
+    match spec.render(execution, &super::headline_png::python_cmd(), script).await {
         Ok(p) => {
             info!("       🖼️  AI cover: \"{}\" ({:.1}s, Novita FLUX + rembg)",
                   headline, duration_sec);
-            Some(super::ffmpeg::HeadlineImage { path: p, duration_sec })
+            Ok(Some(super::ffmpeg::HeadlineImage { path: p, duration_sec }))
         }
+        Err(error @ EditError::Cancelled(_)) => Err(error),
         Err(e) => {
             warn!("AI cover failed ({e}) — falling back to hook title");
-            None
+            Ok(None)
         }
     }
 }
@@ -1822,7 +1824,8 @@ impl<'a> EditService<'a> {
                     cover_dur, layout, &ass_path,
                     &self.config.llm.novita_model, &self.config.llm.novita_base_url,
                     &self.config.vision.novita_model, &self.config.vision.novita_base_url,
-                ) {
+                    self.execution,
+                ).await? {
                     audio.cover = Some(cov);
                     cover_done = true;
                 }
