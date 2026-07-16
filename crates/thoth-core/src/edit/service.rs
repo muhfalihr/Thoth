@@ -1187,7 +1187,7 @@ impl<'a> EditService<'a> {
                             &moment.overlay_style,    // LLM hint: "sticker"|"pip"|"fullscreen"|"auto"
                             &ffmpeg_dir,
                             &moment.overlay_position, // LLM position: "bottom_right"|"bottom_left"|...
-                        ).await;
+                        ).await?;
                     }
 
                     info!(

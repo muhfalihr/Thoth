@@ -52,12 +52,12 @@ pub async fn read_bpm_from_metadata(
             ])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
-    let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        execution.output(&mut command),
-    ).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) if is_cancelled(&error) => return Err(error),
+    let output = match execution
+        .output_with_timeout(&mut command, std::time::Duration::from_secs(5))
+        .await
+    {
+        Ok(output) => output,
+        Err(error) if is_cancelled(&error) => return Err(error),
         _ => return Ok(None),
     };
 

@@ -420,7 +420,7 @@ impl<'a> PipelineRunner<'a> {
 
         // Enrich with subtitles from related videos in the footage pool (extra
         // angles on the topic) without changing the main video used for the edit.
-        let enrich_text = self.fetch_enrichment_texts(&job.base_dir).await;
+        let enrich_text = self.fetch_enrichment_texts(&job.base_dir).await?;
         if !enrich_text.is_empty() {
             sources.push(format!("[Video Terkait]\n{}", enrich_text.join("\n\n")));
         }
@@ -547,17 +547,17 @@ impl<'a> PipelineRunner<'a> {
     /// Fetch subtitle text from enrichment pool YouTube videos to enrich the
     /// narrator's context. Uses yt-dlp `--skip-download --write-auto-sub` which
     /// is very fast (<2s per video). Returns plain text, one entry per video.
-    async fn fetch_enrichment_texts(&self, base_dir: &std::path::Path) -> Vec<String> {
+    async fn fetch_enrichment_texts(&self, base_dir: &std::path::Path) -> Result<Vec<String>> {
         use crate::ingest::content_search::ContentResult;
 
         let enrich_path = base_dir.join(crate::edit::enrichment::ENRICHMENT_FILE);
         let raw = match std::fs::read_to_string(&enrich_path) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(_) => return Ok(Vec::new()),
         };
         let pool: Vec<ContentResult> = match serde_json::from_str(&raw) {
             Ok(v) => v,
-            Err(_) => return Vec::new(),
+            Err(_) => return Ok(Vec::new()),
         };
 
         // Take up to N YouTube videos from the pool (skip non-YouTube — subtitle
@@ -568,7 +568,7 @@ impl<'a> PipelineRunner<'a> {
             .take(max_extra)
             .collect();
 
-        if candidates.is_empty() { return Vec::new(); }
+        if candidates.is_empty() { return Ok(Vec::new()); }
 
         let ytdlp = self.config.ingest.ytdlp_path.clone();
         let execution = self.execution.clone();
@@ -601,10 +601,15 @@ impl<'a> PipelineRunner<'a> {
                         "-o", &out_tmpl.to_string_lossy().to_string(),
                         &cand.url,
                     ]);
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(15),
-                        execution.output(&mut cmd),
-                    ).await;
+                    let command_result = execution
+                        .output_with_timeout(&mut cmd, std::time::Duration::from_secs(15))
+                        .await;
+                    if let Err(error) = command_result
+                        && crate::execution::is_cancelled(&error)
+                    {
+                        let _ = std::fs::remove_dir_all(&sub_dir);
+                        return Err(error);
+                    }
 
                     // Parse VTT → plain text
                     let result = Self::parse_vtt_dir(&sub_dir).map(|text| {
@@ -623,16 +628,18 @@ impl<'a> PipelineRunner<'a> {
 
                     // Bersihkan sub-dir video ini
                     let _ = std::fs::remove_dir_all(&sub_dir);
-                    result
+                    Ok(result)
                 }
             })
             .buffer_unordered(4)
-            .collect()
-            .await;
+            .collect::<Vec<Result<Option<String>>>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
 
         let _ = std::fs::remove_dir_all(&tmp_root);
         let texts: Vec<String> = results.into_iter().flatten().collect();
-        texts
+        Ok(texts)
     }
 
     /// Parse all .vtt files in a directory → deduplicated plain text.

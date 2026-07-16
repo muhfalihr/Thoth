@@ -71,14 +71,12 @@ pub async fn detect_scene_boundaries(
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        execution.output(&mut command),
-    ).await;
+    let output = execution
+        .output_with_timeout(&mut command, std::time::Duration::from_secs(30));
 
-    let stderr = match output {
-        Ok(Ok(o)) => String::from_utf8_lossy(&o.stderr).to_string(),
-        Ok(Err(error)) if is_cancelled(&error) => return Err(error),
+    let stderr = match output.await {
+        Ok(o) => String::from_utf8_lossy(&o.stderr).to_string(),
+        Err(error) if is_cancelled(&error) => return Err(error),
         _ => { debug!("vision: scene detection failed (timeout or spawn error)"); return Ok(Vec::new()); }
     };
 
