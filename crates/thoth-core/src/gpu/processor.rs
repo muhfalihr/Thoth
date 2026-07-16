@@ -186,6 +186,15 @@ async fn drain_decoder_output(
     }
 }
 
+async fn drain_and_wait_decoder(
+    execution: &JobExecutionContext,
+    decoder_out: &mut ChildStdout,
+    decoder: SupervisedChild,
+) -> Result<std::process::ExitStatus> {
+    let _ = drain_decoder_output(execution, decoder_out).await?;
+    decoder.wait().await.context("next decode wait")
+}
+
 // ── GpuProcessor — full pipeline ──────────────────────────────────────────────
 
 /// GPU-accelerated video processor.
@@ -406,8 +415,7 @@ impl GpuProcessor {
                     ).await;
                     write_frame(execution, &mut encode_in, &blended).await?;
                 }
-                let _ = drain_decoder_output(execution, &mut next_out).await?;
-                let _ = next_decode.wait().await.context("next decode wait")?;
+                let _ = drain_and_wait_decoder(execution, &mut next_out, next_decode).await?;
             } else {
                 // No transition — flush tail as-is
                 for frame in &tail_frames {
@@ -555,9 +563,15 @@ mod tests {
         let mut head = [0_u8; 4];
 
         stdout.read_exact(&mut head).await.unwrap();
-        assert_eq!(&head, b"head");
-        assert_eq!(drain_decoder_output(&execution, &mut stdout).await.unwrap(), 4);
-        assert!(child.wait().await.unwrap().success());
+        assert_eq!(head, [0; 4]);
+        let status = tokio::time::timeout(
+            Duration::from_secs(2),
+            drain_and_wait_decoder(&execution, &mut stdout, child),
+        )
+        .await
+        .expect("draining must let a pipe-capacity-exceeding decoder exit")
+        .unwrap();
+        assert!(status.success());
     }
 
     #[cfg(windows)]
@@ -581,14 +595,18 @@ mod tests {
     #[cfg(windows)]
     fn excess_output_command() -> Command {
         let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", "[Console]::Out.Write('headtail')"]);
+        command.args([
+            "-NoProfile",
+            "-Command",
+            "$out = [Console]::OpenStandardOutput(); $chunk = New-Object byte[] 4096; for ($i = 0; $i -lt 64; $i++) { $out.Write($chunk, 0, $chunk.Length) }",
+        ]);
         command
     }
 
     #[cfg(unix)]
     fn excess_output_command() -> Command {
         let mut command = Command::new("sh");
-        command.args(["-c", "printf headtail"]);
+        command.args(["-c", "dd if=/dev/zero bs=4096 count=64 2>/dev/null"]);
         command
     }
 }
