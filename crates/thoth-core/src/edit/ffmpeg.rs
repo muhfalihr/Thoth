@@ -2330,14 +2330,25 @@ mod tests {
         use std::time::Duration;
 
         let execution = crate::execution::JobExecutionContext::new();
+        #[cfg(windows)]
+        let (binary, args) = (
+            "powershell",
+            vec![
+                "-NoProfile".into(),
+                "-Command".into(),
+                "Start-Sleep -Seconds 30".into(),
+            ],
+        );
+        #[cfg(unix)]
         let args = vec![
-            "-NoProfile".into(),
-            "-Command".into(),
-            "Start-Sleep -Seconds 30".into(),
+            "-c".into(),
+            "sleep 30".into(),
         ];
+        #[cfg(unix)]
+        let binary = "sh";
         let waiting_execution = execution.clone();
         let waiting = tokio::spawn(async move {
-            run_ffmpeg_with_binary(&waiting_execution, Path::new("powershell"), &args).await
+            run_ffmpeg_with_binary(&waiting_execution, Path::new(binary), &args).await
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;

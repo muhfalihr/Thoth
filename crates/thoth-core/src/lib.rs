@@ -756,6 +756,7 @@ pub async fn run_cli() -> Result<()> {
             ))?;
 
             // ── Spawn: bun scout/cli.ts <args...> ────────────────────────
+            // non-job process: Scout has its own supervisor.
             let status = std::process::Command::new(&bun)
                 .arg(&cli_ts)
                 .args(&args.args)
