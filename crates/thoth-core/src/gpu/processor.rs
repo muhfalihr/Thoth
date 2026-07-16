@@ -3,7 +3,7 @@ use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{ChildStdin, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
 use tracing::{debug, info, warn};
 
 use super::context::GpuContext;
@@ -163,6 +163,25 @@ async fn write_frame(
         Err(error) => {
             execution.check_cancelled()?;
             Err(error).context("encode write error")
+        }
+    }
+}
+
+async fn drain_decoder_output(
+    execution: &JobExecutionContext,
+    decoder_out: &mut ChildStdout,
+) -> Result<u64> {
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut drained = 0_u64;
+
+    loop {
+        match decoder_out.read(&mut buffer).await {
+            Ok(0) => return Ok(drained),
+            Ok(read) => drained += read as u64,
+            Err(error) => {
+                execution.check_cancelled()?;
+                return Err(error).context("next decoder drain error");
+            }
         }
     }
 }
@@ -387,6 +406,7 @@ impl GpuProcessor {
                     ).await;
                     write_frame(execution, &mut encode_in, &blended).await?;
                 }
+                let _ = drain_decoder_output(execution, &mut next_out).await?;
                 let _ = next_decode.wait().await.context("next decode wait")?;
             } else {
                 // No transition — flush tail as-is
@@ -500,7 +520,7 @@ fn ffmpeg_bin(name: &str) -> String {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     use tokio::process::Command;
 
     use super::*;
@@ -525,6 +545,21 @@ mod tests {
         assert!(is_cancelled(&error));
     }
 
+    #[tokio::test]
+    async fn next_decode_drain_consumes_excess_stdout_before_wait() {
+        let execution = JobExecutionContext::new();
+        let mut command = excess_output_command();
+        command.stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = spawn_piped_command(&execution, &mut command).unwrap();
+        let mut stdout = child.take_stdout().expect("next decoder must expose stdout");
+        let mut head = [0_u8; 4];
+
+        stdout.read_exact(&mut head).await.unwrap();
+        assert_eq!(&head, b"head");
+        assert_eq!(drain_decoder_output(&execution, &mut stdout).await.unwrap(), 4);
+        assert!(child.wait().await.unwrap().success());
+    }
+
     #[cfg(windows)]
     fn long_running_command() -> Command {
         let mut command = Command::new("powershell");
@@ -540,6 +575,20 @@ mod tests {
     fn long_running_command() -> Command {
         let mut command = Command::new("sh");
         command.args(["-c", "printf 'ready\\n'; sleep 30"]);
+        command
+    }
+
+    #[cfg(windows)]
+    fn excess_output_command() -> Command {
+        let mut command = Command::new("powershell");
+        command.args(["-NoProfile", "-Command", "[Console]::Out.Write('headtail')"]);
+        command
+    }
+
+    #[cfg(unix)]
+    fn excess_output_command() -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf headtail"]);
         command
     }
 }
