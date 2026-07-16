@@ -1,13 +1,15 @@
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{bail, Context, Result};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{ChildStdin, Command};
 use tracing::{debug, info, warn};
 
 use super::context::GpuContext;
 use super::effect::{ColorParams, ColorPipeline, TransitionParams, TransitionPipeline};
 use crate::edit::transition::Transition;
+use crate::execution::{JobExecutionContext, SupervisedChild};
 
 // ── Video metadata ─────────────────────────────────────────────────────────────
 
@@ -21,16 +23,19 @@ pub struct VideoMeta {
 
 impl VideoMeta {
     /// Probe video with ffprobe.
-    pub fn probe(path: &Path) -> Result<Self> {
-        let out = Command::new(ffmpeg_bin("ffprobe"))
+    pub async fn probe(execution: &JobExecutionContext, path: &Path) -> Result<Self> {
+        let mut command = Command::new(ffmpeg_bin("ffprobe"));
+        command
             .args([
                 "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=width,height,r_frame_rate,nb_frames",
                 "-of", "csv=p=0",
                 path.to_str().unwrap_or_default(),
-            ])
-            .output()
+            ]);
+        let out = execution
+            .output(&mut command)
+            .await
             .context("failed to spawn ffprobe")?;
 
         let s = String::from_utf8_lossy(&out.stdout);
@@ -64,9 +69,15 @@ impl VideoMeta {
 // ── Frame pipe helpers ────────────────────────────────────────────────────────
 
 /// Spawn an FFmpeg process that decodes `path` to raw RGBA on stdout.
-pub fn decode_pipe(path: &Path, start_sec: f64, end_sec: f64) -> Result<std::process::Child> {
+pub fn decode_pipe(
+    execution: &JobExecutionContext,
+    path: &Path,
+    start_sec: f64,
+    end_sec: f64,
+) -> Result<SupervisedChild> {
     let duration = (end_sec - start_sec).max(0.01);
-    let proc = Command::new(ffmpeg_bin("ffmpeg"))
+    let mut command = Command::new(ffmpeg_bin("ffmpeg"));
+    command
         .args([
             "-y",
             "-ss", &format!("{start_sec:.3}"),
@@ -78,21 +89,20 @@ pub fn decode_pipe(path: &Path, start_sec: f64, end_sec: f64) -> Result<std::pro
             "pipe:1",
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn ffmpeg decode")?;
-    Ok(proc)
+        .stderr(Stdio::null());
+    spawn_piped_command(execution, &mut command).context("failed to spawn ffmpeg decode")
 }
 
 /// Spawn an FFmpeg process that encodes raw RGBA from stdin to `output`.
 pub fn encode_pipe(
+    execution: &JobExecutionContext,
     output: &Path,
     width: u32,
     height: u32,
     fps: f64,
     audio_source: Option<&Path>,
     nvenc: bool,
-) -> Result<std::process::Child> {
+) -> Result<SupervisedChild> {
     let mut args = vec![
         "-y".to_owned(),
         "-f".into(), "rawvideo".into(),
@@ -128,13 +138,33 @@ pub fn encode_pipe(
         output.to_string_lossy().to_string(),
     ]);
 
-    let proc = Command::new(ffmpeg_bin("ffmpeg"))
+    let mut command = Command::new(ffmpeg_bin("ffmpeg"));
+    command
         .args(&args)
         .stdin(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn ffmpeg encode")?;
-    Ok(proc)
+        .stderr(Stdio::null());
+    spawn_piped_command(execution, &mut command).context("failed to spawn ffmpeg encode")
+}
+
+fn spawn_piped_command(
+    execution: &JobExecutionContext,
+    command: &mut Command,
+) -> Result<SupervisedChild> {
+    execution.spawn(command).context("failed to spawn supervised GPU media command")
+}
+
+async fn write_frame(
+    execution: &JobExecutionContext,
+    encode_in: &mut ChildStdin,
+    frame: &[u8],
+) -> Result<()> {
+    match encode_in.write_all(frame).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            execution.check_cancelled()?;
+            Err(error).context("encode write error")
+        }
+    }
 }
 
 // ── GpuProcessor — full pipeline ──────────────────────────────────────────────
@@ -168,6 +198,7 @@ impl GpuProcessor {
     /// Audio is copied directly from `input` (no re-encode).
     pub async fn apply_color(
         &self,
+        execution:   &JobExecutionContext,
         input:       &Path,
         output:      &Path,
         start_sec:   f64,
@@ -177,10 +208,10 @@ impl GpuProcessor {
     ) -> Result<()> {
         if color.is_identity() {
             info!("apply_color: identity params — skipping GPU pass");
-            return self.copy_segment(input, output, start_sec, end_sec, nvenc).await;
+            return self.copy_segment(execution, input, output, start_sec, end_sec, nvenc).await;
         }
 
-        let meta = VideoMeta::probe(input)?;
+        let meta = VideoMeta::probe(execution, input).await?;
         let frame_bytes = meta.frame_bytes();
 
         info!(
@@ -189,21 +220,24 @@ impl GpuProcessor {
             self.ctx.adapter.get_info().name
         );
 
-        let mut decode = decode_pipe(input, start_sec, end_sec)?;
-        let mut encode = encode_pipe(output, meta.width, meta.height, meta.fps,
+        let mut decode = decode_pipe(execution, input, start_sec, end_sec)?;
+        let mut encode = encode_pipe(execution, output, meta.width, meta.height, meta.fps,
                                       Some(input), nvenc)?;
 
-        let mut decode_out = decode.stdout.take().context("no decode stdout")?;
-        let mut encode_in  = encode.stdin.take().context("no encode stdin")?;
+        let mut decode_out = decode.take_stdout().context("no decode stdout")?;
+        let mut encode_in  = encode.take_stdin().context("no encode stdin")?;
 
         let mut frame_buf = vec![0u8; frame_bytes];
         let mut processed = 0u64;
 
         loop {
-            match decode_out.read_exact(&mut frame_buf) {
-                Ok(()) => {}
+            match decode_out.read_exact(&mut frame_buf).await {
+                Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => bail!("decode read error: {e}"),
+                Err(e) => {
+                    execution.check_cancelled()?;
+                    bail!("decode read error: {e}");
+                }
             }
 
             let out_frame = self.color_pipe.apply(
@@ -211,14 +245,13 @@ impl GpuProcessor {
                 meta.width, meta.height, color, None,
             ).await;
 
-            encode_in.write_all(&out_frame)
-                .context("encode write error")?;
+            write_frame(execution, &mut encode_in, &out_frame).await?;
             processed += 1;
         }
 
         drop(encode_in);
-        decode.wait().ok();
-        let enc_status = encode.wait().context("encode wait")?;
+        let _ = decode.wait().await.context("decode wait")?;
+        let enc_status = encode.wait().await.context("encode wait")?;
         if !enc_status.success() {
             bail!("ffmpeg encode exited with: {:?}", enc_status.code());
         }
@@ -233,6 +266,7 @@ impl GpuProcessor {
     /// transition to use going INTO the next clip.
     pub async fn concat_gpu(
         &self,
+        execution:   &JobExecutionContext,
         jobs:        &[ClipJob],
         output:      &Path,
         nvenc:       bool,
@@ -242,6 +276,7 @@ impl GpuProcessor {
         }
         if jobs.len() == 1 {
             return self.apply_color(
+                execution,
                 &jobs[0].path, output,
                 jobs[0].start_sec, jobs[0].end_sec,
                 &jobs[0].color, nvenc,
@@ -254,15 +289,16 @@ impl GpuProcessor {
 
         for (i, job) in jobs.iter().enumerate() {
             let tmp = tmp_dir.join(format!("__gpu_clip_{i}.mp4"));
-            self.apply_color(&job.path, &tmp, job.start_sec, job.end_sec,
+            self.apply_color(execution, &job.path, &tmp, job.start_sec, job.end_sec,
                              &job.color, nvenc).await?;
             colored.push(tmp);
         }
 
         // Step 2: probe all colored clips
-        let metas: Vec<VideoMeta> = colored.iter()
-            .map(|p| VideoMeta::probe(p))
-            .collect::<Result<Vec<_>>>()?;
+        let mut metas = Vec::with_capacity(colored.len());
+        for path in &colored {
+            metas.push(VideoMeta::probe(execution, path).await?);
+        }
 
         let first = &metas[0];
         let w = first.width;
@@ -270,8 +306,8 @@ impl GpuProcessor {
         let fps = first.fps;
 
         // Step 3: build final output with GPU transitions
-        let mut encode = encode_pipe(output, w, h, fps, None, nvenc)?;
-        let mut encode_in = encode.stdin.take().context("no encode stdin")?;
+        let mut encode = encode_pipe(execution, output, w, h, fps, None, nvenc)?;
+        let mut encode_in = encode.take_stdin().context("no encode stdin")?;
 
         // Buffer of "tail frames" from previous clip (for transition blending)
         let tr_dur_frames = |dur: f64| (dur * fps).ceil() as usize;
@@ -291,38 +327,41 @@ impl GpuProcessor {
             info!("  clip {}/{}: {} frames  transition={:?} ({} tr-frames)",
                 i + 1, colored.len(), total_frames, tr, n_tr);
 
-            let mut decode = decode_pipe(clip, 0.0, f64::MAX)?;
-            let mut decode_out = decode.stdout.take().context("no decode stdout")?;
+            let mut decode = decode_pipe(execution, clip, 0.0, f64::MAX)?;
+            let mut decode_out = decode.take_stdout().context("no decode stdout")?;
 
             let mut frame_buf   = vec![0u8; frame_bytes];
             let mut tail_frames: Vec<Vec<u8>> = Vec::with_capacity(n_tr);
             let mut frame_idx   = 0usize;
 
             loop {
-                match decode_out.read_exact(&mut frame_buf) {
-                    Ok(()) => {}
+                match decode_out.read_exact(&mut frame_buf).await {
+                    Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => bail!("decode error on clip {i}: {e}"),
+                    Err(e) => {
+                        execution.check_cancelled()?;
+                        bail!("decode error on clip {i}: {e}");
+                    }
                 }
 
                 if frame_idx < body_frames {
                     // Body: write directly
-                    encode_in.write_all(&frame_buf)?;
+                    write_frame(execution, &mut encode_in, &frame_buf).await?;
                 } else {
                     // Tail: buffer for transition blending
                     tail_frames.push(frame_buf.clone());
                 }
                 frame_idx += 1;
             }
-            decode.wait().ok();
+            let _ = decode.wait().await.context("decode wait")?;
 
             // Blend tail of this clip with head of next clip
             if i + 1 < colored.len() && *tr != Transition::None && !tail_frames.is_empty() {
                 let next_clip  = &colored[i + 1];
                 let next_meta  = &metas[i + 1];
                 let nf_bytes   = next_meta.frame_bytes();
-                let mut next_decode = decode_pipe(next_clip, 0.0, tr_dur)?;
-                let mut next_out    = next_decode.stdout.take().context("no next decode stdout")?;
+                let mut next_decode = decode_pipe(execution, next_clip, 0.0, tr_dur)?;
+                let mut next_out    = next_decode.take_stdout().context("no next decode stdout")?;
                 let mut next_buf    = vec![0u8; nf_bytes];
                 let n_blend = tail_frames.len();
 
@@ -331,11 +370,12 @@ impl GpuProcessor {
                     let tr_params = TransitionParams::new(progress, tr.wgsl_id());
 
                     // Read corresponding frame from next clip
-                    match next_out.read_exact(&mut next_buf) {
-                        Ok(()) => {}
+                    match next_out.read_exact(&mut next_buf).await {
+                        Ok(_) => {}
                         Err(_) => {
+                            execution.check_cancelled()?;
                             // Next clip ran out — write tail frame as-is
-                            encode_in.write_all(tail_frame)?;
+                            write_frame(execution, &mut encode_in, tail_frame).await?;
                             continue;
                         }
                     }
@@ -345,19 +385,19 @@ impl GpuProcessor {
                         tail_frame, &next_buf,
                         w, h, tr_params,
                     ).await;
-                    encode_in.write_all(&blended)?;
+                    write_frame(execution, &mut encode_in, &blended).await?;
                 }
-                next_decode.wait().ok();
+                let _ = next_decode.wait().await.context("next decode wait")?;
             } else {
                 // No transition — flush tail as-is
                 for frame in &tail_frames {
-                    encode_in.write_all(frame)?;
+                    write_frame(execution, &mut encode_in, frame).await?;
                 }
             }
         }
 
         drop(encode_in);
-        let enc_status = encode.wait().context("encode wait")?;
+        let enc_status = encode.wait().await.context("encode wait")?;
         if !enc_status.success() {
             bail!("ffmpeg encode exited: {:?}", enc_status.code());
         }
@@ -372,11 +412,12 @@ impl GpuProcessor {
     }
 
     /// Fast path: copy a time segment without GPU processing.
-    async fn copy_segment(&self, input: &Path, output: &Path,
+    async fn copy_segment(&self, execution: &JobExecutionContext, input: &Path, output: &Path,
                            start: f64, end: f64, nvenc: bool) -> Result<()> {
         let duration = end - start;
         let vcodec = if nvenc { "h264_nvenc" } else { "libx264" };
-        let status = Command::new(ffmpeg_bin("ffmpeg"))
+        let mut command = Command::new(ffmpeg_bin("ffmpeg"));
+        command
             .args([
                 "-y",
                 "-ss", &format!("{start:.3}"),
@@ -386,8 +427,10 @@ impl GpuProcessor {
                 "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "+faststart",
                 output.to_str().unwrap_or_default(),
-            ])
-            .status()
+            ]);
+        let status = execution
+            .status(&mut command)
+            .await
             .context("copy_segment ffmpeg")?;
         if !status.success() {
             bail!("copy_segment failed: {:?}", status.code());
@@ -451,4 +494,52 @@ fn ffmpeg_bin(name: &str) -> String {
         }
     }
     name.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+
+    use super::*;
+    use crate::execution::{is_cancelled, JobExecutionContext};
+
+    #[tokio::test]
+    async fn gpu_pipe_honors_job_cancellation() {
+        let execution = JobExecutionContext::new();
+        let mut command = long_running_command();
+        command.stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = spawn_piped_command(&execution, &mut command).unwrap();
+        let stdout = child.take_stdout().expect("GPU pipe must expose stdout");
+        let mut stdout = BufReader::new(stdout).lines();
+
+        assert_eq!(stdout.next_line().await.unwrap().as_deref(), Some("ready"));
+
+        let started = Instant::now();
+        execution.cancel();
+        let error = child.wait().await.expect_err("cancelled GPU pipe must not succeed");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(is_cancelled(&error));
+    }
+
+    #[cfg(windows)]
+    fn long_running_command() -> Command {
+        let mut command = Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            "Write-Output ready; Start-Sleep -Seconds 30",
+        ]);
+        command
+    }
+
+    #[cfg(unix)]
+    fn long_running_command() -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'ready\\n'; sleep 30"]);
+        command
+    }
 }

@@ -1600,7 +1600,12 @@ impl<'a> EditService<'a> {
                             .parent().unwrap_or(std::path::Path::new("."))
                             .join("final_concat.mp4");
 
-                        match gpu.concat_gpu(&jobs, &concat_path, self.config.ffmpeg.nvenc).await {
+                        match gpu.concat_gpu(
+                            self.execution,
+                            &jobs,
+                            &concat_path,
+                            self.config.ffmpeg.nvenc,
+                        ).await {
                             Ok(()) => {
                                 sp.finish_with_message(format!(
                                     "  ✓ GPU concat → {}", concat_path.display()
@@ -1637,6 +1642,7 @@ impl<'a> EditService<'a> {
 
                             let gpu_out = clip.path.with_extension("gpu.mp4");
                             match gpu.apply_color(
+                                self.execution,
                                 &clip.path, &gpu_out,
                                 0.0, clip.duration_secs,
                                 &grading.to_gpu_params(),

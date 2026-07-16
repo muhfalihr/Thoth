@@ -97,6 +97,7 @@ impl JobExecutionContext {
             .ok_or_else(|| anyhow::anyhow!("spawned child has no process ID"))?;
 
         let key = ChildKey { pid, generation };
+        let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let control = Arc::new(ChildControl {
@@ -127,6 +128,7 @@ impl JobExecutionContext {
 
         Ok(SupervisedChild {
             pid,
+            stdin,
             stdout,
             stderr,
             control,
@@ -231,6 +233,7 @@ where
 
 pub struct SupervisedChild {
     pid: u32,
+    stdin: Option<tokio::process::ChildStdin>,
     stdout: Option<tokio::process::ChildStdout>,
     stderr: Option<tokio::process::ChildStderr>,
     control: Arc<ChildControl>,
@@ -241,6 +244,10 @@ impl SupervisedChild {
     #[must_use]
     pub fn id(&self) -> u32 {
         self.pid
+    }
+
+    pub fn take_stdin(&mut self) -> Option<tokio::process::ChildStdin> {
+        self.stdin.take()
     }
 
     pub fn take_stdout(&mut self) -> Option<tokio::process::ChildStdout> {
@@ -568,7 +575,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::process::Command;
 
     struct ProcessGuard(u32);
@@ -887,6 +894,53 @@ mod tests {
         };
         assert!(is_cancelled(&error));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_stdin_remains_usable_with_supervised_cancellation() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let mut command = stdin_streamed_command();
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = context.spawn(&mut command)?;
+        let _guard = ProcessGuard(child.id());
+        let mut stdin = child
+            .take_stdin()
+            .ok_or_else(|| anyhow::anyhow!("streamed stdin missing"))?;
+        let stdout = child
+            .take_stdout()
+            .ok_or_else(|| anyhow::anyhow!("streamed stdout missing"))?;
+
+        stdin.write_all(b"frame-data\n").await?;
+        drop(stdin);
+
+        let mut lines = BufReader::new(stdout).lines();
+        assert_eq!(lines.next_line().await?, Some("echo:frame-data".to_owned()));
+
+        context.cancel();
+        let error = child
+            .wait()
+            .await
+            .expect_err("cancelled streamed child must return typed cancellation");
+        assert!(is_cancelled(&error));
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn stdin_streamed_command() -> Command {
+        let mut command = Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            "$line = [Console]::In.ReadLine(); Write-Output \"echo:$line\"; Start-Sleep -Seconds 30",
+        ]);
+        command
+    }
+
+    #[cfg(unix)]
+    fn stdin_streamed_command() -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", "IFS= read -r line; printf 'echo:%s\\n' \"$line\"; sleep 30"]);
+        command
     }
 
     #[cfg(windows)]
