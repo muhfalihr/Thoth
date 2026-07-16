@@ -16,6 +16,7 @@ use tracing::{info, warn};
 use crate::analyze::provider::LlmProvider;
 use crate::config::{NewsConfig, ReactionConfig};
 use crate::reaction::tts::synthesize_timed;
+use crate::execution::JobExecutionContext;
 use crate::transcribe::model::WordTimestamp;
 
 /// Everything the narration-driven edit consumes.
@@ -250,6 +251,7 @@ fn parse_narration_reply(raw: &str) -> Result<(String, String), String> {
 
 /// Full narration pipeline: LLM script → TTS (timed) → [`Narration`].
 pub async fn produce(
+    execution: &JobExecutionContext,
     provider: &dyn LlmProvider,
     source_text: &str,
     reaction_cfg: &ReactionConfig,
@@ -262,7 +264,7 @@ pub async fn produce(
     let (text, hook) = generate_script(provider, source_text, language, target_secs, structure_refs).await?;
     info!("🎙️  Narration script: {} words | hook: \"{}\"", text.split_whitespace().count(), hook);
 
-    let timed = synthesize_timed(&text, mp3_path, reaction_cfg, news_cfg).await
+    let timed = synthesize_timed(execution, &text, mp3_path, reaction_cfg, news_cfg).await
         .map_err(|e| format!("narration TTS: {e}"))?;
 
     if timed.words.is_empty() {

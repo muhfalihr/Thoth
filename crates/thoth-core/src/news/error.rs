@@ -1,5 +1,8 @@
 #[derive(Debug, thiserror::Error)]
 pub enum NewsError {
+    #[error(transparent)]
+    Execution(#[from] anyhow::Error),
+
     #[error("LLM keyword extraction failed: {0}")]
     Llm(String),
 

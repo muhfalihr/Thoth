@@ -16,6 +16,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::config::{AppConfig, StyleProfile, VisionConfig};
+use crate::execution::{is_cancelled, JobExecutionContext};
 
 use super::vision::{extract_frames, VisualAnalyzer};
 
@@ -23,11 +24,12 @@ use super::vision::{extract_frames, VisualAnalyzer};
 
 pub struct TrendAnalyzeService<'a> {
     config: &'a AppConfig,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> TrendAnalyzeService<'a> {
-    pub fn new(config: &'a AppConfig) -> Self {
-        Self { config }
+    pub fn new(config: &'a AppConfig, execution: &'a JobExecutionContext) -> Self {
+        Self { config, execution }
     }
 
     /// Download `sample` videos from `url`, analyze their editing style, and
@@ -59,7 +61,7 @@ impl<'a> TrendAnalyzeService<'a> {
         info!("trend-analyze: resolved URL: {}", effective_url);
 
         let mut video_paths = download_sample_videos(
-            ytdlp_path, &effective_url, sample, output_dir, &ffmpeg_dir,
+            self.execution, ytdlp_path, &effective_url, sample, output_dir, &ffmpeg_dir,
         ).await?;
 
         // Auto-fallback: if TikTok page returned 0 videos (common — requires cookies),
@@ -72,7 +74,7 @@ impl<'a> TrendAnalyzeService<'a> {
                  requires cookies). Falling back to YouTube search: '{yt_url}'"
             );
             video_paths = download_sample_videos(
-                ytdlp_path, &yt_url, sample, output_dir, &ffmpeg_dir,
+                self.execution, ytdlp_path, &yt_url, sample, output_dir, &ffmpeg_dir,
             ).await?;
         }
 
@@ -106,9 +108,9 @@ impl<'a> TrendAnalyzeService<'a> {
             let clip_frames_dir = frames_dir.join(format!("v{idx:02}"));
             // Extract 4 frames spread across the video
             let frames = extract_frames(
-                video_path, 2.0, get_video_duration(video_path).await.min(60.0),
+                self.execution, video_path, 2.0, get_video_duration(self.execution, video_path).await?.min(60.0),
                 4, 512, &clip_frames_dir, None,
-            ).await;
+            ).await?;
 
             if frames.is_empty() {
                 warn!("trend-analyze: no frames extracted for {}", video_path.display());
@@ -200,6 +202,7 @@ fn extract_keyword_from_url(url: &str) -> String {
 // ── Video download ────────────────────────────────────────────────────────────
 
 async fn download_sample_videos(
+    execution: &JobExecutionContext,
     ytdlp_path: &str,
     url:        &str,
     sample:     usize,
@@ -226,14 +229,12 @@ async fn download_sample_videos(
     }
     args.push(url.to_owned());
 
-    let status = tokio::time::timeout(
-        Duration::from_secs(300),
-        tokio::process::Command::new(ytdlp_path)
-            .args(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status(),
-    ).await;
+    let mut command = tokio::process::Command::new(ytdlp_path);
+    command
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let status = tokio::time::timeout(Duration::from_secs(300), execution.status(&mut command)).await;
 
     match status {
         Ok(Ok(s)) if s.success() => {}
@@ -246,7 +247,7 @@ async fn download_sample_videos(
                 anyhow::bail!("yt-dlp exited with code {code}");
             }
         }
-        Ok(Err(e)) => anyhow::bail!("yt-dlp spawn error: {e}"),
+        Ok(Err(e)) => return Err(e),
         Err(_) => anyhow::bail!("yt-dlp timed out"),
     }
 
@@ -267,21 +268,26 @@ async fn download_sample_videos(
 }
 
 /// Get video duration in seconds using ffprobe.
-async fn get_video_duration(path: &Path) -> f64 {
+async fn get_video_duration(execution: &JobExecutionContext, path: &Path) -> Result<f64> {
     let ffprobe = std::env::var("FFMPEG_PATH")
         .ok()
         .and_then(|p| std::path::Path::new(&p).parent().map(|d| d.join("ffprobe").to_string_lossy().to_string()))
         .unwrap_or_else(|| "ffprobe".to_owned());
 
-    let out = tokio::process::Command::new(&ffprobe)
+    let mut command = tokio::process::Command::new(&ffprobe);
+    command
         .args(["-v","error","-show_entries","format=duration","-of","csv=p=0",
                &path.to_string_lossy()])
-        .output().await;
+        ;
+    let output = match execution.output(&mut command).await {
+        Ok(output) => output,
+        Err(error) if is_cancelled(&error) => return Err(error),
+        Err(_) => return Ok(30.0),
+    };
 
-    out.ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+    Ok(String::from_utf8(output.stdout).ok()
         .and_then(|s| s.trim().parse::<f64>().ok())
-        .unwrap_or(30.0)
+        .unwrap_or(30.0))
 }
 
 // ── Style analysis ────────────────────────────────────────────────────────────

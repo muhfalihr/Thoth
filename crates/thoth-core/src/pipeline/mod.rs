@@ -463,6 +463,7 @@ impl<'a> PipelineRunner<'a> {
         let structure_refs = self.build_narration_structure_refs(&source_text).await;
 
         let narr = crate::narration::produce(
+            self.execution,
             llm.as_ref(),
             &source_text,
             &self.config.reaction,
@@ -571,6 +572,7 @@ impl<'a> PipelineRunner<'a> {
         if candidates.is_empty() { return Vec::new(); }
 
         let ytdlp = self.config.ingest.ytdlp_path.clone();
+        let execution = self.execution.clone();
         let tmp_root = base_dir.join(".narr_subs");
         let _ = std::fs::create_dir_all(&tmp_root);
 
@@ -580,6 +582,7 @@ impl<'a> PipelineRunner<'a> {
             .map(|cand| {
                 let ytdlp = ytdlp.clone();
                 let tmp_root = tmp_root.clone();
+                let execution = execution.clone();
                 async move {
                     // Sub-dir unik per video → tidak ada tabrakan file
                     let sub_dir = tmp_root.join(&cand.url
@@ -601,7 +604,7 @@ impl<'a> PipelineRunner<'a> {
                     ]);
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(15),
-                        cmd.output(),
+                        execution.output(&mut cmd),
                     ).await;
 
                     // Parse VTT → plain text

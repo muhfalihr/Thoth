@@ -242,6 +242,7 @@ impl<'a> AnalyzeService<'a> {
             let pb = spinner("Extracting visual descriptions of full video…");
             let desc_dir = self.job.analyze_dir().join("describe_frames");
             let descriptions = describe_video_frames(
+                self.execution,
                 vp,
                 duration_secs,
                 interval,
@@ -250,7 +251,7 @@ impl<'a> AnalyzeService<'a> {
                 &desc_dir,
                 &self.config.vision,
                 &self.config.llm,
-            ).await;
+            ).await?;
             self.execution.check_cancelled()?;
             pb.finish_and_clear();
             cleanup_frames(&desc_dir);
@@ -979,16 +980,18 @@ impl<'a> AnalyzeService<'a> {
             let moment_frames_dir = frames_dir.join(format!("{idx:02}"));
             let scene_ts = if cfg.scene_detection {
                 detect_scene_boundaries(
+                    this.execution,
                     video_path,
                     moment.start_sec, moment.end_sec,
                     cfg.scene_threshold,
-                ).await
+                ).await?
             } else {
                 Vec::new()
             };
             this.execution.check_cancelled()?;
             let scene_ts_opt = if scene_ts.is_empty() { None } else { Some(scene_ts.as_slice()) };
             let frames = extract_frames(
+                this.execution,
                 video_path,
                 moment.start_sec,
                 moment.end_sec,
@@ -996,7 +999,7 @@ impl<'a> AnalyzeService<'a> {
                 cfg.frame_width,
                 &moment_frames_dir,
                 scene_ts_opt,
-            ).await;
+            ).await?;
             this.execution.check_cancelled()?;
 
             // Call vision LLM — returns None on any error

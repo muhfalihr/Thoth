@@ -13,6 +13,8 @@ use std::path::Path;
 
 use tracing::debug;
 
+use crate::execution::{is_cancelled, JobExecutionContext};
+
 // ── Per-vibe BPM fallback table ───────────────────────────────────────────────
 
 /// Typical BPM for each BGM vibe category.
@@ -33,13 +35,15 @@ fn default_bpm_for_vibe(vibe: &str) -> f32 {
 ///
 /// Reads the `BPM`, `TBPM`, or `bpm` tag from the file's format metadata.
 /// Returns `None` if no BPM tag is found or ffprobe is unavailable.
-pub async fn read_bpm_from_metadata(path: &Path) -> Option<f32> {
+pub async fn read_bpm_from_metadata(
+    execution: &JobExecutionContext,
+    path: &Path,
+) -> anyhow::Result<Option<f32>> {
     let ffprobe = find_ffprobe();
 
     // ffprobe -v quiet -show_entries format_tags=BPM,TBPM,bpm,tempo -of json {path}
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio::process::Command::new(&ffprobe)
+    let mut command = tokio::process::Command::new(&ffprobe);
+    command
             .args([
                 "-v", "quiet",
                 "-show_entries", "format_tags=BPM,TBPM,bpm,tempo,Bpm",
@@ -47,12 +51,20 @@ pub async fn read_bpm_from_metadata(path: &Path) -> Option<f32> {
                 &path.to_string_lossy(),
             ])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output(),
-    ).await.ok()?.ok()?;
+            .stderr(std::process::Stdio::null());
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        execution.output(&mut command),
+    ).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) if is_cancelled(&error) => return Err(error),
+        _ => return Ok(None),
+    };
 
     let json_text = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&json_text).ok()?;
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_text) else {
+        return Ok(None);
+    };
 
     // Try multiple tag name variants (case differences between taggers)
     let tags = &json["format"]["tags"];
@@ -62,12 +74,12 @@ pub async fn read_bpm_from_metadata(path: &Path) -> Option<f32> {
             if let Ok(bpm) = val.trim().parse::<f32>() {
                 if bpm > 20.0 && bpm < 300.0 {
                     debug!("beat_detect: read BPM {:.1} from metadata tag '{}': {}", bpm, key, path.display());
-                    return Some(bpm);
+                    return Ok(Some(bpm));
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// Determine the effective BPM for a BGM file.
@@ -75,14 +87,18 @@ pub async fn read_bpm_from_metadata(path: &Path) -> Option<f32> {
 /// Priority:
 ///   1. Metadata tag (BPM / TBPM) in the audio file
 ///   2. Per-vibe lookup table fallback
-pub async fn detect_bpm(path: &Path, vibe: &str) -> f32 {
-    if let Some(bpm) = read_bpm_from_metadata(path).await {
-        return bpm;
+pub async fn detect_bpm(
+    execution: &JobExecutionContext,
+    path: &Path,
+    vibe: &str,
+) -> anyhow::Result<f32> {
+    if let Some(bpm) = read_bpm_from_metadata(execution, path).await? {
+        return Ok(bpm);
     }
     let fallback = default_bpm_for_vibe(vibe);
     debug!("beat_detect: no BPM metadata for {} — using vibe fallback {:.0} BPM (vibe={})",
            path.file_name().unwrap_or_default().to_string_lossy(), fallback, vibe);
-    fallback
+    Ok(fallback)
 }
 
 // ── Beat math ─────────────────────────────────────────────────────────────────

@@ -4,4 +4,4 @@ pub mod service;
 pub mod ytdlp;
 
 pub use service::{IngestResult, IngestService};
-pub use ytdlp::{CookieSource, KillOnDrop, YtDlpArgs};
+pub use ytdlp::{CookieSource, YtDlpArgs};

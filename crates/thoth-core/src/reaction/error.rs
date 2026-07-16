@@ -1,5 +1,8 @@
 #[derive(Debug, thiserror::Error)]
 pub enum ReactionError {
+    #[error(transparent)]
+    Execution(#[from] anyhow::Error),
+
     #[error("LLM script generation failed: {0}")]
     Llm(String),
 

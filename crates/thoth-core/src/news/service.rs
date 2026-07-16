@@ -110,7 +110,7 @@ impl<'a> EnrichService<'a> {
 
             // 4c: internet search (batched), dedup, score, filter, rank
             if !keywords.is_empty() {
-                match search::search_keywords(cfg, &keywords).await {
+                match search::search_keywords(self.execution, cfg, &keywords).await {
                     Ok(mut results) => {
                         search::dedup_by_url(&mut results);
                         results.retain(|item| search::within_max_age(item, cfg.max_age_days));
@@ -137,7 +137,7 @@ impl<'a> EnrichService<'a> {
             for (j, item) in enrichment.news.iter_mut().enumerate() {
                 self.execution.check_cancelled()?;
                 let raw_path = news_dir.join(format!("news_{j}.png"));
-                match scraper::screenshot(cfg, &item.url, &raw_path).await {
+                match scraper::screenshot(self.execution, cfg, &item.url, &raw_path).await {
                     Ok(Some(result)) => {
                         // Update item's source from the page if we didn't have it yet.
                         if item.source.is_empty() && !result.source.is_empty() {
@@ -157,7 +157,7 @@ impl<'a> EnrichService<'a> {
                             published: item.published_at.as_deref(),
                             headline:  &item.title,
                         };
-                        match format_screenshot(&params).await {
+                        match format_screenshot(self.execution, &params).await {
                             Ok(p) => {
                                 info!("moment {i} news {j}: formatted → {}", p.display());
                                 item.formatted_screenshot_path = Some(p);
@@ -195,6 +195,7 @@ impl<'a> EnrichService<'a> {
                         } else { None };
 
                         match reaction::synthesize(
+                            self.execution,
                             &script.script,
                             &tts_path,
                             &self.config.reaction,
@@ -233,6 +234,7 @@ impl<'a> EnrichService<'a> {
                                 clip_h: 1920,
                             };
                             match reaction::create_avatar_segment(
+                                self.execution,
                                 &spec, &seg_path,
                                 &self.config.ffmpeg,
                                 &self.config.reaction,

@@ -1140,6 +1140,7 @@ impl<'a> EditService<'a> {
                     overlay_source = format!("{} [{}]", cand.url, cand.platform);
                     run_cooperative_item(self.execution, || async {
                         Ok(fetch_overlay_from_url(
+                            self.execution,
                             &cand.url,
                             at_clamped,
                             dur_clamped,
@@ -1181,6 +1182,7 @@ impl<'a> EditService<'a> {
                     } else {
                         // Legacy: greenscreen → sticker, LLM hint respected.
                         ov.style = detect_overlay_style(
+                            self.execution,
                             &ov.path,
                             &moment.overlay_style,    // LLM hint: "sticker"|"pip"|"fullscreen"|"auto"
                             &ffmpeg_dir,
@@ -1225,6 +1227,7 @@ impl<'a> EditService<'a> {
                             let cand = &enrich_pool[(i + 1 + k) % enrich_pool.len()];
                             if let Some(fspec) = run_cooperative_item(self.execution, || async {
                                 Ok(fetch_overlay_from_url(
+                                    self.execution,
                                     &cand.url, win_start, dur,
                                     &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
                                     overlay_cookie.as_ref(),
@@ -1272,7 +1275,7 @@ impl<'a> EditService<'a> {
             // ── Beat-sync: align transitions + SFX to BGM downbeats ─────────
             if self.config.assets.beat_sync {
                 if let Some(ref bgm_path) = audio_clone.bgm {
-                    let bpm      = beat_detect::detect_bpm(bgm_path, &effective_moment_bgm_vibe).await;
+                    let bpm      = beat_detect::detect_bpm(self.execution, bgm_path, &effective_moment_bgm_vibe).await?;
                     let interval = beat_detect::beat_interval_ms(bpm);
 
                     // Snap SFX beat offset (additive to sfx_at_sec)
@@ -1929,6 +1932,7 @@ impl<'a> EditService<'a> {
                         Kind::Video => {
                             let cand = &enrich_pool[cands[ci].idx];
                             if let Some(spec) = super::overlay::fetch_overlay_from_url(
+                                self.execution,
                                 &cand.url, wt, wdur, &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
                                 overlay_cookie.as_ref(),
                             ).await {

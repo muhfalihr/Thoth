@@ -12,6 +12,8 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::execution::JobExecutionContext;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// A single point on the speed curve: `time` ∈ [0,1] (normalized clip position),
@@ -248,6 +250,7 @@ impl SpeedCurve {
 /// Output file is written to `output`. Audio pitch is preserved when
 /// `curve.pitch_preserve = true` via `atempo` filter (max 2× per stage).
 pub async fn apply_speed_curve(
+    execution: &JobExecutionContext,
     input:   &Path,
     output:  &Path,
     start:   f64,
@@ -271,7 +274,8 @@ pub async fn apply_speed_curve(
     let vcodec = if nvenc { vec!["-c:v", "h264_nvenc", "-preset", "p4"] }
                  else     { vec!["-c:v", "libx264",    "-preset", "fast"] };
 
-    let status = tokio::process::Command::new(&ffmpeg)
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
         .args(["-y", "-i", &input.to_string_lossy()])
         .args(["-vf", &video_filter])
         .args(["-af", &audio_filter])
@@ -279,10 +283,8 @@ pub async fn apply_speed_curve(
         .args(["-crf", "23", "-c:a", "aac", "-b:a", "192k"])
         .arg(output.to_string_lossy().as_ref())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .context("ffmpeg spawn failed")?;
+        .stderr(Stdio::null());
+    let status = execution.status(&mut command).await.context("ffmpeg spawn failed")?;
 
     anyhow::ensure!(status.success(), "ffmpeg speed curve failed: exit {:?}", status.code());
     Ok(())

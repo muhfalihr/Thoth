@@ -600,6 +600,37 @@ mod tests {
         assert_eq!(*entered.lock().unwrap(), vec!["first"]);
     }
 
+    #[tokio::test]
+    async fn supervised_streaming_child_is_reaped() -> Result<()> {
+        let context = JobExecutionContext::new();
+        let mut child = crate::ingest::YtDlpArgs::new("powershell")
+            .extra(&[
+                "-NoProfile",
+                "-Command",
+                "Write-Output 'started'; Start-Sleep -Seconds 30",
+            ])
+            .spawn_with_streams(&context)?;
+        let pid = child.id();
+        let _guard = ProcessGuard(pid);
+        let stdout = child
+            .take_stdout()
+            .expect("streaming yt-dlp child must pipe stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        assert_eq!(lines.next_line().await?, Some("started".to_owned()));
+
+        let started = Instant::now();
+        context.cancel();
+        let error = child
+            .wait()
+            .await
+            .expect_err("cancelled streamed child must return typed cancellation");
+
+        assert!(is_cancelled(&error));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(context.active_child_count(), 0);
+        Ok(())
+    }
+
     #[test]
     fn cancellation_precedence_detects_either_ready_token() {
         let global = CancellationToken::new();

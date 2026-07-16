@@ -5,6 +5,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use crate::config::NewsConfig;
+use crate::execution::JobExecutionContext;
 
 use super::error::NewsError;
 
@@ -43,14 +44,14 @@ pub fn python_command(config: &NewsConfig, script: &Path) -> Result<tokio::proce
 /// Run a command and wait for it with a timeout, returning stdout as String.
 /// Stderr is forwarded to tracing::warn on failure.
 pub async fn run_command(
+    execution: &JobExecutionContext,
     mut cmd: tokio::process::Command,
     label: &str,
     timeout_secs: u64,
 ) -> Result<String, NewsError> {
-    let child = cmd.spawn().map_err(|e| NewsError::Search(format!("{label}: spawn failed: {e}")))?;
     let grace = Duration::from_secs(timeout_secs + 10);
-    let output = match tokio::time::timeout(grace, child.wait_with_output()).await {
-        Ok(r) => r.map_err(NewsError::Io)?,
+    let output = match tokio::time::timeout(grace, execution.output(&mut cmd)).await {
+        Ok(r) => r?,
         Err(_) => return Err(NewsError::Search(format!("{label}: timed out after {}s", grace.as_secs()))),
     };
     if !output.status.success() {

@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
-use crate::execution::JobExecutionContext;
+use crate::execution::{is_cancelled, JobExecutionContext};
 use crate::pipeline::job::JobContext;
 use crate::util::progress::{percent_bar, spinner, stage_done};
 
@@ -207,23 +207,28 @@ impl<'a> IngestService<'a> {
 
         let temp_cookie = builder.temp_cookie_path.clone();
 
-        // SKILL.md §5 — KillOnDrop ensures yt-dlp is cleaned up on task cancellation
+        // The supervised child retains streamed output while owning the full process tree.
         let mut child = builder
             .url(url)
-            .spawn_with_streams()
+            .spawn_with_streams(self.execution)
             .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
+                if is_cancelled(&e) {
+                    e
+                } else if let Some(source) = e.downcast_ref::<std::io::Error>()
+                    && source.kind() == std::io::ErrorKind::NotFound
+                {
                     IngestError::YtDlpNotFound {
                         path: ytdlp_bin.clone(),
-                        source: e,
+                        source: std::io::Error::new(source.kind(), source.to_string()),
                     }
+                    .into()
                 } else {
-                    IngestError::Io(e)
+                    e
                 }
             })?;
 
-        let stdout = child.0.stdout.take().unwrap();
-        let stderr = child.0.stderr.take().unwrap();
+        let stdout = child.take_stdout().expect("yt-dlp stdout is piped");
+        let stderr = child.take_stderr().expect("yt-dlp stderr is piped");
 
         let mut stdout_lines = BufReader::new(stdout).lines();
         let mut stderr_lines = BufReader::new(stderr).lines();
@@ -351,7 +356,7 @@ impl<'a> IngestService<'a> {
         // Clean up whichever bar is still active
         if let Some(bar) = pct_bar { bar.finish_and_clear(); } else { pb.finish_and_clear(); }
 
-        let status = child.0.wait().await.map_err(IngestError::Io)?;
+        let status = child.wait().await?;
         self.execution.check_cancelled()?;
         let stderr_buf = stderr_handle.await.unwrap_or_default();
 
@@ -499,12 +504,12 @@ impl<'a> IngestService<'a> {
         // Short delay before first attempt — reduces 429 after video download
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        let result = tokio::process::Command::new(&bin)
+        let mut command = tokio::process::Command::new(&bin);
+        command
             .args(&args)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await;
+            .stderr(std::process::Stdio::piped());
+        let result = self.execution.output(&mut command).await;
 
         pb.finish_and_clear();
 
@@ -516,12 +521,12 @@ impl<'a> IngestService<'a> {
                     debug!("YouTube subtitle 429 rate-limit — will retry after 5s");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     // Single retry
-                    let _ = tokio::process::Command::new(&bin)
+                    let mut retry = tokio::process::Command::new(&bin);
+                    retry
                         .args(&args)
                         .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                        .await;
+                        .stderr(std::process::Stdio::null());
+                    let _ = self.execution.status(&mut retry).await;
                 } else if !stderr.trim().is_empty() {
                     debug!("YouTube subtitle yt-dlp: {}", stderr.trim());
                 }

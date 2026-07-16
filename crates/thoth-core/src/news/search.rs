@@ -15,6 +15,7 @@ use serde::Deserialize;
 use tracing::{debug, warn};
 
 use crate::config::NewsConfig;
+use crate::execution::JobExecutionContext;
 
 use super::error::NewsError;
 use super::model::{NewsItem, RawSearchResult};
@@ -33,15 +34,23 @@ struct SearchEnvelope {
 ///
 /// Errors are returned so the caller can log + degrade per keyword without
 /// aborting the whole moment.
-pub async fn search_by_keyword(config: &NewsConfig, keyword: &str) -> Result<Vec<NewsItem>, NewsError> {
-    search_keywords(config, std::slice::from_ref(&keyword.to_owned())).await
+pub async fn search_by_keyword(
+    execution: &JobExecutionContext,
+    config: &NewsConfig,
+    keyword: &str,
+) -> Result<Vec<NewsItem>, NewsError> {
+    search_keywords(execution, config, std::slice::from_ref(&keyword.to_owned())).await
 }
 
 /// Search several keywords at once. For the Playwright backend this reuses a
 /// single browser session across all queries (one subprocess) — far cheaper than
 /// launching a browser per keyword. Each result is tagged with its originating
 /// query via [`RawSearchResult::query`].
-pub async fn search_keywords(config: &NewsConfig, keywords: &[String]) -> Result<Vec<NewsItem>, NewsError> {
+pub async fn search_keywords(
+    execution: &JobExecutionContext,
+    config: &NewsConfig,
+    keywords: &[String],
+) -> Result<Vec<NewsItem>, NewsError> {
     if keywords.is_empty() {
         return Ok(Vec::new());
     }
@@ -61,7 +70,7 @@ pub async fn search_keywords(config: &NewsConfig, keywords: &[String]) -> Result
             }
             all
         }
-        _ => search_playwright(config, keywords).await?,
+        _ => search_playwright(execution, config, keywords).await?,
     };
     Ok(raws
         .into_iter()
@@ -71,7 +80,11 @@ pub async fn search_keywords(config: &NewsConfig, keywords: &[String]) -> Result
 }
 
 /// Run the Python + Playwright search script as a subprocess for one or more queries.
-async fn search_playwright(config: &NewsConfig, keywords: &[String]) -> Result<Vec<RawSearchResult>, NewsError> {
+async fn search_playwright(
+    execution: &JobExecutionContext,
+    config: &NewsConfig,
+    keywords: &[String],
+) -> Result<Vec<RawSearchResult>, NewsError> {
     let max = config.max_results_per_moment.max(3).to_string();
     let timeout_arg = config.screenshot_timeout_secs.to_string();
 
@@ -89,7 +102,7 @@ async fn search_playwright(config: &NewsConfig, keywords: &[String]) -> Result<V
     // Hard cap: per-query timeout × number of queries + 15s for browser startup/teardown.
     let n = keywords.len().max(1) as u64;
     let timeout = config.screenshot_timeout_secs * n + 15;
-    let stdout = run_command(cmd, "search_playwright", timeout).await?;
+    let stdout = run_command(execution, cmd, "search_playwright", timeout).await?;
     parse_envelope(&stdout)
 }
 

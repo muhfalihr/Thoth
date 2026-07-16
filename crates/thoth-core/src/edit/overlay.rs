@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::config::OverlayConfig;
+use crate::execution::JobExecutionContext;
 
 // ── Style types ───────────────────────────────────────────────────────────────
 
@@ -136,6 +137,7 @@ pub struct OverlaySpec {
 /// Cache key is `md5(url)` (variant slot 0). Returns `None` on any failure — an
 /// overlay is purely additive and must never block clip rendering.
 pub async fn fetch_overlay_from_url(
+    execution:  &JobExecutionContext,
     url:        &str,
     at_sec:     f64,
     duration:   f64,
@@ -160,14 +162,14 @@ pub async fn fetch_overlay_from_url(
         // Grab only the opening slice — enrichment clips are full-length videos,
         // so a max-duration *filter* (download_clip_direct) would reject them.
         let ok = download_clip_section(
-            ytdlp_path, url, &tmp_prefix, cfg.max_duration, ffmpeg_dir, cookie,
+            execution, ytdlp_path, url, &tmp_prefix, cfg.max_duration, ffmpeg_dir, cookie,
         ).await;
         if !ok {
             warn!("overlay: enrichment download failed for {url}");
             return None;
         }
         if let Some(raw) = find_downloaded(&tmp_prefix) {
-            if trim_clip(&raw, &dest, cfg.max_duration, ffmpeg_dir).await.is_ok() {
+            if trim_clip(execution, &raw, &dest, cfg.max_duration, ffmpeg_dir).await.is_ok() {
                 let _ = tokio::fs::remove_file(&raw).await;
             } else {
                 let _ = tokio::fs::rename(&raw, &dest).await;
@@ -199,6 +201,7 @@ pub async fn fetch_overlay_from_url(
 ///
 /// Never fails — returns `OverlayStyle::FullScreen` on any error.
 pub async fn detect_overlay_style(
+    execution:     &JobExecutionContext,
     path:          &Path,
     style_hint:    &str,
     ffmpeg_dir:    &str,
@@ -208,7 +211,7 @@ pub async fn detect_overlay_style(
     match style_hint.trim().to_lowercase().as_str() {
         "sticker" => {
             // LLM says sticker — run pixel analysis to determine key color
-            let key = detect_key_color(path, ffmpeg_dir).await.unwrap_or(KeyColor::Green);
+            let key = detect_key_color(execution, path, ffmpeg_dir).await.unwrap_or(KeyColor::Green);
             OverlayStyle::Sticker { position: pos, scale_pct: 35, key_color: key }
         }
         "pip" => {
@@ -217,7 +220,7 @@ pub async fn detect_overlay_style(
         "fullscreen" => OverlayStyle::FullScreen,
         _ => {
             // "auto" or empty — run full auto-detection, use position hint
-            auto_detect_style_at(path, ffmpeg_dir, pos).await
+            auto_detect_style_at(execution, path, ffmpeg_dir, pos).await
         }
     }
 }
@@ -229,12 +232,12 @@ pub async fn detect_overlay_style(
 /// - Green/blue screen dominant → `Sticker`
 /// - Portrait aspect ratio (face/reaction) → `Pip`
 /// - Otherwise → `FullScreen`
-async fn auto_detect_style_at(path: &Path, ffmpeg_dir: &str, pos: StickerPosition) -> OverlayStyle {
+async fn auto_detect_style_at(execution: &JobExecutionContext, path: &Path, ffmpeg_dir: &str, pos: StickerPosition) -> OverlayStyle {
     // 1. Check aspect ratio via ffprobe (fast, no decoding)
-    let aspect = get_video_aspect(path, ffmpeg_dir).await;
+    let aspect = get_video_aspect(execution, path, ffmpeg_dir).await;
 
     // 2. Sample a center frame and analyse colours
-    if let Some((avg_r, avg_g, avg_b)) = sample_center_frame(path, ffmpeg_dir).await {
+    if let Some((avg_r, avg_g, avg_b)) = sample_center_frame(execution, path, ffmpeg_dir).await {
         // Greenscreen heuristic: G significantly dominates R and B
         if avg_g as f32 > avg_r as f32 * 1.35
             && avg_g as f32 > avg_b as f32 * 1.35
@@ -275,8 +278,8 @@ async fn auto_detect_style_at(path: &Path, ffmpeg_dir: &str, pos: StickerPositio
 
 /// Detect whether a clip has green or blue screen as dominant background colour.
 /// Returns the detected `KeyColor`, or `None` if no chroma screen detected.
-async fn detect_key_color(path: &Path, ffmpeg_dir: &str) -> Option<KeyColor> {
-    let (r, g, b) = sample_center_frame(path, ffmpeg_dir).await?;
+async fn detect_key_color(execution: &JobExecutionContext, path: &Path, ffmpeg_dir: &str) -> Option<KeyColor> {
+    let (r, g, b) = sample_center_frame(execution, path, ffmpeg_dir).await?;
     if g as f32 > r as f32 * 1.25 && g as f32 > b as f32 * 1.25 {
         Some(KeyColor::Green)
     } else if b as f32 > r as f32 * 1.25 && b as f32 > g as f32 * 1.25 {
@@ -287,13 +290,12 @@ async fn detect_key_color(path: &Path, ffmpeg_dir: &str) -> Option<KeyColor> {
 }
 
 /// Extract a single centre frame from the video and return average (R, G, B).
-async fn sample_center_frame(path: &Path, ffmpeg_dir: &str) -> Option<(u8, u8, u8)> {
+async fn sample_center_frame(execution: &JobExecutionContext, path: &Path, ffmpeg_dir: &str) -> Option<(u8, u8, u8)> {
     let ffmpeg = resolve_ffmpeg(ffmpeg_dir);
 
     // Extract a 64×64 patch from the center of frame 1 as raw RGB
-    let output = tokio::time::timeout(
-        Duration::from_secs(15),
-        tokio::process::Command::new(&ffmpeg)
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
             .args([
                 "-y",
                 "-i", &path.to_string_lossy(),
@@ -304,9 +306,8 @@ async fn sample_center_frame(path: &Path, ffmpeg_dir: &str) -> Option<(u8, u8, u
                 "pipe:1",
             ])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output(),
-    ).await;
+            .stderr(std::process::Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(15), execution.output(&mut command)).await;
 
     let bytes = match output {
         Ok(Ok(out)) if !out.stdout.is_empty() => out.stdout,
@@ -327,7 +328,7 @@ async fn sample_center_frame(path: &Path, ffmpeg_dir: &str) -> Option<(u8, u8, u
 }
 
 /// Get video width × height using ffprobe.
-async fn get_video_aspect(path: &Path, ffmpeg_dir: &str) -> Option<(u32, u32)> {
+async fn get_video_aspect(execution: &JobExecutionContext, path: &Path, ffmpeg_dir: &str) -> Option<(u32, u32)> {
     let ffprobe = {
         let dir = Path::new(ffmpeg_dir);
         let bin = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
@@ -338,9 +339,8 @@ async fn get_video_aspect(path: &Path, ffmpeg_dir: &str) -> Option<(u32, u32)> {
         }
     };
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::process::Command::new(&ffprobe)
+    let mut command = tokio::process::Command::new(&ffprobe);
+    command
             .args([
                 "-v", "error",
                 "-select_streams", "v:0",
@@ -349,9 +349,8 @@ async fn get_video_aspect(path: &Path, ffmpeg_dir: &str) -> Option<(u32, u32)> {
                 &path.to_string_lossy(),
             ])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output(),
-    ).await.ok()?.ok()?;
+            .stderr(std::process::Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(5), execution.output(&mut command)).await.ok()?.ok()?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let parts: Vec<&str> = text.trim().split(',').collect();
@@ -421,6 +420,7 @@ async fn cleanup_temp_cookie(path: Option<std::path::PathBuf>) {
 /// this function passes a specific video URL so yt-dlp downloads immediately
 /// without an extra search round-trip.
 async fn download_clip_direct(
+    execution:   &JobExecutionContext,
     ytdlp:       &str,
     url:         &str,
     out_prefix:  &Path,
@@ -453,14 +453,9 @@ async fn download_clip_direct(
 
     debug!("overlay: yt-dlp direct[v{variant_idx}] {url}");
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(60),
-        tokio::process::Command::new(&bin)
-            .args(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status(),
-    ).await;
+    let mut command = tokio::process::Command::new(&bin);
+    command.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let result = tokio::time::timeout(Duration::from_secs(60), execution.status(&mut command)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
     matches!(result, Ok(Ok(s)) if s.success())
@@ -473,6 +468,7 @@ async fn download_clip_direct(
 /// max-duration *filter* (which would reject the whole video). Fast — only the
 /// requested slice is fetched.
 async fn download_clip_section(
+    execution:  &JobExecutionContext,
     ytdlp:      &str,
     url:        &str,
     out_prefix: &Path,
@@ -503,14 +499,9 @@ async fn download_clip_section(
 
     debug!("overlay: yt-dlp section[0-{secs}s] {url}");
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(90),
-        tokio::process::Command::new(&bin)
-            .args(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status(),
-    ).await;
+    let mut command = tokio::process::Command::new(&bin);
+    command.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let result = tokio::time::timeout(Duration::from_secs(90), execution.status(&mut command)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
     matches!(result, Ok(Ok(s)) if s.success())
@@ -521,6 +512,7 @@ async fn download_clip_section(
 /// Uses `max_downloads(1)` so yt-dlp picks the first result matching the
 /// duration filter — successive variants rotate at the call site.
 async fn download_clip_variant(
+    execution:   &JobExecutionContext,
     ytdlp:       &str,
     url:         &str,
     out_prefix:  &Path,
@@ -557,14 +549,9 @@ async fn download_clip_variant(
 
     debug!("overlay: yt-dlp {label}[v{variant_idx}] args: {:?}", args);
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(60),
-        tokio::process::Command::new(&bin)
-            .args(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status(),
-    ).await;
+    let mut command = tokio::process::Command::new(&bin);
+    command.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let result = tokio::time::timeout(Duration::from_secs(60), execution.status(&mut command)).await;
 
     cleanup_temp_cookie(temp_cookie).await;
     matches!(result, Ok(Ok(s)) if s.success())
@@ -583,15 +570,14 @@ fn find_downloaded(prefix: &Path) -> Option<PathBuf> {
     None
 }
 
-async fn trim_clip(src: &Path, dest: &Path, max_dur: f64, ffmpeg_dir: &str) -> Result<()> {
+async fn trim_clip(execution: &JobExecutionContext, src: &Path, dest: &Path, max_dur: f64, ffmpeg_dir: &str) -> Result<()> {
     let ffmpeg = resolve_ffmpeg(ffmpeg_dir);
-    let status = tokio::process::Command::new(&ffmpeg)
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
         .args(["-y", "-i", &src.to_string_lossy(), "-t", &format!("{max_dur:.3}"),
                "-c", "copy", "-movflags", "+faststart", &dest.to_string_lossy()])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .context("ffmpeg trim spawn")?;
+        .stderr(std::process::Stdio::null());
+    let status = execution.status(&mut command).await.context("ffmpeg trim spawn")?;
     if status.success() { Ok(()) } else { Err(anyhow::anyhow!("ffmpeg trim exited {status}")) }
 }

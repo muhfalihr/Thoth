@@ -499,7 +499,8 @@ pub async fn run_cli() -> Result<()> {
         Commands::TrendAnalyze(args) => {
             use analyze::trend_analyzer::{profile_to_toml, TrendAnalyzeService};
 
-            let svc = TrendAnalyzeService::new(&config);
+            let execution = JobExecutionContext::new();
+            let svc = TrendAnalyzeService::new(&config, &execution);
             let profile = svc.run(
                 &args.url,
                 args.sample,
