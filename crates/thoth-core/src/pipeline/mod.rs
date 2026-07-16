@@ -1,7 +1,7 @@
 pub mod job;
 pub mod state;
 
-use std::path::Path;
+use std::{future::Future, path::Path};
 
 use anyhow::{Context, Result};
 use futures_util::stream::{self, StreamExt};
@@ -15,6 +15,7 @@ use crate::cli::{LlmProviderName, OutputLayout as CliLayout, WhisperModelSize};
 use crate::config::AppConfig;
 use crate::edit::layout::OutputLayout;
 use crate::edit::{AudioOptions, EditService};
+use crate::execution::JobExecutionContext;
 use crate::ingest::IngestService;
 use crate::news::EnrichService;
 use crate::transcribe::TranscribeService;
@@ -34,13 +35,28 @@ fn build_job_context(job_id_override: Option<&str>, job_id: String, output_dir: 
     }
 }
 
+async fn run_cooperative_stage<T, F, Fut>(
+    execution: &JobExecutionContext,
+    stage: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    execution.check_cancelled()?;
+    let result = stage().await?;
+    execution.check_cancelled()?;
+    Ok(result)
+}
+
 pub struct PipelineRunner<'a> {
     config: &'a AppConfig,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> PipelineRunner<'a> {
-    pub fn new(config: &'a AppConfig) -> Self {
-        Self { config }
+    pub fn new(config: &'a AppConfig, execution: &'a JobExecutionContext) -> Self {
+        Self { config, execution }
     }
 
     pub async fn run(
@@ -79,15 +95,21 @@ impl<'a> PipelineRunner<'a> {
         };
 
         // ── Stage 1: Ingest ──────────────────────────────────────────────
+        self.execution.check_cancelled()?;
         if state.stages.ingest.is_none() {
             stage_header(1, 5, "Ingest  (yt-dlp download)");
-            let svc = IngestService::new(self.config, &job);
-            let result = svc.run(url, false).await?;
+            let svc = IngestService::new(self.config, &job, self.execution);
+            let result = run_cooperative_stage(self.execution, || async {
+                svc.run(url, false).await.context("ingest stage failed")
+            }).await?;
             state.stages.ingest = Some(result);
+            self.execution.check_cancelled()?;
             state.save(&job.state_path())?;
+            self.execution.check_cancelled()?;
         } else {
             info!("Stage 1/4: Ingest — skipped (already complete)");
         }
+        self.execution.check_cancelled()?;
 
         // Clone fields out of ingest result before further borrows
         let ingest = state.stages.ingest.as_ref().unwrap();
@@ -97,23 +119,30 @@ impl<'a> PipelineRunner<'a> {
         let video_duration = ingest.duration_secs;
 
         // ── Stage 2: Transcribe ──────────────────────────────────────────
+        self.execution.check_cancelled()?;
         if state.stages.transcribe.is_none() {
             stage_header(2, 5, "Transcribe  (Groq Whisper API)");
             info!("  Video   : \"{}\"  ({:.0}s)", video_title, video_duration);
-            let svc = TranscribeService::new(self.config, &job);
-            let result = svc.run(&video_path, &model.to_string()).await?;
+            let svc = TranscribeService::new(self.config, &job, self.execution);
+            let result = run_cooperative_stage(self.execution, || async {
+                svc.run(&video_path, &model.to_string()).await.context("transcribe stage failed")
+            }).await?;
             state.stages.transcribe = Some(result);
+            self.execution.check_cancelled()?;
             state.save(&job.state_path())?;
+            self.execution.check_cancelled()?;
         } else {
             info!("Stage 2/4: Transcribe — skipped (already complete)");
         }
+        self.execution.check_cancelled()?;
 
         // ── Stage 3: Analyze ─────────────────────────────────────────────
+        self.execution.check_cancelled()?;
         if state.stages.analyze.is_none() {
             stage_header(3, 5, &format!("Analyze  ({} LLM)", provider));
-            let svc = AnalyzeService::new(self.config, &job);
-            let result = svc
-                .run(
+            let svc = AnalyzeService::new(self.config, &job, self.execution);
+            let result = run_cooperative_stage(self.execution, || async {
+                svc.run(
                     &job.transcript_path(),
                     &provider.to_string(),
                     max_clips,
@@ -122,19 +151,25 @@ impl<'a> PipelineRunner<'a> {
                     &video_title,
                     &video_channel,
                 )
-                .await?;
+                .await
+                .context("analyze stage failed")
+            }).await?;
             state.stages.analyze = Some(result);
+            self.execution.check_cancelled()?;
             state.save(&job.state_path())?;
+            self.execution.check_cancelled()?;
         } else {
             info!("Stage 3/5: Analyze — skipped (already complete)");
         }
+        self.execution.check_cancelled()?;
 
         // ── Stage 4: Enrich  (news + reaction) ───────────────────────────
+        self.execution.check_cancelled()?;
         if state.stages.enrich.is_none() && self.config.news.enabled {
             stage_header(4, 5, "Enrich  (news search)");
-            let svc = EnrichService::new(self.config, &job);
-            match svc
-                .run(
+            let svc = EnrichService::new(self.config, &job, self.execution);
+            match run_cooperative_stage(self.execution, || async {
+                svc.run(
                     &job.moments_path(),
                     &job.transcript_path(),
                     &video_title,
@@ -142,39 +177,52 @@ impl<'a> PipelineRunner<'a> {
                     &provider.to_string(),
                 )
                 .await
+                .context("enrich stage failed")
+            }).await
             {
                 Ok(result) => {
                     state.stages.enrich = Some(result);
+                    self.execution.check_cancelled()?;
                     state.save(&job.state_path())?;
+                    self.execution.check_cancelled()?;
                 }
                 // Enrichment is best-effort — never fail the whole pipeline over it.
-                Err(e) => warn!("Stage 4/5: Enrich failed — continuing without news: {e}"),
+                Err(e) => {
+                    if e.downcast_ref::<crate::execution::Cancelled>().is_some() {
+                        return Err(e);
+                    }
+                    warn!("Stage 4/5: Enrich failed — continuing without news: {e}");
+                }
             }
         } else if state.stages.enrich.is_none() {
             info!("Stage 4/5: Enrich — skipped (news disabled)");
         } else {
             info!("Stage 4/5: Enrich — skipped (already complete)");
         }
+        self.execution.check_cancelled()?;
 
         // ── Stage 4.5: Narration  (narrator-driven spine) ────────────────
         // Generate ONE continuous narrator voiceover (+ word timings) that the
         // edit builds the video around. Best-effort: never fails the pipeline.
         if self.config.narration.enabled && !job.narration_mp3().exists() {
+            self.execution.check_cancelled()?;
             stage_header(4, 5, "Narration  (narrator voiceover)");
             match self.generate_narration(&job, provider).await {
                 Ok(()) => {}
                 Err(e) => warn!("Narration failed — continuing without narrator: {e}"),
             }
+            self.execution.check_cancelled()?;
         }
 
         // ── Stage 5: Edit ────────────────────────────────────────────────
+        self.execution.check_cancelled()?;
         if state.stages.edit.is_none() {
             stage_header(5, 5, &format!("Edit  (FFmpeg {layout} clips)"));
-            let svc = EditService::new(self.config, &job);
+            let svc = EditService::new(self.config, &job, self.execution);
             let out_layout = OutputLayout::from(layout);
 
-            let result = svc
-                .run(
+            let result = run_cooperative_stage(self.execution, || async {
+                svc.run(
                     &video_path,
                     &job.moments_path(),
                     &job.transcript_path(),
@@ -184,12 +232,17 @@ impl<'a> PipelineRunner<'a> {
                     social_name,
                     style_profile_name,
                 )
-                .await?;
+                .await
+                .context("edit stage failed")
+            }).await?;
             state.stages.edit = Some(result);
+            self.execution.check_cancelled()?;
             state.save(&job.state_path())?;
+            self.execution.check_cancelled()?;
         } else {
             info!("Stage 5/5: Edit — skipped (already complete)");
         }
+        self.execution.check_cancelled()?;
 
         let edit = state.stages.edit.as_ref().unwrap();
         let paths: Vec<_> = edit.output_clips.iter().map(|c| c.path.clone()).collect();
@@ -609,6 +662,8 @@ impl<'a> PipelineRunner<'a> {
 #[cfg(test)]
 mod job_id_wiring_tests {
     use super::*;
+    use crate::execution::{Cancelled, JobExecutionContext};
+    use std::sync::{Arc, Mutex};
 
     fn temp_base() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("thoth_run_wiring_{}", uuid::Uuid::new_v4()))
@@ -635,5 +690,48 @@ mod job_id_wiring_tests {
         assert_eq!(job.root(), base.join(".thoth").join(&minted_id)); // nested (CLI default)
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn cancelled_context_stops_before_next_stage() {
+        let pre_cancelled = JobExecutionContext::new();
+        pre_cancelled.cancel();
+        let entered = Arc::new(Mutex::new(Vec::new()));
+        let first_entered = Arc::clone(&entered);
+
+        let error = run_cooperative_stage(&pre_cancelled, move || async move {
+            first_entered.lock().unwrap().push("first");
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+
+        assert!(error.downcast_ref::<Cancelled>().is_some());
+        assert!(entered.lock().unwrap().is_empty());
+
+        let execution = JobExecutionContext::new();
+        let entered = Arc::new(Mutex::new(Vec::new()));
+        let first_entered = Arc::clone(&entered);
+        let second_entered = Arc::clone(&entered);
+        let first_execution = execution.clone();
+
+        let error = async {
+            run_cooperative_stage(&execution, move || async move {
+                first_entered.lock().unwrap().push("first");
+                first_execution.cancel();
+                Ok(())
+            })
+            .await?;
+            run_cooperative_stage(&execution, move || async move {
+                second_entered.lock().unwrap().push("second");
+                Ok(())
+            })
+            .await
+        }
+        .await
+        .unwrap_err();
+
+        assert!(error.downcast_ref::<Cancelled>().is_some());
+        assert_eq!(*entered.lock().unwrap(), vec!["first"]);
     }
 }

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::config::AppConfig;
+use crate::execution::JobExecutionContext;
 use crate::pipeline::job::JobContext;
 use crate::transcribe::model::{Transcript, WhisperSegment};
 use crate::util::progress::{spinner, stage_done};
@@ -37,11 +38,16 @@ pub struct AnalyzeResult {
 pub struct AnalyzeService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> AnalyzeService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
     /// Run full analysis: transcript LLM + optional visual frame re-ranking.
@@ -58,7 +64,8 @@ impl<'a> AnalyzeService<'a> {
         video_path:      Option<&Path>,
         video_title:     &str,
         video_channel:   &str,
-    ) -> Result<AnalyzeResult, AnalyzeError> {
+    ) -> Result<AnalyzeResult> {
+        self.execution.check_cancelled()?;
         let t0 = Instant::now();
         let provider = self.build_provider(provider_name)?;
 
@@ -110,6 +117,7 @@ impl<'a> AnalyzeService<'a> {
             &compact_for_kw,
             12,
         ).await;
+        self.execution.check_cancelled()?;
         pb_kw.finish_and_clear();
 
         // ── Frequency-based fallback (when LLM returns nothing) ───────────────
@@ -128,6 +136,7 @@ impl<'a> AnalyzeService<'a> {
             .map(|k| k.to_lowercase())
             .collect();
         for kw in effective_auto {
+            self.execution.check_cancelled()?;
             let lower = kw.to_lowercase();
             if !focus_keywords.iter().any(|k| k == &lower) {
                 focus_keywords.push(lower);
@@ -242,6 +251,7 @@ impl<'a> AnalyzeService<'a> {
                 &self.config.vision,
                 &self.config.llm,
             ).await;
+            self.execution.check_cancelled()?;
             pb.finish_and_clear();
             cleanup_frames(&desc_dir);
 
@@ -393,7 +403,7 @@ impl<'a> AnalyzeService<'a> {
                     serde_json::from_value(whole).expect("hardcoded whole-clip moment is valid"),
                 );
             } else {
-                return Err(AnalyzeError::NoMomentsFound);
+                return Err(AnalyzeError::NoMomentsFound.into());
             }
         }
 
@@ -448,7 +458,7 @@ impl<'a> AnalyzeService<'a> {
                  is too aggressive.",
                 intro_end_sec
             );
-            return Err(AnalyzeError::NoMomentsFound);
+            return Err(AnalyzeError::NoMomentsFound.into());
         }
 
         // ── Drop moments that start in or significantly overlap the outro ────────
@@ -500,7 +510,7 @@ impl<'a> AnalyzeService<'a> {
                  is too aggressive.",
                 outro_start_sec
             );
-            return Err(AnalyzeError::NoMomentsFound);
+            return Err(AnalyzeError::NoMomentsFound.into());
         }
 
         // ── Drop mid-video ceremony segments (content-based) ────────────────
@@ -573,6 +583,7 @@ impl<'a> AnalyzeService<'a> {
             final_moments = self
                 .visual_rerank(final_moments, vp, &transcript, max_clips)
                 .await;
+            self.execution.check_cancelled()?;
         } else {
             final_moments.truncate(max_clips);
         }
@@ -580,11 +591,12 @@ impl<'a> AnalyzeService<'a> {
         let moments = ViralMomentList { moments: final_moments };
 
         if moments.moments.is_empty() {
-            return Err(AnalyzeError::NoMomentsFound);
+            return Err(AnalyzeError::NoMomentsFound.into());
         }
 
         info!("identified {} viral moments:", moments.moments.len());
         for (i, m) in moments.moments.iter().enumerate() {
+            self.execution.check_cancelled()?;
             info!(
                 "  [{}/{}] [{}·{}] \"{}\"",
                 i + 1, moments.moments.len(),
@@ -614,6 +626,7 @@ impl<'a> AnalyzeService<'a> {
             self.config.whisper.language.clone(),
         );
 
+        self.execution.check_cancelled()?;
         let moments_path = self.job.moments_path();
         let json = serde_json::to_string_pretty(&moments).map_err(|e| {
             AnalyzeError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))

@@ -10,6 +10,7 @@ use tracing::{debug, info};
 use futures_util::stream::{self, StreamExt};
 
 use crate::config::AppConfig;
+use crate::execution::JobExecutionContext;
 use crate::pipeline::job::JobContext;
 use crate::util::progress::{spinner, stage_done};
 
@@ -36,18 +37,24 @@ pub struct TranscribeResult {
 pub struct TranscribeService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> TranscribeService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
     pub async fn run(
         &self,
         video_path: &Path,
         model_size: &str,
-    ) -> Result<TranscribeResult, TranscribeError> {
+    ) -> Result<TranscribeResult> {
+        self.execution.check_cancelled()?;
         let t0 = Instant::now();
 
         // ── Step 1: Try YouTube transcript first (instant, no API cost) ──────
@@ -57,6 +64,7 @@ impl<'a> TranscribeService<'a> {
         // We prefer this over Whisper when available.
         let t_infer = Instant::now();
         let (transcript, model_used) = if let Some(yt) = self.try_youtube_transcript().await {
+            self.execution.check_cancelled()?;
             let infer_secs = t_infer.elapsed().as_secs_f64();
             info!(
                 "YouTube transcript loaded in {:.1}s — {} segments",
@@ -68,6 +76,7 @@ impl<'a> TranscribeService<'a> {
             // ── Step 2: Extract audio + run Whisper ─────────────────────────
             let wav_path = self.job.source_dir().join("audio.wav");
             self.extract_audio(video_path, &wav_path).await?;
+            self.execution.check_cancelled()?;
 
             let wav_mb = std::fs::metadata(&wav_path)
                 .map(|m| m.len() as f64 / 1_048_576.0)
@@ -75,12 +84,14 @@ impl<'a> TranscribeService<'a> {
             info!("audio extracted: {wav_mb:.1} MB ({wav_path:?})");
 
             let transcript = self.transcribe(&wav_path, model_size).await?;
+            self.execution.check_cancelled()?;
             (transcript, model_size.to_owned())
         };
         let infer_secs = t_infer.elapsed().as_secs_f64();
 
         // Step 3: Save transcript JSON
         let transcript_path = self.job.transcript_path();
+        self.execution.check_cancelled()?;
         let json = serde_json::to_string_pretty(&transcript).map_err(|e| {
             TranscribeError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
         })?;

@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
+use crate::execution::JobExecutionContext;
 use crate::pipeline::job::JobContext;
 use crate::util::progress::{percent_bar, spinner, stage_done};
 
@@ -82,21 +83,27 @@ impl Default for CopyrightStatus {
 pub struct IngestService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> IngestService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
-    pub async fn run(&self, url: &str, force: bool) -> Result<IngestResult, IngestError> {
+    pub async fn run(&self, url: &str, force: bool) -> Result<IngestResult> {
+        self.execution.check_cancelled()?;
         let t0 = Instant::now();
 
         // LOCAL-FILE source (not a URL): a still→video synthesized from a NON-VIDEO main post
         // (main.rs::synthesize_still_video). Copy it (+ sibling .info.json) into the source dir and
         // build the result directly — yt-dlp is not involved.
         if !url.starts_with("http://") && !url.starts_with("https://") && Path::new(url).is_file() {
-            return self.ingest_local_file(Path::new(url)).await;
+            return Ok(self.ingest_local_file(Path::new(url)).await?);
         }
         // Bound the id length in the template. For normal sites %(id)s is a short id (e.g. a YouTube
         // 11-char id), but for a direct CDN .mp4 URL (TikTok/fbcdn, used by scout content-sets) the
@@ -246,6 +253,7 @@ impl<'a> IngestService<'a> {
         let mut current_file_desc = String::from("video");
 
         while let Ok(Some(line)) = stdout_lines.next_line().await {
+            self.execution.check_cancelled()?;
             debug!("yt-dlp stdout: {line}");
 
             // ── File destination → switch spinner to percent bar ──────────────
@@ -344,6 +352,7 @@ impl<'a> IngestService<'a> {
         if let Some(bar) = pct_bar { bar.finish_and_clear(); } else { pb.finish_and_clear(); }
 
         let status = child.0.wait().await.map_err(IngestError::Io)?;
+        self.execution.check_cancelled()?;
         let stderr_buf = stderr_handle.await.unwrap_or_default();
 
         // SKILL.md §3A — clean up temp cookie DB copy after job completes
@@ -371,11 +380,11 @@ impl<'a> IngestService<'a> {
                 // Continue — video may still be on disk; find_or_merge_video() will confirm
             } else if super::ytdlp::is_cookie_error(&stderr_buf) {
                 // SKILL.md §3A — HTTP 400 cookie error → actionable error message
-                return Err(IngestError::CookieExpired { stderr: stderr_buf });
+                return Err(IngestError::CookieExpired { stderr: stderr_buf }.into());
             } else {
                 // Real failure: video itself could not be downloaded
                 warn!("yt-dlp stderr:\n{stderr_buf}");
-                return Err(IngestError::YtDlpFailed { code, stderr: stderr_buf });
+                return Err(IngestError::YtDlpFailed { code, stderr: stderr_buf }.into());
             }
         }
 
@@ -391,6 +400,7 @@ impl<'a> IngestService<'a> {
         // `find_subtitle_file()` below will pick them up if they were written.
 
         let result = self.build_result(video_path).await?;
+        self.execution.check_cancelled()?;
 
         let size_mb = std::fs::metadata(&result.video_path)
             .map(|m| m.len() as f64 / 1_048_576.0)

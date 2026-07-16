@@ -81,8 +81,7 @@ async fn execute_pipeline(
     push_params(&mut argv, &job.spec.params);
 
     let args = crate::cli::RunArgs::try_parse_from(&argv)?;
-    let cancel = context.cancellation_token();
-    crate::run_once(args, config, &cancel).await
+    crate::run_once(args, config, &context).await
 }
 
 /// One claim's lifecycle: install a DB progress sink, run `run_fn`, record the

@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use crate::analyze::provider::build_llm_provider;
 use crate::analyze::schema::ViralMomentList;
 use crate::config::AppConfig;
+use crate::execution::JobExecutionContext;
 use crate::pipeline::job::JobContext;
 use crate::transcribe::model::Transcript;
 
@@ -28,11 +29,16 @@ use super::{keyword, search};
 pub struct EnrichService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> EnrichService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
     /// Run the enrichment stage and persist `enrich/enrich.json`.
@@ -46,7 +52,8 @@ impl<'a> EnrichService<'a> {
         video_title: &str,
         video_channel: &str,
         provider_name: &str,
-    ) -> Result<EnrichResult, NewsError> {
+    ) -> anyhow::Result<EnrichResult> {
+        self.execution.check_cancelled()?;
         let cfg = &self.config.news;
 
         // ── Load inputs ────────────────────────────────────────────────────────
@@ -72,6 +79,7 @@ impl<'a> EnrichService<'a> {
         // ── Per-moment enrichment (sequential) ─────────────────────────────────
         let mut enrichments = Vec::with_capacity(moments.moments.len());
         for (i, moment) in moments.moments.iter().enumerate() {
+            self.execution.check_cancelled()?;
             let window = transcript_window(&transcript, moment.start_sec, moment.end_sec);
             let mut enrichment = MomentEnrichment::new(i, window.clone());
 
@@ -127,6 +135,7 @@ impl<'a> EnrichService<'a> {
             // ── 4d/4e: Screenshot + format news articles (Phase 2) ─────────────
             let news_dir = self.job.news_dir(i);
             for (j, item) in enrichment.news.iter_mut().enumerate() {
+                self.execution.check_cancelled()?;
                 let raw_path = news_dir.join(format!("news_{j}.png"));
                 match scraper::screenshot(cfg, &item.url, &raw_path).await {
                     Ok(Some(result)) => {
@@ -248,6 +257,7 @@ impl<'a> EnrichService<'a> {
 
         // ── Persist ────────────────────────────────────────────────────────────
         let result = EnrichResult::from_enrichments(enrichments);
+        self.execution.check_cancelled()?;
         let json = serde_json::to_string_pretty(&result)
             .map_err(|e| NewsError::InvalidJson(format!("serialize enrich.json: {e}")))?;
         tokio::fs::write(self.job.enrich_path(), json).await?;

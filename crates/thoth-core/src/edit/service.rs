@@ -10,6 +10,7 @@ use tracing::{info, warn};
 use crate::analyze::schema::ViralMomentList;
 use crate::analyze::provider::{build_llm_provider, LlmProvider};
 use crate::config::AppConfig;
+use crate::execution::JobExecutionContext;
 use crate::transcribe::model::WordTimestamp;
 use crate::util::beat_detect;
 use crate::pipeline::job::JobContext;
@@ -475,11 +476,16 @@ pub struct EditResult {
 pub struct EditService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> EditService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
     /// Resolve the cookie source for footage (overlay) downloads, mirroring the
@@ -509,7 +515,8 @@ impl<'a> EditService<'a> {
         source_channel:     &str,
         social_name:        &str,
         style_profile_name: &str,   // "auto" or "" = LLM per-clip, named = apply profile
-    ) -> Result<EditResult, EditError> {
+    ) -> Result<EditResult> {
+        self.execution.check_cancelled()?;
         let t0 = Instant::now();
 
         // ── Validate social icon (if provided) ───────────────────────────────
@@ -517,25 +524,25 @@ impl<'a> EditService<'a> {
             if !icon.path.exists() {
                 return Err(EditError::FfmpegFailed(format!(
                     "social icon not found: {}", icon.path.display()
-                )));
+                )).into());
             }
             let ext = icon.path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("png") {
                 return Err(EditError::FfmpegFailed(
                     "social icon must be a PNG file (extension .png)".to_owned()
-                ));
+                ).into());
             }
             if icon.size < audio_opts.social_icon_min_size {
                 return Err(EditError::FfmpegFailed(format!(
                     "social icon size {} px is below the minimum {} px",
                     icon.size, audio_opts.social_icon_min_size
-                )));
+                )).into());
             }
             if icon.size > audio_opts.social_icon_max_size {
                 return Err(EditError::FfmpegFailed(format!(
                     "social icon size {} px exceeds the maximum {} px",
                     icon.size, audio_opts.social_icon_max_size
-                )));
+                )).into());
             }
         }
 
@@ -679,6 +686,7 @@ impl<'a> EditService<'a> {
         }
 
         for (i, moment) in moments.moments.iter().enumerate() {
+            self.execution.check_cancelled()?;
             let slug     = slugify(&moment.title);
             let ass_path = self.job.ass_path(i, &slug);
             let out_path = self.job.clip_path(i, &slug);
@@ -719,7 +727,7 @@ impl<'a> EditService<'a> {
                     start,
                     end,
                     duration: video_duration,
-                });
+                }.into());
             }
 
             info!(
@@ -1411,6 +1419,7 @@ impl<'a> EditService<'a> {
             })
             .await
             .map_err(|e| EditError::FfmpegFailed(e.to_string()))??;
+            self.execution.check_cancelled()?;
 
             let out_mb = std::fs::metadata(&out_path)
                 .map(|m| m.len() as f64 / 1_048_576.0)
@@ -1589,6 +1598,7 @@ impl<'a> EditService<'a> {
 
                         let mut graded = 0usize;
                         for (i, clip) in output_clips.iter_mut().enumerate() {
+                            self.execution.check_cancelled()?;
                             let mood = if !gpu_cfg.default_color_mood.is_empty() {
                                 gpu_cfg.default_color_mood.clone()
                             } else {

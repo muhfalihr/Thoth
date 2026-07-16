@@ -35,6 +35,7 @@ use cli::{Cli, ClipStyleArg, Commands};
 use config::AppConfig;
 use edit::ffmpeg::ClipStyle;
 use edit::layout::OutputLayout;
+use execution::JobExecutionContext;
 use pipeline::PipelineRunner;
 use pipeline::job::JobContext;
 
@@ -388,10 +389,11 @@ pub async fn run_cli() -> Result<()> {
 
     match cli.command {
         Commands::Ingest(args) => {
+            let execution = JobExecutionContext::new();
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = JobContext::new(job_id, args.output_dir.clone())
                 .context("failed to create job directories")?;
-            let svc = ingest::IngestService::new(&config, &job);
+            let svc = ingest::IngestService::new(&config, &job, &execution);
             let result = svc.run(&args.url, args.force).await?;
             println!("{}", brand::ok("Ingest complete."));
             println!("{}", brand::field("Video", result.video_path.display()));
@@ -400,6 +402,7 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Transcribe(args) => {
+            let execution = JobExecutionContext::new();
             // When run standalone the job dir is derived from the video file's parent
             let output_dir = args.output_dir.clone();
             let job_id = uuid::Uuid::new_v4().to_string();
@@ -410,7 +413,7 @@ pub async fn run_cli() -> Result<()> {
                 config.whisper.language = lang;
             }
 
-            let svc = transcribe::TranscribeService::new(&config, &job);
+            let svc = transcribe::TranscribeService::new(&config, &job, &execution);
             let result = svc.run(&args.video_path, &args.model.to_string()).await?;
             println!("{}", brand::ok("Transcription complete."));
             println!("{}", brand::field("Transcript", result.transcript_path.display()));
@@ -419,6 +422,7 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Analyze(args) => {
+            let execution = JobExecutionContext::new();
             let job_id = uuid::Uuid::new_v4().to_string();
             // Derive output dir from transcript file's grandparent or use cwd
             let output_dir = args
@@ -429,7 +433,7 @@ pub async fn run_cli() -> Result<()> {
                 .unwrap_or(std::path::Path::new("."))
                 .to_owned();
             let job = JobContext::new(job_id, output_dir).context("failed to create job directories")?;
-            let svc = analyze::AnalyzeService::new(&config, &job);
+            let svc = analyze::AnalyzeService::new(&config, &job, &execution);
             let result = svc
                 .run(
                     &args.transcript_path,
@@ -448,10 +452,11 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Edit(args) => {
+            let execution = JobExecutionContext::new();
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = JobContext::new(job_id, args.output_dir.clone())
                 .context("failed to create job directories")?;
-            let svc = edit::EditService::new(&config, &job);
+            let svc = edit::EditService::new(&config, &job, &execution);
             let layout = OutputLayout::from(&args.layout);
             let result = svc
                 .run(
@@ -487,8 +492,8 @@ pub async fn run_cli() -> Result<()> {
         Commands::Run(args) => {
             // Pipeline body extracted to `run_once` so the persistent `thoth
             // worker` runs the exact same path with warm models already resident.
-            let cancel = tokio_util::sync::CancellationToken::new();
-            run_once(args, config, &cancel).await?;
+            let execution = JobExecutionContext::new();
+            run_once(args, config, &execution).await?;
         }
 
         Commands::TrendAnalyze(args) => {
@@ -761,17 +766,13 @@ pub async fn run_cli() -> Result<()> {
 /// Execute one full `run` pipeline with whatever models are already resident.
 /// Shared verbatim by the CLI `run` command and the `thoth worker` claim loop —
 /// the only difference is the installed progress sink (stdout vs the SQLite job
-/// DB) and who supplies `args`. `cancel` is checked at coarse stage boundaries
-/// (entry + before the heavy edit/render run); mid-pipeline interruption is a
-/// follow-up (needs the token threaded into PipelineRunner).
+/// DB) and who supplies `args` and its execution context.
 pub async fn run_once(
     args: cli::RunArgs,
     config: AppConfig,
-    cancel: &tokio_util::sync::CancellationToken,
+    execution: &JobExecutionContext,
 ) -> Result<()> {
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
+    execution.check_cancelled()?;
             let mut config = config;
             if let Some(lang) = args.language {
                 config.whisper.language = lang;
@@ -969,7 +970,7 @@ pub async fn run_once(
                 );
             };
 
-            let runner = PipelineRunner::new(&config);
+            let runner = PipelineRunner::new(&config, execution);
             let _clips = runner
                 .run(
                     &resolved_url,
