@@ -597,7 +597,7 @@ impl<'a> IngestService<'a> {
     /// yt-dlp sometimes downloads video and audio as separate streams
     /// (e.g. `abc.f399.mp4` + `abc.f251.webm`) when it can't locate FFmpeg.
     /// This function detects that case and merges them using our FFmpeg.
-    async fn find_or_merge_video(&self) -> Result<Option<PathBuf>, IngestError> {
+    async fn find_or_merge_video(&self) -> Result<Option<PathBuf>> {
         let dir = self.job.source_dir();
         if !dir.exists() {
             return Ok(None);
@@ -674,7 +674,8 @@ impl<'a> IngestService<'a> {
 
         let pb = spinner("Merging video + audio streams…");
 
-        let status = crate::util::ffmpeg::command()
+        let mut ffmpeg = crate::util::ffmpeg::command();
+        ffmpeg
             .args([
                 "-y",
                 "-i", &video_file.to_string_lossy(),
@@ -686,11 +687,13 @@ impl<'a> IngestService<'a> {
                 "-map", "1:a:0",
                 "-movflags", "+faststart",
                 &merged_path.to_string_lossy(),
-            ])
-            .spawn()
-            .map_err(|e| IngestError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
-            .wait()
-            .map_err(IngestError::Io)?;
+            ]);
+        ffmpeg
+            .as_inner_mut()
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut command = tokio::process::Command::from(std::process::Command::from(ffmpeg));
+        let status = run_merge_ffmpeg(self.execution, &mut command).await?;
 
         pb.finish_and_clear();
 
@@ -916,6 +919,13 @@ fn scan_copyright_text(text: &str) -> Vec<String> {
     found
 }
 
+async fn run_merge_ffmpeg(
+    execution: &JobExecutionContext,
+    command: &mut tokio::process::Command,
+) -> Result<std::process::ExitStatus> {
+    execution.status(command).await
+}
+
 /// Parse percentage from yt-dlp progress lines.
 /// Example: "[download]  23.4% of  45.00MiB at  2.50MiB/s ETA 00:18"
 fn parse_download_percent(line: &str) -> Option<f64> {
@@ -954,5 +964,45 @@ fn parse_speed_eta(line: &str) -> Option<String> {
         [speed, "ETA", eta, ..] => Some(format!(" — {speed}  ETA {eta}")),
         [speed, ..] => Some(format!(" — {speed}")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::execution::{is_cancelled, JobExecutionContext};
+
+    #[tokio::test]
+    async fn ingest_merge_honors_job_cancellation() {
+        let execution = JobExecutionContext::new();
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = tokio::process::Command::new("powershell");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "sleep 30"]);
+            command
+        };
+
+        let waiting_execution = execution.clone();
+        let waiting = tokio::spawn(async move {
+            run_merge_ffmpeg(&waiting_execution, &mut command).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        execution.cancel();
+
+        let error = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("cancelled ingest merge must be reaped within two seconds")
+            .expect("ingest merge task must not panic")
+            .expect_err("cancelled ingest merge must fail");
+        assert!(is_cancelled(&error), "{error:?}");
     }
 }
