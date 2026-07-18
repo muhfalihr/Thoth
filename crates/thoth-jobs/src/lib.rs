@@ -1,4 +1,112 @@
 mod validation;
+mod profiles;
+
+pub use profiles::{
+    AdvancedSettings, AnalysisSettings, IngestSourceSettings, NarrationSettings, OutputSettings,
+    ProfileSettings, ResolvedSettings, RunOverrides, SETTINGS_SCHEMA_VERSION, VisualEditSettings,
+    redacted_settings_json, resolve_settings, validate_settings,
+};
+
+#[cfg(test)]
+mod profiles_tests {
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use crate::{
+        ProfileSettings, ResolvedSettings, RunOverrides, ThothHome, redacted_settings_json,
+        resolve_settings, validate_settings,
+    };
+
+    #[test]
+    fn override_wins_without_mutating_profile() {
+        let profile = ProfileSettings::default();
+        let overrides = RunOverrides {
+            analysis_max_clips: Some(5),
+            ..RunOverrides::default()
+        };
+
+        let resolved = resolve_settings(&profile, &overrides).unwrap();
+
+        assert_eq!(resolved.analysis.max_clips, 5);
+        assert_eq!(profile.analysis.max_clips, 3);
+    }
+
+    #[test]
+    fn snapshot_has_reference_not_secret_value() {
+        let snapshot = redacted_settings_json(&ResolvedSettings::default(), Some("openai-production"));
+
+        assert_eq!(snapshot["credential_ref"], "openai-production");
+        assert!(snapshot.get("credential_value").is_none());
+        assert!(!snapshot.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn profile_deserialization_rejects_unknown_fields() {
+        let invalid = json!({
+            "schema_version": 1,
+            "narration": { "language": null },
+            "visual_edit": {
+                "layout": "vertical",
+                "clip_style": "fade",
+                "style_profile": "auto",
+                "social": "",
+                "bgm": null,
+                "bgm_volume": 0.12,
+                "sfx_intro": null,
+                "headline_dur": 4.0
+            },
+            "analysis": {
+                "provider": "novita",
+                "model": "medium",
+                "max_clips": 3,
+                "keywords": []
+            },
+            "ingest_source": { "source": null, "content_set": null },
+            "output": { "directory": null },
+            "advanced": {},
+            "unknown": true
+        });
+
+        assert!(serde_json::from_value::<ProfileSettings>(invalid).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_invalid_enum_and_managed_path_escape() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        let mut settings = ProfileSettings::default();
+        settings.visual_edit.layout = "diagonal".to_owned();
+        assert!(validate_settings(&settings, &home).is_err());
+
+        settings.visual_edit.layout = "vertical".to_owned();
+        settings.output.directory = Some(PathBuf::from("outside-output"));
+        assert!(validate_settings(&settings, &home).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_blank_required_values_and_non_finite_numbers() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        let mut settings = ProfileSettings::default();
+        settings.analysis.provider = "  ".to_owned();
+        assert!(validate_settings(&settings, &home).is_err());
+
+        settings.analysis.provider = "novita".to_owned();
+        settings.visual_edit.bgm_volume = f64::NAN;
+        assert!(validate_settings(&settings, &home).is_err());
+    }
+
+    #[test]
+    fn validation_accepts_a_managed_output_directory() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        let mut settings = ProfileSettings::default();
+        settings.output.directory = Some(home.project_outputs("project-1"));
+
+        assert!(validate_settings(&settings, &home).is_ok());
+    }
+}
 
 #[cfg(test)]
 mod home_tests {
