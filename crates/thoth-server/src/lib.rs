@@ -57,6 +57,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/jobs/:id", get(routes::get_job))
         .route("/jobs/:id/cancel", post(routes::cancel_job))
         .route(
+            "/jobs/:id/effective-settings",
+            get(routes::get_effective_settings),
+        )
+        .route(
+            "/projects/:project_id/jobs",
+            post(routes::create_project_job),
+        )
+        .route(
             "/artifacts/:id/*path",
             get(routes::get_artifact).head(routes::get_artifact),
         )

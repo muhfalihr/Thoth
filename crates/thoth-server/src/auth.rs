@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::{
     body::Body,
@@ -9,6 +10,24 @@ use axum::{
 };
 
 use thoth_jobs::{JobStore, ThothHome};
+
+/// Resolves whether a profile's non-secret `credential_ref` currently points
+/// at a usable credential. Never exposes the secret itself — callers only
+/// ever see the bool. Injected so tests can supply a deterministic fake.
+pub trait CredentialProvider: Send + Sync {
+    /// Whether the named non-secret reference resolves to a usable credential.
+    fn is_available(&self, reference: &str) -> bool;
+}
+
+/// Production `CredentialProvider`: a reference is available iff the
+/// environment variable of that exact name is set and non-empty after trim.
+pub struct EnvCredentialProvider;
+
+impl CredentialProvider for EnvCredentialProvider {
+    fn is_available(&self, reference: &str) -> bool {
+        std::env::var(reference).is_ok_and(|value| !value.trim().is_empty())
+    }
+}
 
 /// The server and worker share this SQLite database by default. `THOTH_DB`
 /// remains an explicit compatibility override for existing deployments.
@@ -45,6 +64,8 @@ pub struct AppState {
     /// Single-slot supervisor for the interactive scout discovery pipeline.
     /// In-memory; independent of the render job queue. See scout.rs.
     pub scout: crate::scout::ScoutSupervisor,
+    /// Injected credential-availability check for profile-resolved enqueue.
+    pub credentials: Arc<dyn CredentialProvider>,
 }
 
 impl AppState {

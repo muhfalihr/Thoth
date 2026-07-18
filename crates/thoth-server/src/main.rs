@@ -1,8 +1,9 @@
-use std::{ffi::OsString, net::SocketAddr, path::PathBuf};
+use std::{ffi::OsString, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use thoth_jobs::resolve_home;
 use thoth_server::auth::{
-    AppState, legacy_output_root, server_db_path, worker_compatible_config_path,
+    AppState, EnvCredentialProvider, legacy_output_root, server_db_path,
+    worker_compatible_config_path,
 };
 
 fn parse_home_arg(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Option<PathBuf>> {
@@ -54,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         home,
         worker_config_path,
         scout: thoth_server::scout::new_supervisor(),
+        credentials: Arc::new(EnvCredentialProvider),
     };
 
     // Liveness backstop: reclaim jobs whose independent worker crashed.

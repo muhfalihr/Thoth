@@ -2,7 +2,9 @@
 // bind — port 8787 may be occupied on this machine). Covers the REST surface:
 // auth gating, job creation, listing, artifact traversal guard, SSE tailing.
 use std::{
+    collections::HashSet,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -11,9 +13,19 @@ use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 use thoth_server::{
-    auth::{AppState, legacy_output_root, server_db_path, worker_compatible_config_path},
+    auth::{AppState, CredentialProvider, legacy_output_root, server_db_path, worker_compatible_config_path},
     build_router,
 };
+
+/// Deterministic test double: only references in the set are "available".
+/// Never resolves anything from the real environment.
+struct FakeCredentialProvider(HashSet<String>);
+
+impl CredentialProvider for FakeCredentialProvider {
+    fn is_available(&self, reference: &str) -> bool {
+        self.0.contains(reference)
+    }
+}
 
 #[test]
 fn server_runtime_paths_are_derived_from_thoth_home() {
@@ -50,6 +62,13 @@ fn test_output_root(root: &std::path::Path) -> PathBuf {
 // Returns the router + the Thoth home root so tests that need to seed events
 // directly can reopen the same SQLite DB through `test_db_path(&tmp)`.
 async fn build_test_app() -> (axum::Router, PathBuf) {
+    build_test_app_with_credentials(&[]).await
+}
+
+// Same as `build_test_app`, but with a deterministic fake `CredentialProvider`
+// that treats exactly the given references as available. Tests exercising the
+// enqueue-from-profile credential gate use this to avoid touching real env vars.
+async fn build_test_app_with_credentials(available: &[&str]) -> (axum::Router, PathBuf) {
     let tmp = std::env::temp_dir().join(format!("thoth-routes-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     let home = test_home(&tmp);
@@ -58,6 +77,7 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
     let store = thoth_jobs::JobStore::connect_with_home(db_path.to_str().unwrap(), home.clone())
         .await
         .unwrap();
+    let credentials: HashSet<String> = available.iter().map(|s| s.to_string()).collect();
     let state = AppState {
         api_key: "test-key".into(),
         store,
@@ -65,6 +85,7 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
         home,
         worker_config_path: tmp.join("config.toml"),
         scout: thoth_server::scout::new_supervisor(),
+        credentials: Arc::new(FakeCredentialProvider(credentials)),
     };
     (build_router(state), tmp)
 }
@@ -1203,6 +1224,7 @@ async fn app_with_content_set(cs: std::path::PathBuf) -> axum::Router {
         home,
         worker_config_path: tmp.join("config.toml"),
         scout,
+        credentials: Arc::new(FakeCredentialProvider(HashSet::new())),
     };
     build_router(state)
 }
@@ -1973,5 +1995,435 @@ async fn profile_storage_errors_return_safe_internal_error() {
     assert_eq!(text, r#"{"error":"internal_error"}"#);
     assert!(!text.contains("secret"));
     assert!(!text.to_ascii_lowercase().contains("sql"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_from_profile_resolves_overrides_and_effective_settings() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": null
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let created = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({
+            "profile_id": profile_id,
+            "overrides": { "analysis_max_clips": 5 }
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let job_id = created["job_id"].as_str().unwrap();
+
+    let settings = project_api_json(
+        app.clone(),
+        "GET",
+        &format!("/api/jobs/{job_id}/effective-settings"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(settings["settings"]["analysis"]["max_clips"], 5);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_rejects_profile_from_another_project() {
+    let (app, tmp) = build_test_app().await;
+    let first = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "First" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let second = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Second" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let first_id = first["id"].as_str().unwrap();
+    let second_id = second["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{first_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": null
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(project_api_request(
+            "POST",
+            &format!("/api/projects/{second_id}/jobs"),
+            Some(serde_json::json!({
+                "profile_id": profile_id,
+                "overrides": {}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_rejects_invalid_overrides() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": null
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    // "widescreen" is not one of the allowed visual_edit.layout values.
+    let response = app
+        .oneshot(project_api_request(
+            "POST",
+            &format!("/api/projects/{project_id}/jobs"),
+            Some(serde_json::json!({
+                "profile_id": profile_id,
+                "overrides": { "visual_edit_layout": "widescreen" }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_rejects_when_credential_reference_is_unavailable() {
+    // Deliberately empty fake credential set: "openai-production" resolves to nothing.
+    let (app, tmp) = build_test_app_with_credentials(&[]).await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": "openai-production"
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(project_api_request(
+            "POST",
+            &format!("/api/projects/{project_id}/jobs"),
+            Some(serde_json::json!({
+                "profile_id": profile_id,
+                "overrides": {}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    let text = body.to_string();
+    // The error must never leak the reference name or imply a secret value.
+    assert!(!text.contains("openai-production"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_succeeds_when_credential_reference_is_available() {
+    let (app, tmp) = build_test_app_with_credentials(&["openai-production"]).await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": "openai-production"
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let created = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({
+            "profile_id": profile_id,
+            "overrides": {}
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    assert!(created["job_id"].as_str().is_some());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_rejects_unknown_body_fields_as_safe_json() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(project_api_request(
+            "POST",
+            &format!("/api/projects/{project_id}/jobs"),
+            Some(serde_json::json!({
+                "profile_id": "does-not-matter",
+                "overrides": {},
+                "unexpected_field": true
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    assert_eq!(body["error"], "invalid_request");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn effective_settings_snapshot_is_immutable_after_profile_edit() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": { "analysis": { "provider": "novita", "model": "medium", "max_clips": 3, "keywords": [] } },
+            "credential_ref": null
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let created = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let job_id = created["job_id"].as_str().unwrap();
+
+    // Edit the profile after enqueue — the stored snapshot must not move.
+    let _ = project_api_json(
+        app.clone(),
+        "PATCH",
+        &format!("/api/projects/{project_id}/profiles/{profile_id}"),
+        Some(serde_json::json!({
+            "settings": { "analysis": { "provider": "novita", "model": "medium", "max_clips": 99, "keywords": [] } }
+        })),
+        StatusCode::OK,
+    )
+    .await;
+
+    let settings = project_api_json(
+        app.clone(),
+        "GET",
+        &format!("/api/jobs/{job_id}/effective-settings"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(settings["settings"]["analysis"]["max_clips"], 3);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_output_dir_is_under_projects_outputs_job_id() {
+    let (app, tmp) = build_test_app().await;
+    let home = test_home(&tmp);
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default", "description": "", "settings": {}, "credential_ref": null
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let created = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let job_id = created["job_id"].as_str().unwrap();
+
+    let job = project_api_json(
+        app.clone(),
+        "GET",
+        &format!("/api/jobs/{job_id}"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    let expected = home
+        .project_outputs(&project_id)
+        .join(job_id)
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(job["output_dir"], expected);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn effective_settings_redacts_credential_reference() {
+    let (app, tmp) = build_test_app_with_credentials(&["openai-production"]).await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": "openai-production"
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let created = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let job_id = created["job_id"].as_str().unwrap();
+
+    let settings = project_api_json(
+        app.clone(),
+        "GET",
+        &format!("/api/jobs/{job_id}/effective-settings"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert!(settings["settings"].get("credential_ref").is_none());
+    let text = settings.to_string();
+    assert!(!text.contains("openai-production"));
     let _ = std::fs::remove_dir_all(tmp);
 }

@@ -12,8 +12,9 @@ use serde::Deserialize;
 use crate::auth::AppState;
 use crate::scout::{self, DiscoverReq, RunReq, ScoutKind, ValidateReq};
 use thoth_jobs::{
-    CancelRequestOutcome, JobRecord, JobSpec, JobStore, ProfileRecord, ProfileSettings,
-    ResourceError, validate_job_spec, validate_settings,
+    CancelRequestOutcome, EnqueueRequest, JobRecord, JobSpec, JobStore, ProfileRecord,
+    ProfileSettings, ResourceError, RunOverrides, resolve_settings, validate_job_spec,
+    validate_settings,
 };
 
 #[derive(Deserialize)]
@@ -74,6 +75,14 @@ pub struct DuplicateProfileBody {
 pub struct ValidateProfileBody {
     #[serde(default)]
     pub settings: Option<ProfileSettings>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProjectJobBody {
+    pub profile_id: String,
+    #[serde(default)]
+    pub overrides: RunOverrides,
 }
 
 fn resource_error_response(error: ResourceError) -> Response {
@@ -422,6 +431,95 @@ pub async fn create_job(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job_id }))).into_response()
+}
+
+/// Enqueue a job from a project-scoped profile plus typed one-off overrides.
+/// The stored settings snapshot is the fully resolved, redacted result —
+/// immune to later edits of the selected profile.
+pub async fn create_project_job(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    body: Result<Json<CreateProjectJobBody>, JsonRejection>,
+) -> Response {
+    let body = match request_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+
+    if let Err(error) = state.store.get_project(&project_id).await {
+        return resource_error_response(error);
+    }
+    let profile = match scoped_profile(&state.store, &project_id, &body.profile_id).await {
+        Ok(profile) => profile,
+        Err(error) => return resource_error_response(error),
+    };
+
+    if let Some(reference) = &profile.credential_ref {
+        if !state.credentials.is_available(reference) {
+            return resource_error_response(ResourceError::Validation {
+                message: "required credential is unavailable".to_owned(),
+            });
+        }
+    }
+
+    let resolved = match resolve_settings(&profile.settings, &body.overrides, &state.home) {
+        Ok(resolved) => resolved,
+        Err(error) => return validation_error_response(error),
+    };
+
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let output_dir = state.home.project_outputs(&project_id).join(&job_id);
+    let spec = JobSpec {
+        command: "run".to_owned(),
+        url: resolved.ingest_source.source.clone(),
+        content_set: resolved
+            .ingest_source
+            .content_set
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned()),
+        params: serde_json::json!({}),
+    };
+    let request = EnqueueRequest {
+        spec,
+        project_id: project_id.clone(),
+        profile_id: Some(profile.id.clone()),
+        profile_revision: None,
+        resolved_settings: resolved,
+    };
+    if state
+        .store
+        .enqueue_resolved(&job_id, &request, &output_dir.to_string_lossy())
+        .await
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "job_id": job_id })),
+    )
+        .into_response()
+}
+
+/// Redacted, immutable settings snapshot resolved at enqueue time. Never
+/// includes the profile's credential reference or any secret value.
+pub async fn get_effective_settings(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Response {
+    let job = match state.store.get(&job_id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let mut settings = match job.resolved_settings_snapshot {
+        Some(settings) => settings,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if let Some(object) = settings.as_object_mut() {
+        object.remove("credential_ref");
+    }
+    Json(serde_json::json!({ "settings": settings })).into_response()
 }
 
 pub async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<JobRecord>>, StatusCode> {
