@@ -278,11 +278,11 @@ mod profile_store_tests {
         let a = store.create_project("A").await.unwrap();
         let b = store.create_project("B").await.unwrap();
         store
-            .create_profile(&a.id, "Default", ProfileSettings::default(), None)
+            .create_profile(&a.id, "Default", "", ProfileSettings::default(), None)
             .await
             .unwrap();
         store
-            .create_profile(&b.id, "Default", ProfileSettings::default(), None)
+            .create_profile(&b.id, "Default", "", ProfileSettings::default(), None)
             .await
             .unwrap();
 
@@ -290,7 +290,7 @@ mod profile_store_tests {
         let mut changed = ProfileSettings::default();
         changed.analysis.max_clips = 5;
         store
-            .update_profile(&profile.id, "Default", changed, None)
+            .update_profile(&profile.id, "Default", "", changed, None)
             .await
             .unwrap();
 
@@ -308,12 +308,12 @@ mod profile_store_tests {
         let (store, root) = fresh_profile_store().await;
         let project = store.create_project("A").await.unwrap();
         store
-            .create_profile(&project.id, "Default", ProfileSettings::default(), None)
+            .create_profile(&project.id, "Default", "", ProfileSettings::default(), None)
             .await
             .unwrap();
 
         let result = store
-            .create_profile(&project.id, "Default", ProfileSettings::default(), None)
+            .create_profile(&project.id, "Default", "", ProfileSettings::default(), None)
             .await;
 
         assert!(result.is_err());
@@ -327,7 +327,7 @@ mod profile_store_tests {
         let first = store.create_project("A").await.unwrap();
         let second = store.create_project("B").await.unwrap();
         let profile = store
-            .create_profile(&first.id, "Default", ProfileSettings::default(), None)
+            .create_profile(&first.id, "Default", "", ProfileSettings::default(), None)
             .await
             .unwrap();
 
@@ -347,13 +347,13 @@ mod profile_store_tests {
         let (store, root) = fresh_profile_store().await;
         let project = store.create_project("A").await.unwrap();
         let profile = store
-            .create_profile(&project.id, "Default", ProfileSettings::default(), None)
+            .create_profile(&project.id, "Default", "", ProfileSettings::default(), None)
             .await
             .unwrap();
         let mut changed = ProfileSettings::default();
         changed.analysis.max_clips = 5;
         store
-            .update_profile(&profile.id, "Changed", changed, Some("named-credential"))
+            .update_profile(&profile.id, "Changed", "", changed, Some("named-credential"))
             .await
             .unwrap();
         let original = store.list_profile_revisions(&profile.id).await.unwrap().remove(0);
@@ -367,6 +367,87 @@ mod profile_store_tests {
         assert_eq!(restored.settings.analysis.max_clips, 3);
         assert_eq!(restored.credential_ref, None);
         assert_eq!(store.list_profile_revisions(&profile.id).await.unwrap().len(), 2);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn profile_description_is_persisted_revised_and_restored() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("A").await.unwrap();
+        let profile = store
+            .create_profile(
+                &project.id,
+                "Default",
+                "Initial description",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.get_profile(&profile.id).await.unwrap().unwrap().description, "Initial description");
+
+        let updated = store
+            .update_profile(
+                &profile.id,
+                "Default",
+                "Updated description",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let original = store.list_profile_revisions(&profile.id).await.unwrap().remove(0);
+
+        assert_eq!(updated.description, "Updated description");
+        assert_eq!(original.description, "Initial description");
+        let restored = store
+            .restore_profile_revision(&profile.id, &original.id)
+            .await
+            .unwrap();
+        assert_eq!(restored.description, "Initial description");
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn profile_description_is_trimmed_before_persistence() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("A").await.unwrap();
+
+        let profile = store
+            .create_profile(
+                &project.id,
+                "Default",
+                "  Concise summary  ",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(profile.description, "Concise summary");
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn profile_description_rejects_more_than_1024_characters() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("A").await.unwrap();
+
+        let error = store
+            .create_profile(
+                &project.id,
+                "Default",
+                &"x".repeat(1025),
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("at most 1024"));
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -426,6 +507,17 @@ fn validate_credential_ref(reference: Option<&str>) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+fn normalize_description(value: &str) -> anyhow::Result<String> {
+    const MAX_DESCRIPTION_CHARS: usize = 1024;
+
+    let normalized = value.trim();
+    anyhow::ensure!(
+        normalized.chars().count() <= MAX_DESCRIPTION_CHARS,
+        "profile description must be at most {MAX_DESCRIPTION_CHARS} characters"
+    );
+    Ok(normalized.to_owned())
 }
 
 fn is_sqlite_busy(error: &sqlx::Error) -> bool {
@@ -549,16 +641,17 @@ impl JobStore {
         &self,
         project_id: &str,
         name: &str,
+        description: &str,
         settings: ProfileSettings,
         credential_ref: Option<&str>,
     ) -> anyhow::Result<ProfileRecord> {
         validate_name("profile name", name)?;
         validate_credential_ref(credential_ref)?;
+        let description = normalize_description(description)?;
         let home = self.require_home()?;
         validate_settings(&settings, home)?;
 
         let id = uuid::Uuid::new_v4().to_string();
-        let description = String::new();
         let settings_json = serde_json::to_string(&settings)?;
         let ts = now();
         sqlx::query(
@@ -609,11 +702,13 @@ impl JobStore {
         &self,
         profile_id: &str,
         name: &str,
+        description: &str,
         settings: ProfileSettings,
         credential_ref: Option<&str>,
     ) -> anyhow::Result<ProfileRecord> {
         validate_name("profile name", name)?;
         validate_credential_ref(credential_ref)?;
+        let description = normalize_description(description)?;
         let home = self.require_home()?;
         validate_settings(&settings, home)?;
 
@@ -651,10 +746,11 @@ impl JobStore {
 
         sqlx::query(
             "UPDATE profiles
-             SET name = ?, schema_version = ?, settings_json = ?, credential_ref = ?, updated_at = ?
+             SET name = ?, description = ?, schema_version = ?, settings_json = ?, credential_ref = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(name)
+        .bind(&description)
         .bind(settings.schema_version as i64)
         .bind(settings_json)
         .bind(credential_ref)
@@ -668,7 +764,7 @@ impl JobStore {
             id: previous.id,
             project_id: previous.project_id,
             name: name.to_owned(),
-            description: previous.description,
+            description,
             settings,
             credential_ref: credential_ref.map(str::to_owned),
             created_at: previous.created_at,
@@ -709,6 +805,7 @@ impl JobStore {
         self.update_profile(
             profile_id,
             &revision.name,
+            &revision.description,
             revision.settings,
             revision.credential_ref.as_deref(),
         )
