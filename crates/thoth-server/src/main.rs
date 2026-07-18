@@ -1,7 +1,9 @@
 use std::{ffi::OsString, net::SocketAddr, path::PathBuf};
 
 use thoth_jobs::resolve_home;
-use thoth_server::auth::{AppState, legacy_output_root, server_db_path};
+use thoth_server::auth::{
+    AppState, legacy_output_root, server_db_path, worker_compatible_config_path,
+};
 
 fn parse_home_arg(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Option<PathBuf>> {
     let mut args = args.into_iter();
@@ -33,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     // typed project jobs resolve their own workspace paths.
     home.ensure_project_layout("legacy")?;
     let output_root = legacy_output_root(&home);
+    let worker_config_path = worker_compatible_config_path()?;
     // The server and the `thoth worker` process meet ONLY here — the shared
     // SQLite/WAL job database. `THOTH_DB` remains a compatibility override;
     // the default is always inside the resolved Thoth home.
@@ -49,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
         store,
         output_root,
         home,
+        worker_config_path,
         scout: thoth_server::scout::new_supervisor(),
     };
 

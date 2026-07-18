@@ -22,6 +22,14 @@ pub fn legacy_output_root(home: &ThothHome) -> PathBuf {
     home.project_outputs("legacy")
 }
 
+/// `AppConfig::load()` in the independent worker uses
+/// `File::with_name("config")`, resolved from its current working directory.
+/// Keep raw TOML compatibility reads and writes on that exact file until the
+/// typed-profile migration removes the endpoint and dashboard editor together.
+pub fn worker_compatible_config_path() -> std::io::Result<PathBuf> {
+    std::env::current_dir().map(|directory| directory.join("config.toml"))
+}
+
 /// Server-wide config shared with handlers. The server no longer owns any job
 /// runtime state (no in-process worker handles) — the `JobStore` (shared SQLite
 /// DB) is the entire channel to the independent worker process.
@@ -32,16 +40,19 @@ pub struct AppState {
     pub output_root: PathBuf,
     /// Application home shared by all server-owned paths.
     pub home: ThothHome,
+    /// Exact legacy TOML path the independent worker reads from its CWD.
+    pub worker_config_path: PathBuf,
     /// Single-slot supervisor for the interactive scout discovery pipeline.
     /// In-memory; independent of the render job queue. See scout.rs.
     pub scout: crate::scout::ScoutSupervisor,
 }
 
 impl AppState {
-    /// Transitional location used by the legacy raw TOML endpoints. Those
-    /// endpoints are retired by the profile migration task.
-    pub fn legacy_config_path(&self) -> PathBuf {
-        self.home.root().join("config.toml")
+    /// Transitional location used by the legacy raw TOML endpoints. This is
+    /// deliberately the worker's CWD config, not a path inside `ThothHome`.
+    /// The endpoint is retired by the profile migration task.
+    pub fn legacy_config_path(&self) -> &std::path::Path {
+        &self.worker_config_path
     }
 }
 

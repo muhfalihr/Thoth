@@ -9,8 +9,9 @@
 - `crates/thoth-server/tests/routes_http.rs`
 
 `AppState.config_path` was replaced with `home: ThothHome`. The raw TOML
-endpoints remain only as a transitional compatibility surface; they use
-`home/config.toml` until the planned migration task removes them.
+endpoints remain only as a transitional compatibility surface; their explicit
+worker-compatible path is retained until the planned migration task removes
+them.
 
 ## TDD Evidence
 
@@ -69,4 +70,35 @@ formatting changes are included in this task, per the explicit deferral.
 - Bearer middleware and loopback-default bind logic are unchanged.
 - No `thoth-core`, media, GPU, or other new dependency was added.
 - The only route-file edits are necessary replacements of the removed
-  `config_path` field with the transitional `home/config.toml` accessor.
+  `config_path` field with the transitional worker-compatible accessor.
+
+## Review Follow-up: P1 Legacy Worker Compatibility
+
+Review identified that `home/config.toml` was not worker-compatible: the
+independent worker still loads `File::with_name("config")` from its CWD.
+
+### RED
+
+Added `legacy_config_path_matches_the_workers_cwd_config` and ran:
+
+```text
+cargo test -p thoth-server --test routes_http legacy_config_path_matches_the_workers_cwd_config -- --nocapture
+```
+
+Result: expected `E0432` because `worker_compatible_config_path` was absent.
+
+### GREEN
+
+`main` now resolves `current_dir()/config.toml` at startup and injects it as
+`AppState.worker_config_path`. The raw endpoint reads/writes that path. Test
+fixtures inject a temporary path so the raw endpoint's existing round-trip test
+does not modify the worktree config.
+
+Focused verification:
+
+```text
+legacy_config_path_matches_the_workers_cwd_config ... ok
+config_get_put_roundtrip_and_validation ... ok
+```
+
+Default Thoth-home database/output behavior is unchanged by this follow-up.

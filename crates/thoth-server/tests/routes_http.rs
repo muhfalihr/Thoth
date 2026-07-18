@@ -11,7 +11,7 @@ use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 use thoth_server::{
-    auth::{AppState, legacy_output_root, server_db_path},
+    auth::{AppState, legacy_output_root, server_db_path, worker_compatible_config_path},
     build_router,
 };
 
@@ -24,6 +24,14 @@ fn server_runtime_paths_are_derived_from_thoth_home() {
     assert_eq!(
         legacy_output_root(&home),
         root.join("projects").join("legacy").join("outputs")
+    );
+}
+
+#[test]
+fn legacy_config_path_matches_the_workers_cwd_config() {
+    assert_eq!(
+        worker_compatible_config_path().unwrap(),
+        std::env::current_dir().unwrap().join("config.toml")
     );
 }
 
@@ -55,6 +63,7 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
         store,
         output_root: legacy_output_root(&home),
         home,
+        worker_config_path: tmp.join("config.toml"),
         scout: thoth_server::scout::new_supervisor(),
     };
     (build_router(state), tmp)
@@ -1192,6 +1201,7 @@ async fn app_with_content_set(cs: std::path::PathBuf) -> axum::Router {
         store,
         output_root: legacy_output_root(&home),
         home,
+        worker_config_path: tmp.join("config.toml"),
         scout,
     };
     build_router(state)
