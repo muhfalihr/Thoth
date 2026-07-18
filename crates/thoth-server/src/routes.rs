@@ -479,6 +479,13 @@ pub async fn create_project_job(
             .map(|p| p.to_string_lossy().into_owned()),
         params: serde_json::json!({}),
     };
+    if let Err(error) = validate_job_spec(&spec) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": error })),
+        )
+            .into_response();
+    }
     let request = EnqueueRequest {
         spec,
         project_id: project_id.clone(),

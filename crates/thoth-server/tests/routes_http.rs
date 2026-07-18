@@ -2031,7 +2031,7 @@ async fn project_job_from_profile_resolves_overrides_and_effective_settings() {
         &format!("/api/projects/{project_id}/jobs"),
         Some(serde_json::json!({
             "profile_id": profile_id,
-            "overrides": { "analysis_max_clips": 5 }
+            "overrides": { "analysis_max_clips": 5, "ingest_source_source": "https://x.test/v" }
         })),
         StatusCode::CREATED,
     )
@@ -2224,7 +2224,7 @@ async fn project_job_succeeds_when_credential_reference_is_available() {
         &format!("/api/projects/{project_id}/jobs"),
         Some(serde_json::json!({
             "profile_id": profile_id,
-            "overrides": {}
+            "overrides": { "ingest_source_source": "https://x.test/v" }
         })),
         StatusCode::CREATED,
     )
@@ -2295,7 +2295,10 @@ async fn effective_settings_snapshot_is_immutable_after_profile_edit() {
         app.clone(),
         "POST",
         &format!("/api/projects/{project_id}/jobs"),
-        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        Some(serde_json::json!({
+            "profile_id": profile_id,
+            "overrides": { "ingest_source_source": "https://x.test/v" }
+        })),
         StatusCode::CREATED,
     )
     .await;
@@ -2354,7 +2357,10 @@ async fn project_job_output_dir_is_under_projects_outputs_job_id() {
         app.clone(),
         "POST",
         &format!("/api/projects/{project_id}/jobs"),
-        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        Some(serde_json::json!({
+            "profile_id": profile_id,
+            "overrides": { "ingest_source_source": "https://x.test/v" }
+        })),
         StatusCode::CREATED,
     )
     .await;
@@ -2408,7 +2414,10 @@ async fn effective_settings_redacts_credential_reference() {
         app.clone(),
         "POST",
         &format!("/api/projects/{project_id}/jobs"),
-        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        Some(serde_json::json!({
+            "profile_id": profile_id,
+            "overrides": { "ingest_source_source": "https://x.test/v" }
+        })),
         StatusCode::CREATED,
     )
     .await;
@@ -2425,5 +2434,45 @@ async fn effective_settings_redacts_credential_reference() {
     assert!(settings["settings"].get("credential_ref").is_none());
     let text = settings.to_string();
     assert!(!text.contains("openai-production"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_rejects_profile_with_no_ingest_source() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    // Default settings: ingest_source.source and .content_set are both None.
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": null
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(project_api_request(
+            "POST",
+            &format!("/api/projects/{project_id}/jobs"),
+            Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let _ = std::fs::remove_dir_all(tmp);
 }
