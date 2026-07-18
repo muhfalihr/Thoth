@@ -4,7 +4,7 @@ mod profiles;
 pub use profiles::{
     AdvancedSettings, AnalysisSettings, IngestSourceSettings, NarrationSettings, OutputSettings,
     ProfileSettings, ResolvedSettings, RunOverrides, SETTINGS_SCHEMA_VERSION, VisualEditSettings,
-    redacted_settings_json, resolve_settings, validate_settings,
+    redacted_settings_json, resolve_settings, validate_resolved_settings, validate_settings,
 };
 
 #[cfg(test)]
@@ -15,18 +15,20 @@ mod profiles_tests {
 
     use crate::{
         ProfileSettings, ResolvedSettings, RunOverrides, ThothHome, redacted_settings_json,
-        resolve_settings, validate_settings,
+        resolve_settings, validate_resolved_settings, validate_settings,
     };
 
     #[test]
     fn override_wins_without_mutating_profile() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
         let profile = ProfileSettings::default();
         let overrides = RunOverrides {
             analysis_max_clips: Some(5),
             ..RunOverrides::default()
         };
 
-        let resolved = resolve_settings(&profile, &overrides).unwrap();
+        let resolved = resolve_settings(&profile, &overrides, &home).unwrap();
 
         assert_eq!(resolved.analysis.max_clips, 5);
         assert_eq!(profile.analysis.max_clips, 3);
@@ -34,7 +36,8 @@ mod profiles_tests {
 
     #[test]
     fn snapshot_has_reference_not_secret_value() {
-        let snapshot = redacted_settings_json(&ResolvedSettings::default(), Some("openai-production"));
+        let snapshot =
+            redacted_settings_json(&ResolvedSettings::default(), Some("openai-production"));
 
         assert_eq!(snapshot["credential_ref"], "openai-production");
         assert!(snapshot.get("credential_value").is_none());
@@ -72,6 +75,48 @@ mod profiles_tests {
     }
 
     #[test]
+    fn profile_deserialization_applies_v1_defaults_without_accepting_unknown_fields() {
+        let settings = serde_json::from_value::<ProfileSettings>(json!({})).unwrap();
+
+        assert_eq!(settings, ProfileSettings::default());
+        assert!(serde_json::from_value::<ProfileSettings>(json!({ "unknown": true })).is_err());
+    }
+
+    #[test]
+    fn resolver_rejects_invalid_typed_overrides() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        let profile = ProfileSettings::default();
+        let invalid_enum = RunOverrides {
+            analysis_provider: Some("unsupported".to_owned()),
+            ..RunOverrides::default()
+        };
+        assert!(resolve_settings(&profile, &invalid_enum, &home).is_err());
+
+        let non_finite = RunOverrides {
+            visual_edit_bgm_volume: Some(f64::NAN),
+            ..RunOverrides::default()
+        };
+        assert!(resolve_settings(&profile, &non_finite, &home).is_err());
+
+        let escaped_output = RunOverrides {
+            output_directory: Some(Some(root.join("..").join("outside"))),
+            ..RunOverrides::default()
+        };
+        assert!(resolve_settings(&profile, &escaped_output, &home).is_err());
+    }
+
+    #[test]
+    fn resolved_settings_validation_rejects_output_outside_home() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        let mut resolved = ResolvedSettings::default();
+        resolved.output.directory = Some(root.join("..").join("outside"));
+
+        assert!(validate_resolved_settings(&resolved, &home).is_err());
+    }
+
+    #[test]
     fn validation_rejects_invalid_enum_and_managed_path_escape() {
         let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
         let home = ThothHome::for_test(&root);
@@ -101,10 +146,64 @@ mod profiles_tests {
     fn validation_accepts_a_managed_output_directory() {
         let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
         let home = ThothHome::for_test(&root);
+        home.ensure_layout().unwrap();
         let mut settings = ProfileSettings::default();
         settings.output.directory = Some(home.project_outputs("project-1"));
 
         assert!(validate_settings(&settings, &home).is_ok());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validation_rejects_output_path_through_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("thoth-outside-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        home.ensure_layout().unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = home.root().join("projects").join("escape");
+        symlink(&outside, &link).unwrap();
+
+        let mut settings = ProfileSettings::default();
+        settings.output.directory = Some(link.join("render"));
+        assert!(validate_settings(&settings, &home).is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validation_rejects_output_path_through_symlink_when_supported() {
+        use std::io::ErrorKind;
+        use std::os::windows::fs::symlink_dir;
+
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("thoth-outside-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        home.ensure_layout().unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = home.root().join("projects").join("escape");
+        if let Err(error) = symlink_dir(&outside, &link) {
+            assert!(
+                error.kind() == ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314),
+                "symlink setup failed for an unexpected reason: {error}"
+            );
+            let _ = std::fs::remove_dir_all(root);
+            let _ = std::fs::remove_dir_all(outside);
+            return;
+        }
+
+        let mut settings = ProfileSettings::default();
+        settings.output.directory = Some(link.join("render"));
+        assert!(validate_settings(&settings, &home).is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
     }
 }
 

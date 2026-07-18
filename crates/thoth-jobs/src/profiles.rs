@@ -1,6 +1,9 @@
-use std::path::{Component, Path, PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -25,14 +28,14 @@ const CLIP_STYLES: &[&str] = &["fade", "flash", "zoom", "smooth", "none"];
 
 /// Safe narration defaults that can be stored in a project profile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct NarrationSettings {
     pub language: Option<String>,
 }
 
 /// Existing visual and edit CLI knobs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct VisualEditSettings {
     pub layout: String,
     pub clip_style: String,
@@ -61,7 +64,7 @@ impl Default for VisualEditSettings {
 
 /// Existing analysis CLI knobs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct AnalysisSettings {
     pub provider: String,
     pub model: String,
@@ -82,7 +85,7 @@ impl Default for AnalysisSettings {
 
 /// A profile's optional default input. It remains external to `ThothHome`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct IngestSourceSettings {
     pub source: Option<String>,
     pub content_set: Option<PathBuf>,
@@ -90,19 +93,19 @@ pub struct IngestSourceSettings {
 
 /// The optional output directory is managed by Thoth and must stay inside its home.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct OutputSettings {
     pub directory: Option<PathBuf>,
 }
 
 /// Reserved typed section for later supported knobs; schema v1 intentionally has none.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct AdvancedSettings {}
 
 /// Versioned, validated defaults owned by one project profile.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ProfileSettings {
     pub schema_version: u32,
     pub narration: NarrationSettings,
@@ -129,7 +132,7 @@ impl Default for ProfileSettings {
 
 /// Typed one-off settings. `None` means retain the selected profile's value.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct RunOverrides {
     pub narration_language: Option<Option<String>>,
     pub visual_edit_layout: Option<String>,
@@ -151,7 +154,7 @@ pub struct RunOverrides {
 
 /// The complete settings used by a single job after its profile and overrides resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ResolvedSettings {
     pub schema_version: u32,
     pub narration: NarrationSettings,
@@ -186,6 +189,7 @@ impl From<ProfileSettings> for ResolvedSettings {
 pub fn resolve_settings(
     profile: &ProfileSettings,
     overrides: &RunOverrides,
+    home: &ThothHome,
 ) -> Result<ResolvedSettings> {
     let mut resolved = ResolvedSettings::from(profile.clone());
 
@@ -238,11 +242,25 @@ pub fn resolve_settings(
         resolved.output.directory = value.clone();
     }
 
+    validate_resolved_settings(&resolved, home)?;
     Ok(resolved)
 }
 
-/// Validates a profile or resolved settings through their shared shape.
+/// Validates a stored profile before it can be selected for a run.
 pub fn validate_settings(settings: &ProfileSettings, home: &ThothHome) -> Result<()> {
+    validate_parts(
+        settings.schema_version,
+        &settings.narration,
+        &settings.visual_edit,
+        &settings.analysis,
+        &settings.ingest_source,
+        &settings.output,
+        home,
+    )
+}
+
+/// Validates a resolved snapshot before it can be stored or handed to a worker.
+pub fn validate_resolved_settings(settings: &ResolvedSettings, home: &ThothHome) -> Result<()> {
     validate_parts(
         settings.schema_version,
         &settings.narration,
@@ -305,16 +323,7 @@ fn validate_parts(
     );
 
     if let Some(directory) = &output.directory {
-        ensure!(
-            directory.is_absolute(),
-            "output.directory must be an absolute path under ThothHome"
-        );
-        let root = normalize_path(home.root());
-        let candidate = normalize_path(directory);
-        ensure!(
-            candidate.starts_with(&root),
-            "output.directory must stay under ThothHome"
-        );
+        validate_managed_output_directory(directory, home)?;
     }
     Ok(())
 }
@@ -346,18 +355,38 @@ fn validate_optional_path(field: &str, value: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
+fn validate_managed_output_directory(directory: &Path, home: &ThothHome) -> Result<()> {
+    ensure!(
+        directory.is_absolute(),
+        "output.directory must be an absolute path under ThothHome"
+    );
+    let canonical_home = fs::canonicalize(home.root()).with_context(|| {
+        format!(
+            "cannot validate managed output because ThothHome does not exist: {}",
+            home.root().display()
+        )
+    })?;
+    let existing_ancestor = canonicalize_existing_ancestor(directory)?;
+    ensure!(
+        existing_ancestor.starts_with(&canonical_home),
+        "output.directory must stay under ThothHome without following a symlink outside it"
+    );
+    Ok(())
+}
+
+fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf> {
+    let mut candidate = path;
+    loop {
+        match fs::canonicalize(candidate) {
+            Ok(canonical) => return Ok(canonical),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                candidate = candidate
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("output.directory has no existing ancestor"))?;
             }
-            _ => normalized.push(component.as_os_str()),
+            Err(error) => return Err(error).context("cannot inspect output.directory"),
         }
     }
-    normalized
 }
 
 /// Produces the only settings JSON permitted to enter a job snapshot.
