@@ -3,7 +3,8 @@ mod profiles;
 
 pub use profiles::{
     AdvancedSettings, AnalysisSettings, IngestSourceSettings, NarrationSettings, OutputSettings,
-    ProfileSettings, ResolvedSettings, RunOverrides, SETTINGS_SCHEMA_VERSION, VisualEditSettings,
+    ProfileRecord, ProfileRevision, ProfileSettings, ProjectRecord, ResolvedSettings, RunOverrides,
+    SETTINGS_SCHEMA_VERSION, VisualEditSettings,
     redacted_settings_json, resolve_settings, validate_resolved_settings, validate_settings,
 };
 
@@ -254,6 +255,138 @@ mod home_tests {
     }
 }
 
+#[cfg(test)]
+mod profile_store_tests {
+    use super::*;
+
+    async fn fresh_profile_store() -> (JobStore, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("thoth-profile-store-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        home.ensure_layout().unwrap();
+        let store = JobStore::connect_with_home(
+            home.data_dir().join("jobs.db").to_str().unwrap(),
+            home,
+        )
+        .await
+        .unwrap();
+        (store, root)
+    }
+
+    #[tokio::test]
+    async fn same_profile_name_is_allowed_in_two_projects_and_update_creates_revision() {
+        let (store, root) = fresh_profile_store().await;
+        let a = store.create_project("A").await.unwrap();
+        let b = store.create_project("B").await.unwrap();
+        store
+            .create_profile(&a.id, "Default", ProfileSettings::default(), None)
+            .await
+            .unwrap();
+        store
+            .create_profile(&b.id, "Default", ProfileSettings::default(), None)
+            .await
+            .unwrap();
+
+        let profile = store.list_profiles(&a.id).await.unwrap().pop().unwrap();
+        let mut changed = ProfileSettings::default();
+        changed.analysis.max_clips = 5;
+        store
+            .update_profile(&profile.id, "Default", changed, None)
+            .await
+            .unwrap();
+
+        let revisions = store.list_profile_revisions(&profile.id).await.unwrap();
+        assert_eq!(revisions.len(), 1);
+        assert_eq!(revisions[0].settings.analysis.max_clips, 3);
+        assert!(a.workspace_path.join("content-sets").is_dir());
+        assert!(b.workspace_path.join("outputs").is_dir());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn duplicate_profile_name_in_one_project_fails() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("A").await.unwrap();
+        store
+            .create_profile(&project.id, "Default", ProfileSettings::default(), None)
+            .await
+            .unwrap();
+
+        let result = store
+            .create_profile(&project.id, "Default", ProfileSettings::default(), None)
+            .await;
+
+        assert!(result.is_err());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn projects_list_and_profiles_are_retrieved_by_their_opaque_ids() {
+        let (store, root) = fresh_profile_store().await;
+        let first = store.create_project("A").await.unwrap();
+        let second = store.create_project("B").await.unwrap();
+        let profile = store
+            .create_profile(&first.id, "Default", ProfileSettings::default(), None)
+            .await
+            .unwrap();
+
+        let projects = store.list_projects().await.unwrap();
+        let fetched = store.get_profile(&profile.id).await.unwrap();
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].id, first.id);
+        assert_eq!(projects[1].id, second.id);
+        assert_eq!(fetched.unwrap().project_id, first.id);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn restoring_a_revision_creates_new_history() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("A").await.unwrap();
+        let profile = store
+            .create_profile(&project.id, "Default", ProfileSettings::default(), None)
+            .await
+            .unwrap();
+        let mut changed = ProfileSettings::default();
+        changed.analysis.max_clips = 5;
+        store
+            .update_profile(&profile.id, "Changed", changed, Some("named-credential"))
+            .await
+            .unwrap();
+        let original = store.list_profile_revisions(&profile.id).await.unwrap().remove(0);
+
+        let restored = store
+            .restore_profile_revision(&profile.id, &original.id)
+            .await
+            .unwrap();
+
+        assert_eq!(restored.name, "Default");
+        assert_eq!(restored.settings.analysis.max_clips, 3);
+        assert_eq!(restored.credential_ref, None);
+        assert_eq!(store.list_profile_revisions(&profile.id).await.unwrap().len(), 2);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn project_mutation_requires_an_explicit_home() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-store-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = JobStore::connect(root.join("jobs.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let error = store.create_project("A").await.unwrap_err();
+
+        assert!(error.to_string().contains("ThothHome"));
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 mod home;
 
 pub mod types;
@@ -273,10 +406,26 @@ use std::{str::FromStr, time::Duration};
 #[derive(Clone)]
 pub struct JobStore {
     pub pool: sqlx::SqlitePool,
+    home: Option<ThothHome>,
 }
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+fn validate_name(field: &str, value: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!value.trim().is_empty(), "{field} must not be blank");
+    Ok(())
+}
+
+fn validate_credential_ref(reference: Option<&str>) -> anyhow::Result<()> {
+    if let Some(reference) = reference {
+        anyhow::ensure!(
+            !reference.trim().is_empty(),
+            "credential reference must not be blank"
+        );
+    }
+    Ok(())
 }
 
 fn is_sqlite_busy(error: &sqlx::Error) -> bool {
@@ -327,14 +476,295 @@ async fn backoff_after_cancel_busy(
 
 impl JobStore {
     pub async fn connect(db_path: &str) -> anyhow::Result<JobStore> {
+        Self::connect_inner(db_path, None).await
+    }
+
+    /// Connects a profile-aware store to a deliberately resolved application home.
+    pub async fn connect_with_home(db_path: &str, home: ThothHome) -> anyhow::Result<JobStore> {
+        home.ensure_layout()?;
+        Self::connect_inner(db_path, Some(home)).await
+    }
+
+    async fn connect_inner(db_path: &str, home: Option<ThothHome>) -> anyhow::Result<JobStore> {
         let opts = SqliteConnectOptions::from_str(db_path)?
             .create_if_missing(true)
+            .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5));
         let pool = SqlitePoolOptions::new().max_connections(5).connect_with(opts).await?;
         sqlx::migrate!().run(&pool).await?;
-        Ok(JobStore { pool })
+        Ok(JobStore { pool, home })
+    }
+
+    fn require_home(&self) -> anyhow::Result<&ThothHome> {
+        self.home.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "project and profile mutations require JobStore::connect_with_home and a configured ThothHome"
+            )
+        })
+    }
+
+    pub async fn create_project(&self, name: &str) -> anyhow::Result<ProjectRecord> {
+        validate_name("project name", name)?;
+        let home = self.require_home()?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let workspace_path = home.project_root(&id);
+        home.ensure_project_layout(&id)?;
+
+        let ts = now();
+        let result = sqlx::query(
+            "INSERT INTO projects (id, name, workspace_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(name)
+        .bind(workspace_path.to_string_lossy().as_ref())
+        .bind(&ts)
+        .bind(&ts)
+        .execute(&self.pool)
+        .await;
+
+        if let Err(error) = result {
+            let _ = std::fs::remove_dir_all(&workspace_path);
+            return Err(error.into());
+        }
+
+        Ok(ProjectRecord {
+            id,
+            name: name.to_owned(),
+            workspace_path,
+            created_at: ts.clone(),
+            updated_at: ts,
+        })
+    }
+
+    pub async fn list_projects(&self) -> anyhow::Result<Vec<ProjectRecord>> {
+        let rows = sqlx::query("SELECT * FROM projects ORDER BY created_at, id")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(Self::row_to_project).collect()
+    }
+
+    pub async fn create_profile(
+        &self,
+        project_id: &str,
+        name: &str,
+        settings: ProfileSettings,
+        credential_ref: Option<&str>,
+    ) -> anyhow::Result<ProfileRecord> {
+        validate_name("profile name", name)?;
+        validate_credential_ref(credential_ref)?;
+        let home = self.require_home()?;
+        validate_settings(&settings, home)?;
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let description = String::new();
+        let settings_json = serde_json::to_string(&settings)?;
+        let ts = now();
+        sqlx::query(
+            "INSERT INTO profiles (id, project_id, name, description, schema_version, settings_json, credential_ref, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(project_id)
+        .bind(name)
+        .bind(&description)
+        .bind(settings.schema_version as i64)
+        .bind(&settings_json)
+        .bind(credential_ref)
+        .bind(&ts)
+        .bind(&ts)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(ProfileRecord {
+            id,
+            project_id: project_id.to_owned(),
+            name: name.to_owned(),
+            description,
+            settings,
+            credential_ref: credential_ref.map(str::to_owned),
+            created_at: ts.clone(),
+            updated_at: ts,
+        })
+    }
+
+    pub async fn list_profiles(&self, project_id: &str) -> anyhow::Result<Vec<ProfileRecord>> {
+        let rows = sqlx::query("SELECT * FROM profiles WHERE project_id = ? ORDER BY name, id")
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(Self::row_to_profile).collect()
+    }
+
+    pub async fn get_profile(&self, profile_id: &str) -> anyhow::Result<Option<ProfileRecord>> {
+        let row = sqlx::query("SELECT * FROM profiles WHERE id = ?")
+            .bind(profile_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(Self::row_to_profile).transpose()
+    }
+
+    pub async fn update_profile(
+        &self,
+        profile_id: &str,
+        name: &str,
+        settings: ProfileSettings,
+        credential_ref: Option<&str>,
+    ) -> anyhow::Result<ProfileRecord> {
+        validate_name("profile name", name)?;
+        validate_credential_ref(credential_ref)?;
+        let home = self.require_home()?;
+        validate_settings(&settings, home)?;
+
+        let settings_json = serde_json::to_string(&settings)?;
+        let ts = now();
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT * FROM profiles WHERE id = ?")
+            .bind(profile_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let previous = row
+            .as_ref()
+            .map(Self::row_to_profile)
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("profile {profile_id} was not found"))?;
+
+        let revision_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO profile_revisions
+                (id, profile_id, revision, name, description, schema_version, settings_json, credential_ref, created_at)
+             VALUES
+                (?, ?, (SELECT COALESCE(MAX(revision), 0) + 1 FROM profile_revisions WHERE profile_id = ?), ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&revision_id)
+        .bind(&previous.id)
+        .bind(&previous.id)
+        .bind(&previous.name)
+        .bind(&previous.description)
+        .bind(previous.settings.schema_version as i64)
+        .bind(serde_json::to_string(&previous.settings)?)
+        .bind(&previous.credential_ref)
+        .bind(&ts)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE profiles
+             SET name = ?, schema_version = ?, settings_json = ?, credential_ref = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(name)
+        .bind(settings.schema_version as i64)
+        .bind(settings_json)
+        .bind(credential_ref)
+        .bind(&ts)
+        .bind(profile_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        Ok(ProfileRecord {
+            id: previous.id,
+            project_id: previous.project_id,
+            name: name.to_owned(),
+            description: previous.description,
+            settings,
+            credential_ref: credential_ref.map(str::to_owned),
+            created_at: previous.created_at,
+            updated_at: ts,
+        })
+    }
+
+    pub async fn list_profile_revisions(
+        &self,
+        profile_id: &str,
+    ) -> anyhow::Result<Vec<ProfileRevision>> {
+        let rows = sqlx::query(
+            "SELECT * FROM profile_revisions WHERE profile_id = ? ORDER BY revision DESC, id DESC",
+        )
+        .bind(profile_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(Self::row_to_profile_revision).collect()
+    }
+
+    pub async fn restore_profile_revision(
+        &self,
+        profile_id: &str,
+        revision_id: &str,
+    ) -> anyhow::Result<ProfileRecord> {
+        let row = sqlx::query(
+            "SELECT * FROM profile_revisions WHERE id = ? AND profile_id = ?",
+        )
+        .bind(revision_id)
+        .bind(profile_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let revision = row
+            .as_ref()
+            .map(Self::row_to_profile_revision)
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("profile revision {revision_id} was not found"))?;
+        self.update_profile(
+            profile_id,
+            &revision.name,
+            revision.settings,
+            revision.credential_ref.as_deref(),
+        )
+        .await
+    }
+
+    fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<ProjectRecord> {
+        Ok(ProjectRecord {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            workspace_path: std::path::PathBuf::from(row.try_get::<String, _>("workspace_path")?),
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
+    fn row_to_profile(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<ProfileRecord> {
+        let settings_json: String = row.try_get("settings_json")?;
+        let settings: ProfileSettings = serde_json::from_str(&settings_json)?;
+        let schema_version: i64 = row.try_get("schema_version")?;
+        anyhow::ensure!(
+            schema_version == i64::from(settings.schema_version),
+            "stored profile schema version does not match its settings"
+        );
+        Ok(ProfileRecord {
+            id: row.try_get("id")?,
+            project_id: row.try_get("project_id")?,
+            name: row.try_get("name")?,
+            description: row.try_get("description")?,
+            settings,
+            credential_ref: row.try_get("credential_ref")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
+    fn row_to_profile_revision(
+        row: &sqlx::sqlite::SqliteRow,
+    ) -> anyhow::Result<ProfileRevision> {
+        let settings_json: String = row.try_get("settings_json")?;
+        let settings: ProfileSettings = serde_json::from_str(&settings_json)?;
+        let schema_version: i64 = row.try_get("schema_version")?;
+        anyhow::ensure!(
+            schema_version == i64::from(settings.schema_version),
+            "stored profile revision schema version does not match its settings"
+        );
+        Ok(ProfileRevision {
+            id: row.try_get("id")?,
+            profile_id: row.try_get("profile_id")?,
+            revision: row.try_get("revision")?,
+            name: row.try_get("name")?,
+            description: row.try_get("description")?,
+            settings,
+            credential_ref: row.try_get("credential_ref")?,
+            created_at: row.try_get("created_at")?,
+        })
     }
 
     fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> JobRecord {
@@ -831,6 +1261,7 @@ mod tests {
                 .connect_with(contender_options)
                 .await
                 .unwrap(),
+            home: None,
         };
 
         let mut write_lock = holder.pool.begin().await.unwrap();

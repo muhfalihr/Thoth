@@ -11,6 +11,42 @@ use crate::ThothHome;
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
+/// A project and its workspace owned below `ThothHome`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectRecord {
+    pub id: String,
+    pub name: String,
+    pub workspace_path: PathBuf,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// The current validated settings of one project-scoped profile.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProfileRecord {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub description: String,
+    pub settings: ProfileSettings,
+    pub credential_ref: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// An immutable former state of a profile, retained before each update.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProfileRevision {
+    pub id: String,
+    pub profile_id: String,
+    pub revision: i64,
+    pub name: String,
+    pub description: String,
+    pub settings: ProfileSettings,
+    pub credential_ref: Option<String>,
+    pub created_at: String,
+}
+
 const PROVIDERS: &[&str] = &[
     "groq",
     "openai",
