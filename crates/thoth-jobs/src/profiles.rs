@@ -11,6 +11,43 @@ use crate::ThothHome;
 
 pub const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
+/// Stable resource failure categories for HTTP and CLI adapters.
+///
+/// `Display` deliberately never includes database diagnostics. Internal
+/// callers may inspect the source of `Storage` for logging, while external
+/// responses can match the variant without parsing error strings.
+#[derive(Debug)]
+pub enum ResourceError {
+    NotFound,
+    DuplicateName,
+    Validation { message: String },
+    ActiveJobs,
+    Storage(anyhow::Error),
+}
+
+impl std::fmt::Display for ResourceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("resource was not found"),
+            Self::DuplicateName => formatter.write_str("resource name already exists"),
+            Self::Validation { message } => formatter.write_str(message),
+            Self::ActiveJobs => formatter.write_str("project has active jobs"),
+            Self::Storage(_) => formatter.write_str("resource storage operation failed"),
+        }
+    }
+}
+
+impl std::error::Error for ResourceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Storage(source) => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+pub type ResourceResult<T> = std::result::Result<T, ResourceError>;
+
 /// A project and its workspace owned below `ThothHome`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectRecord {

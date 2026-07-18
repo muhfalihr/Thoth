@@ -4,7 +4,7 @@ mod profiles;
 pub use profiles::{
     AdvancedSettings, AnalysisSettings, IngestSourceSettings, NarrationSettings, OutputSettings,
     ProfileRecord, ProfileRevision, ProfileSettings, ProjectRecord, ResolvedSettings, RunOverrides,
-    SETTINGS_SCHEMA_VERSION, VisualEditSettings,
+    ResourceError, ResourceResult, SETTINGS_SCHEMA_VERSION, VisualEditSettings,
     redacted_settings_json, resolve_settings, validate_resolved_settings, validate_settings,
 };
 
@@ -316,7 +316,7 @@ mod profile_store_tests {
             .create_profile(&project.id, "Default", "", ProfileSettings::default(), None)
             .await;
 
-        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ResourceError::DuplicateName));
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -447,7 +447,7 @@ mod profile_store_tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("at most 1024"));
+        assert!(matches!(error, ResourceError::Validation { .. }));
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -462,7 +462,221 @@ mod profile_store_tests {
 
         let error = store.create_project("A").await.unwrap_err();
 
-        assert!(error.to_string().contains("ThothHome"));
+        assert!(matches!(error, ResourceError::Storage(_)));
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn project_lookup_and_update_normalize_the_name() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("Original").await.unwrap();
+
+        let updated = store.update_project(&project.id, "  Renamed  ").await.unwrap();
+        let fetched = store.get_project(&project.id).await.unwrap();
+
+        assert_eq!(updated.name, "Renamed");
+        assert_eq!(fetched.name, "Renamed");
+        assert_eq!(fetched.workspace_path, project.workspace_path);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn project_update_reports_duplicate_name_without_sql_text() {
+        let (store, root) = fresh_profile_store().await;
+        store.create_project("Existing").await.unwrap();
+        let project = store.create_project("Other").await.unwrap();
+
+        let error = store.update_project(&project.id, "Existing").await.unwrap_err();
+
+        assert!(matches!(error, ResourceError::DuplicateName));
+        assert_eq!(error.to_string(), "resource name already exists");
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn missing_project_mutations_return_typed_not_found() {
+        let (store, root) = fresh_profile_store().await;
+
+        assert!(matches!(
+            store.get_project("missing").await.unwrap_err(),
+            ResourceError::NotFound
+        ));
+        assert!(matches!(
+            store.update_project("missing", "Name").await.unwrap_err(),
+            ResourceError::NotFound
+        ));
+        assert!(matches!(
+            store.delete_project("missing").await.unwrap_err(),
+            ResourceError::NotFound
+        ));
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn project_delete_rejects_queued_and_running_jobs() {
+        for status in ["queued", "running"] {
+            let (store, root) = fresh_profile_store().await;
+            let project = store.create_project("Busy").await.unwrap();
+            let job_id = uuid::Uuid::new_v4().to_string();
+            let ts = now();
+            sqlx::query(
+                "INSERT INTO jobs
+                    (id, command, params, status, output_dir, created_at, updated_at, project_id)
+                 VALUES (?, 'run', '{}', ?, 'out', ?, ?, ?)",
+            )
+            .bind(&job_id)
+            .bind(status)
+            .bind(&ts)
+            .bind(&ts)
+            .bind(&project.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+            let error = store.delete_project(&project.id).await.unwrap_err();
+
+            assert!(matches!(error, ResourceError::ActiveJobs));
+            assert_eq!(store.get_project(&project.id).await.unwrap().id, project.id);
+            drop(store);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[tokio::test]
+    async fn project_delete_removes_metadata_but_preserves_workspace_and_historical_job() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("Finished").await.unwrap();
+        let profile = store
+            .create_profile(
+                &project.id,
+                "Default",
+                "retained in job snapshot",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .update_profile(
+                &profile.id,
+                "Default",
+                "updated",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let ts = now();
+        sqlx::query(
+            "INSERT INTO jobs
+                (id, command, params, status, output_dir, created_at, updated_at,
+                 project_id, profile_id, resolved_settings_snapshot)
+             VALUES (?, 'run', '{}', 'succeeded', 'out', ?, ?, ?, ?, '{}')",
+        )
+        .bind(&job_id)
+        .bind(&ts)
+        .bind(&ts)
+        .bind(&project.id)
+        .bind(&profile.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        store.delete_project(&project.id).await.unwrap();
+
+        assert!(matches!(
+            store.get_project(&project.id).await.unwrap_err(),
+            ResourceError::NotFound
+        ));
+        assert!(store.get_profile(&profile.id).await.unwrap().is_none());
+        assert!(store.list_profile_revisions(&profile.id).await.unwrap().is_empty());
+        assert!(project.workspace_path.is_dir(), "metadata delete must not touch files");
+        let historical = store.get(&job_id).await.unwrap().unwrap();
+        assert_eq!(historical.project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(historical.profile_id.as_deref(), Some(profile.id.as_str()));
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn profile_delete_is_project_scoped_and_removes_its_revisions() {
+        let (store, root) = fresh_profile_store().await;
+        let owner = store.create_project("Owner").await.unwrap();
+        let other = store.create_project("Other").await.unwrap();
+        let profile = store
+            .create_profile(
+                &owner.id,
+                "Default",
+                "",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .update_profile(
+                &profile.id,
+                "Default",
+                "",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store.delete_profile(&other.id, &profile.id).await.unwrap_err(),
+            ResourceError::NotFound
+        ));
+        assert!(store.get_profile(&profile.id).await.unwrap().is_some());
+
+        store.delete_profile(&owner.id, &profile.id).await.unwrap();
+
+        assert!(store.get_profile(&profile.id).await.unwrap().is_none());
+        assert!(store.list_profile_revisions(&profile.id).await.unwrap().is_empty());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn resource_names_and_descriptions_return_typed_validation_errors() {
+        let (store, root) = fresh_profile_store().await;
+
+        assert!(matches!(
+            store.create_project("   ").await.unwrap_err(),
+            ResourceError::Validation { .. }
+        ));
+        let project = store.create_project("  Trimmed project  ").await.unwrap();
+        assert_eq!(project.name, "Trimmed project");
+        let profile = store
+            .create_profile(
+                &project.id,
+                "  Trimmed profile  ",
+                "  Trimmed description  ",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(profile.name, "Trimmed profile");
+        assert_eq!(profile.description, "Trimmed description");
+
+        let error = store
+            .create_profile(
+                &project.id,
+                "Too long",
+                &"x".repeat(1025),
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ResourceError::Validation { .. }));
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -494,9 +708,20 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+fn normalize_name(field: &str, value: &str) -> ResourceResult<String> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Err(ResourceError::Validation {
+            message: format!("{field} must not be blank"),
+        });
+    }
+    Ok(normalized.to_owned())
+}
+
 fn validate_name(field: &str, value: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(!value.trim().is_empty(), "{field} must not be blank");
-    Ok(())
+    normalize_name(field, value)
+        .map(|_| ())
+        .map_err(anyhow::Error::new)
 }
 
 fn validate_credential_ref(reference: Option<&str>) -> anyhow::Result<()> {
@@ -509,15 +734,40 @@ fn validate_credential_ref(reference: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn normalize_description(value: &str) -> anyhow::Result<String> {
+fn normalize_description(value: &str) -> ResourceResult<String> {
     const MAX_DESCRIPTION_CHARS: usize = 1024;
 
     let normalized = value.trim();
-    anyhow::ensure!(
-        normalized.chars().count() <= MAX_DESCRIPTION_CHARS,
-        "profile description must be at most {MAX_DESCRIPTION_CHARS} characters"
-    );
+    if normalized.chars().count() > MAX_DESCRIPTION_CHARS {
+        return Err(ResourceError::Validation {
+            message: format!(
+                "profile description must be at most {MAX_DESCRIPTION_CHARS} characters"
+            ),
+        });
+    }
     Ok(normalized.to_owned())
+}
+
+fn resource_storage(error: impl Into<anyhow::Error>) -> ResourceError {
+    ResourceError::Storage(error.into())
+}
+
+fn resource_validation(error: impl std::fmt::Display) -> ResourceError {
+    ResourceError::Validation {
+        message: error.to_string(),
+    }
+}
+
+fn resource_write_error(error: sqlx::Error) -> ResourceError {
+    if let Some(database_error) = error.as_database_error() {
+        if database_error.is_unique_violation() {
+            return ResourceError::DuplicateName;
+        }
+        if database_error.is_foreign_key_violation() {
+            return ResourceError::NotFound;
+        }
+    }
+    resource_storage(error)
 }
 
 fn is_sqlite_busy(error: &sqlx::Error) -> bool {
@@ -597,19 +847,19 @@ impl JobStore {
         })
     }
 
-    pub async fn create_project(&self, name: &str) -> anyhow::Result<ProjectRecord> {
-        validate_name("project name", name)?;
-        let home = self.require_home()?;
+    pub async fn create_project(&self, name: &str) -> ResourceResult<ProjectRecord> {
+        let name = normalize_name("project name", name)?;
+        let home = self.require_home().map_err(resource_storage)?;
         let id = uuid::Uuid::new_v4().to_string();
         let workspace_path = home.project_root(&id);
-        home.ensure_project_layout(&id)?;
+        home.ensure_project_layout(&id).map_err(resource_storage)?;
 
         let ts = now();
         let result = sqlx::query(
             "INSERT INTO projects (id, name, workspace_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&id)
-        .bind(name)
+        .bind(&name)
         .bind(workspace_path.to_string_lossy().as_ref())
         .bind(&ts)
         .bind(&ts)
@@ -618,23 +868,116 @@ impl JobStore {
 
         if let Err(error) = result {
             let _ = std::fs::remove_dir_all(&workspace_path);
-            return Err(error.into());
+            return Err(resource_write_error(error));
         }
 
         Ok(ProjectRecord {
             id,
-            name: name.to_owned(),
+            name,
             workspace_path,
             created_at: ts.clone(),
             updated_at: ts,
         })
     }
 
-    pub async fn list_projects(&self) -> anyhow::Result<Vec<ProjectRecord>> {
+    pub async fn list_projects(&self) -> ResourceResult<Vec<ProjectRecord>> {
         let rows = sqlx::query("SELECT * FROM projects ORDER BY created_at, id")
             .fetch_all(&self.pool)
-            .await?;
-        rows.iter().map(Self::row_to_project).collect()
+            .await
+            .map_err(resource_storage)?;
+        rows.iter()
+            .map(Self::row_to_project)
+            .collect::<anyhow::Result<_>>()
+            .map_err(resource_storage)
+    }
+
+    pub async fn get_project(&self, project_id: &str) -> ResourceResult<ProjectRecord> {
+        let row = sqlx::query("SELECT * FROM projects WHERE id = ?")
+            .bind(project_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(resource_storage)?;
+        row.as_ref()
+            .map(Self::row_to_project)
+            .transpose()
+            .map_err(resource_storage)?
+            .ok_or(ResourceError::NotFound)
+    }
+
+    pub async fn update_project(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> ResourceResult<ProjectRecord> {
+        let name = normalize_name("project name", name)?;
+        let ts = now();
+        let row = sqlx::query(
+            "UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING *",
+        )
+        .bind(&name)
+        .bind(&ts)
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(resource_write_error)?;
+        row.as_ref()
+            .map(Self::row_to_project)
+            .transpose()
+            .map_err(resource_storage)?
+            .ok_or(ResourceError::NotFound)
+    }
+
+    pub async fn delete_project(&self, project_id: &str) -> ResourceResult<()> {
+        let mut tx = self.pool.begin().await.map_err(resource_storage)?;
+
+        // The first statement obtains SQLite's write reservation before the
+        // active-job guard, making the guard and metadata deletion atomic with
+        // respect to other writers.
+        let exists = sqlx::query("UPDATE projects SET updated_at = updated_at WHERE id = ?")
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(resource_storage)?
+            .rows_affected();
+        if exists == 0 {
+            tx.rollback().await.map_err(resource_storage)?;
+            return Err(ResourceError::NotFound);
+        }
+
+        let active: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM jobs
+                WHERE project_id = ? AND status IN ('queued', 'running')
+            )",
+        )
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(resource_storage)?;
+        if active != 0 {
+            tx.rollback().await.map_err(resource_storage)?;
+            return Err(ResourceError::ActiveJobs);
+        }
+
+        sqlx::query(
+            "DELETE FROM profile_revisions
+             WHERE profile_id IN (SELECT id FROM profiles WHERE project_id = ?)",
+        )
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(resource_storage)?;
+        sqlx::query("DELETE FROM profiles WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(resource_storage)?;
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(resource_storage)?;
+        tx.commit().await.map_err(resource_storage)
     }
 
     pub async fn create_profile(
@@ -644,15 +987,15 @@ impl JobStore {
         description: &str,
         settings: ProfileSettings,
         credential_ref: Option<&str>,
-    ) -> anyhow::Result<ProfileRecord> {
-        validate_name("profile name", name)?;
-        validate_credential_ref(credential_ref)?;
+    ) -> ResourceResult<ProfileRecord> {
+        let name = normalize_name("profile name", name)?;
+        validate_credential_ref(credential_ref).map_err(resource_validation)?;
         let description = normalize_description(description)?;
-        let home = self.require_home()?;
-        validate_settings(&settings, home)?;
+        let home = self.require_home().map_err(resource_storage)?;
+        validate_settings(&settings, home).map_err(resource_validation)?;
 
         let id = uuid::Uuid::new_v4().to_string();
-        let settings_json = serde_json::to_string(&settings)?;
+        let settings_json = serde_json::to_string(&settings).map_err(resource_storage)?;
         let ts = now();
         sqlx::query(
             "INSERT INTO profiles (id, project_id, name, description, schema_version, settings_json, credential_ref, created_at, updated_at)
@@ -660,7 +1003,7 @@ impl JobStore {
         )
         .bind(&id)
         .bind(project_id)
-        .bind(name)
+        .bind(&name)
         .bind(&description)
         .bind(settings.schema_version as i64)
         .bind(&settings_json)
@@ -668,12 +1011,13 @@ impl JobStore {
         .bind(&ts)
         .bind(&ts)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(resource_write_error)?;
 
         Ok(ProfileRecord {
             id,
             project_id: project_id.to_owned(),
-            name: name.to_owned(),
+            name,
             description,
             settings,
             credential_ref: credential_ref.map(str::to_owned),
@@ -682,20 +1026,28 @@ impl JobStore {
         })
     }
 
-    pub async fn list_profiles(&self, project_id: &str) -> anyhow::Result<Vec<ProfileRecord>> {
+    pub async fn list_profiles(&self, project_id: &str) -> ResourceResult<Vec<ProfileRecord>> {
         let rows = sqlx::query("SELECT * FROM profiles WHERE project_id = ? ORDER BY name, id")
             .bind(project_id)
             .fetch_all(&self.pool)
-            .await?;
-        rows.iter().map(Self::row_to_profile).collect()
+            .await
+            .map_err(resource_storage)?;
+        rows.iter()
+            .map(Self::row_to_profile)
+            .collect::<anyhow::Result<_>>()
+            .map_err(resource_storage)
     }
 
-    pub async fn get_profile(&self, profile_id: &str) -> anyhow::Result<Option<ProfileRecord>> {
+    pub async fn get_profile(&self, profile_id: &str) -> ResourceResult<Option<ProfileRecord>> {
         let row = sqlx::query("SELECT * FROM profiles WHERE id = ?")
             .bind(profile_id)
             .fetch_optional(&self.pool)
-            .await?;
-        row.as_ref().map(Self::row_to_profile).transpose()
+            .await
+            .map_err(resource_storage)?;
+        row.as_ref()
+            .map(Self::row_to_profile)
+            .transpose()
+            .map_err(resource_storage)
     }
 
     pub async fn update_profile(
@@ -705,25 +1057,27 @@ impl JobStore {
         description: &str,
         settings: ProfileSettings,
         credential_ref: Option<&str>,
-    ) -> anyhow::Result<ProfileRecord> {
-        validate_name("profile name", name)?;
-        validate_credential_ref(credential_ref)?;
+    ) -> ResourceResult<ProfileRecord> {
+        let name = normalize_name("profile name", name)?;
+        validate_credential_ref(credential_ref).map_err(resource_validation)?;
         let description = normalize_description(description)?;
-        let home = self.require_home()?;
-        validate_settings(&settings, home)?;
+        let home = self.require_home().map_err(resource_storage)?;
+        validate_settings(&settings, home).map_err(resource_validation)?;
 
-        let settings_json = serde_json::to_string(&settings)?;
+        let settings_json = serde_json::to_string(&settings).map_err(resource_storage)?;
         let ts = now();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin().await.map_err(resource_storage)?;
         let row = sqlx::query("SELECT * FROM profiles WHERE id = ?")
             .bind(profile_id)
             .fetch_optional(&mut *tx)
-            .await?;
+            .await
+            .map_err(resource_storage)?;
         let previous = row
             .as_ref()
             .map(Self::row_to_profile)
-            .transpose()?
-            .ok_or_else(|| anyhow::anyhow!("profile {profile_id} was not found"))?;
+            .transpose()
+            .map_err(resource_storage)?
+            .ok_or(ResourceError::NotFound)?;
 
         let revision_id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
@@ -738,18 +1092,19 @@ impl JobStore {
         .bind(&previous.name)
         .bind(&previous.description)
         .bind(previous.settings.schema_version as i64)
-        .bind(serde_json::to_string(&previous.settings)?)
+        .bind(serde_json::to_string(&previous.settings).map_err(resource_storage)?)
         .bind(&previous.credential_ref)
         .bind(&ts)
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(resource_write_error)?;
 
         sqlx::query(
             "UPDATE profiles
              SET name = ?, description = ?, schema_version = ?, settings_json = ?, credential_ref = ?, updated_at = ?
              WHERE id = ?",
         )
-        .bind(name)
+        .bind(&name)
         .bind(&description)
         .bind(settings.schema_version as i64)
         .bind(settings_json)
@@ -757,13 +1112,14 @@ impl JobStore {
         .bind(&ts)
         .bind(profile_id)
         .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
+        .await
+        .map_err(resource_write_error)?;
+        tx.commit().await.map_err(resource_storage)?;
 
         Ok(ProfileRecord {
             id: previous.id,
             project_id: previous.project_id,
-            name: name.to_owned(),
+            name,
             description,
             settings,
             credential_ref: credential_ref.map(str::to_owned),
@@ -775,33 +1131,39 @@ impl JobStore {
     pub async fn list_profile_revisions(
         &self,
         profile_id: &str,
-    ) -> anyhow::Result<Vec<ProfileRevision>> {
+    ) -> ResourceResult<Vec<ProfileRevision>> {
         let rows = sqlx::query(
             "SELECT * FROM profile_revisions WHERE profile_id = ? ORDER BY revision DESC, id DESC",
         )
         .bind(profile_id)
         .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(Self::row_to_profile_revision).collect()
+        .await
+        .map_err(resource_storage)?;
+        rows.iter()
+            .map(Self::row_to_profile_revision)
+            .collect::<anyhow::Result<_>>()
+            .map_err(resource_storage)
     }
 
     pub async fn restore_profile_revision(
         &self,
         profile_id: &str,
         revision_id: &str,
-    ) -> anyhow::Result<ProfileRecord> {
+    ) -> ResourceResult<ProfileRecord> {
         let row = sqlx::query(
             "SELECT * FROM profile_revisions WHERE id = ? AND profile_id = ?",
         )
         .bind(revision_id)
         .bind(profile_id)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(resource_storage)?;
         let revision = row
             .as_ref()
             .map(Self::row_to_profile_revision)
-            .transpose()?
-            .ok_or_else(|| anyhow::anyhow!("profile revision {revision_id} was not found"))?;
+            .transpose()
+            .map_err(resource_storage)?
+            .ok_or(ResourceError::NotFound)?;
         self.update_profile(
             profile_id,
             &revision.name,
@@ -810,6 +1172,40 @@ impl JobStore {
             revision.credential_ref.as_deref(),
         )
         .await
+    }
+
+    pub async fn delete_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> ResourceResult<()> {
+        let mut tx = self.pool.begin().await.map_err(resource_storage)?;
+        let exists = sqlx::query(
+            "UPDATE profiles SET updated_at = updated_at WHERE id = ? AND project_id = ?",
+        )
+        .bind(profile_id)
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(resource_storage)?
+        .rows_affected();
+        if exists == 0 {
+            tx.rollback().await.map_err(resource_storage)?;
+            return Err(ResourceError::NotFound);
+        }
+
+        sqlx::query("DELETE FROM profile_revisions WHERE profile_id = ?")
+            .bind(profile_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(resource_storage)?;
+        sqlx::query("DELETE FROM profiles WHERE id = ? AND project_id = ?")
+            .bind(profile_id)
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(resource_storage)?;
+        tx.commit().await.map_err(resource_storage)
     }
 
     fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> anyhow::Result<ProjectRecord> {
