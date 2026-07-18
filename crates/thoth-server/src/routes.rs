@@ -102,7 +102,7 @@ pub async fn cancel_job(
 /// SSE relay: tail `job_events` by autoincrement `seq`. This is the entire
 /// progress channel now — the server has no in-process handle to the worker, so
 /// it polls the shared DB. `Last-Event-ID` (or `?after=`) resumes after a drop;
-/// the stream closes once a `done`/`error` event lands.
+/// the stream closes once a `done`, `error`, or `cancelled` event lands.
 ///
 /// Mounted OUTSIDE the bearer layer (EventSource can't send headers) — it
 /// self-authenticates via `?token=<api_key>`.
