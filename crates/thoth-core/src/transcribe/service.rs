@@ -47,6 +47,21 @@ fn supervised_ffmpeg_command(command: &mut FfmpegCommand) -> tokio::process::Com
     supervised
 }
 
+async fn start_groq_upload_if_active<T, F, Fut>(
+    execution: &JobExecutionContext,
+    operation: &str,
+    upload: F,
+) -> Result<T, TranscribeError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T, TranscribeError>>,
+{
+    execution
+        .check_cancelled()
+        .map_err(|error| TranscribeError::from_execution(error, operation.to_owned()))?;
+    upload().await
+}
+
 impl<'a> TranscribeService<'a> {
     pub fn new(
         config: &'a AppConfig,
@@ -248,7 +263,10 @@ impl<'a> TranscribeService<'a> {
             // ── Single request ────────────────────────────────────────────────
             info!("uploading compressed audio: {mp3_mb:.1} MB (Groq limit: 24 MB)");
             let pb = spinner(&format!("Transcribing via Groq Whisper — {mp3_mb:.1} MB…"));
-            let transcript = self.groq_upload(&mp3_path, 0.0).await?;
+            let transcript = start_groq_upload_if_active(self.execution, "upload Groq", || {
+                self.groq_upload(&mp3_path, 0.0)
+            })
+            .await?;
             pb.finish_and_clear();
             Ok(transcript)
         } else {
@@ -378,7 +396,12 @@ impl<'a> TranscribeService<'a> {
                         "[{}/{}] Uploading chunk {:.0}s–{:.0}s ({:.1} MB)…",
                         meta.idx + 1, total, meta.start, meta.end, meta.mb
                     ));
-                    let result = this.groq_upload(&meta.path, meta.start).await;
+                    let result = start_groq_upload_if_active(
+                        this.execution,
+                        "upload Groq chunk",
+                        || this.groq_upload(&meta.path, meta.start),
+                    )
+                    .await;
                     pb.finish_and_clear();
                     // Bersihkan chunk setelah upload selesai
                     let _ = tokio::fs::remove_file(&meta.path).await;
@@ -1037,4 +1060,29 @@ fn load_wav_f32(wav_path: &Path) -> Result<Vec<f32>, TranscribeError> {
             .collect(),
     };
     Ok(samples)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::execution::JobExecutionContext;
+
+    #[tokio::test]
+    async fn cancelled_context_does_not_start_groq_upload() {
+        let execution = JobExecutionContext::new();
+        execution.cancel();
+        let upload_started = AtomicBool::new(false);
+
+        let error = start_groq_upload_if_active(&execution, "upload Groq", || async {
+            upload_started.store(true, Ordering::SeqCst);
+            Ok::<(), TranscribeError>(())
+        })
+        .await
+        .expect_err("cancelled upload must not begin");
+
+        assert!(matches!(error, TranscribeError::Cancelled(_)));
+        assert!(!upload_started.load(Ordering::SeqCst));
+    }
 }
