@@ -51,10 +51,33 @@ pub struct JobSpec {
     #[serde(default)] pub params: serde_json::Value,
 }
 
+/// A fully resolved, safe-to-persist job request. The caller owns the job ID
+/// and output directory so this store does not infer any filesystem policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnqueueRequest {
+    pub spec: JobSpec,
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_revision: Option<i64>,
+    pub resolved_settings: crate::ResolvedSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRecord {
     pub id: String,
     pub spec: JobSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_revision: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_settings_snapshot: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_summary: Option<serde_json::Value>,
     pub status: JobStatus,
     pub stage: Option<String>,
     pub pct: f32,

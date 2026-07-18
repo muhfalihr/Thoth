@@ -866,6 +866,10 @@ impl JobStore {
 
     fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> JobRecord {
         let params: String = row.get("params");
+        let json_column = |column| {
+            row.get::<Option<String>, _>(column)
+                .and_then(|value| serde_json::from_str(&value).ok())
+        };
         JobRecord {
             id: row.get("id"),
             spec: JobSpec {
@@ -874,6 +878,11 @@ impl JobStore {
                 content_set: row.get("content_set"),
                 params: serde_json::from_str(&params).unwrap_or(serde_json::Value::Null),
             },
+            project_id: row.get("project_id"),
+            profile_id: row.get("profile_id"),
+            profile_revision: row.get("profile_revision"),
+            resolved_settings_snapshot: json_column("resolved_settings_snapshot"),
+            override_summary: json_column("override_summary"),
             status: JobStatus::from_str(&row.get::<String, _>("status")).unwrap_or(JobStatus::Failed),
             stage: row.get("stage"),
             pct: row.get::<f64, _>("pct") as f32,
@@ -901,6 +910,48 @@ impl JobStore {
         .bind(id).bind(&spec.command).bind(&spec.url).bind(&spec.content_set)
         .bind(spec.params.to_string()).bind(output_dir).bind(&ts).bind(&ts)
         .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Inserts a queued job and its immutable, redacted configuration snapshot
+    /// in the same SQLite statement. It never reads the selected profile.
+    pub async fn enqueue_resolved(
+        &self,
+        id: &str,
+        request: &EnqueueRequest,
+        output_dir: &str,
+    ) -> anyhow::Result<()> {
+        validate_name("project id", &request.project_id)?;
+        if let Some(profile_id) = &request.profile_id {
+            validate_name("profile id", profile_id)?;
+        }
+        if let Some(profile_revision) = request.profile_revision {
+            anyhow::ensure!(profile_revision > 0, "profile revision must be positive");
+        }
+        validate_name("output directory", output_dir)?;
+
+        let snapshot = redacted_settings_json(&request.resolved_settings, None).to_string();
+        let ts = now();
+        sqlx::query(
+            "INSERT INTO jobs
+                (id, command, url, content_set, params, status, output_dir, created_at, updated_at,
+                 project_id, profile_id, profile_revision, resolved_settings_snapshot, override_summary)
+             VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(id)
+        .bind(&request.spec.command)
+        .bind(&request.spec.url)
+        .bind(&request.spec.content_set)
+        .bind(request.spec.params.to_string())
+        .bind(output_dir)
+        .bind(&ts)
+        .bind(&ts)
+        .bind(&request.project_id)
+        .bind(&request.profile_id)
+        .bind(request.profile_revision)
+        .bind(snapshot)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1172,6 +1223,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn snapshot_migration_adds_nullable_provenance_columns() {
+        let (store, dir) = fresh().await;
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(jobs)")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get("name"))
+            .collect();
+
+        for expected in [
+            "project_id",
+            "profile_id",
+            "profile_revision",
+            "resolved_settings_snapshot",
+            "override_summary",
+        ] {
+            assert!(columns.contains(&expected.to_owned()), "missing {expected}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn snapshot_migration_upgrades_a_legacy_job_without_provenance() {
+        let dir = std::env::temp_dir().join(format!("thoth-legacy-job-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("jobs.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::from_str(db.to_str().unwrap()).unwrap().create_if_missing(true))
+            .await
+            .unwrap();
+        let all_migrations = sqlx::migrate!();
+        let legacy_migrator = sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                all_migrations
+                    .iter()
+                    .filter(|migration| migration.version < 3)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        legacy_migrator.run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO jobs (id, command, params, status, output_dir, created_at, updated_at)
+             VALUES ('legacy-job', 'run', '{}', 'queued', 'legacy-out', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        drop(pool);
+
+        let store = JobStore::connect(db.to_str().unwrap()).await.unwrap();
+        let job = store.get("legacy-job").await.unwrap().unwrap();
+
+        assert_eq!(job.spec.command, "run");
+        assert_eq!(job.output_dir, "legacy-out");
+        assert_eq!(job.project_id, None);
+        assert_eq!(job.profile_id, None);
+        assert_eq!(job.profile_revision, None);
+        assert_eq!(job.resolved_settings_snapshot, None);
+        assert_eq!(job.override_summary, None);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     async fn fresh() -> (JobStore, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("thoth-jobs-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1195,7 +1316,65 @@ mod tests {
         assert_eq!(rec.status, JobStatus::Queued);
         assert_eq!(rec.spec.url.as_deref(), Some("https://x/y"));
         assert_eq!(rec.output_dir, "out/j");
+        assert_eq!(rec.project_id, None);
+        assert_eq!(rec.profile_id, None);
+        assert_eq!(rec.profile_revision, None);
+        assert_eq!(rec.resolved_settings_snapshot, None);
+        assert_eq!(rec.override_summary, None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn job_snapshot_survives_profile_edit() {
+        let root = std::env::temp_dir().join(format!("thoth-job-snapshot-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        home.ensure_layout().unwrap();
+        let store = JobStore::connect_with_home(
+            home.data_dir().join("jobs.db").to_str().unwrap(),
+            home.clone(),
+        )
+        .await
+        .unwrap();
+        let project = store.create_project("Snapshot").await.unwrap();
+        let profile = store
+            .create_profile(&project.id, "Default", "", ProfileSettings::default(), None)
+            .await
+            .unwrap();
+        let resolved = resolve_settings(&profile.settings, &RunOverrides::default(), &home).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let output_dir = home.project_outputs(&project.id).join(&id);
+
+        store
+            .enqueue_resolved(
+                &id,
+                &EnqueueRequest {
+                    spec: run_spec("https://x/y"),
+                    project_id: project.id.clone(),
+                    profile_id: Some(profile.id.clone()),
+                    profile_revision: None,
+                    resolved_settings: resolved,
+                },
+                output_dir.to_str().unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let mut updated = ProfileSettings::default();
+        updated.analysis.max_clips = 5;
+        store
+            .update_profile(&profile.id, "Default", "", updated, None)
+            .await
+            .unwrap();
+
+        let job = store.get(&id).await.unwrap().unwrap();
+        assert_eq!(job.project_id.as_deref(), Some(project.id.as_str()));
+        assert_eq!(job.profile_id.as_deref(), Some(profile.id.as_str()));
+        assert_eq!(job.profile_revision, None);
+        let snapshot = job.resolved_settings_snapshot.unwrap();
+        assert_eq!(snapshot["analysis"]["max_clips"], 3);
+        assert!(snapshot.get("credential_value").is_none());
+        assert_eq!(store.get_profile(&profile.id).await.unwrap().unwrap().settings.analysis.max_clips, 5);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
