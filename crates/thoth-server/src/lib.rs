@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod artifact;
 pub mod reaper;
 pub mod routes;
 pub mod scout;
