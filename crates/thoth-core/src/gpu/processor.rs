@@ -153,11 +153,24 @@ fn spawn_piped_command(
     execution.spawn(command).context("failed to spawn supervised GPU media command")
 }
 
+async fn run_frame_operation<T, F, Fut>(
+    execution: &JobExecutionContext,
+    operation: F,
+) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    execution.check_cancelled()?;
+    Ok(operation().await)
+}
+
 async fn write_frame(
     execution: &JobExecutionContext,
     encode_in: &mut ChildStdin,
     frame: &[u8],
 ) -> Result<()> {
+    execution.check_cancelled()?;
     match encode_in.write_all(frame).await {
         Ok(()) => Ok(()),
         Err(error) => {
@@ -175,6 +188,7 @@ async fn drain_decoder_output(
     let mut drained = 0_u64;
 
     loop {
+        execution.check_cancelled()?;
         match decoder_out.read(&mut buffer).await {
             Ok(0) => return Ok(drained),
             Ok(read) => drained += read as u64,
@@ -259,6 +273,7 @@ impl GpuProcessor {
         let mut processed = 0u64;
 
         loop {
+            execution.check_cancelled()?;
             match decode_out.read_exact(&mut frame_buf).await {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -268,10 +283,13 @@ impl GpuProcessor {
                 }
             }
 
-            let out_frame = self.color_pipe.apply(
-                &self.ctx, &frame_buf,
-                meta.width, meta.height, color, None,
-            ).await;
+            let out_frame = run_frame_operation(execution, || {
+                self.color_pipe.apply(
+                    &self.ctx, &frame_buf,
+                    meta.width, meta.height, color, None,
+                )
+            })
+            .await?;
 
             write_frame(execution, &mut encode_in, &out_frame).await?;
             processed += 1;
@@ -316,6 +334,7 @@ impl GpuProcessor {
         let mut colored: Vec<PathBuf> = Vec::new();
 
         for (i, job) in jobs.iter().enumerate() {
+            execution.check_cancelled()?;
             let tmp = tmp_dir.join(format!("__gpu_clip_{i}.mp4"));
             self.apply_color(execution, &job.path, &tmp, job.start_sec, job.end_sec,
                              &job.color, nvenc).await?;
@@ -325,6 +344,7 @@ impl GpuProcessor {
         // Step 2: probe all colored clips
         let mut metas = Vec::with_capacity(colored.len());
         for path in &colored {
+            execution.check_cancelled()?;
             metas.push(VideoMeta::probe(execution, path).await?);
         }
 
@@ -341,6 +361,7 @@ impl GpuProcessor {
         let tr_dur_frames = |dur: f64| (dur * fps).ceil() as usize;
 
         for i in 0..colored.len() {
+            execution.check_cancelled()?;
             let clip    = &colored[i];
             let meta    = &metas[i];
             let tr      = if i + 1 < jobs.len() { &jobs[i].transition_out } else { &Transition::None };
@@ -363,6 +384,7 @@ impl GpuProcessor {
             let mut frame_idx   = 0usize;
 
             loop {
+                execution.check_cancelled()?;
                 match decode_out.read_exact(&mut frame_buf).await {
                     Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -377,6 +399,7 @@ impl GpuProcessor {
                     write_frame(execution, &mut encode_in, &frame_buf).await?;
                 } else {
                     // Tail: buffer for transition blending
+                    execution.check_cancelled()?;
                     tail_frames.push(frame_buf.clone());
                 }
                 frame_idx += 1;
@@ -385,6 +408,7 @@ impl GpuProcessor {
 
             // Blend tail of this clip with head of next clip
             if i + 1 < colored.len() && *tr != Transition::None && !tail_frames.is_empty() {
+                execution.check_cancelled()?;
                 let next_clip  = &colored[i + 1];
                 let next_meta  = &metas[i + 1];
                 let nf_bytes   = next_meta.frame_bytes();
@@ -394,6 +418,7 @@ impl GpuProcessor {
                 let n_blend = tail_frames.len();
 
                 for (bi, tail_frame) in tail_frames.iter().enumerate() {
+                    execution.check_cancelled()?;
                     let progress = (bi + 1) as f32 / n_blend as f32;
                     let tr_params = TransitionParams::new(progress, tr.wgsl_id());
 
@@ -408,11 +433,14 @@ impl GpuProcessor {
                         }
                     }
 
-                    let blended = self.tr_pipe.blend(
-                        &self.ctx,
-                        tail_frame, &next_buf,
-                        w, h, tr_params,
-                    ).await;
+                    let blended = run_frame_operation(execution, || {
+                        self.tr_pipe.blend(
+                            &self.ctx,
+                            tail_frame, &next_buf,
+                            w, h, tr_params,
+                        )
+                    })
+                    .await?;
                     write_frame(execution, &mut encode_in, &blended).await?;
                 }
                 let _ = drain_and_wait_decoder(execution, &mut next_out, next_decode).await?;
@@ -572,6 +600,32 @@ mod tests {
         .expect("draining must let a pipe-capacity-exceeding decoder exit")
         .unwrap();
         assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn cancellation_prevents_next_gpu_frame_operation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let execution = JobExecutionContext::new();
+        let operations = AtomicUsize::new(0);
+
+        run_frame_operation(&execution, || {
+            operations.fetch_add(1, Ordering::SeqCst);
+            execution.cancel();
+            async {}
+        })
+        .await
+        .expect("first frame operation must complete");
+
+        let error = run_frame_operation(&execution, || {
+            operations.fetch_add(1, Ordering::SeqCst);
+            async {}
+        })
+        .await
+        .expect_err("cancelled context must not start the next frame operation");
+
+        assert!(is_cancelled(&error));
+        assert_eq!(operations.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(windows)]
