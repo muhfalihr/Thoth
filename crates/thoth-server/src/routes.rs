@@ -3,7 +3,7 @@ use std::{convert::Infallible, time::Duration};
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
-    response::{Response, sse::{Event, Sse}},
+    response::{IntoResponse, Response, sse::{Event, Sse}},
     Json,
 };
 use futures_util::stream::Stream;
@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::auth::AppState;
 use crate::scout::{self, DiscoverReq, RunReq, ScoutKind, ValidateReq};
-use thoth_jobs::{CancelRequestOutcome, JobRecord, JobSpec};
+use thoth_jobs::{CancelRequestOutcome, JobRecord, JobSpec, validate_job_spec};
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
@@ -25,18 +25,29 @@ pub struct StreamQuery {
 pub async fn create_job(
     State(state): State<AppState>,
     Json(spec): Json<JobSpec>,
-) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
+) -> Response {
+    if let Err(error) = validate_job_spec(&spec) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": error })),
+        )
+            .into_response();
+    }
+
     // The worker creates the output dir when it actually runs the job; the
     // server only records intent. output_dir is `output_root/<job_id>` so the
     // artifact route (which serves `output_root/<id>`) and the worker agree.
     let job_id = uuid::Uuid::new_v4().to_string();
     let out = state.output_root.join(&job_id);
-    state
+    if state
         .store
         .enqueue(&job_id, &spec, &out.to_string_lossy())
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "job_id": job_id }))))
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job_id }))).into_response()
 }
 
 pub async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<JobRecord>>, StatusCode> {
@@ -67,18 +78,24 @@ pub async fn get_job(
 pub async fn cancel_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    match state
+) -> Response {
+    let outcome = match state
         .store
         .request_cancel(&id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
+        Ok(outcome) => outcome,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    match outcome {
         CancelRequestOutcome::QueuedCancelled
         | CancelRequestOutcome::RunningRequested
-        | CancelRequestOutcome::AlreadyRequested => Ok(StatusCode::ACCEPTED),
-        CancelRequestOutcome::Terminal(_) => Err(StatusCode::CONFLICT),
-        CancelRequestOutcome::NotFound => Err(StatusCode::NOT_FOUND),
+        | CancelRequestOutcome::AlreadyRequested => match state.store.get(&id).await {
+            Ok(Some(job)) => Json(job).into_response(),
+            Ok(None) | Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        CancelRequestOutcome::Terminal(_) => StatusCode::CONFLICT.into_response(),
+        CancelRequestOutcome::NotFound => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -126,7 +143,7 @@ pub async fn stream_job(
             let mut terminal = false;
             for ev in events {
                 last_seq = ev.seq;
-                if ev.kind == "done" || ev.kind == "error" {
+                if ev.kind == "done" || ev.kind == "error" || ev.kind == "cancelled" {
                     terminal = true;
                 }
                 let data = serde_json::to_string(&ev).unwrap_or_default();

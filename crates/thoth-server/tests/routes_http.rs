@@ -1,7 +1,7 @@
 // Integration test: drives the router in-process via `oneshot` (no socket
 // bind — port 8787 may be occupied on this machine). Covers the REST surface:
 // auth gating, job creation, listing, artifact traversal guard, SSE tailing.
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -62,6 +62,25 @@ fn artifact_request(method: &str, path: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn create_job_request(spec: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/jobs")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer test-key")
+        .body(Body::from(spec.to_string()))
+        .unwrap()
+}
+
+fn list_jobs_request() -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri("/api/jobs")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap()
+}
+
 fn scout_output_request(method: &str, path: &str) -> Request<Body> {
     Request::builder()
         .method(method)
@@ -109,7 +128,7 @@ async fn create_job_with_key_returns_201_and_job_id() {
 }
 
 #[tokio::test]
-async fn cancel_job_queued_is_accepted_and_emits_one_cancelled_event() {
+async fn cancel_job_queued_returns_current_job_and_emits_one_cancelled_event() {
     let (app, tmp) = build_test_app().await;
     let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
         .await
@@ -118,7 +137,9 @@ async fn cancel_job_queued_is_accepted_and_emits_one_cancelled_event() {
 
     let res = app.oneshot(cancel_job_request("queued-job")).await.unwrap();
 
-    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    assert_eq!(res.status(), StatusCode::OK);
+    let job: thoth_jobs::JobRecord = serde_json::from_slice(&response_bytes(res).await).unwrap();
+    assert_eq!(job.status, thoth_jobs::JobStatus::Cancelled);
     assert_eq!(
         store.get("queued-job").await.unwrap().unwrap().status,
         thoth_jobs::JobStatus::Cancelled
@@ -130,7 +151,7 @@ async fn cancel_job_queued_is_accepted_and_emits_one_cancelled_event() {
 }
 
 #[tokio::test]
-async fn cancel_job_running_is_accepted_and_sets_flag() {
+async fn cancel_job_running_returns_current_job_and_sets_flag() {
     let (app, tmp) = build_test_app().await;
     let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
         .await
@@ -140,7 +161,11 @@ async fn cancel_job_running_is_accepted_and_sets_flag() {
 
     let res = app.oneshot(cancel_job_request("running-job")).await.unwrap();
 
-    assert_eq!(res.status(), StatusCode::ACCEPTED);
+    assert_eq!(res.status(), StatusCode::OK);
+    let response_job: thoth_jobs::JobRecord =
+        serde_json::from_slice(&response_bytes(res).await).unwrap();
+    assert_eq!(response_job.status, thoth_jobs::JobStatus::Running);
+    assert!(response_job.cancel_requested);
     let job = store.get("running-job").await.unwrap().unwrap();
     assert_eq!(job.status, thoth_jobs::JobStatus::Running);
     assert!(job.cancel_requested);
@@ -149,7 +174,7 @@ async fn cancel_job_running_is_accepted_and_sets_flag() {
 }
 
 #[tokio::test]
-async fn cancel_job_repeated_running_request_is_accepted() {
+async fn cancel_job_repeated_running_request_returns_current_job() {
     let (app, tmp) = build_test_app().await;
     let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
         .await
@@ -164,8 +189,8 @@ async fn cancel_job_repeated_running_request_is_accepted() {
         .unwrap();
     let second = app.oneshot(cancel_job_request("repeated-job")).await.unwrap();
 
-    assert_eq!(first.status(), StatusCode::ACCEPTED);
-    assert_eq!(second.status(), StatusCode::ACCEPTED);
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(second.status(), StatusCode::OK);
     let job = store.get("repeated-job").await.unwrap().unwrap();
     assert_eq!(job.status, thoth_jobs::JobStatus::Running);
     assert!(job.cancel_requested);
@@ -206,6 +231,48 @@ async fn cancel_job_missing_returns_not_found() {
     let res = app.oneshot(cancel_job_request("missing-job")).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancelled_event_is_terminal_and_closes_the_job_sse_stream() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "cancelled-stream-job").await;
+    store
+        .append_event(
+            "cancelled-stream-job",
+            "cancelled",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/jobs/cancelled-stream-job/stream?token=test-key")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(
+        Duration::from_secs(1),
+        axum::body::to_bytes(response.into_body(), usize::MAX),
+    )
+    .await
+    .expect("cancelled event must close the stream")
+    .unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains(r#""type":"cancelled""#),
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -276,6 +343,46 @@ async fn job_artifact_get_head_and_ranges_stream_the_http_representation() {
         assert_eq!(response.headers()[header::CONTENT_RANGE], expected_range);
         assert_eq!(response.headers()[header::CONTENT_LENGTH], expected_body.len().to_string());
         assert_eq!(response_bytes(response).await, expected_body);
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn invalid_job_requests_return_structured_422_without_enqueuing() {
+    let (app, tmp) = build_test_app().await;
+    let cases = [
+        (serde_json::json!({ "command": "analyze", "url": "https://x.test", "params": {} }), "command", "unsupported_command"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "content_set": "set.json", "params": {} }), "source", "invalid_source"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": [] }), "params", "invalid_params"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "unknown": true } }), "params.unknown", "unknown_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "language": "  " } }), "params.language", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "provider": "invalid" } }), "params.provider", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "max_clips": 0 } }), "params.max_clips", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "bgm_volume": 2 } }), "params.bgm_volume", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "headline_dur": 0 } }), "params.headline_dur", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "keywords": ["ok", ""] } }), "params.keywords", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "extra_args": ["--safe", ""] } }), "params.extra_args", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "extra_args": ["--output-dir=elsewhere"] } }), "params.extra_args[0]", "protected_argument"),
+    ];
+
+    for (spec, field, code) in cases {
+        let before = app.clone().oneshot(list_jobs_request()).await.unwrap();
+        let before: serde_json::Value = serde_json::from_slice(&response_bytes(before).await).unwrap();
+
+        let response = app.clone().oneshot(create_job_request(spec)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value = serde_json::from_slice(&response_bytes(response).await).unwrap();
+        let error = body.get("error").and_then(serde_json::Value::as_object).unwrap();
+        assert_eq!(body.as_object().unwrap().len(), 1, "body: {body}");
+        assert_eq!(error.len(), 3, "body: {body}");
+        assert_eq!(error.get("field"), Some(&serde_json::json!(field)));
+        assert_eq!(error.get("code"), Some(&serde_json::json!(code)));
+        assert!(error.get("message").and_then(serde_json::Value::as_str).is_some());
+
+        let after = app.clone().oneshot(list_jobs_request()).await.unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&response_bytes(after).await).unwrap();
+        assert_eq!(after, before, "invalid {field} request enqueued a job");
     }
 
     let _ = std::fs::remove_dir_all(&tmp);
