@@ -1824,7 +1824,7 @@ impl<'a> EditService<'a> {
                         start,
                         end,
                     )
-                    .await;
+                    .await?;
                     if let Err(error @ EditError::Cancelled(_)) = super::ffmpeg::generate_thumbnail(
                         &self.execution,
                         video_path,

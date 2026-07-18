@@ -2265,8 +2265,12 @@ pub async fn generate_thumbnail(
 
 /// Mean left↔right asymmetry of one frame: 0 = perfectly mirror-symmetric, higher = natural.
 /// Extracts a tiny 64×64 grayscale frame and compares each pixel to its horizontal mirror. Returns
-/// `INFINITY` when scoring fails (so a failure never makes a frame look "more symmetric" / rejected).
-async fn frame_asymmetry(execution: &JobExecutionContext, video_path: &Path, time_sec: f64) -> f64 {
+/// `INFINITY` only when the produced frame cannot be read or is malformed.
+async fn frame_asymmetry(
+    execution: &JobExecutionContext,
+    video_path: &Path,
+    time_sec: f64,
+) -> Result<f64, EditError> {
     let tmp = std::env::temp_dir().join(format!(
         "thoth_sym_{}_{}.gray", std::process::id(), (time_sec * 1000.0) as u64));
     let args = vec![
@@ -2277,11 +2281,11 @@ async fn frame_asymmetry(execution: &JobExecutionContext, video_path: &Path, tim
         "-f".into(), "rawvideo".into(),
         tmp.to_string_lossy().to_string(),
     ];
-    if run_ffmpeg(execution, &args).await.is_err() { return f64::INFINITY; }
-    let buf = match std::fs::read(&tmp) { Ok(b) => b, Err(_) => return f64::INFINITY };
+    run_ffmpeg(execution, &args).await?;
+    let buf = match std::fs::read(&tmp) { Ok(b) => b, Err(_) => return Ok(f64::INFINITY) };
     let _ = std::fs::remove_file(&tmp);
     let (w, h) = (64usize, 64usize);
-    if buf.len() < w * h { return f64::INFINITY; }
+    if buf.len() < w * h { return Ok(f64::INFINITY); }
     let (mut sum, mut n) = (0u64, 0u64);
     for y in 0..h {
         for x in 0..w / 2 {
@@ -2291,31 +2295,47 @@ async fn frame_asymmetry(execution: &JobExecutionContext, video_path: &Path, tim
             n += 1;
         }
     }
-    if n == 0 { f64::INFINITY } else { sum as f64 / n as f64 }
+    Ok(if n == 0 { f64::INFINITY } else { sum as f64 / n as f64 })
 }
 
 /// Pick the cover-subject frame time around `preferred` whose frame is LEAST mirror-symmetric, to
 /// dodge transition/kaleidoscope frames that duplicate the subject (the cover then shows a doubled
 /// face). Samples a small ±1.5 s window so it stays on the intended subject moment. Falls back to
-/// `preferred` when the window is too short or scoring fails.
+/// `preferred` when the window is too short or a frame output is malformed.
 pub async fn pick_cover_frame_time(
     execution: &JobExecutionContext,
     video_path: &Path,
     preferred: f64,
     start: f64,
     end: f64,
-) -> f64 {
+) -> Result<f64, EditError> {
+    pick_cover_frame_time_with_scorer(preferred, start, end, |time_sec| {
+        frame_asymmetry(execution, video_path, time_sec)
+    })
+    .await
+}
+
+async fn pick_cover_frame_time_with_scorer<F, Fut>(
+    preferred: f64,
+    start: f64,
+    end: f64,
+    mut score_frame: F,
+) -> Result<f64, EditError>
+where
+    F: FnMut(f64) -> Fut,
+    Fut: std::future::Future<Output = Result<f64, EditError>>,
+{
     let lo = (preferred - 1.5).max(start);
     let hi = (preferred + 1.5).min((end - 0.1).max(start));
-    if hi - lo < 0.4 { return preferred; }
+    if hi - lo < 0.4 { return Ok(preferred); }
     let steps = 6;
     let (mut best, mut best_score) = (preferred, -1.0f64);
     for i in 0..=steps {
         let t = lo + (hi - lo) * (i as f64 / steps as f64);
-        let s = frame_asymmetry(execution, video_path, t).await;
+        let s = score_frame(t).await?;
         if s.is_finite() && s > best_score { best_score = s; best = t; }
     }
-    best
+    Ok(best)
 }
 
 /// Concatenate `main_clip` with an `avatar_segment` (post-roll) into `output`.
@@ -2414,6 +2434,27 @@ mod tests {
             .await
             .expect("cancelled wrapper must return promptly")
             .expect("wrapper task must not panic");
+        assert!(matches!(result, Err(EditError::Cancelled(_))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn frame_selection_propagates_job_cancellation() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let execution = crate::execution::JobExecutionContext::new();
+        let scoring_started = AtomicBool::new(false);
+
+        let result = pick_cover_frame_time_with_scorer(1.0, 0.0, 3.0, |_| {
+            scoring_started.store(true, Ordering::SeqCst);
+            execution.cancel();
+            let cancellation = execution
+                .check_cancelled()
+                .map_err(|error| EditError::from_execution(error, "score cover frame".to_owned()));
+            async move { cancellation.map(|()| 0.0) }
+        })
+        .await;
+
+        assert!(scoring_started.load(Ordering::SeqCst));
         assert!(matches!(result, Err(EditError::Cancelled(_))), "{result:?}");
     }
 
