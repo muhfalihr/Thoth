@@ -380,7 +380,16 @@ async fn runtime_contract_http_smoke() {
 
     let worker_store = store.clone();
     let worker_id = job_id.to_owned();
+    let (initial_poll_tx, initial_poll_rx) = tokio::sync::oneshot::channel();
     let worker = tokio::spawn(async move {
+        let initially_cancelled = worker_store.is_cancel_requested(&worker_id).await.unwrap();
+        assert!(
+            !initially_cancelled,
+            "worker must observe the claimed job running before cancellation"
+        );
+        initial_poll_tx
+            .send(())
+            .expect("test must await the worker's initial SQLite poll");
         loop {
             if worker_store.is_cancel_requested(&worker_id).await.unwrap() {
                 return worker_store
@@ -396,6 +405,10 @@ async fn runtime_contract_http_smoke() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     });
+
+    initial_poll_rx
+        .await
+        .expect("worker must poll SQLite before the cancellation request");
 
     let cancellation_started = Instant::now();
     let cancelled = app
