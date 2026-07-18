@@ -2198,6 +2198,52 @@ async fn run_ffmpeg_with_binary(
     Ok(())
 }
 
+#[cfg(test)]
+async fn run_ffmpeg_with_binary_and_ready(
+    execution: &JobExecutionContext,
+    binary: &Path,
+    args: &[String],
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> Result<(), EditError> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut command = tokio::process::Command::new(binary);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = execution.spawn(&mut command).map_err(|error| {
+        EditError::from_execution(error, format!("failed to run FFmpeg at '{}'", binary.display()))
+    })?;
+    let stdout = child
+        .take_stdout()
+        .ok_or_else(|| EditError::FfmpegFailed("ready helper stdout is not piped".to_owned()))?;
+    let mut stdout = BufReader::new(stdout).lines();
+    let marker = tokio::time::timeout(std::time::Duration::from_secs(2), stdout.next_line())
+        .await
+        .map_err(|_| EditError::FfmpegFailed("ready helper did not emit a marker".to_owned()))?
+        .map_err(|error| EditError::FfmpegFailed(error.to_string()))?
+        .ok_or_else(|| EditError::FfmpegFailed("ready helper closed stdout".to_owned()))?;
+    if marker != "ready" {
+        return Err(EditError::FfmpegFailed(format!(
+            "ready helper emitted unexpected marker: {marker}"
+        )));
+    }
+    let _ = ready.send(());
+
+    let status = child.status().await.map_err(|error| {
+        EditError::from_execution(error, format!("failed to run FFmpeg at '{}'", binary.display()))
+    })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(EditError::FfmpegFailed(format!(
+            "FFmpeg exited with code {:?}",
+            status.code()
+        )))
+    }
+}
+
 /// Generate a thumbnail frame from the video at `time_sec`.
 pub async fn generate_thumbnail(
     execution: &JobExecutionContext,
@@ -2330,28 +2376,38 @@ mod tests {
         use std::time::Duration;
 
         let execution = crate::execution::JobExecutionContext::new();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         #[cfg(windows)]
         let (binary, args) = (
             "powershell",
             vec![
                 "-NoProfile".into(),
                 "-Command".into(),
-                "Start-Sleep -Seconds 30".into(),
+                "Write-Output ready; Start-Sleep -Seconds 30".into(),
             ],
         );
         #[cfg(unix)]
         let args = vec![
             "-c".into(),
-            "sleep 30".into(),
+            "printf 'ready\\n'; sleep 30".into(),
         ];
         #[cfg(unix)]
         let binary = "sh";
         let waiting_execution = execution.clone();
         let waiting = tokio::spawn(async move {
-            run_ffmpeg_with_binary(&waiting_execution, Path::new(binary), &args).await
+            run_ffmpeg_with_binary_and_ready(
+                &waiting_execution,
+                Path::new(binary),
+                &args,
+                ready_tx,
+            )
+            .await
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(2), ready_rx)
+            .await
+            .expect("helper child must emit its ready marker")
+            .expect("helper must forward its ready marker");
         execution.cancel();
 
         let result = tokio::time::timeout(Duration::from_secs(2), waiting)
