@@ -734,7 +734,8 @@ mod profile_store_tests {
     async fn create_and_update_reject_normalized_legacy_project_name_conflicts() {
         let (store, root) = fresh_profile_store().await;
         let existing = store.create_project("Existing").await.unwrap();
-        sqlx::query("UPDATE projects SET name = '  Existing  ' WHERE id = ?")
+        sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
+            .bind("\tExisting\n")
             .bind(&existing.id)
             .execute(&store.pool)
             .await
@@ -749,6 +750,25 @@ mod profile_store_tests {
             store.update_project(&other.id, "Existing").await.unwrap_err(),
             ResourceError::DuplicateName
         ));
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn update_rejects_unicode_whitespace_legacy_project_name_conflict() {
+        let (store, root) = fresh_profile_store().await;
+        let existing = store.create_project("Existing").await.unwrap();
+        sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
+            .bind("\u{2003}Existing\u{2003}")
+            .bind(&existing.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let other = store.create_project("Other").await.unwrap();
+
+        let error = store.update_project(&other.id, " Existing ").await.unwrap_err();
+
+        assert!(matches!(error, ResourceError::DuplicateName));
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -862,6 +882,11 @@ fn validate_name(field: &str, value: &str) -> anyhow::Result<()> {
     normalize_name(field, value)
         .map(|_| ())
         .map_err(anyhow::Error::new)
+}
+
+fn matches_normalized_name(existing: &str, normalized: &str) -> bool {
+    normalize_name("stored project name", existing)
+        .is_ok_and(|existing| existing == normalized)
 }
 
 fn validate_credential_ref(reference: Option<&str>) -> anyhow::Result<()> {
@@ -1001,14 +1026,15 @@ impl JobStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(resource_storage)?;
-            let duplicate: i64 = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM projects WHERE trim(name) = ?)",
-            )
-            .bind(&name)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(resource_storage)?;
-            if duplicate != 0 {
+            let existing: Vec<(String, String)> =
+                sqlx::query_as("SELECT id, name FROM projects")
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(resource_storage)?;
+            let duplicate = existing
+                .iter()
+                .any(|(_, existing_name)| matches_normalized_name(existing_name, &name));
+            if duplicate {
                 tx.rollback().await.map_err(resource_storage)?;
                 return Err(ResourceError::DuplicateName);
             }
@@ -1083,17 +1109,16 @@ impl JobStore {
             tx.rollback().await.map_err(resource_storage)?;
             return Err(ResourceError::NotFound);
         }
-        let duplicate: i64 = sqlx::query_scalar(
-            "SELECT EXISTS(
-                SELECT 1 FROM projects WHERE trim(name) = ? AND id <> ?
-            )",
-        )
-        .bind(&name)
-        .bind(project_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(resource_storage)?;
-        if duplicate != 0 {
+        let existing: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, name FROM projects WHERE id <> ?")
+                .bind(project_id)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(resource_storage)?;
+        let duplicate = existing
+            .iter()
+            .any(|(_, existing_name)| matches_normalized_name(existing_name, &name));
+        if duplicate {
             tx.rollback().await.map_err(resource_storage)?;
             return Err(ResourceError::DuplicateName);
         }
