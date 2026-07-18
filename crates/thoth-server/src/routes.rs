@@ -49,8 +49,18 @@ pub struct UpdateProfileBody {
     pub description: Option<String>,
     #[serde(default)]
     pub settings: Option<ProfileSettings>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_option")]
     pub credential_ref: Option<Option<String>>,
+}
+
+fn deserialize_present_option<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -267,7 +277,11 @@ pub async fn update_profile(
     let name = body.name.unwrap_or(current.name);
     let description = body.description.unwrap_or(current.description);
     let settings = body.settings.unwrap_or(current.settings);
-    let credential_ref = body.credential_ref.unwrap_or(current.credential_ref);
+    let credential_ref = match body.credential_ref {
+        None => current.credential_ref,
+        Some(None) => None,
+        Some(Some(reference)) => Some(reference.trim().to_owned()),
+    };
     match state
         .store
         .update_profile(

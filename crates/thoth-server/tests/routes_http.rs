@@ -1769,6 +1769,70 @@ async fn profile_validate_checks_candidate_without_mutating_the_profile() {
 }
 
 #[tokio::test]
+async fn profile_patch_distinguishes_omitted_credential_from_explicit_null() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Project" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profiles_uri = format!("/api/projects/{}/profiles", project["id"].as_str().unwrap());
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &profiles_uri,
+        Some(serde_json::json!({
+            "name": "Default",
+            "settings": {},
+            "credential_ref": "openai-production"
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_uri = format!("{profiles_uri}/{}", profile["id"].as_str().unwrap());
+    assert_eq!(profile["credential_ref"], "openai-production");
+
+    let omitted = project_api_json(
+        app.clone(),
+        "PATCH",
+        &profile_uri,
+        Some(serde_json::json!({ "description": "Credential retained" })),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(omitted["credential_ref"], "openai-production");
+
+    let cleared = project_api_json(
+        app.clone(),
+        "PATCH",
+        &profile_uri,
+        Some(serde_json::json!({ "credential_ref": null })),
+        StatusCode::OK,
+    )
+    .await;
+    assert!(cleared["credential_ref"].is_null());
+
+    let persisted = project_api_json(app.clone(), "GET", &profile_uri, None, StatusCode::OK).await;
+    assert!(persisted["credential_ref"].is_null());
+
+    let set = project_api_json(
+        app.clone(),
+        "PATCH",
+        &profile_uri,
+        Some(serde_json::json!({ "credential_ref": "  openai-secondary  " })),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(set["credential_ref"], "openai-secondary");
+    let persisted = project_api_json(app, "GET", &profile_uri, None, StatusCode::OK).await;
+    assert_eq!(persisted["credential_ref"], "openai-secondary");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
 async fn delete_resources_are_scoped_and_project_delete_rejects_active_jobs() {
     let (app, tmp) = build_test_app().await;
     let owner = project_api_json(
