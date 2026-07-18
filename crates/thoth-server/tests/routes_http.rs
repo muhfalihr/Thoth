@@ -62,6 +62,14 @@ fn artifact_request(method: &str, path: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn scout_output_request(method: &str, path: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(format!("/api/scout/output/{path}?token=test-key"))
+        .body(Body::empty())
+        .unwrap()
+}
+
 #[tokio::test]
 async fn create_job_without_key_is_unauthorized() {
     let (app, tmp) = build_test_app().await;
@@ -406,6 +414,101 @@ async fn scout_output_token_route_supports_get_head_and_ranges() {
     assert_eq!(response_bytes(get_range).await, b"456789");
 
     std::fs::remove_file(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_serves_zero_byte_get_and_head_but_rejects_ranges() {
+    let (app, tmp) = build_test_app().await;
+    let name = format!("routes-http-empty-{}.txt", uuid::Uuid::new_v4());
+    let path = std::path::Path::new(thoth_server::scout::SCOUT_OUTPUT_DIR).join(&name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+
+    for method in ["GET", "HEAD"] {
+        let response = app
+            .clone()
+            .oneshot(scout_output_request(method, &name))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .header(header::RANGE, "bytes=0-0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */0");
+    assert!(response_bytes(response).await.is_empty());
+
+    std::fs::remove_file(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_rejects_bad_ranges_and_directories() {
+    let (app, tmp) = build_test_app().await;
+    let directory = format!("routes-http-directory-{}", uuid::Uuid::new_v4());
+    let name = format!("routes-http-range-{}.txt", uuid::Uuid::new_v4());
+    let output_dir = std::path::Path::new(thoth_server::scout::SCOUT_OUTPUT_DIR);
+    std::fs::create_dir_all(output_dir.join(&directory)).unwrap();
+    std::fs::write(output_dir.join(&name), b"0123456789").unwrap();
+
+    for value in ["bytes=garbage", "bytes=10-", "bytes=0-1,4-5"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/scout/output/{name}?token=test-key"))
+                    .header(header::RANGE, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{value}");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    let response = app
+        .oneshot(scout_output_request("GET", &directory))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    std::fs::remove_file(output_dir.join(&name)).unwrap();
+    std::fs::remove_dir_all(output_dir.join(&directory)).unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_rejects_traversal() {
+    let (app, tmp) = build_test_app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/scout/output/..%2Foutside.txt?token=test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
