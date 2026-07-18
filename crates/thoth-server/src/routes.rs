@@ -1,7 +1,7 @@
 use std::{convert::Infallible, time::Duration};
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, State, rejection::JsonRejection},
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response, sse::{Event, Sse}},
     Json,
@@ -11,7 +11,367 @@ use serde::Deserialize;
 
 use crate::auth::AppState;
 use crate::scout::{self, DiscoverReq, RunReq, ScoutKind, ValidateReq};
-use thoth_jobs::{CancelRequestOutcome, JobRecord, JobSpec, validate_job_spec};
+use thoth_jobs::{
+    CancelRequestOutcome, JobRecord, JobSpec, JobStore, ProfileRecord, ProfileSettings,
+    ResourceError, validate_job_spec, validate_settings,
+};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProjectBody {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProjectBody {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProfileBody {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub settings: ProfileSettings,
+    #[serde(default)]
+    pub credential_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProfileBody {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub settings: Option<ProfileSettings>,
+    #[serde(default)]
+    pub credential_ref: Option<Option<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateProfileBody {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateProfileBody {
+    #[serde(default)]
+    pub settings: Option<ProfileSettings>,
+}
+
+fn resource_error_response(error: ResourceError) -> Response {
+    match error {
+        ResourceError::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "not_found" })),
+        )
+            .into_response(),
+        ResourceError::DuplicateName => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "duplicate_name" })),
+        )
+            .into_response(),
+        ResourceError::Validation { message } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "error": "validation_failed",
+                "message": message,
+            })),
+        )
+            .into_response(),
+        ResourceError::ActiveJobs => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "active_jobs" })),
+        )
+            .into_response(),
+        ResourceError::Storage(source) => {
+            tracing::error!(error = ?source, "project/profile storage operation failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "internal_error" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn request_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, Response> {
+    match body {
+        Ok(Json(body)) => Ok(body),
+        Err(_) => Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": "invalid_request" })),
+        )
+            .into_response()),
+    }
+}
+
+fn validation_error_response(error: anyhow::Error) -> Response {
+    resource_error_response(ResourceError::Validation {
+        message: error.to_string(),
+    })
+}
+
+async fn scoped_profile(
+    store: &JobStore,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<ProfileRecord, ResourceError> {
+    let profile = store
+        .get_profile(profile_id)
+        .await?
+        .ok_or(ResourceError::NotFound)?;
+    if profile.project_id != project_id {
+        return Err(ResourceError::NotFound);
+    }
+    Ok(profile)
+}
+
+pub async fn create_project(
+    State(state): State<AppState>,
+    body: Result<Json<CreateProjectBody>, JsonRejection>,
+) -> Response {
+    let body = match request_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    match state.store.create_project(&body.name).await {
+        Ok(project) => (StatusCode::CREATED, Json(project)).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn list_projects(State(state): State<AppState>) -> Response {
+    match state.store.list_projects().await {
+        Ok(projects) => Json(projects).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn get_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Response {
+    match state.store.get_project(&project_id).await {
+        Ok(project) => Json(project).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn update_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    body: Result<Json<UpdateProjectBody>, JsonRejection>,
+) -> Response {
+    let body = match request_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    match state.store.update_project(&project_id, &body.name).await {
+        Ok(project) => Json(project).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn delete_project(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Response {
+    match state.store.delete_project(&project_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn create_profile(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    body: Result<Json<CreateProfileBody>, JsonRejection>,
+) -> Response {
+    let body = match request_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    if let Err(error) = state.store.get_project(&project_id).await {
+        return resource_error_response(error);
+    }
+    match state
+        .store
+        .create_profile(
+            &project_id,
+            &body.name,
+            &body.description,
+            body.settings,
+            body.credential_ref.as_deref(),
+        )
+        .await
+    {
+        Ok(profile) => (StatusCode::CREATED, Json(profile)).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn list_profiles(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Response {
+    if let Err(error) = state.store.get_project(&project_id).await {
+        return resource_error_response(error);
+    }
+    match state.store.list_profiles(&project_id).await {
+        Ok(profiles) => Json(profiles).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn get_profile(
+    State(state): State<AppState>,
+    Path((project_id, profile_id)): Path<(String, String)>,
+) -> Response {
+    match scoped_profile(&state.store, &project_id, &profile_id).await {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn update_profile(
+    State(state): State<AppState>,
+    Path((project_id, profile_id)): Path<(String, String)>,
+    body: Result<Json<UpdateProfileBody>, JsonRejection>,
+) -> Response {
+    let body = match request_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let current = match scoped_profile(&state.store, &project_id, &profile_id).await {
+        Ok(profile) => profile,
+        Err(error) => return resource_error_response(error),
+    };
+    if body.name.is_none()
+        && body.description.is_none()
+        && body.settings.is_none()
+        && body.credential_ref.is_none()
+    {
+        return validation_error_response(anyhow::anyhow!(
+            "profile update must include at least one field"
+        ));
+    }
+
+    let name = body.name.unwrap_or(current.name);
+    let description = body.description.unwrap_or(current.description);
+    let settings = body.settings.unwrap_or(current.settings);
+    let credential_ref = body.credential_ref.unwrap_or(current.credential_ref);
+    match state
+        .store
+        .update_profile(
+            &profile_id,
+            &name,
+            &description,
+            settings,
+            credential_ref.as_deref(),
+        )
+        .await
+    {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn delete_profile(
+    State(state): State<AppState>,
+    Path((project_id, profile_id)): Path<(String, String)>,
+) -> Response {
+    match state.store.delete_profile(&project_id, &profile_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn duplicate_profile(
+    State(state): State<AppState>,
+    Path((project_id, profile_id)): Path<(String, String)>,
+    body: Result<Json<DuplicateProfileBody>, JsonRejection>,
+) -> Response {
+    let body = match request_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let source = match scoped_profile(&state.store, &project_id, &profile_id).await {
+        Ok(profile) => profile,
+        Err(error) => return resource_error_response(error),
+    };
+    match state
+        .store
+        .create_profile(
+            &project_id,
+            &body.name,
+            &source.description,
+            source.settings,
+            source.credential_ref.as_deref(),
+        )
+        .await
+    {
+        Ok(profile) => (StatusCode::CREATED, Json(profile)).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn list_profile_revisions(
+    State(state): State<AppState>,
+    Path((project_id, profile_id)): Path<(String, String)>,
+) -> Response {
+    if let Err(error) = scoped_profile(&state.store, &project_id, &profile_id).await {
+        return resource_error_response(error);
+    }
+    match state.store.list_profile_revisions(&profile_id).await {
+        Ok(revisions) => Json(revisions).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn restore_profile_revision(
+    State(state): State<AppState>,
+    Path((project_id, profile_id, revision_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(error) = scoped_profile(&state.store, &project_id, &profile_id).await {
+        return resource_error_response(error);
+    }
+    match state
+        .store
+        .restore_profile_revision(&profile_id, &revision_id)
+        .await
+    {
+        Ok(profile) => Json(profile).into_response(),
+        Err(error) => resource_error_response(error),
+    }
+}
+
+pub async fn validate_profile(
+    State(state): State<AppState>,
+    Path((project_id, profile_id)): Path<(String, String)>,
+    body: Result<Json<ValidateProfileBody>, JsonRejection>,
+) -> Response {
+    let body = match request_body(body) {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let profile = match scoped_profile(&state.store, &project_id, &profile_id).await {
+        Ok(profile) => profile,
+        Err(error) => return resource_error_response(error),
+    };
+    let settings = body.settings.unwrap_or(profile.settings);
+    match validate_settings(&settings, &state.home) {
+        Ok(()) => Json(serde_json::json!({ "valid": true })).into_response(),
+        Err(error) => validation_error_response(error),
+    }
+}
 
 #[derive(Deserialize)]
 pub struct StreamQuery {

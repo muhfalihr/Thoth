@@ -17,6 +17,42 @@ use auth::AppState;
 /// in-process HTTP integration tests so they can't drift.
 pub fn build_router(state: AppState) -> Router {
     let api = Router::new()
+        .route(
+            "/projects",
+            get(routes::list_projects).post(routes::create_project),
+        )
+        .route(
+            "/projects/:project_id",
+            get(routes::get_project)
+                .patch(routes::update_project)
+                .delete(routes::delete_project),
+        )
+        .route(
+            "/projects/:project_id/profiles",
+            get(routes::list_profiles).post(routes::create_profile),
+        )
+        .route(
+            "/projects/:project_id/profiles/:profile_id",
+            get(routes::get_profile)
+                .patch(routes::update_profile)
+                .delete(routes::delete_profile),
+        )
+        .route(
+            "/projects/:project_id/profiles/:profile_id/duplicate",
+            post(routes::duplicate_profile),
+        )
+        .route(
+            "/projects/:project_id/profiles/:profile_id/revisions",
+            get(routes::list_profile_revisions),
+        )
+        .route(
+            "/projects/:project_id/profiles/:profile_id/revisions/:revision_id/restore",
+            post(routes::restore_profile_revision),
+        )
+        .route(
+            "/projects/:project_id/profiles/:profile_id/validate",
+            post(routes::validate_profile),
+        )
         .route("/jobs", get(routes::list_jobs).post(routes::create_job))
         .route("/jobs/:id", get(routes::get_job))
         .route("/jobs/:id/cancel", post(routes::cancel_job))

@@ -1363,3 +1363,551 @@ async fn scout_output_valid_token_missing_file_is_404() {
         .unwrap();
     assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::NOT_FOUND);
 }
+
+fn project_api_request(
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", "Bearer test-key");
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    builder
+        .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
+        .unwrap()
+}
+
+async fn project_api_json(
+    app: axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+    expected_status: StatusCode,
+) -> serde_json::Value {
+    let response = app
+        .oneshot(project_api_request(method, uri, body))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), expected_status);
+    body_json(response).await
+}
+
+#[tokio::test]
+async fn project_resources_require_bearer_authentication() {
+    let (app, tmp) = build_test_app().await;
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/projects")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_resources_create_list_detail_update_and_preserve_workspace_on_delete() {
+    let (app, tmp) = build_test_app().await;
+    let created = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": " Demo " })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = created["id"].as_str().unwrap();
+    let workspace = PathBuf::from(created["workspace_path"].as_str().unwrap());
+    assert_eq!(created["name"], "Demo");
+    assert!(workspace.is_dir());
+
+    let listed = project_api_json(
+        app.clone(),
+        "GET",
+        "/api/projects",
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], project_id);
+
+    let detail_uri = format!("/api/projects/{project_id}");
+    let detail = project_api_json(
+        app.clone(),
+        "GET",
+        &detail_uri,
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(detail["id"], project_id);
+    let updated = project_api_json(
+        app.clone(),
+        "PATCH",
+        &detail_uri,
+        Some(serde_json::json!({ "name": "Renamed" })),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(updated["name"], "Renamed");
+
+    let response = app
+        .clone()
+        .oneshot(project_api_request("DELETE", &detail_uri, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(workspace.is_dir(), "metadata deletion must not remove files");
+    let missing = app
+        .oneshot(project_api_request("GET", &detail_uri, None))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn profile_is_visible_only_in_its_project() {
+    let (app, tmp) = build_test_app().await;
+    let first = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "First" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let second = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Second" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let first_id = first["id"].as_str().unwrap();
+    let second_id = second["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{first_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "Safe typed defaults",
+            "settings": {},
+            "credential_ref": "openai-production"
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+    assert_eq!(profile["project_id"], first_id);
+    assert_eq!(profile["credential_ref"], "openai-production");
+    assert!(profile.get("credential_value").is_none());
+
+    let own_uri = format!("/api/projects/{first_id}/profiles/{profile_id}");
+    let own = project_api_json(app.clone(), "GET", &own_uri, None, StatusCode::OK).await;
+    assert_eq!(own["id"], profile_id);
+    let listed = project_api_json(
+        app.clone(),
+        "GET",
+        &format!("/api/projects/{first_id}/profiles"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+
+    let foreign_uri = format!("/api/projects/{second_id}/profiles/{profile_id}");
+    let foreign = app
+        .oneshot(project_api_request("GET", &foreign_uri, None))
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn duplicate_resource_names_return_conflict() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Project" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let duplicate_project = app
+        .clone()
+        .oneshot(project_api_request(
+            "POST",
+            "/api/projects",
+            Some(serde_json::json!({ "name": " Project " })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(duplicate_project.status(), StatusCode::CONFLICT);
+
+    let profiles_uri = format!("/api/projects/{}/profiles", project["id"].as_str().unwrap());
+    project_api_json(
+        app.clone(),
+        "POST",
+        &profiles_uri,
+        Some(serde_json::json!({ "name": "Default", "settings": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let duplicate_profile = app
+        .oneshot(project_api_request(
+            "POST",
+            &profiles_uri,
+            Some(serde_json::json!({ "name": "Default", "settings": {} })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(duplicate_profile.status(), StatusCode::CONFLICT);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_profile_payloads_reject_unknown_fields_and_invalid_settings() {
+    let (app, tmp) = build_test_app().await;
+    let unknown_project_field = app
+        .clone()
+        .oneshot(project_api_request(
+            "POST",
+            "/api/projects",
+            Some(serde_json::json!({ "name": "Project", "unknown": true })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown_project_field.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        unknown_project_field.headers()[header::CONTENT_TYPE],
+        "application/json"
+    );
+    assert_eq!(body_json(unknown_project_field).await["error"], "invalid_request");
+
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Project" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profiles_uri = format!("/api/projects/{}/profiles", project["id"].as_str().unwrap());
+    let unknown_setting = app
+        .clone()
+        .oneshot(project_api_request(
+            "POST",
+            &profiles_uri,
+            Some(serde_json::json!({
+                "name": "Unknown",
+                "settings": { "unknown": true }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown_setting.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let invalid_setting = app
+        .oneshot(project_api_request(
+            "POST",
+            &profiles_uri,
+            Some(serde_json::json!({
+                "name": "Invalid",
+                "settings": { "analysis": { "provider": "unsupported" } }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid_setting.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let error = body_json(invalid_setting).await;
+    assert_eq!(error["error"], "validation_failed");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn profile_duplicate_update_revision_and_restore_are_project_scoped() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Project" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profiles_uri = format!("/api/projects/{project_id}/profiles");
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &profiles_uri,
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "Before",
+            "settings": { "analysis": { "max_clips": 3 } }
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+    let profile_uri = format!("{profiles_uri}/{profile_id}");
+    let duplicate = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("{profile_uri}/duplicate"),
+        Some(serde_json::json!({ "name": "Copy" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    assert_ne!(duplicate["id"], profile_id);
+    assert_eq!(duplicate["settings"], profile["settings"]);
+
+    let updated = project_api_json(
+        app.clone(),
+        "PATCH",
+        &profile_uri,
+        Some(serde_json::json!({
+            "description": "After",
+            "settings": { "analysis": { "max_clips": 5 } }
+        })),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(updated["name"], "Default", "omitted PATCH fields are retained");
+    assert_eq!(updated["description"], "After");
+    assert_eq!(updated["settings"]["analysis"]["max_clips"], 5);
+
+    let revisions = project_api_json(
+        app.clone(),
+        "GET",
+        &format!("{profile_uri}/revisions"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(revisions.as_array().unwrap().len(), 1);
+    assert_eq!(revisions[0]["description"], "Before");
+    let revision_id = revisions[0]["id"].as_str().unwrap();
+    let restored = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("{profile_uri}/revisions/{revision_id}/restore"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(restored["description"], "Before");
+    assert_eq!(restored["settings"]["analysis"]["max_clips"], 3);
+    let history = project_api_json(
+        app,
+        "GET",
+        &format!("{profile_uri}/revisions"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(history.as_array().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn profile_validate_checks_candidate_without_mutating_the_profile() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Project" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profiles_uri = format!("/api/projects/{}/profiles", project["id"].as_str().unwrap());
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &profiles_uri,
+        Some(serde_json::json!({ "name": "Default", "settings": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_uri = format!("{profiles_uri}/{}", profile["id"].as_str().unwrap());
+    let valid = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("{profile_uri}/validate"),
+        Some(serde_json::json!({ "settings": { "analysis": { "max_clips": 7 } } })),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(valid["valid"], true);
+
+    let invalid = app
+        .clone()
+        .oneshot(project_api_request(
+            "POST",
+            &format!("{profile_uri}/validate"),
+            Some(serde_json::json!({ "settings": { "analysis": { "max_clips": 0 } } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let current = project_api_json(app, "GET", &profile_uri, None, StatusCode::OK).await;
+    assert_eq!(current["settings"]["analysis"]["max_clips"], 3);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn delete_resources_are_scoped_and_project_delete_rejects_active_jobs() {
+    let (app, tmp) = build_test_app().await;
+    let owner = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Owner" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let other = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Other" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let owner_id = owner["id"].as_str().unwrap();
+    let other_id = other["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{owner_id}/profiles"),
+        Some(serde_json::json!({ "name": "Default", "settings": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+    let wrong_scope = app
+        .clone()
+        .oneshot(project_api_request(
+            "DELETE",
+            &format!("/api/projects/{other_id}/profiles/{profile_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong_scope.status(), StatusCode::NOT_FOUND);
+
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
+        .await
+        .unwrap();
+    store
+        .enqueue_resolved(
+            "active-job",
+            &thoth_jobs::EnqueueRequest {
+                spec: thoth_jobs::JobSpec {
+                    command: "run".into(),
+                    url: Some("https://x.test".into()),
+                    content_set: None,
+                    params: serde_json::json!({}),
+                },
+                project_id: owner_id.to_owned(),
+                profile_id: Some(profile_id.to_owned()),
+                profile_revision: None,
+                resolved_settings: thoth_jobs::ResolvedSettings::default(),
+            },
+            "out/active-job",
+        )
+        .await
+        .unwrap();
+    let active_delete = app
+        .clone()
+        .oneshot(project_api_request(
+            "DELETE",
+            &format!("/api/projects/{owner_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(active_delete.status(), StatusCode::CONFLICT);
+
+    let profile_delete = app
+        .clone()
+        .oneshot(project_api_request(
+            "DELETE",
+            &format!("/api/projects/{owner_id}/profiles/{profile_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(profile_delete.status(), StatusCode::NO_CONTENT);
+    let deleted_profile = app
+        .oneshot(project_api_request(
+            "GET",
+            &format!("/api/projects/{owner_id}/profiles/{profile_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(deleted_profile.status(), StatusCode::NOT_FOUND);
+    assert!(store.get("active-job").await.unwrap().is_some());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn profile_storage_errors_return_safe_internal_error() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "Project" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({ "name": "Default", "settings": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+    let database_url = format!("sqlite://{}", test_db_path(&tmp).to_string_lossy());
+    let pool = sqlx::SqlitePool::connect(&database_url).await.unwrap();
+    sqlx::query("UPDATE profiles SET settings_json = ? WHERE id = ?")
+        .bind(r#"{"secret":"must-not-leak"}"#)
+        .bind(profile_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let response = app
+        .oneshot(project_api_request(
+            "GET",
+            &format!("/api/projects/{project_id}/profiles/{profile_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let text = String::from_utf8(response_bytes(response).await).unwrap();
+    assert_eq!(text, r#"{"error":"internal_error"}"#);
+    assert!(!text.contains("secret"));
+    assert!(!text.to_ascii_lowercase().contains("sql"));
+    let _ = std::fs::remove_dir_all(tmp);
+}
