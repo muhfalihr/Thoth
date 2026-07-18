@@ -680,6 +680,146 @@ mod profile_store_tests {
         drop(store);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[tokio::test]
+    async fn v3_database_with_duplicate_and_padded_project_names_still_connects() {
+        let root = std::env::temp_dir().join(format!("thoth-v3-projects-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("jobs.db");
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str(db.to_str().unwrap())
+                    .unwrap()
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        let all_migrations = sqlx::migrate!();
+        let v3_migrator = sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                all_migrations
+                    .iter()
+                    .filter(|migration| migration.version <= 3)
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        v3_migrator.run(&pool).await.unwrap();
+        for (id, name) in [("one", "Demo"), ("two", "Demo"), ("three", "  Demo  ")] {
+            sqlx::query(
+                "INSERT INTO projects (id, name, workspace_path, created_at, updated_at)
+                 VALUES (?, ?, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(root.join(id).to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        drop(pool);
+
+        let store = JobStore::connect(db.to_str().unwrap()).await.unwrap();
+
+        assert_eq!(store.list_projects().await.unwrap().len(), 3);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn create_and_update_reject_normalized_legacy_project_name_conflicts() {
+        let (store, root) = fresh_profile_store().await;
+        let existing = store.create_project("Existing").await.unwrap();
+        sqlx::query("UPDATE projects SET name = '  Existing  ' WHERE id = ?")
+            .bind(&existing.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store.create_project(" Existing ").await.unwrap_err(),
+            ResourceError::DuplicateName
+        ));
+        let other = store.create_project("Other").await.unwrap();
+        assert!(matches!(
+            store.update_project(&other.id, "Existing").await.unwrap_err(),
+            ResourceError::DuplicateName
+        ));
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn concurrent_project_create_has_one_deterministic_duplicate_outcome() {
+        let root = std::env::temp_dir().join(format!("thoth-project-race-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        home.ensure_layout().unwrap();
+        let db = home.data_dir().join("jobs.db");
+        let first = JobStore::connect_with_home(db.to_str().unwrap(), home.clone())
+            .await
+            .unwrap();
+        let second = JobStore::connect_with_home(db.to_str().unwrap(), home)
+            .await
+            .unwrap();
+
+        let (left, right) = tokio::join!(
+            first.create_project("Concurrent"),
+            second.create_project("  Concurrent  ")
+        );
+
+        assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+        let error = left.err().or_else(|| right.err()).unwrap();
+        assert!(matches!(error, ResourceError::DuplicateName));
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn profile_revision_unique_failure_is_typed_as_storage() {
+        let (store, root) = fresh_profile_store().await;
+        let project = store.create_project("Project").await.unwrap();
+        let profile = store
+            .create_profile(&project.id, "Default", "", ProfileSettings::default(), None)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER duplicate_profile_revision
+             BEFORE INSERT ON profile_revisions
+             BEGIN
+               INSERT INTO profile_revisions
+                 (id, profile_id, revision, name, description, schema_version,
+                  settings_json, credential_ref, created_at)
+               VALUES
+                 (NEW.id || '-duplicate', NEW.profile_id, NEW.revision, NEW.name,
+                  NEW.description, NEW.schema_version, NEW.settings_json,
+                  NEW.credential_ref, NEW.created_at);
+             END",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let error = store
+            .update_profile(
+                &profile.id,
+                "Default",
+                "",
+                ProfileSettings::default(),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ResourceError::Storage(_)));
+        assert!(store.list_profile_revisions(&profile.id).await.unwrap().is_empty());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 mod home;
@@ -758,7 +898,7 @@ fn resource_validation(error: impl std::fmt::Display) -> ResourceError {
     }
 }
 
-fn resource_write_error(error: sqlx::Error) -> ResourceError {
+fn profile_name_write_error(error: sqlx::Error) -> ResourceError {
     if let Some(database_error) = error.as_database_error() {
         if database_error.is_unique_violation() {
             return ResourceError::DuplicateName;
@@ -855,20 +995,41 @@ impl JobStore {
         home.ensure_project_layout(&id).map_err(resource_storage)?;
 
         let ts = now();
-        let result = sqlx::query(
-            "INSERT INTO projects (id, name, workspace_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(&name)
-        .bind(workspace_path.to_string_lossy().as_ref())
-        .bind(&ts)
-        .bind(&ts)
-        .execute(&self.pool)
+        let result = async {
+            let mut tx = self.pool.begin().await.map_err(resource_storage)?;
+            sqlx::query("UPDATE projects SET updated_at = updated_at WHERE 0")
+                .execute(&mut *tx)
+                .await
+                .map_err(resource_storage)?;
+            let duplicate: i64 = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE trim(name) = ?)",
+            )
+            .bind(&name)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(resource_storage)?;
+            if duplicate != 0 {
+                tx.rollback().await.map_err(resource_storage)?;
+                return Err(ResourceError::DuplicateName);
+            }
+            sqlx::query(
+                "INSERT INTO projects (id, name, workspace_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(&name)
+            .bind(workspace_path.to_string_lossy().as_ref())
+            .bind(&ts)
+            .bind(&ts)
+            .execute(&mut *tx)
+            .await
+            .map_err(resource_storage)?;
+            tx.commit().await.map_err(resource_storage)
+        }
         .await;
 
         if let Err(error) = result {
             let _ = std::fs::remove_dir_all(&workspace_path);
-            return Err(resource_write_error(error));
+            return Err(error);
         }
 
         Ok(ProjectRecord {
@@ -911,15 +1072,41 @@ impl JobStore {
     ) -> ResourceResult<ProjectRecord> {
         let name = normalize_name("project name", name)?;
         let ts = now();
+        let mut tx = self.pool.begin().await.map_err(resource_storage)?;
+        let exists = sqlx::query("UPDATE projects SET updated_at = updated_at WHERE id = ?")
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(resource_storage)?
+            .rows_affected();
+        if exists == 0 {
+            tx.rollback().await.map_err(resource_storage)?;
+            return Err(ResourceError::NotFound);
+        }
+        let duplicate: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM projects WHERE trim(name) = ? AND id <> ?
+            )",
+        )
+        .bind(&name)
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(resource_storage)?;
+        if duplicate != 0 {
+            tx.rollback().await.map_err(resource_storage)?;
+            return Err(ResourceError::DuplicateName);
+        }
         let row = sqlx::query(
             "UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING *",
         )
         .bind(&name)
         .bind(&ts)
         .bind(project_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(resource_write_error)?;
+        .map_err(resource_storage)?;
+        tx.commit().await.map_err(resource_storage)?;
         row.as_ref()
             .map(Self::row_to_project)
             .transpose()
@@ -1012,7 +1199,7 @@ impl JobStore {
         .bind(&ts)
         .execute(&self.pool)
         .await
-        .map_err(resource_write_error)?;
+        .map_err(profile_name_write_error)?;
 
         Ok(ProfileRecord {
             id,
@@ -1097,7 +1284,7 @@ impl JobStore {
         .bind(&ts)
         .execute(&mut *tx)
         .await
-        .map_err(resource_write_error)?;
+        .map_err(resource_storage)?;
 
         sqlx::query(
             "UPDATE profiles
@@ -1113,7 +1300,7 @@ impl JobStore {
         .bind(profile_id)
         .execute(&mut *tx)
         .await
-        .map_err(resource_write_error)?;
+        .map_err(profile_name_write_error)?;
         tx.commit().await.map_err(resource_storage)?;
 
         Ok(ProfileRecord {
