@@ -10,21 +10,51 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
-use thoth_server::{auth::AppState, build_router};
+use thoth_server::{
+    auth::{AppState, legacy_output_root, server_db_path},
+    build_router,
+};
 
-// Returns the router + the temp dir (which holds the SQLite DB) so tests that
-// need to seed events directly can reopen the same DB via `tmp.join("t.db")`.
+#[test]
+fn server_runtime_paths_are_derived_from_thoth_home() {
+    let root = std::env::temp_dir().join(format!("thoth-server-home-{}", uuid::Uuid::new_v4()));
+    let home = thoth_jobs::resolve_home(Some(&root)).unwrap();
+
+    assert_eq!(server_db_path(&home), root.join("data").join("thoth.db"));
+    assert_eq!(
+        legacy_output_root(&home),
+        root.join("projects").join("legacy").join("outputs")
+    );
+}
+
+fn test_home(root: &std::path::Path) -> thoth_jobs::ThothHome {
+    thoth_jobs::resolve_home(Some(root)).unwrap()
+}
+
+fn test_db_path(root: &std::path::Path) -> PathBuf {
+    server_db_path(&test_home(root))
+}
+
+fn test_output_root(root: &std::path::Path) -> PathBuf {
+    legacy_output_root(&test_home(root))
+}
+
+// Returns the router + the Thoth home root so tests that need to seed events
+// directly can reopen the same SQLite DB through `test_db_path(&tmp)`.
 async fn build_test_app() -> (axum::Router, PathBuf) {
     let tmp = std::env::temp_dir().join(format!("thoth-routes-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let home = test_home(&tmp);
+    home.ensure_project_layout("legacy").unwrap();
+    let db_path = server_db_path(&home);
+    let store = thoth_jobs::JobStore::connect_with_home(db_path.to_str().unwrap(), home.clone())
         .await
         .unwrap();
     let state = AppState {
         api_key: "test-key".into(),
         store,
-        output_root: tmp.clone(),
-        config_path: tmp.join("config.toml"),
+        output_root: legacy_output_root(&home),
+        home,
         scout: thoth_server::scout::new_supervisor(),
     };
     (build_router(state), tmp)
@@ -133,7 +163,7 @@ async fn create_job_with_key_returns_201_and_job_id() {
 #[tokio::test]
 async fn cancel_job_queued_returns_current_job_and_emits_one_cancelled_event() {
     let (app, tmp) = build_test_app().await;
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
         .await
         .unwrap();
     enqueue_test_job(&store, "queued-job").await;
@@ -156,7 +186,7 @@ async fn cancel_job_queued_returns_current_job_and_emits_one_cancelled_event() {
 #[tokio::test]
 async fn cancel_job_running_returns_current_job_and_sets_flag() {
     let (app, tmp) = build_test_app().await;
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
         .await
         .unwrap();
     enqueue_test_job(&store, "running-job").await;
@@ -179,7 +209,7 @@ async fn cancel_job_running_returns_current_job_and_sets_flag() {
 #[tokio::test]
 async fn cancel_job_repeated_running_request_returns_current_job() {
     let (app, tmp) = build_test_app().await;
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
         .await
         .unwrap();
     enqueue_test_job(&store, "repeated-job").await;
@@ -204,7 +234,7 @@ async fn cancel_job_repeated_running_request_returns_current_job() {
 #[tokio::test]
 async fn cancel_job_terminal_returns_conflict() {
     let (app, tmp) = build_test_app().await;
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
         .await
         .unwrap();
     enqueue_test_job(&store, "terminal-job").await;
@@ -240,7 +270,7 @@ async fn cancel_job_missing_returns_not_found() {
 #[tokio::test]
 async fn cancelled_event_is_terminal_and_closes_the_job_sse_stream() {
     let (app, tmp) = build_test_app().await;
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
         .await
         .unwrap();
     enqueue_test_job(&store, "cancelled-stream-job").await;
@@ -298,7 +328,7 @@ async fn artifact_backslash_traversal_is_rejected() {
 #[tokio::test]
 async fn job_artifact_get_head_and_ranges_stream_the_http_representation() {
     let (app, tmp) = build_test_app().await;
-    let job_dir = tmp.join("job1");
+    let job_dir = test_output_root(&tmp).join("job1");
     std::fs::create_dir_all(&job_dir).unwrap();
     std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
 
@@ -357,7 +387,7 @@ async fn job_artifact_get_head_and_ranges_stream_the_http_representation() {
 #[tokio::test]
 async fn runtime_contract_http_smoke() {
     let (app, tmp) = build_test_app().await;
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
         .await
         .unwrap();
 
@@ -434,7 +464,7 @@ async fn runtime_contract_http_smoke() {
         thoth_jobs::JobStatus::Cancelled
     );
 
-    let job_dir = tmp.join(job_id);
+    let job_dir = test_output_root(&tmp).join(job_id);
     std::fs::create_dir_all(&job_dir).unwrap();
     std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
 
@@ -544,7 +574,7 @@ async fn invalid_job_requests_return_structured_422_without_enqueuing() {
 #[tokio::test]
 async fn job_artifact_rejects_bad_ranges_and_missing_or_directory_files() {
     let (app, tmp) = build_test_app().await;
-    let job_dir = tmp.join("job1");
+    let job_dir = test_output_root(&tmp).join("job1");
     std::fs::create_dir_all(job_dir.join("directory")).unwrap();
     std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
 
@@ -582,7 +612,7 @@ async fn job_artifact_rejects_bad_ranges_and_missing_or_directory_files() {
 #[tokio::test]
 async fn job_artifact_serves_zero_byte_get_and_head_but_rejects_ranges() {
     let (app, tmp) = build_test_app().await;
-    let job_dir = tmp.join("job1");
+    let job_dir = test_output_root(&tmp).join("job1");
     std::fs::create_dir_all(&job_dir).unwrap();
     std::fs::write(job_dir.join("empty.txt"), b"").unwrap();
 
@@ -840,7 +870,7 @@ async fn sse_tails_events_and_resumes() {
         .to_string();
 
     // seed a progress then a done event directly through the store (reopen same db)
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
         .await
         .unwrap();
     store
@@ -875,7 +905,7 @@ async fn sse_tails_events_and_resumes() {
 async fn manifest_resolves_existing_artifacts() {
     let (app, tmp) = build_test_app().await;
     let id = "job-abc";
-    let job = tmp.join(id);
+    let job = test_output_root(&tmp).join(id);
     // Cover every sub-layout the handler mirrors from thoth-core — this test IS
     // the drift guard for that coupling (spec §3b), so exercise all paths, not
     // just video+moments.
@@ -909,7 +939,7 @@ async fn manifest_resolves_existing_artifacts() {
 async fn manifest_video_falls_back_to_newest_clip() {
     let (app, tmp) = build_test_app().await;
     let id = "job-fallback";
-    let job = tmp.join(id);
+    let job = test_output_root(&tmp).join(id);
     std::fs::create_dir_all(job.join("clips")).unwrap();
     // No final_concat.mp4 → handler must fall back to the newest clip_*.mp4.
     std::fs::write(job.join("clips/clip_000.mp4"), b"x").unwrap();
@@ -1147,16 +1177,21 @@ async fn style_profiles_lists_names() {
 async fn app_with_content_set(cs: std::path::PathBuf) -> axum::Router {
     let tmp = std::env::temp_dir().join(format!("thoth-cs-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
-        .await
-        .unwrap();
+    let home = test_home(&tmp);
+    home.ensure_project_layout("legacy").unwrap();
+    let store = thoth_jobs::JobStore::connect_with_home(
+        server_db_path(&home).to_str().unwrap(),
+        home.clone(),
+    )
+    .await
+    .unwrap();
     let scout = thoth_server::scout::new_supervisor();
     scout.lock().await.last_content_set = Some(cs);
     let state = AppState {
         api_key: "test-key".into(),
         store,
-        output_root: tmp.clone(),
-        config_path: tmp.join("config.toml"),
+        output_root: legacy_output_root(&home),
+        home,
         scout,
     };
     build_router(state)

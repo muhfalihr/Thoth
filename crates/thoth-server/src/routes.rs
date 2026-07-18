@@ -315,7 +315,7 @@ pub struct ConfigBody {
 
 /// Raw config.toml text (empty string if the file is absent).
 pub async fn get_config(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let text = std::fs::read_to_string(state.legacy_config_path()).unwrap_or_default();
     Json(serde_json::json!({ "text": text }))
 }
 
@@ -330,7 +330,7 @@ pub async fn put_config(
             Json(serde_json::json!({ "error": e.to_string() })),
         );
     }
-    match std::fs::write(&state.config_path, &body.text) {
+    match std::fs::write(state.legacy_config_path(), &body.text) {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -342,7 +342,7 @@ pub async fn put_config(
 /// Names of the `[styles.profiles.*]` tables, for the dashboard dropdown.
 /// Parse error / missing section → empty list.
 pub async fn get_style_profiles(State(state): State<AppState>) -> Json<Vec<String>> {
-    let text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
+    let text = std::fs::read_to_string(state.legacy_config_path()).unwrap_or_default();
     let names = toml::from_str::<toml::Value>(&text)
         .ok()
         .and_then(|v| {

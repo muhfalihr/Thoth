@@ -8,7 +8,19 @@ use axum::{
     response::Response,
 };
 
-use thoth_jobs::JobStore;
+use thoth_jobs::{JobStore, ThothHome};
+
+/// The server and worker share this SQLite database by default. `THOTH_DB`
+/// remains an explicit compatibility override for existing deployments.
+pub fn server_db_path(home: &ThothHome) -> PathBuf {
+    home.data_dir().join("thoth.db")
+}
+
+/// Compatibility output location for the unprofiled `/api/jobs` endpoint.
+/// Typed project jobs use their own `projects/<project-id>/outputs` directory.
+pub fn legacy_output_root(home: &ThothHome) -> PathBuf {
+    home.project_outputs("legacy")
+}
 
 /// Server-wide config shared with handlers. The server no longer owns any job
 /// runtime state (no in-process worker handles) — the `JobStore` (shared SQLite
@@ -18,14 +30,19 @@ pub struct AppState {
     pub api_key: String,
     pub store: JobStore,
     pub output_root: PathBuf,
-    /// Path to config.toml, read/written by the config endpoints. Hardcoded to
-    /// cwd-relative `config.toml` to match AppConfig::load()'s `File::with_name`
-    /// lookup exactly — the worker ignores any override, so this must not be
-    /// env-configurable or a UI edit could land in a file no job ever reads.
-    pub config_path: PathBuf,
+    /// Application home shared by all server-owned paths.
+    pub home: ThothHome,
     /// Single-slot supervisor for the interactive scout discovery pipeline.
     /// In-memory; independent of the render job queue. See scout.rs.
     pub scout: crate::scout::ScoutSupervisor,
+}
+
+impl AppState {
+    /// Transitional location used by the legacy raw TOML endpoints. Those
+    /// endpoints are retired by the profile migration task.
+    pub fn legacy_config_path(&self) -> PathBuf {
+        self.home.root().join("config.toml")
+    }
 }
 
 /// True iff `header` is `Bearer <key>` matching `key`. Shared by the
