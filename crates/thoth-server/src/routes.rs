@@ -2,8 +2,8 @@ use std::{convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
-    response::sse::{Event, Sse},
+    http::{HeaderMap, Method, StatusCode},
+    response::{Response, sse::{Event, Sse}},
     Json,
 };
 use futures_util::stream::Stream;
@@ -542,7 +542,9 @@ pub async fn scout_content_set_save(
 pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,
-) -> Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), StatusCode> {
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     // Only plain filename components may compose the served path. This rejects
     // `..` (ParentDir), backslash-as-separator traversal, and absolute/prefix
     // forms (`C:\`, `/`) — all of which would otherwise escape output_root on
@@ -556,14 +558,8 @@ pub async fn get_artifact(
         return Err(StatusCode::BAD_REQUEST);
     }
     let full = state.output_root.join(&rel);
-    let bytes = tokio::fs::read(&full)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
     let content_type = guess_content_type(&full);
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, content_type)],
-        bytes,
-    ))
+    crate::artifact::serve_file(&method, &headers, &full, content_type).await
 }
 
 /// GET /api/scout/output/*path — serve a local scout artifact (crop PNGs, post-crop
@@ -574,7 +570,9 @@ pub async fn scout_output_file(
     State(state): State<AppState>,
     Path(rel): Path<String>,
     Query(q): Query<ImgToken>,
-) -> Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), StatusCode> {
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     if q.token.as_deref() != Some(state.api_key.as_str()) {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -586,9 +584,6 @@ pub async fn scout_output_file(
         return Err(StatusCode::BAD_REQUEST);
     }
     let full = std::path::Path::new(scout::SCOUT_OUTPUT_DIR).join(rel_path);
-    let bytes = tokio::fs::read(&full)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
     let content_type = guess_content_type(&full);
-    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
+    crate::artifact::serve_file(&method, &headers, &full, content_type).await
 }

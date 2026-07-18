@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 use thoth_server::{auth::AppState, build_router};
@@ -44,6 +44,22 @@ async fn enqueue_test_job(store: &thoth_jobs::JobStore, id: &str) {
         params: serde_json::json!({}),
     };
     store.enqueue(id, &spec, "out/job").await.unwrap();
+}
+
+async fn response_bytes(response: axum::response::Response) -> Vec<u8> {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
+}
+
+fn artifact_request(method: &str, path: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(format!("/api/artifacts/job1/{path}"))
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap()
 }
 
 #[tokio::test]
@@ -198,6 +214,198 @@ async fn artifact_backslash_traversal_is_rejected() {
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "traversal must be 400");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn job_artifact_get_head_and_ranges_stream_the_http_representation() {
+    let (app, tmp) = build_test_app().await;
+    let job_dir = tmp.join("job1");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
+
+    let get = app
+        .clone()
+        .oneshot(artifact_request("GET", "artifact.txt"))
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    assert_eq!(get.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(get.headers()[header::CONTENT_LENGTH], "10");
+    assert_eq!(get.headers()[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(response_bytes(get).await, b"0123456789");
+
+    let head = app
+        .clone()
+        .oneshot(artifact_request("HEAD", "artifact.txt"))
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(head.headers()[header::CONTENT_LENGTH], "10");
+    assert_eq!(head.headers()[header::ACCEPT_RANGES], "bytes");
+    assert!(response_bytes(head).await.is_empty());
+
+    for (value, expected_range, expected_body) in [
+        ("bytes=0-3", "bytes 0-3/10", b"0123".as_slice()),
+        ("bytes=-4", "bytes 6-9/10", b"6789".as_slice()),
+        ("bytes=4-", "bytes 4-9/10", b"456789".as_slice()),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/artifacts/job1/artifact.txt")
+                    .header("authorization", "Bearer test-key")
+                    .header(header::RANGE, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "{value}");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], expected_range);
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], expected_body.len().to_string());
+        assert_eq!(response_bytes(response).await, expected_body);
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn job_artifact_rejects_bad_ranges_and_missing_or_directory_files() {
+    let (app, tmp) = build_test_app().await;
+    let job_dir = tmp.join("job1");
+    std::fs::create_dir_all(job_dir.join("directory")).unwrap();
+    std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
+
+    for value in ["bytes=garbage", "bytes=10-", "bytes=0-1,4-5"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/artifacts/job1/artifact.txt")
+                    .header("authorization", "Bearer test-key")
+                    .header(header::RANGE, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{value}");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    for path in ["missing.txt", "directory"] {
+        let response = app
+            .clone()
+            .oneshot(artifact_request("GET", path))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn job_artifact_serves_zero_byte_get_and_head_but_rejects_ranges() {
+    let (app, tmp) = build_test_app().await;
+    let job_dir = tmp.join("job1");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    std::fs::write(job_dir.join("empty.txt"), b"").unwrap();
+
+    for method in ["GET", "HEAD"] {
+        let response = app
+            .clone()
+            .oneshot(artifact_request(method, "empty.txt"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/api/artifacts/job1/empty.txt")
+                .header("authorization", "Bearer test-key")
+                .header(header::RANGE, "bytes=0-0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */0");
+    assert!(response_bytes(response).await.is_empty());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_supports_get_head_and_ranges() {
+    let (app, tmp) = build_test_app().await;
+    let name = format!("routes-http-{}.txt", uuid::Uuid::new_v4());
+    let path = std::path::Path::new(thoth_server::scout::SCOUT_OUTPUT_DIR).join(&name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"0123456789").unwrap();
+
+    let get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    assert_eq!(get.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(get.headers()[header::CONTENT_LENGTH], "10");
+    assert_eq!(get.headers()[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(response_bytes(get).await, b"0123456789");
+
+    let head = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .header(header::RANGE, "bytes=-4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(head.headers()[header::CONTENT_RANGE], "bytes 6-9/10");
+    assert_eq!(head.headers()[header::CONTENT_LENGTH], "4");
+    assert!(response_bytes(head).await.is_empty());
+
+    let get_range = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .header(header::RANGE, "bytes=4-")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(get_range.headers()[header::CONTENT_RANGE], "bytes 4-9/10");
+    assert_eq!(response_bytes(get_range).await, b"456789");
+
+    std::fs::remove_file(&path).unwrap();
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
