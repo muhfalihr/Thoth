@@ -1,7 +1,10 @@
 // Integration test: drives the router in-process via `oneshot` (no socket
 // bind — port 8787 may be occupied on this machine). Covers the REST surface:
 // auth gating, job creation, listing, artifact traversal guard, SSE tailing.
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -344,6 +347,143 @@ async fn job_artifact_get_head_and_ranges_stream_the_http_representation() {
         assert_eq!(response.headers()[header::CONTENT_LENGTH], expected_body.len().to_string());
         assert_eq!(response_bytes(response).await, expected_body);
     }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Release-readiness smoke test for the HTTP runtime contract. This stays in
+/// `thoth-server`: the spawned worker models the SQLite polling boundary that
+/// a real worker uses, without introducing a `thoth-core` dependency here.
+#[tokio::test]
+async fn runtime_contract_http_smoke() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    let invalid = app
+        .clone()
+        .oneshot(create_job_request(serde_json::json!({
+            "command": "unsupported",
+            "url": "https://x.test",
+            "params": {},
+        })))
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(store.list().await.unwrap().is_empty(), "422 must not enqueue");
+
+    let job_id = "runtime-smoke-job";
+    enqueue_test_job(&store, job_id).await;
+    let claimed = store.claim_next("smoke-worker").await.unwrap().unwrap();
+    assert_eq!(claimed.id, job_id);
+
+    let worker_store = store.clone();
+    let worker_id = job_id.to_owned();
+    let worker = tokio::spawn(async move {
+        loop {
+            if worker_store.is_cancel_requested(&worker_id).await.unwrap() {
+                return worker_store
+                    .finish_running(
+                        &worker_id,
+                        thoth_jobs::JobStatus::Cancelled,
+                        None,
+                        "cancelled",
+                        None,
+                    )
+                    .await;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    let cancellation_started = Instant::now();
+    let cancelled = app
+        .clone()
+        .oneshot(cancel_job_request(job_id))
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    let transitioned = tokio::time::timeout(Duration::from_secs(2), worker)
+        .await
+        .expect("SQLite cancellation must be observed within two seconds")
+        .expect("worker task must not panic")
+        .expect("worker polling must finish cleanly");
+    assert!(transitioned, "only the claimed job may become terminal");
+    let cancellation_latency = cancellation_started.elapsed();
+    assert!(
+        cancellation_latency < Duration::from_secs(2),
+        "cancellation took {cancellation_latency:?}"
+    );
+    println!("runtime smoke SQLite cancellation latency: {cancellation_latency:?}");
+    assert_eq!(
+        store.get(job_id).await.unwrap().unwrap().status,
+        thoth_jobs::JobStatus::Cancelled
+    );
+
+    let job_dir = tmp.join(job_id);
+    std::fs::create_dir_all(&job_dir).unwrap();
+    std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
+
+    let head = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_LENGTH], "10");
+    assert!(response_bytes(head).await.is_empty());
+
+    let full = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(full.status(), StatusCode::OK);
+    assert_eq!(response_bytes(full).await, b"0123456789");
+
+    let partial = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .header(header::RANGE, "bytes=2-5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(partial.headers()[header::CONTENT_RANGE], "bytes 2-5/10");
+    assert_eq!(response_bytes(partial).await, b"2345");
+
+    let malformed = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .header(header::RANGE, "bytes=not-a-range")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(malformed.headers()[header::CONTENT_RANGE], "bytes */10");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
