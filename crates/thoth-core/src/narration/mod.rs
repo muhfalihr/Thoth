@@ -16,6 +16,7 @@ use tracing::{info, warn};
 use crate::analyze::provider::LlmProvider;
 use crate::config::{NewsConfig, ReactionConfig};
 use crate::reaction::tts::synthesize_timed;
+use crate::execution::JobExecutionContext;
 use crate::transcribe::model::WordTimestamp;
 
 /// Everything the narration-driven edit consumes.
@@ -250,6 +251,7 @@ fn parse_narration_reply(raw: &str) -> Result<(String, String), String> {
 
 /// Full narration pipeline: LLM script → TTS (timed) → [`Narration`].
 pub async fn produce(
+    execution: &JobExecutionContext,
     provider: &dyn LlmProvider,
     source_text: &str,
     reaction_cfg: &ReactionConfig,
@@ -258,12 +260,15 @@ pub async fn produce(
     language: &str,
     target_secs: u32,
     structure_refs: &str,
-) -> Result<Narration, String> {
-    let (text, hook) = generate_script(provider, source_text, language, target_secs, structure_refs).await?;
+) -> anyhow::Result<Narration> {
+    let (text, hook) = generate_script(provider, source_text, language, target_secs, structure_refs)
+        .await
+        .map_err(anyhow::Error::msg)?;
     info!("🎙️  Narration script: {} words | hook: \"{}\"", text.split_whitespace().count(), hook);
 
-    let timed = synthesize_timed(&text, mp3_path, reaction_cfg, news_cfg).await
-        .map_err(|e| format!("narration TTS: {e}"))?;
+    let timed = synthesize_timed(execution, &text, mp3_path, reaction_cfg, news_cfg)
+        .await
+        .map_err(narration_tts_error)?;
 
     if timed.words.is_empty() {
         warn!("narration TTS returned no word timings — subtitles may be unsynced");
@@ -274,6 +279,13 @@ pub async fn produce(
     Ok(Narration {
         mp3: timed.path, words: timed.words, duration_secs: timed.duration_secs, hook, text,
     })
+}
+
+fn narration_tts_error(error: crate::reaction::error::ReactionError) -> anyhow::Error {
+    match error {
+        crate::reaction::error::ReactionError::Cancelled(cancelled) => anyhow::Error::new(cancelled),
+        error => error.into(),
+    }
 }
 
 fn strip_fences(raw: &str) -> &str {
@@ -288,6 +300,18 @@ fn strip_fences(raw: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::sanitize_hook;
+
+    #[test]
+    fn cancellation_survives_reaction_to_narration_error_conversion() {
+        let reaction_error = crate::reaction::error::ReactionError::from_news_error(
+            crate::news::error::NewsError::Execution(anyhow::Error::new(
+                crate::execution::Cancelled,
+            )),
+        );
+        let narration_error = super::narration_tts_error(reaction_error);
+
+        assert!(crate::execution::is_cancelled(&narration_error));
+    }
 
     #[test]
     fn strips_all_punctuation_from_hook() {

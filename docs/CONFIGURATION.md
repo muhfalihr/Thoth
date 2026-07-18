@@ -285,6 +285,23 @@ Only used by the two-process deployment (see **[RUNNING.md](RUNNING.md)**):
 | `THOTH_OUTPUT_ROOT` | server | `output` | Root served by `/api/artifacts/<job_id>/*`. |
 | `THOTH_ADDR` | server | `127.0.0.1:8787` | Server bind address. |
 
+### Trusted local/LAN server boundary
+
+The server + worker deployment is for a trusted local machine or LAN, not an
+Internet-facing multi-user service. `THOTH_ADDR` defaults to loopback; if you choose a
+LAN bind address, set a non-default `THOTH_API_KEY` and restrict access at the network
+boundary. The current API key protects server routes, while fuller bind policy, token
+handling, and local/LAN hardening are deliberately deferred to the next hardening
+subproject.
+
+For the runtime contract, the server validates `POST /api/jobs` before enqueueing and
+returns structured `422` errors for invalid input. `params.extra_args` is only for the
+trusted operator: it must be non-empty option strings and cannot provide positional
+source input or override `-o`, `--output-dir`, `--job-id`, or `--content` (including
+`--flag=value` forms). Artifact responses under `THOTH_OUTPUT_ROOT` support streamed
+`GET`/`HEAD` and one byte range; malformed, unsatisfiable, and multi-range requests
+return `416`. See **[RUNNING.md](RUNNING.md)** for the lifecycle and response details.
+
 ### scout model knobs (optional)
 
 Defaults are good — see **[MODELS.md](MODELS.md)**. Overrides: `THOTH_LLM_MODEL`,

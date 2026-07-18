@@ -54,6 +54,20 @@ cargo build --release
 Clips land in `output/.thoth/<job-id>/clips/`. Full setup (including the GPU path and
 per-OS instructions) is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 
+## Server-mode runtime contract
+
+In the server + worker deployment, cancellation is a distinct terminal outcome, not a
+failed job. A queued job becomes `cancelled` immediately; for a running job the worker
+observes the shared SQLite cancellation flag, shuts down its active work and child
+processes, then records `cancelled`. While SQLite remains readable, that shutdown begins
+within two seconds. Job artifacts support streamed `GET`/`HEAD` responses and one HTTP
+byte range; invalid run requests are rejected before they enter the queue. The complete
+operator and API contract is in **[docs/RUNNING.md](docs/RUNNING.md)**.
+
+The server is designed for a trusted local machine or LAN. Internet-facing bind, token,
+and path-hardening policy is intentionally deferred to the next Local/LAN Security
+subproject.
+
 ## Documentation
 
 | Document | What's in it |

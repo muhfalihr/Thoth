@@ -13,6 +13,7 @@ use tracing::{info, warn};
 use crate::analyze::provider::build_llm_provider;
 use crate::analyze::schema::ViralMomentList;
 use crate::config::AppConfig;
+use crate::execution::JobExecutionContext;
 use crate::pipeline::job::JobContext;
 use crate::transcribe::model::Transcript;
 
@@ -28,11 +29,16 @@ use super::{keyword, search};
 pub struct EnrichService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> EnrichService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
     /// Run the enrichment stage and persist `enrich/enrich.json`.
@@ -46,7 +52,8 @@ impl<'a> EnrichService<'a> {
         video_title: &str,
         video_channel: &str,
         provider_name: &str,
-    ) -> Result<EnrichResult, NewsError> {
+    ) -> anyhow::Result<EnrichResult> {
+        self.execution.check_cancelled()?;
         let cfg = &self.config.news;
 
         // ── Load inputs ────────────────────────────────────────────────────────
@@ -72,6 +79,7 @@ impl<'a> EnrichService<'a> {
         // ── Per-moment enrichment (sequential) ─────────────────────────────────
         let mut enrichments = Vec::with_capacity(moments.moments.len());
         for (i, moment) in moments.moments.iter().enumerate() {
+            self.execution.check_cancelled()?;
             let window = transcript_window(&transcript, moment.start_sec, moment.end_sec);
             let mut enrichment = MomentEnrichment::new(i, window.clone());
 
@@ -102,7 +110,7 @@ impl<'a> EnrichService<'a> {
 
             // 4c: internet search (batched), dedup, score, filter, rank
             if !keywords.is_empty() {
-                match search::search_keywords(cfg, &keywords).await {
+                match search::search_keywords(self.execution, cfg, &keywords).await {
                     Ok(mut results) => {
                         search::dedup_by_url(&mut results);
                         results.retain(|item| search::within_max_age(item, cfg.max_age_days));
@@ -127,8 +135,9 @@ impl<'a> EnrichService<'a> {
             // ── 4d/4e: Screenshot + format news articles (Phase 2) ─────────────
             let news_dir = self.job.news_dir(i);
             for (j, item) in enrichment.news.iter_mut().enumerate() {
+                self.execution.check_cancelled()?;
                 let raw_path = news_dir.join(format!("news_{j}.png"));
-                match scraper::screenshot(cfg, &item.url, &raw_path).await {
+                match scraper::screenshot(self.execution, cfg, &item.url, &raw_path).await {
                     Ok(Some(result)) => {
                         // Update item's source from the page if we didn't have it yet.
                         if item.source.is_empty() && !result.source.is_empty() {
@@ -148,7 +157,7 @@ impl<'a> EnrichService<'a> {
                             published: item.published_at.as_deref(),
                             headline:  &item.title,
                         };
-                        match format_screenshot(&params).await {
+                        match format_screenshot(self.execution, &params).await {
                             Ok(p) => {
                                 info!("moment {i} news {j}: formatted → {}", p.display());
                                 item.formatted_screenshot_path = Some(p);
@@ -186,6 +195,7 @@ impl<'a> EnrichService<'a> {
                         } else { None };
 
                         match reaction::synthesize(
+                            self.execution,
                             &script.script,
                             &tts_path,
                             &self.config.reaction,
@@ -224,6 +234,7 @@ impl<'a> EnrichService<'a> {
                                 clip_h: 1920,
                             };
                             match reaction::create_avatar_segment(
+                                self.execution,
                                 &spec, &seg_path,
                                 &self.config.ffmpeg,
                                 &self.config.reaction,
@@ -248,6 +259,7 @@ impl<'a> EnrichService<'a> {
 
         // ── Persist ────────────────────────────────────────────────────────────
         let result = EnrichResult::from_enrichments(enrichments);
+        self.execution.check_cancelled()?;
         let json = serde_json::to_string_pretty(&result)
             .map_err(|e| NewsError::InvalidJson(format!("serialize enrich.json: {e}")))?;
         tokio::fs::write(self.job.enrich_path(), json).await?;

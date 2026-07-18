@@ -24,7 +24,7 @@ export type JobRecord = {
   output_dir: string;
 };
 export type SseEvent = {
-  type: "progress" | "log" | "done" | "error";
+  type: "progress" | "log" | "done" | "error" | "cancelled";
   job_id: string;
   stage?: string;
   pct?: number;
@@ -59,7 +59,7 @@ export async function cancelJob(id: string): Promise<void> {
 
 // EventSource can't set headers → token via query param. The server's first
 // frame is a named "snapshot" event (a JobRecord, not an SseEvent) — this
-// wrapper only surfaces the default-event progress/log/done/error stream;
+// wrapper only surfaces the default-event progress/log/done/error/cancelled stream;
 // JobMonitor gets its initial state from getJob() instead, per the brief's
 // reconnect guidance.
 export function streamJob(id: string, onEvent: (e: SseEvent) => void): EventSource {

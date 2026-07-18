@@ -13,6 +13,7 @@ pub mod analyze;
 pub mod cli;
 pub mod config;
 pub mod edit;
+pub mod execution;
 pub mod gpu;
 pub mod ingest;
 pub mod narration;
@@ -34,6 +35,7 @@ use cli::{Cli, ClipStyleArg, Commands};
 use config::AppConfig;
 use edit::ffmpeg::ClipStyle;
 use edit::layout::OutputLayout;
+use execution::JobExecutionContext;
 use pipeline::PipelineRunner;
 use pipeline::job::JobContext;
 
@@ -234,11 +236,14 @@ fn move_ffmpeg_to_root(dest_dir: &str) -> Result<()> {
 /// can drive the normal pipeline. The cropped post image is fit+padded to the layout and held for
 /// `secs`; a sibling `.info.json` carries the real title/description/uploader so the ingest stage
 /// reports correct metadata (and the analyze whole-clip fallback + narration grounding take over).
-/// Returns the mp4 path, or None on any ffmpeg failure (caller falls back to the post URL).
-fn synthesize_still_video(
+/// Returns the mp4 path, or `None` on an ordinary ffmpeg failure (caller falls back to the post
+/// URL); cancellation is returned as an error so the job stops promptly.
+async fn synthesize_still_video(
+    execution: &JobExecutionContext,
     img: &str, out_dir: &std::path::Path, title: &str, description: &str, uploader: &str,
     w: u32, h: u32,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>> {
+    execution.check_cancelled()?;
     let secs = 45.0_f64;
     let out = out_dir.join("main_still.mp4");
     let ffmpeg = ffmpeg_sidecar::paths::ffmpeg_path();
@@ -248,20 +253,27 @@ fn synthesize_still_video(
     );
     // Include a SILENT audio track (anullsrc) — the transcribe stage extracts audio.wav, which fails
     // on a video with no audio stream. Silence → empty transcript → narration grounds on context.
-    let status = std::process::Command::new(&ffmpeg)
-        .args([
-            "-y", "-loop", "1", "-framerate", "30", "-t", &secs.to_string(), "-i", img,
-            "-f", "lavfi", "-t", &secs.to_string(), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-            "-vf", &vf, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-shortest",
-            out.to_str()?,
-        ])
+    let args = vec![
+        "-y".into(), "-loop".into(), "1".into(), "-framerate".into(), "30".into(),
+        "-t".into(), secs.to_string(), "-i".into(), img.into(),
+        "-f".into(), "lavfi".into(), "-t".into(), secs.to_string(), "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=44100".into(),
+        "-vf".into(), vf, "-c:v".into(), "libx264".into(), "-preset".into(),
+        "veryfast".into(), "-pix_fmt".into(), "yuv420p".into(), "-c:a".into(),
+        "aac".into(), "-shortest".into(), out.to_string_lossy().to_string(),
+    ];
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
+        .args(args)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    let status = match execution.status(&mut command).await {
+        Ok(status) => status,
+        Err(error) if execution::is_cancelled(&error) => return Err(error),
+        Err(_) => return Ok(None),
+    };
     if !status.success() || !out.exists() {
-        return None;
+        return Ok(None);
     }
     // Sidecar info.json → IngestService::load_info_json reads title/duration/uploader/description.
     let info = serde_json::json!({
@@ -270,7 +282,7 @@ fn synthesize_still_video(
         "uploader": uploader, "description": description.trim(),
     });
     let _ = std::fs::write(out.with_extension("info.json"), info.to_string());
-    Some(out)
+    Ok(Some(out))
 }
 
 /// CLI entry point. Parses args, bootstraps logging/ffmpeg/env, dispatches.
@@ -387,10 +399,11 @@ pub async fn run_cli() -> Result<()> {
 
     match cli.command {
         Commands::Ingest(args) => {
+            let execution = JobExecutionContext::new();
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = JobContext::new(job_id, args.output_dir.clone())
                 .context("failed to create job directories")?;
-            let svc = ingest::IngestService::new(&config, &job);
+            let svc = ingest::IngestService::new(&config, &job, &execution);
             let result = svc.run(&args.url, args.force).await?;
             println!("{}", brand::ok("Ingest complete."));
             println!("{}", brand::field("Video", result.video_path.display()));
@@ -399,6 +412,7 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Transcribe(args) => {
+            let execution = JobExecutionContext::new();
             // When run standalone the job dir is derived from the video file's parent
             let output_dir = args.output_dir.clone();
             let job_id = uuid::Uuid::new_v4().to_string();
@@ -409,7 +423,7 @@ pub async fn run_cli() -> Result<()> {
                 config.whisper.language = lang;
             }
 
-            let svc = transcribe::TranscribeService::new(&config, &job);
+            let svc = transcribe::TranscribeService::new(&config, &job, &execution);
             let result = svc.run(&args.video_path, &args.model.to_string()).await?;
             println!("{}", brand::ok("Transcription complete."));
             println!("{}", brand::field("Transcript", result.transcript_path.display()));
@@ -418,6 +432,7 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Analyze(args) => {
+            let execution = JobExecutionContext::new();
             let job_id = uuid::Uuid::new_v4().to_string();
             // Derive output dir from transcript file's grandparent or use cwd
             let output_dir = args
@@ -428,7 +443,7 @@ pub async fn run_cli() -> Result<()> {
                 .unwrap_or(std::path::Path::new("."))
                 .to_owned();
             let job = JobContext::new(job_id, output_dir).context("failed to create job directories")?;
-            let svc = analyze::AnalyzeService::new(&config, &job);
+            let svc = analyze::AnalyzeService::new(&config, &job, &execution);
             let result = svc
                 .run(
                     &args.transcript_path,
@@ -447,10 +462,11 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Edit(args) => {
+            let execution = JobExecutionContext::new();
             let job_id = uuid::Uuid::new_v4().to_string();
             let job = JobContext::new(job_id, args.output_dir.clone())
                 .context("failed to create job directories")?;
-            let svc = edit::EditService::new(&config, &job);
+            let svc = edit::EditService::new(&config, &job, &execution);
             let layout = OutputLayout::from(&args.layout);
             let result = svc
                 .run(
@@ -486,14 +502,15 @@ pub async fn run_cli() -> Result<()> {
         Commands::Run(args) => {
             // Pipeline body extracted to `run_once` so the persistent `thoth
             // worker` runs the exact same path with warm models already resident.
-            let cancel = tokio_util::sync::CancellationToken::new();
-            run_once(args, config, &cancel).await?;
+            let execution = JobExecutionContext::new();
+            run_once(args, config, &execution).await?;
         }
 
         Commands::TrendAnalyze(args) => {
             use analyze::trend_analyzer::{profile_to_toml, TrendAnalyzeService};
 
-            let svc = TrendAnalyzeService::new(&config);
+            let execution = JobExecutionContext::new();
+            let svc = TrendAnalyzeService::new(&config, &execution);
             let profile = svc.run(
                 &args.url,
                 args.sample,
@@ -657,6 +674,7 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Thumbnail(args) => {
+            let execution = JobExecutionContext::new();
             let job = JobContext::new(args.job_id.clone(), args.output_dir.clone())
                 .context("failed to access job directory")?;
 
@@ -695,7 +713,14 @@ pub async fn run_cli() -> Result<()> {
 
                 println!("  Generating thumbnail for clip {} at {:.1}s...", i + 1, thumb_time);
 
-                if let Err(e) = edit::ffmpeg::generate_thumbnail(&out_path, &thumb_path, thumb_time) {
+                if let Err(e) = edit::ffmpeg::generate_thumbnail(
+                    &execution,
+                    &out_path,
+                    &thumb_path,
+                    thumb_time,
+                )
+                .await
+                {
                     eprintln!("  {}", brand::err(format!("failed: {}", e)));
                 } else {
                     println!("  {}", brand::ok(format!("saved: {}", thumb_path.display())));
@@ -732,6 +757,7 @@ pub async fn run_cli() -> Result<()> {
             ))?;
 
             // ── Spawn: bun scout/cli.ts <args...> ────────────────────────
+            // non-job process: Scout has its own supervisor.
             let status = std::process::Command::new(&bun)
                 .arg(&cli_ts)
                 .args(&args.args)
@@ -760,17 +786,13 @@ pub async fn run_cli() -> Result<()> {
 /// Execute one full `run` pipeline with whatever models are already resident.
 /// Shared verbatim by the CLI `run` command and the `thoth worker` claim loop —
 /// the only difference is the installed progress sink (stdout vs the SQLite job
-/// DB) and who supplies `args`. `cancel` is checked at coarse stage boundaries
-/// (entry + before the heavy edit/render run); mid-pipeline interruption is a
-/// follow-up (needs the token threaded into PipelineRunner).
+/// DB) and who supplies `args` and its execution context.
 pub async fn run_once(
     args: cli::RunArgs,
     config: AppConfig,
-    cancel: &tokio_util::sync::CancellationToken,
+    execution: &JobExecutionContext,
 ) -> Result<()> {
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
+    execution.check_cancelled()?;
             let mut config = config;
             if let Some(lang) = args.language {
                 config.whisper.language = lang;
@@ -954,7 +976,18 @@ pub async fn run_once(
                         cli::OutputLayout::Vertical => (1080u32, 1920u32),
                     };
                     let uploader = set.profile.as_ref().map(|p| p.handle.trim()).unwrap_or("");
-                    match synthesize_still_video(&main_img, &args.output_dir, &set.main_title, &set.main_description, uploader, sw, sh) {
+                    match synthesize_still_video(
+                        execution,
+                        &main_img,
+                        &args.output_dir,
+                        &set.main_title,
+                        &set.main_description,
+                        uploader,
+                        sw,
+                        sh,
+                    )
+                    .await?
+                    {
                         Some(p) => { tracing::info!("🖼️  MAIN non-video → still video: {}", p.display()); p.to_string_lossy().to_string() }
                         None => { tracing::warn!("still-video synth failed → using main_url (may not be downloadable)"); set.main_url }
                     }
@@ -968,7 +1001,7 @@ pub async fn run_once(
                 );
             };
 
-            let runner = PipelineRunner::new(&config);
+            let runner = PipelineRunner::new(&config, execution);
             let _clips = runner
                 .run(
                     &resolved_url,

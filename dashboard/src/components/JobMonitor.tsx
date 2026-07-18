@@ -11,6 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import { StatusBadge } from "@/components/StatusBadge";
 import { LogPane, type LogLine } from "@/components/LogPane";
 import { ReviewPanel } from "@/components/ReviewPanel";
+import { terminalEventIsFailure, terminalEventKind } from "@/lib/job-events";
 
 let seq = 0;
 function nextId() {
@@ -42,14 +43,21 @@ export function JobMonitor({ jobId }: { jobId: string | null }) {
         );
       } else if (ev.type === "log") {
         setLines((prev) => [...prev, { id: nextId(), ts: ev.ts, text: ev.message ?? "", kind: "log" }]);
-      } else if (ev.type === "error") {
-        setLines((prev) => [
-          ...prev,
-          { id: nextId(), ts: ev.ts, text: ev.message ?? "job failed", kind: "error" },
-        ]);
-        es.close();
-        getJob(jobId).then((rec) => !cancelled && setRecord(rec));
-      } else if (ev.type === "done") {
+      } else {
+        const terminal = terminalEventKind(ev.type);
+        if (!terminal) return;
+
+        if (terminalEventIsFailure(terminal)) {
+          setLines((prev) => [
+            ...prev,
+            { id: nextId(), ts: ev.ts, text: ev.message ?? "job failed", kind: "error" },
+          ]);
+        } else if (terminal === "cancelled") {
+          setLines((prev) => [
+            ...prev,
+            { id: nextId(), ts: ev.ts, text: "Job cancelled", kind: "log" },
+          ]);
+        }
         es.close();
         getJob(jobId).then((rec) => !cancelled && setRecord(rec));
       }

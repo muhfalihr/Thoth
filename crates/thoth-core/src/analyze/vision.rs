@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use tracing::{debug, warn};
 
 use crate::config::{LlmConfig, VisionConfig};
+use crate::execution::{is_cancelled, JobExecutionContext};
 
 use super::schema::VisualScore;
 
@@ -48,18 +49,18 @@ pub struct FrameData {
 /// Returns a sorted Vec of absolute timestamps (seconds from video start).
 /// Returns empty Vec on failure — callers fall back to uniform sampling.
 pub async fn detect_scene_boundaries(
+    execution: &JobExecutionContext,
     video_path: &Path,
     start_sec:  f64,
     end_sec:    f64,
     threshold:  f32,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     let ffmpeg = std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned());
     let vf     = format!("select='gt(scene,{threshold:.2})',showinfo,scale=64:64");
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        tokio::process::Command::new(&ffmpeg)
-            .args([
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
+        .args([
                 "-y",
                 "-ss", &format!("{start_sec:.3}"),
                 "-to", &format!("{end_sec:.3}"),
@@ -69,13 +70,14 @@ pub async fn detect_scene_boundaries(
                 "-f", "null", "-",
             ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output(),
-    ).await;
+            .stderr(std::process::Stdio::piped());
+    let output = execution
+        .output_with_timeout(&mut command, std::time::Duration::from_secs(30));
 
-    let stderr = match output {
-        Ok(Ok(o)) => String::from_utf8_lossy(&o.stderr).to_string(),
-        _ => { debug!("vision: scene detection failed (timeout or spawn error)"); return Vec::new(); }
+    let stderr = match output.await {
+        Ok(o) => String::from_utf8_lossy(&o.stderr).to_string(),
+        Err(error) if is_cancelled(&error) => return Err(error),
+        _ => { debug!("vision: scene detection failed (timeout or spawn error)"); return Ok(Vec::new()); }
     };
 
     // Parse "pts_time:X.XXXXXX" from showinfo output
@@ -96,7 +98,7 @@ pub async fn detect_scene_boundaries(
 
     debug!("vision: scene_detection found {} boundaries in [{:.1}s–{:.1}s]",
            timestamps.len(), start_sec, end_sec);
-    timestamps
+    Ok(timestamps)
 }
 
 // ── Frame extraction ──────────────────────────────────────────────────────────
@@ -111,6 +113,7 @@ pub async fn detect_scene_boundaries(
 /// Frames are resized to `width` pixels wide (height proportional).
 /// Returns an empty `Vec` on FFmpeg failure (caller treats it as no visual data).
 pub async fn extract_frames(
+    execution: &JobExecutionContext,
     video_path:       &Path,
     start_sec:        f64,
     end_sec:          f64,
@@ -118,10 +121,10 @@ pub async fn extract_frames(
     width:            u32,
     output_dir:       &Path,
     scene_timestamps: Option<&[f64]>,   // None = uniform sampling (default)
-) -> Vec<FrameData> {
+) -> Result<Vec<FrameData>> {
     if let Err(e) = tokio::fs::create_dir_all(output_dir).await {
         warn!("vision: cannot create frames dir: {e}");
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // Choose timestamps to extract: scene-based or uniform
@@ -139,7 +142,7 @@ pub async fn extract_frames(
     };
 
     if selected_ts.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let ffmpeg  = std::env::var("FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_owned());
@@ -147,7 +150,8 @@ pub async fn extract_frames(
 
     for (idx, &ts) in selected_ts.iter().enumerate() {
         let out_path = output_dir.join(format!("frame_{idx:03}.jpg"));
-        let status = tokio::process::Command::new(&ffmpeg)
+        let mut command = tokio::process::Command::new(&ffmpeg);
+        command
             .args([
                 "-y",
                 "-ss", &format!("{ts:.3}"),
@@ -158,13 +162,13 @@ pub async fn extract_frames(
                 &out_path.to_string_lossy(),
             ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
+            .stderr(std::process::Stdio::null());
+        let status = execution.status(&mut command).await;
 
         match status {
             Ok(s) if s.success() => {}
             Ok(s) => { warn!("vision: frame extraction exited with {s} at t={ts:.1}s"); continue; }
+            Err(error) if is_cancelled(&error) => return Err(error),
             Err(e) => { warn!("vision: failed to spawn ffmpeg: {e}"); continue; }
         }
 
@@ -176,7 +180,7 @@ pub async fn extract_frames(
             Err(e) => warn!("vision: cannot read frame at t={ts:.1}s: {e}"),
         }
     }
-    frames
+    Ok(frames)
 }
 
 /// Build uniformly spaced timestamps across a video duration.
@@ -829,6 +833,7 @@ pub struct VideoDescription {
 /// Frames are batched into groups of `batch_size` per API call.
 /// Returns an empty `Vec` on any failure — callers fall back to plain transcript.
 pub async fn describe_video_frames(
+    execution:     &JobExecutionContext,
     video_path:    &Path,
     total_duration: f64,
     interval_sec:   f64,
@@ -837,9 +842,9 @@ pub async fn describe_video_frames(
     output_dir:     &Path,
     config:         &VisionConfig,
     llm_config:     &LlmConfig,
-) -> Vec<VideoDescription> {
+) -> Result<Vec<VideoDescription>> {
     if total_duration <= 0.0 || interval_sec <= 0.0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // ── Determine sampling timestamps ─────────────────────────────────────────
@@ -848,8 +853,8 @@ pub async fn describe_video_frames(
     let timestamps: Vec<f64> = if config.scene_detection {
         // Scene-based: detect cuts across the whole video, subsample to max_frames
         let scenes = detect_scene_boundaries(
-            video_path, 0.0, total_duration, config.scene_threshold,
-        ).await;
+            execution, video_path, 0.0, total_duration, config.scene_threshold,
+        ).await?;
 
         if scenes.is_empty() {
             debug!("vision: no scenes detected — falling back to uniform sampling");
@@ -863,7 +868,7 @@ pub async fn describe_video_frames(
     };
 
     if timestamps.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let analyzer = VisualAnalyzer::new(config, llm_config);
@@ -882,6 +887,7 @@ pub async fn describe_video_frames(
     let per_batch: Vec<Vec<VideoDescription>> = stream::iter(batches)
         .map(|(batch_idx, chunk)| {
             let analyzer = &analyzer;
+            let execution = execution;
             async move {
                 let batch_dir = output_dir.join(format!("desc_batch_{batch_idx:04}"));
 
@@ -890,7 +896,7 @@ pub async fn describe_video_frames(
                 let mut frames_data: Vec<FrameData> = Vec::new();
                 for &ts in &chunk {
                     let frame_dir = batch_dir.join(format!("t{ts:.0}"));
-                    let frames = extract_frames(video_path, ts, ts + 0.5, 1, frame_width, &frame_dir, None).await;
+                    let frames = extract_frames(execution, video_path, ts, ts + 0.5, 1, frame_width, &frame_dir, None).await?;
                     if let Some(f) = frames.into_iter().next() {
                         ts_list.push(ts);
                         frames_data.push(f);
@@ -898,7 +904,7 @@ pub async fn describe_video_frames(
                 }
 
                 if frames_data.is_empty() {
-                    return Vec::new();
+                    return Ok(Vec::new());
                 }
 
                 // Call vision LLM to describe this batch
@@ -906,18 +912,20 @@ pub async fn describe_video_frames(
 
                 // Clean up batch frames
                 cleanup_frames(&batch_dir);
-                descs
+                Ok(descs)
             }
         })
         .buffer_unordered(concurrency)
-        .collect()
-        .await;
+        .collect::<Vec<Result<Vec<VideoDescription>>>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
 
     let mut all_descriptions: Vec<VideoDescription> = per_batch.into_iter().flatten().collect();
 
     // Sort by timestamp
     all_descriptions.sort_by(|a, b| a.timestamp_sec.partial_cmp(&b.timestamp_sec).unwrap());
-    all_descriptions
+    Ok(all_descriptions)
 }
 
 /// Inject visual descriptions into a compact transcript string.

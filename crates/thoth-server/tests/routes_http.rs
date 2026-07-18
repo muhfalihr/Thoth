@@ -1,10 +1,13 @@
 // Integration test: drives the router in-process via `oneshot` (no socket
 // bind — port 8787 may be occupied on this machine). Covers the REST surface:
 // auth gating, job creation, listing, artifact traversal guard, SSE tailing.
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 
 use thoth_server::{auth::AppState, build_router};
@@ -25,6 +28,68 @@ async fn build_test_app() -> (axum::Router, PathBuf) {
         scout: thoth_server::scout::new_supervisor(),
     };
     (build_router(state), tmp)
+}
+
+fn cancel_job_request(id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/jobs/{id}/cancel"))
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn enqueue_test_job(store: &thoth_jobs::JobStore, id: &str) {
+    let spec = thoth_jobs::JobSpec {
+        command: "run".into(),
+        url: Some("https://x.test".into()),
+        content_set: None,
+        params: serde_json::json!({}),
+    };
+    store.enqueue(id, &spec, "out/job").await.unwrap();
+}
+
+async fn response_bytes(response: axum::response::Response) -> Vec<u8> {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
+}
+
+fn artifact_request(method: &str, path: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(format!("/api/artifacts/job1/{path}"))
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn create_job_request(spec: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/jobs")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer test-key")
+        .body(Body::from(spec.to_string()))
+        .unwrap()
+}
+
+fn list_jobs_request() -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri("/api/jobs")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn scout_output_request(method: &str, path: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(format!("/api/scout/output/{path}?token=test-key"))
+        .body(Body::empty())
+        .unwrap()
 }
 
 #[tokio::test]
@@ -66,6 +131,155 @@ async fn create_job_with_key_returns_201_and_job_id() {
 }
 
 #[tokio::test]
+async fn cancel_job_queued_returns_current_job_and_emits_one_cancelled_event() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "queued-job").await;
+
+    let res = app.oneshot(cancel_job_request("queued-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let job: thoth_jobs::JobRecord = serde_json::from_slice(&response_bytes(res).await).unwrap();
+    assert_eq!(job.status, thoth_jobs::JobStatus::Cancelled);
+    assert_eq!(
+        store.get("queued-job").await.unwrap().unwrap().status,
+        thoth_jobs::JobStatus::Cancelled
+    );
+    let events = store.events_since("queued-job", 0).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "cancelled");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_running_returns_current_job_and_sets_flag() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "running-job").await;
+    store.claim_next("worker-1").await.unwrap().unwrap();
+
+    let res = app.oneshot(cancel_job_request("running-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let response_job: thoth_jobs::JobRecord =
+        serde_json::from_slice(&response_bytes(res).await).unwrap();
+    assert_eq!(response_job.status, thoth_jobs::JobStatus::Running);
+    assert!(response_job.cancel_requested);
+    let job = store.get("running-job").await.unwrap().unwrap();
+    assert_eq!(job.status, thoth_jobs::JobStatus::Running);
+    assert!(job.cancel_requested);
+    assert!(store.events_since("running-job", 0).await.unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_repeated_running_request_returns_current_job() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "repeated-job").await;
+    store.claim_next("worker-1").await.unwrap().unwrap();
+
+    let first = app
+        .clone()
+        .oneshot(cancel_job_request("repeated-job"))
+        .await
+        .unwrap();
+    let second = app.oneshot(cancel_job_request("repeated-job")).await.unwrap();
+
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(second.status(), StatusCode::OK);
+    let job = store.get("repeated-job").await.unwrap().unwrap();
+    assert_eq!(job.status, thoth_jobs::JobStatus::Running);
+    assert!(job.cancel_requested);
+    assert!(store.events_since("repeated-job", 0).await.unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_terminal_returns_conflict() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "terminal-job").await;
+    store.claim_next("worker-1").await.unwrap().unwrap();
+    store
+        .finish_running(
+            "terminal-job",
+            thoth_jobs::JobStatus::Succeeded,
+            None,
+            "done",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let res = app.oneshot(cancel_job_request("terminal-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(store.events_since("terminal-job", 0).await.unwrap().len(), 1);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancel_job_missing_returns_not_found() {
+    let (app, tmp) = build_test_app().await;
+
+    let res = app.oneshot(cancel_job_request("missing-job")).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cancelled_event_is_terminal_and_closes_the_job_sse_stream() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+    enqueue_test_job(&store, "cancelled-stream-job").await;
+    store
+        .append_event(
+            "cancelled-stream-job",
+            "cancelled",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/jobs/cancelled-stream-job/stream?token=test-key")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(
+        Duration::from_secs(1),
+        axum::body::to_bytes(response.into_body(), usize::MAX),
+    )
+    .await
+    .expect("cancelled event must close the stream")
+    .unwrap();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains(r#""type":"cancelled""#),
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
 async fn artifact_backslash_traversal_is_rejected() {
     // Regression: the old `/`-only `".."` split let `..\..\` through on Windows.
     // %5C decodes to `\`, which Path treats as a separator → ParentDir component.
@@ -78,6 +292,483 @@ async fn artifact_backslash_traversal_is_rejected() {
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST, "traversal must be 400");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn job_artifact_get_head_and_ranges_stream_the_http_representation() {
+    let (app, tmp) = build_test_app().await;
+    let job_dir = tmp.join("job1");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
+
+    let get = app
+        .clone()
+        .oneshot(artifact_request("GET", "artifact.txt"))
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    assert_eq!(get.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(get.headers()[header::CONTENT_LENGTH], "10");
+    assert_eq!(get.headers()[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(response_bytes(get).await, b"0123456789");
+
+    let head = app
+        .clone()
+        .oneshot(artifact_request("HEAD", "artifact.txt"))
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(head.headers()[header::CONTENT_LENGTH], "10");
+    assert_eq!(head.headers()[header::ACCEPT_RANGES], "bytes");
+    assert!(response_bytes(head).await.is_empty());
+
+    for (value, expected_range, expected_body) in [
+        ("bytes=0-3", "bytes 0-3/10", b"0123".as_slice()),
+        ("bytes=-4", "bytes 6-9/10", b"6789".as_slice()),
+        ("bytes=4-", "bytes 4-9/10", b"456789".as_slice()),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/artifacts/job1/artifact.txt")
+                    .header("authorization", "Bearer test-key")
+                    .header(header::RANGE, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT, "{value}");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], expected_range);
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], expected_body.len().to_string());
+        assert_eq!(response_bytes(response).await, expected_body);
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Release-readiness smoke test for the HTTP runtime contract. This stays in
+/// `thoth-server`: the spawned worker models the SQLite polling boundary that
+/// a real worker uses, without introducing a `thoth-core` dependency here.
+#[tokio::test]
+async fn runtime_contract_http_smoke() {
+    let (app, tmp) = build_test_app().await;
+    let store = thoth_jobs::JobStore::connect(tmp.join("t.db").to_str().unwrap())
+        .await
+        .unwrap();
+
+    let invalid = app
+        .clone()
+        .oneshot(create_job_request(serde_json::json!({
+            "command": "unsupported",
+            "url": "https://x.test",
+            "params": {},
+        })))
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(store.list().await.unwrap().is_empty(), "422 must not enqueue");
+
+    let job_id = "runtime-smoke-job";
+    enqueue_test_job(&store, job_id).await;
+    let claimed = store.claim_next("smoke-worker").await.unwrap().unwrap();
+    assert_eq!(claimed.id, job_id);
+
+    let worker_store = store.clone();
+    let worker_id = job_id.to_owned();
+    let (initial_poll_tx, initial_poll_rx) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(async move {
+        let initially_cancelled = worker_store.is_cancel_requested(&worker_id).await.unwrap();
+        assert!(
+            !initially_cancelled,
+            "worker must observe the claimed job running before cancellation"
+        );
+        initial_poll_tx
+            .send(())
+            .expect("test must await the worker's initial SQLite poll");
+        loop {
+            if worker_store.is_cancel_requested(&worker_id).await.unwrap() {
+                return worker_store
+                    .finish_running(
+                        &worker_id,
+                        thoth_jobs::JobStatus::Cancelled,
+                        None,
+                        "cancelled",
+                        None,
+                    )
+                    .await;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    initial_poll_rx
+        .await
+        .expect("worker must poll SQLite before the cancellation request");
+
+    let cancellation_started = Instant::now();
+    let cancelled = app
+        .clone()
+        .oneshot(cancel_job_request(job_id))
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    let transitioned = tokio::time::timeout(Duration::from_secs(2), worker)
+        .await
+        .expect("SQLite cancellation must be observed within two seconds")
+        .expect("worker task must not panic")
+        .expect("worker polling must finish cleanly");
+    assert!(transitioned, "only the claimed job may become terminal");
+    let cancellation_latency = cancellation_started.elapsed();
+    assert!(
+        cancellation_latency < Duration::from_secs(2),
+        "cancellation took {cancellation_latency:?}"
+    );
+    println!("runtime smoke SQLite cancellation latency: {cancellation_latency:?}");
+    assert_eq!(
+        store.get(job_id).await.unwrap().unwrap().status,
+        thoth_jobs::JobStatus::Cancelled
+    );
+
+    let job_dir = tmp.join(job_id);
+    std::fs::create_dir_all(&job_dir).unwrap();
+    std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
+
+    let head = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()[header::CONTENT_LENGTH], "10");
+    assert!(response_bytes(head).await.is_empty());
+
+    let full = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(full.status(), StatusCode::OK);
+    assert_eq!(response_bytes(full).await, b"0123456789");
+
+    let partial = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .header(header::RANGE, "bytes=2-5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(partial.headers()[header::CONTENT_RANGE], "bytes 2-5/10");
+    assert_eq!(response_bytes(partial).await, b"2345");
+
+    let malformed = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/artifacts/{job_id}/artifact.txt"))
+                .header("authorization", "Bearer test-key")
+                .header(header::RANGE, "bytes=not-a-range")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(malformed.headers()[header::CONTENT_RANGE], "bytes */10");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn invalid_job_requests_return_structured_422_without_enqueuing() {
+    let (app, tmp) = build_test_app().await;
+    let cases = [
+        (serde_json::json!({ "command": "analyze", "url": "https://x.test", "params": {} }), "command", "unsupported_command"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "content_set": "set.json", "params": {} }), "source", "invalid_source"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": [] }), "params", "invalid_params"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "unknown": true } }), "params.unknown", "unknown_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "language": "  " } }), "params.language", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "provider": "invalid" } }), "params.provider", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "max_clips": 0 } }), "params.max_clips", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "bgm_volume": 2 } }), "params.bgm_volume", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "headline_dur": 0 } }), "params.headline_dur", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "keywords": ["ok", ""] } }), "params.keywords", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "extra_args": ["--safe", ""] } }), "params.extra_args", "invalid_parameter"),
+        (serde_json::json!({ "command": "run", "url": "https://x.test", "params": { "extra_args": ["--output-dir=elsewhere"] } }), "params.extra_args[0]", "protected_argument"),
+    ];
+
+    for (spec, field, code) in cases {
+        let before = app.clone().oneshot(list_jobs_request()).await.unwrap();
+        let before: serde_json::Value = serde_json::from_slice(&response_bytes(before).await).unwrap();
+
+        let response = app.clone().oneshot(create_job_request(spec)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value = serde_json::from_slice(&response_bytes(response).await).unwrap();
+        let error = body.get("error").and_then(serde_json::Value::as_object).unwrap();
+        assert_eq!(body.as_object().unwrap().len(), 1, "body: {body}");
+        assert_eq!(error.len(), 3, "body: {body}");
+        assert_eq!(error.get("field"), Some(&serde_json::json!(field)));
+        assert_eq!(error.get("code"), Some(&serde_json::json!(code)));
+        assert!(error.get("message").and_then(serde_json::Value::as_str).is_some());
+
+        let after = app.clone().oneshot(list_jobs_request()).await.unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&response_bytes(after).await).unwrap();
+        assert_eq!(after, before, "invalid {field} request enqueued a job");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn job_artifact_rejects_bad_ranges_and_missing_or_directory_files() {
+    let (app, tmp) = build_test_app().await;
+    let job_dir = tmp.join("job1");
+    std::fs::create_dir_all(job_dir.join("directory")).unwrap();
+    std::fs::write(job_dir.join("artifact.txt"), b"0123456789").unwrap();
+
+    for value in ["bytes=garbage", "bytes=10-", "bytes=0-1,4-5"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/artifacts/job1/artifact.txt")
+                    .header("authorization", "Bearer test-key")
+                    .header(header::RANGE, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{value}");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    for path in ["missing.txt", "directory"] {
+        let response = app
+            .clone()
+            .oneshot(artifact_request("GET", path))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn job_artifact_serves_zero_byte_get_and_head_but_rejects_ranges() {
+    let (app, tmp) = build_test_app().await;
+    let job_dir = tmp.join("job1");
+    std::fs::create_dir_all(&job_dir).unwrap();
+    std::fs::write(job_dir.join("empty.txt"), b"").unwrap();
+
+    for method in ["GET", "HEAD"] {
+        let response = app
+            .clone()
+            .oneshot(artifact_request(method, "empty.txt"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/api/artifacts/job1/empty.txt")
+                .header("authorization", "Bearer test-key")
+                .header(header::RANGE, "bytes=0-0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */0");
+    assert!(response_bytes(response).await.is_empty());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_supports_get_head_and_ranges() {
+    let (app, tmp) = build_test_app().await;
+    let name = format!("routes-http-{}.txt", uuid::Uuid::new_v4());
+    let path = std::path::Path::new(thoth_server::scout::SCOUT_OUTPUT_DIR).join(&name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"0123456789").unwrap();
+
+    let get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    assert_eq!(get.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(get.headers()[header::CONTENT_LENGTH], "10");
+    assert_eq!(get.headers()[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(response_bytes(get).await, b"0123456789");
+
+    let head = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .header(header::RANGE, "bytes=-4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(head.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(head.headers()[header::CONTENT_RANGE], "bytes 6-9/10");
+    assert_eq!(head.headers()[header::CONTENT_LENGTH], "4");
+    assert!(response_bytes(head).await.is_empty());
+
+    let get_range = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .header(header::RANGE, "bytes=4-")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_range.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(get_range.headers()[header::CONTENT_RANGE], "bytes 4-9/10");
+    assert_eq!(response_bytes(get_range).await, b"456789");
+
+    std::fs::remove_file(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_serves_zero_byte_get_and_head_but_rejects_ranges() {
+    let (app, tmp) = build_test_app().await;
+    let name = format!("routes-http-empty-{}.txt", uuid::Uuid::new_v4());
+    let path = std::path::Path::new(thoth_server::scout::SCOUT_OUTPUT_DIR).join(&name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"").unwrap();
+
+    for method in ["GET", "HEAD"] {
+        let response = app
+            .clone()
+            .oneshot(scout_output_request(method, &name))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri(format!("/api/scout/output/{name}?token=test-key"))
+                .header(header::RANGE, "bytes=0-0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */0");
+    assert!(response_bytes(response).await.is_empty());
+
+    std::fs::remove_file(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_rejects_bad_ranges_and_directories() {
+    let (app, tmp) = build_test_app().await;
+    let directory = format!("routes-http-directory-{}", uuid::Uuid::new_v4());
+    let name = format!("routes-http-range-{}.txt", uuid::Uuid::new_v4());
+    let output_dir = std::path::Path::new(thoth_server::scout::SCOUT_OUTPUT_DIR);
+    std::fs::create_dir_all(output_dir.join(&directory)).unwrap();
+    std::fs::write(output_dir.join(&name), b"0123456789").unwrap();
+
+    for value in ["bytes=garbage", "bytes=10-", "bytes=0-1,4-5"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/scout/output/{name}?token=test-key"))
+                    .header(header::RANGE, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{value}");
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */10");
+        assert!(response_bytes(response).await.is_empty());
+    }
+
+    let response = app
+        .oneshot(scout_output_request("GET", &directory))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    std::fs::remove_file(output_dir.join(&name)).unwrap();
+    std::fs::remove_dir_all(output_dir.join(&directory)).unwrap();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn scout_output_token_route_rejects_traversal() {
+    let (app, tmp) = build_test_app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/scout/output/..%2Foutside.txt?token=test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

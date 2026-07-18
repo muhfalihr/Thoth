@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod artifact;
 pub mod reaper;
 pub mod routes;
 pub mod scout;
@@ -19,7 +20,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/jobs", get(routes::list_jobs).post(routes::create_job))
         .route("/jobs/:id", get(routes::get_job))
         .route("/jobs/:id/cancel", post(routes::cancel_job))
-        .route("/artifacts/:id/*path", get(routes::get_artifact))
+        .route(
+            "/artifacts/:id/*path",
+            get(routes::get_artifact).head(routes::get_artifact),
+        )
         .route("/jobs/:id/manifest", get(routes::get_manifest))
         .route(
             "/config",
@@ -48,7 +52,10 @@ pub fn build_router(state: AppState) -> Router {
     let api = api
         .route("/jobs/:id/stream", get(routes::stream_job))
         .route("/scout/stream", get(routes::scout_stream))
-        .route("/scout/output/*path", get(routes::scout_output_file));
+        .route(
+            "/scout/output/*path",
+            get(routes::scout_output_file).head(routes::scout_output_file),
+        );
 
     Router::new()
         .route("/health", get(|| async { "ok" }))

@@ -27,6 +27,8 @@ use std::process::Stdio;
 
 use tracing::debug;
 
+use crate::execution::JobExecutionContext;
+
 use super::error::NewsError;
 
 const OUT_W: u32 = 1080;
@@ -51,7 +53,10 @@ pub struct FormatParams<'a> {
 /// Returns the `out_path` on success, `Err` only on hard FFmpeg failure.
 /// A missing fonts directory is handled gracefully — caption text uses a built-in
 /// fallback font so the function never errors on missing Poppins.
-pub async fn format_screenshot(params: &FormatParams<'_>) -> Result<PathBuf, NewsError> {
+pub async fn format_screenshot(
+    execution: &JobExecutionContext,
+    params: &FormatParams<'_>,
+) -> Result<PathBuf, NewsError> {
     let ffmpeg = ffmpeg_binary();
 
     // Ensure output parent dir exists.
@@ -62,7 +67,8 @@ pub async fn format_screenshot(params: &FormatParams<'_>) -> Result<PathBuf, New
     let filter = build_filter(params.source, params.published, params.headline);
     debug!("formatter filter_complex: {}", filter);
 
-    let output = tokio::process::Command::new(&ffmpeg)
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
         .args([
             "-y",                              // overwrite
             "-i", &params.raw_path.to_string_lossy(),
@@ -74,10 +80,8 @@ pub async fn format_screenshot(params: &FormatParams<'_>) -> Result<PathBuf, New
             &params.out_path.to_string_lossy(),
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| NewsError::Search(format!("ffmpeg spawn failed: {e}")))?;
+        .stderr(Stdio::piped());
+    let output = execution.output(&mut command).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -2,8 +2,8 @@ use std::{convert::Infallible, time::Duration};
 
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
-    response::sse::{Event, Sse},
+    http::{HeaderMap, Method, StatusCode},
+    response::{IntoResponse, Response, sse::{Event, Sse}},
     Json,
 };
 use futures_util::stream::Stream;
@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::auth::AppState;
 use crate::scout::{self, DiscoverReq, RunReq, ScoutKind, ValidateReq};
-use thoth_jobs::{JobRecord, JobSpec, JobStatus};
+use thoth_jobs::{CancelRequestOutcome, JobRecord, JobSpec, validate_job_spec};
 
 #[derive(Deserialize)]
 pub struct StreamQuery {
@@ -25,18 +25,29 @@ pub struct StreamQuery {
 pub async fn create_job(
     State(state): State<AppState>,
     Json(spec): Json<JobSpec>,
-) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
+) -> Response {
+    if let Err(error) = validate_job_spec(&spec) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({ "error": error })),
+        )
+            .into_response();
+    }
+
     // The worker creates the output dir when it actually runs the job; the
     // server only records intent. output_dir is `output_root/<job_id>` so the
     // artifact route (which serves `output_root/<id>`) and the worker agree.
     let job_id = uuid::Uuid::new_v4().to_string();
     let out = state.output_root.join(&job_id);
-    state
+    if state
         .store
         .enqueue(&job_id, &spec, &out.to_string_lossy())
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "job_id": job_id }))))
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job_id }))).into_response()
 }
 
 pub async fn list_jobs(State(state): State<AppState>) -> Result<Json<Vec<JobRecord>>, StatusCode> {
@@ -61,48 +72,37 @@ pub async fn get_job(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-/// Cancel a job. A queued job is finished immediately (it never started);
-/// a running job gets a cooperative cancel flag the worker polls (there is no
+/// Cancel a job. A queued job is cancelled atomically (it never started); a
+/// running job gets a cooperative cancel flag the worker polls (there is no
 /// process to signal — the worker is an independent peer). Terminal jobs 409.
 pub async fn cancel_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
-    let job = state
+) -> Response {
+    let outcome = match state
         .store
-        .get(&id)
+        .request_cancel(&id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    match job.status {
-        JobStatus::Queued => {
-            state
-                .store
-                .finish(&id, JobStatus::Cancelled, Some("cancelled before start"))
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            state
-                .store
-                .append_event(&id, "error", None, None, Some("cancelled"))
-                .await
-                .ok();
-        }
-        JobStatus::Running => {
-            state
-                .store
-                .request_cancel(&id)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        }
-        _ => return Err(StatusCode::CONFLICT),
+    {
+        Ok(outcome) => outcome,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    match outcome {
+        CancelRequestOutcome::QueuedCancelled
+        | CancelRequestOutcome::RunningRequested
+        | CancelRequestOutcome::AlreadyRequested => match state.store.get(&id).await {
+            Ok(Some(job)) => Json(job).into_response(),
+            Ok(None) | Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
+        CancelRequestOutcome::Terminal(_) => StatusCode::CONFLICT.into_response(),
+        CancelRequestOutcome::NotFound => StatusCode::NOT_FOUND.into_response(),
     }
-    Ok(StatusCode::ACCEPTED)
 }
 
 /// SSE relay: tail `job_events` by autoincrement `seq`. This is the entire
 /// progress channel now — the server has no in-process handle to the worker, so
 /// it polls the shared DB. `Last-Event-ID` (or `?after=`) resumes after a drop;
-/// the stream closes once a `done`/`error` event lands.
+/// the stream closes once a `done`, `error`, or `cancelled` event lands.
 ///
 /// Mounted OUTSIDE the bearer layer (EventSource can't send headers) — it
 /// self-authenticates via `?token=<api_key>`.
@@ -143,7 +143,7 @@ pub async fn stream_job(
             let mut terminal = false;
             for ev in events {
                 last_seq = ev.seq;
-                if ev.kind == "done" || ev.kind == "error" {
+                if ev.kind == "done" || ev.kind == "error" || ev.kind == "cancelled" {
                     terminal = true;
                 }
                 let data = serde_json::to_string(&ev).unwrap_or_default();
@@ -559,7 +559,9 @@ pub async fn scout_content_set_save(
 pub async fn get_artifact(
     State(state): State<AppState>,
     Path((id, path)): Path<(String, String)>,
-) -> Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), StatusCode> {
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     // Only plain filename components may compose the served path. This rejects
     // `..` (ParentDir), backslash-as-separator traversal, and absolute/prefix
     // forms (`C:\`, `/`) — all of which would otherwise escape output_root on
@@ -573,14 +575,8 @@ pub async fn get_artifact(
         return Err(StatusCode::BAD_REQUEST);
     }
     let full = state.output_root.join(&rel);
-    let bytes = tokio::fs::read(&full)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
     let content_type = guess_content_type(&full);
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, content_type)],
-        bytes,
-    ))
+    crate::artifact::serve_file(&method, &headers, &full, content_type).await
 }
 
 /// GET /api/scout/output/*path — serve a local scout artifact (crop PNGs, post-crop
@@ -591,7 +587,9 @@ pub async fn scout_output_file(
     State(state): State<AppState>,
     Path(rel): Path<String>,
     Query(q): Query<ImgToken>,
-) -> Result<([(axum::http::HeaderName, &'static str); 1], Vec<u8>), StatusCode> {
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
     if q.token.as_deref() != Some(state.api_key.as_str()) {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -603,9 +601,6 @@ pub async fn scout_output_file(
         return Err(StatusCode::BAD_REQUEST);
     }
     let full = std::path::Path::new(scout::SCOUT_OUTPUT_DIR).join(rel_path);
-    let bytes = tokio::fs::read(&full)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
     let content_type = guess_content_type(&full);
-    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes))
+    crate::artifact::serve_file(&method, &headers, &full, content_type).await
 }

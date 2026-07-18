@@ -16,6 +16,7 @@ use serde::Deserialize;
 use tracing::{debug, warn};
 
 use crate::config::{NewsConfig, ReactionConfig};
+use crate::execution::JobExecutionContext;
 
 use super::error::ReactionError;
 use crate::news::util::{python_command, run_command};
@@ -43,6 +44,7 @@ pub struct TimedTtsResult {
 /// Fallback: Edge TTS via `scripts/tts/tts_narrate.py` (word timings distributed from
 /// sentence boundaries) when the ElevenLabs key/voice is missing or the call fails.
 pub async fn synthesize_timed(
+    execution: &JobExecutionContext,
     text: &str,
     output_path: &Path,
     reaction_cfg: &ReactionConfig,
@@ -62,7 +64,7 @@ pub async fn synthesize_timed(
             Err(e) => warn!("ElevenLabs timed TTS failed ({e}); falling back to Edge"),
         }
     }
-    synthesize_edge_timed(text, output_path, reaction_cfg, news_cfg).await
+    synthesize_edge_timed(execution, text, output_path, reaction_cfg, news_cfg).await
 }
 
 /// ElevenLabs `with-timestamps` → MP3 + per-word timings (aggregated from the
@@ -157,6 +159,7 @@ async fn synthesize_elevenlabs_timed(
 
 /// Edge TTS fallback via `scripts/tts/tts_narrate.py` → MP3 + word timings JSON.
 async fn synthesize_edge_timed(
+    execution: &JobExecutionContext,
     text: &str,
     output_path: &Path,
     reaction_cfg: &ReactionConfig,
@@ -177,8 +180,9 @@ async fn synthesize_edge_timed(
         .arg("--rate").arg("+6%")
         .arg("--output").arg(output_path);
 
-    let stdout = run_command(cmd, "tts_narrate", 120).await
-        .map_err(|e| ReactionError::Tts(e.to_string()))?;
+    let stdout = run_command(execution, cmd, "tts_narrate", 120)
+        .await
+        .map_err(ReactionError::from_news_error)?;
 
     #[derive(Deserialize)]
     struct W { word: String, start_ms: i64, end_ms: i64 }
@@ -237,6 +241,7 @@ struct TtsEnvelope {
 /// Tries Edge TTS first (via Python subprocess), falls back to OpenAI TTS
 /// when `reaction.tts.provider = "openai"`.
 pub async fn synthesize(
+    execution: &JobExecutionContext,
     text: &str,
     output_path: &Path,
     reaction_cfg: &ReactionConfig,
@@ -254,13 +259,14 @@ pub async fn synthesize(
         "openai"     => synthesize_openai(text, output_path, reaction_cfg, openai_api_key).await,
         "elevenlabs" => synthesize_elevenlabs(text, output_path, reaction_cfg).await,
         "none"       => Err(ReactionError::Tts("TTS provider is 'none'".to_owned())),
-        _            => synthesize_edge(text, output_path, reaction_cfg, news_cfg).await,
+        _            => synthesize_edge(execution, text, output_path, reaction_cfg, news_cfg).await,
     }
 }
 
 // ── Edge TTS (default, free) ──────────────────────────────────────────────────
 
 async fn synthesize_edge(
+    execution: &JobExecutionContext,
     text: &str,
     output_path: &Path,
     reaction_cfg: &ReactionConfig,
@@ -280,8 +286,9 @@ async fn synthesize_edge(
 
     debug!("TTS (edge): voice={}", reaction_cfg.tts.edge_voice);
 
-    let stdout = run_command(cmd, "tts_edge", 60).await
-        .map_err(|e| ReactionError::Tts(e.to_string()))?;
+    let stdout = run_command(execution, cmd, "tts_edge", 60)
+        .await
+        .map_err(ReactionError::from_news_error)?;
 
     parse_tts_envelope(&stdout, output_path)
 }

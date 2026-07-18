@@ -15,6 +15,7 @@ serde_json  = "1"
 chrono      = { version = "0.4", features = ["clock"] }
 anyhow      = "1"
 uuid        = { version = "1", features = ["v4"] }
+tokio       = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

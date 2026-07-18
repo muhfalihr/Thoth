@@ -32,6 +32,10 @@ chrono       = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 async-stream = "0.3"
 toml         = "0.8"
+tokio-util   = { version = "0.7", features = ["io"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

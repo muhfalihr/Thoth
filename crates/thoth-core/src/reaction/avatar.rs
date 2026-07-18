@@ -15,6 +15,7 @@ use std::process::Stdio;
 use tracing::{debug, info};
 
 use crate::config::{AvatarMode, FfmpegConfig, ReactionConfig};
+use crate::execution::JobExecutionContext;
 use crate::news::util::{python_command, run_command};
 
 use super::error::ReactionError;
@@ -41,6 +42,7 @@ pub struct AvatarSegmentSpec<'a> {
 /// - `AvatarMode::StaticImage` — static PNG + TTS audio over news background
 /// - `AvatarMode::None` — returns `Ok(None)` (caller skips)
 pub async fn create_avatar_segment(
+    execution: &JobExecutionContext,
     spec: &AvatarSegmentSpec<'_>,
     output_path: &Path,
     cfg: &FfmpegConfig,
@@ -49,7 +51,7 @@ pub async fn create_avatar_segment(
     match reaction.avatar.mode {
         AvatarMode::None => return Ok(None),
         AvatarMode::SadTalker => {
-            return create_sadtalker_segment(spec, output_path, reaction).await;
+            return create_sadtalker_segment(execution, spec, output_path, reaction).await;
         }
         _ => {} // StaticImage and others fall through to FFmpeg approach
     }
@@ -63,13 +65,12 @@ pub async fn create_avatar_segment(
 
     debug!("avatar segment: ffmpeg {}", args.join(" "));
 
-    let output = tokio::process::Command::new(&ffmpeg)
+    let mut command = tokio::process::Command::new(&ffmpeg);
+    command
         .args(&args)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| ReactionError::Tts(format!("ffmpeg spawn: {e}")))?;
+        .stderr(Stdio::piped());
+    let output = execution.output(&mut command).await?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
@@ -211,6 +212,7 @@ fn build_filter(
 /// Calls `scripts/media/sadtalker_generate.py` via the `thoth-sadtalker` conda env.
 /// The script wraps SadTalker's `inference.py` and returns a JSON envelope.
 async fn create_sadtalker_segment(
+    execution: &JobExecutionContext,
     spec:     &AvatarSegmentSpec<'_>,
     output:   &Path,
     reaction: &ReactionConfig,
@@ -259,9 +261,9 @@ async fn create_sadtalker_segment(
     );
 
     // SadTalker can take 1-3 minutes on GPU — use generous timeout.
-    let stdout = run_command(cmd, "sadtalker", 300)
+    let stdout = run_command(execution, cmd, "sadtalker", 300)
         .await
-        .map_err(|e| ReactionError::Tts(e.to_string()))?;
+        .map_err(ReactionError::from_news_error)?;
 
     let env: serde_json::Value = serde_json::from_str(
         stdout.trim().find('{').map(|i| &stdout[i..]).unwrap_or(stdout.trim())

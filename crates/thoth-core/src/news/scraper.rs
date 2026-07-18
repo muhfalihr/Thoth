@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use crate::execution::JobExecutionContext;
+
 use crate::config::NewsConfig;
 
 use super::error::NewsError;
@@ -52,6 +54,7 @@ struct ScreenshotEnvelope {
 /// Returns `Ok(Some(...))` on success, `Ok(None)` when the script is missing or
 /// the browser cannot load the page (caller should log + skip gracefully).
 pub async fn screenshot(
+    execution: &JobExecutionContext,
     config: &NewsConfig,
     url: &str,
     output_path: &PathBuf,
@@ -72,7 +75,7 @@ pub async fn screenshot(
         .arg("--width").arg(config.screenshot_width_px.to_string())
         .arg("--timeout").arg(config.screenshot_timeout_secs.to_string());
 
-    let stdout = match run_command(cmd, "screenshot", config.screenshot_timeout_secs + 15).await {
+    let stdout = match run_command(execution, cmd, "screenshot", config.screenshot_timeout_secs + 15).await {
         Ok(s) => s,
         Err(e) => {
             warn!("screenshot subprocess failed for {url}: {e}");

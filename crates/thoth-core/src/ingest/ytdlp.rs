@@ -9,12 +9,14 @@
 //! - **§2A — Filename safety**: `--windows-filenames` (Windows only), `--trim-filenames 120`
 //! - **§3A — Cookie management**: `--cookies-from-browser` / `--cookies <file>`,
 //!   Windows Chromium locked-DB workaround, HTTP 400 detection hint
-//! - **§5  — Resource cleanup**: `KillOnDrop` wrapper kills child on task cancellation
+//! - **§5  — Resource cleanup**: supervised children terminate their process trees on cancellation
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tracing::{debug, warn};
+
+use crate::execution::{JobExecutionContext, SupervisedChild};
 
 // ── Cookie source ─────────────────────────────────────────────────────────────
 
@@ -55,28 +57,13 @@ impl CookieSource {
     }
 }
 
-// ── KillOnDrop ────────────────────────────────────────────────────────────────
-
-/// SKILL.md §5 — Resource cleanup.
-///
-/// Wraps a `tokio::process::Child` so that `start_kill()` is called automatically
-/// when the guard is dropped.  This ensures yt-dlp is always cleaned up even if the
-/// parent task panics or is cancelled (e.g., the user hits Ctrl+C).
-pub struct KillOnDrop(pub tokio::process::Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        let _ = self.0.start_kill();
-    }
-}
-
 // ── YtDlpArgs builder ─────────────────────────────────────────────────────────
 
 /// Builder for yt-dlp argument lists.
 ///
 /// Each method appends the corresponding flags and returns `self` for chaining.
 /// Call `build()` to get the final `Vec<String>` or `spawn()` to launch the
-/// process immediately wrapped in `KillOnDrop`.
+/// process supervised by the current job execution context.
 ///
 /// # Example
 ///
@@ -89,7 +76,7 @@ impl Drop for KillOnDrop {
 ///     .youtube_client_fallback(url)
 ///     .ffmpeg_dir("/usr/bin")
 ///     .url(url)
-///     .spawn_with_streams()?;
+///     .spawn_with_streams(execution)?;
 /// ```
 pub struct YtDlpArgs {
     /// Path to the yt-dlp binary.
@@ -301,30 +288,33 @@ impl YtDlpArgs {
         (self.bin, self.args)
     }
 
-    /// Spawn the yt-dlp process and return a `KillOnDrop` guard.
+    /// Spawn yt-dlp under the job supervisor, retaining piped streams for parsing.
     ///
     /// stdout and stderr are piped so the caller can stream output.
-    pub fn spawn_with_streams(self) -> Result<KillOnDrop, std::io::Error> {
+    pub fn spawn_with_streams(
+        self,
+        execution: &JobExecutionContext,
+    ) -> anyhow::Result<SupervisedChild> {
         let (bin, args) = self.build();
         debug!("yt-dlp spawn: {:?} {:?}", bin, args);
-        let child = tokio::process::Command::new(&bin)
+        let mut command = tokio::process::Command::new(&bin);
+        command
             .args(&args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        Ok(KillOnDrop(child))
+            .stderr(Stdio::piped());
+        execution.spawn(&mut command)
     }
 
-    /// Spawn the yt-dlp process silently (stdout/stderr discarded).
-    pub fn spawn_silent(self) -> Result<KillOnDrop, std::io::Error> {
+    /// Spawn yt-dlp under the job supervisor with output discarded.
+    pub fn spawn_silent(self, execution: &JobExecutionContext) -> anyhow::Result<SupervisedChild> {
         let (bin, args) = self.build();
         debug!("yt-dlp spawn silent: {:?} {:?}", bin, args);
-        let child = tokio::process::Command::new(&bin)
+        let mut command = tokio::process::Command::new(&bin);
+        command
             .args(&args)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        Ok(KillOnDrop(child))
+            .stderr(Stdio::null());
+        execution.spawn(&mut command)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

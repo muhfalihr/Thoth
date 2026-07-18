@@ -4,6 +4,7 @@ use std::process::Stdio;
 use tracing::{debug, info, warn};
 
 use crate::config::FfmpegConfig;
+use crate::execution::JobExecutionContext;
 use super::error::EditError;
 
 // ── Transition type ───────────────────────────────────────────────────────────
@@ -366,7 +367,8 @@ impl ClipSpec {
 /// - All input clips must have the same resolution, FPS, and codec profile.
 ///   Use `encode_clip_direct` with consistent `OutputLayout` before calling this.
 /// - Output re-encodes using libx264 (CPU) or h264_nvenc (GPU) based on `cfg`.
-pub fn concat_with_transitions(
+pub async fn concat_with_transitions(
+    execution: &JobExecutionContext,
     clips: &[ClipSpec],
     output: &Path,
     cfg: &FfmpegConfig,
@@ -387,7 +389,7 @@ pub fn concat_with_transitions(
     // Check if ALL transitions are None → use simple concat (faster, lossless)
     let all_none = clips[..n - 1].iter().all(|c| c.transition_out == Transition::None);
     if all_none {
-        return concat_simple(clips, output, cfg);
+        return concat_simple(execution, clips, output, cfg).await;
     }
 
     // Build filter_complex with xfade chain
@@ -462,14 +464,19 @@ pub fn concat_with_transitions(
     );
     debug!("ffmpeg {}", args.join(" "));
 
-    run_ffmpeg(&args)
+    run_ffmpeg(execution, &args).await
 }
 
 // ── Simple concat (lossless when all cuts are hard) ──────────────────────────
 
 /// Concatenate clips with no transitions using FFmpeg concat demuxer.
 /// Avoids re-encoding — much faster for hard cuts.
-fn concat_simple(clips: &[ClipSpec], output: &Path, cfg: &FfmpegConfig) -> Result<(), EditError> {
+async fn concat_simple(
+    execution: &JobExecutionContext,
+    clips: &[ClipSpec],
+    output: &Path,
+    cfg: &FfmpegConfig,
+) -> Result<(), EditError> {
     // Write a temporary concat list file
     let list_path = output.with_extension("concat.txt");
     let list_content: String = clips
@@ -501,7 +508,7 @@ fn concat_simple(clips: &[ClipSpec], output: &Path, cfg: &FfmpegConfig) -> Resul
     ]);
 
     info!("concat_simple: {} clips → {}", clips.len(), output.display());
-    let result = run_ffmpeg(&args);
+    let result = run_ffmpeg(execution, &args).await;
     let _ = std::fs::remove_file(&list_path); // cleanup regardless
     result
 }
@@ -550,21 +557,28 @@ fn build_encoder(cfg: &FfmpegConfig) -> (String, Vec<String>) {
     }
 }
 
-fn run_ffmpeg(args: &[String]) -> Result<(), EditError> {
+async fn run_ffmpeg(
+    execution: &JobExecutionContext,
+    args: &[String],
+) -> Result<(), EditError> {
     let binary = if let Ok(p) = std::env::var("FFMPEG_PATH") {
         PathBuf::from(p)
     } else {
         ffmpeg_sidecar::paths::ffmpeg_path()
     };
 
-    let output = std::process::Command::new(&binary)
+    let mut command = tokio::process::Command::new(&binary);
+    command
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| EditError::FfmpegFailed(format!(
-            "failed to spawn FFmpeg at '{}': {e}", binary.display()
-        )))?;
+        .stderr(Stdio::piped());
+    let output = execution
+        .output(&mut command)
+        .await
+        .map_err(|error| EditError::from_execution(
+            error,
+            format!("failed to run FFmpeg at '{}'", binary.display()),
+        ))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

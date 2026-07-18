@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
+use crate::execution::{is_cancelled, JobExecutionContext};
 use crate::pipeline::job::JobContext;
 use crate::util::progress::{percent_bar, spinner, stage_done};
 
@@ -82,21 +83,27 @@ impl Default for CopyrightStatus {
 pub struct IngestService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
 }
 
 impl<'a> IngestService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
-    pub async fn run(&self, url: &str, force: bool) -> Result<IngestResult, IngestError> {
+    pub async fn run(&self, url: &str, force: bool) -> Result<IngestResult> {
+        self.execution.check_cancelled()?;
         let t0 = Instant::now();
 
         // LOCAL-FILE source (not a URL): a still→video synthesized from a NON-VIDEO main post
         // (main.rs::synthesize_still_video). Copy it (+ sibling .info.json) into the source dir and
         // build the result directly — yt-dlp is not involved.
         if !url.starts_with("http://") && !url.starts_with("https://") && Path::new(url).is_file() {
-            return self.ingest_local_file(Path::new(url)).await;
+            return Ok(self.ingest_local_file(Path::new(url)).await?);
         }
         // Bound the id length in the template. For normal sites %(id)s is a short id (e.g. a YouTube
         // 11-char id), but for a direct CDN .mp4 URL (TikTok/fbcdn, used by scout content-sets) the
@@ -200,23 +207,28 @@ impl<'a> IngestService<'a> {
 
         let temp_cookie = builder.temp_cookie_path.clone();
 
-        // SKILL.md §5 — KillOnDrop ensures yt-dlp is cleaned up on task cancellation
+        // The supervised child retains streamed output while owning the full process tree.
         let mut child = builder
             .url(url)
-            .spawn_with_streams()
+            .spawn_with_streams(self.execution)
             .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
+                if is_cancelled(&e) {
+                    e
+                } else if let Some(source) = e.downcast_ref::<std::io::Error>()
+                    && source.kind() == std::io::ErrorKind::NotFound
+                {
                     IngestError::YtDlpNotFound {
                         path: ytdlp_bin.clone(),
-                        source: e,
+                        source: std::io::Error::new(source.kind(), source.to_string()),
                     }
+                    .into()
                 } else {
-                    IngestError::Io(e)
+                    e
                 }
             })?;
 
-        let stdout = child.0.stdout.take().unwrap();
-        let stderr = child.0.stderr.take().unwrap();
+        let stdout = child.take_stdout().expect("yt-dlp stdout is piped");
+        let stderr = child.take_stderr().expect("yt-dlp stderr is piped");
 
         let mut stdout_lines = BufReader::new(stdout).lines();
         let mut stderr_lines = BufReader::new(stderr).lines();
@@ -246,6 +258,7 @@ impl<'a> IngestService<'a> {
         let mut current_file_desc = String::from("video");
 
         while let Ok(Some(line)) = stdout_lines.next_line().await {
+            self.execution.check_cancelled()?;
             debug!("yt-dlp stdout: {line}");
 
             // ── File destination → switch spinner to percent bar ──────────────
@@ -343,7 +356,8 @@ impl<'a> IngestService<'a> {
         // Clean up whichever bar is still active
         if let Some(bar) = pct_bar { bar.finish_and_clear(); } else { pb.finish_and_clear(); }
 
-        let status = child.0.wait().await.map_err(IngestError::Io)?;
+        let status = child.wait().await?;
+        self.execution.check_cancelled()?;
         let stderr_buf = stderr_handle.await.unwrap_or_default();
 
         // SKILL.md §3A — clean up temp cookie DB copy after job completes
@@ -371,11 +385,11 @@ impl<'a> IngestService<'a> {
                 // Continue — video may still be on disk; find_or_merge_video() will confirm
             } else if super::ytdlp::is_cookie_error(&stderr_buf) {
                 // SKILL.md §3A — HTTP 400 cookie error → actionable error message
-                return Err(IngestError::CookieExpired { stderr: stderr_buf });
+                return Err(IngestError::CookieExpired { stderr: stderr_buf }.into());
             } else {
                 // Real failure: video itself could not be downloaded
                 warn!("yt-dlp stderr:\n{stderr_buf}");
-                return Err(IngestError::YtDlpFailed { code, stderr: stderr_buf });
+                return Err(IngestError::YtDlpFailed { code, stderr: stderr_buf }.into());
             }
         }
 
@@ -391,6 +405,7 @@ impl<'a> IngestService<'a> {
         // `find_subtitle_file()` below will pick them up if they were written.
 
         let result = self.build_result(video_path).await?;
+        self.execution.check_cancelled()?;
 
         let size_mb = std::fs::metadata(&result.video_path)
             .map(|m| m.len() as f64 / 1_048_576.0)
@@ -489,12 +504,12 @@ impl<'a> IngestService<'a> {
         // Short delay before first attempt — reduces 429 after video download
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        let result = tokio::process::Command::new(&bin)
+        let mut command = tokio::process::Command::new(&bin);
+        command
             .args(&args)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await;
+            .stderr(std::process::Stdio::piped());
+        let result = self.execution.output(&mut command).await;
 
         pb.finish_and_clear();
 
@@ -506,12 +521,12 @@ impl<'a> IngestService<'a> {
                     debug!("YouTube subtitle 429 rate-limit — will retry after 5s");
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     // Single retry
-                    let _ = tokio::process::Command::new(&bin)
+                    let mut retry = tokio::process::Command::new(&bin);
+                    retry
                         .args(&args)
                         .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status()
-                        .await;
+                        .stderr(std::process::Stdio::null());
+                    let _ = self.execution.status(&mut retry).await;
                 } else if !stderr.trim().is_empty() {
                     debug!("YouTube subtitle yt-dlp: {}", stderr.trim());
                 }
@@ -582,7 +597,7 @@ impl<'a> IngestService<'a> {
     /// yt-dlp sometimes downloads video and audio as separate streams
     /// (e.g. `abc.f399.mp4` + `abc.f251.webm`) when it can't locate FFmpeg.
     /// This function detects that case and merges them using our FFmpeg.
-    async fn find_or_merge_video(&self) -> Result<Option<PathBuf>, IngestError> {
+    async fn find_or_merge_video(&self) -> Result<Option<PathBuf>> {
         let dir = self.job.source_dir();
         if !dir.exists() {
             return Ok(None);
@@ -659,7 +674,8 @@ impl<'a> IngestService<'a> {
 
         let pb = spinner("Merging video + audio streams…");
 
-        let status = crate::util::ffmpeg::command()
+        let mut ffmpeg = crate::util::ffmpeg::command();
+        ffmpeg
             .args([
                 "-y",
                 "-i", &video_file.to_string_lossy(),
@@ -671,11 +687,13 @@ impl<'a> IngestService<'a> {
                 "-map", "1:a:0",
                 "-movflags", "+faststart",
                 &merged_path.to_string_lossy(),
-            ])
-            .spawn()
-            .map_err(|e| IngestError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
-            .wait()
-            .map_err(IngestError::Io)?;
+            ]);
+        ffmpeg
+            .as_inner_mut()
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut command = tokio::process::Command::from(std::process::Command::from(ffmpeg));
+        let status = run_merge_ffmpeg(self.execution, &mut command, None).await?;
 
         pb.finish_and_clear();
 
@@ -901,6 +919,24 @@ fn scan_copyright_text(text: &str) -> Vec<String> {
     found
 }
 
+async fn run_merge_ffmpeg(
+    execution: &JobExecutionContext,
+    command: &mut tokio::process::Command,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<std::process::ExitStatus> {
+    let child = execution.spawn(command).map_err(|error| {
+        if is_cancelled(&error) {
+            error
+        } else {
+            IngestError::Io(std::io::Error::other(error.to_string())).into()
+        }
+    })?;
+    if let Some(started) = started {
+        let _ = started.send(());
+    }
+    child.status().await
+}
+
 /// Parse percentage from yt-dlp progress lines.
 /// Example: "[download]  23.4% of  45.00MiB at  2.50MiB/s ETA 00:18"
 fn parse_download_percent(line: &str) -> Option<f64> {
@@ -939,5 +975,49 @@ fn parse_speed_eta(line: &str) -> Option<String> {
         [speed, "ETA", eta, ..] => Some(format!(" — {speed}  ETA {eta}")),
         [speed, ..] => Some(format!(" — {speed}")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::execution::{is_cancelled, JobExecutionContext};
+
+    #[tokio::test]
+    async fn ingest_merge_honors_job_cancellation() {
+        let execution = JobExecutionContext::new();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = tokio::process::Command::new("powershell");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "sleep 30"]);
+            command
+        };
+
+        let waiting_execution = execution.clone();
+        let waiting = tokio::spawn(async move {
+            run_merge_ffmpeg(&waiting_execution, &mut command, Some(started)).await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), ready)
+            .await
+            .expect("ingest merge child must start")
+            .expect("ingest merge start signal must be sent");
+        execution.cancel();
+
+        let error = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("cancelled ingest merge must be reaped within two seconds")
+            .expect("ingest merge task must not panic")
+            .expect_err("cancelled ingest merge must fail");
+        assert!(is_cancelled(&error), "{error:?}");
     }
 }

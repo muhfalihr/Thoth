@@ -10,6 +10,7 @@ use tracing::{info, warn};
 use crate::analyze::schema::ViralMomentList;
 use crate::analyze::provider::{build_llm_provider, LlmProvider};
 use crate::config::AppConfig;
+use crate::execution::{run_cooperative_item, JobExecutionContext};
 use crate::transcribe::model::WordTimestamp;
 use crate::util::beat_detect;
 use crate::pipeline::job::JobContext;
@@ -34,13 +35,14 @@ use crate::gpu::processor::{ClipJob, GpuProcessor};
 ///
 /// `ass_path` is the clip's subtitle path; the hook artifacts are siblings
 /// (`*.hook.png` / `*.hook.ass`).
-fn build_hook_overlay(
+async fn build_hook_overlay(
     hk: &crate::config::HookTitleConfig,
     text: &str,
     duration_sec: f64,
     layout: &OutputLayout,
     ass_path: &Path,
-) -> (Option<super::ffmpeg::HeadlineImage>, Option<PathBuf>) {
+    execution: &JobExecutionContext,
+) -> Result<(Option<super::ffmpeg::HeadlineImage>, Option<PathBuf>), EditError> {
     let (w, h) = match layout {
         OutputLayout::Vertical   => (1080u32, 1920u32),
         OutputLayout::Horizontal => (1920u32, 1080u32),
@@ -76,12 +78,16 @@ fn build_hook_overlay(
             out: png_path.to_string_lossy().to_string(),
         };
         let script = Path::new("scripts/render/render_headline.py");
-        match spec.render(&super::headline_png::python_cmd(), script) {
+        match spec
+            .render(execution, &super::headline_png::python_cmd(), script)
+            .await
+        {
             Ok(p) => {
                 info!("       💥 Hook title PNG: \"{}\" ({:.1}s, {} colours, Pillow)",
                       text, duration_sec, hk.palette.len());
-                return (Some(super::ffmpeg::HeadlineImage { path: p, duration_sec }), None);
+                return Ok((Some(super::ffmpeg::HeadlineImage { path: p, duration_sec }), None));
             }
+            Err(error @ EditError::Cancelled(_)) => return Err(error),
             Err(e) => warn!("hook title PNG render failed ({e}) — falling back to ASS"),
         }
     }
@@ -104,21 +110,21 @@ fn build_hook_overlay(
         Ok(()) => {
             info!("       💥 Hook title: \"{}\" ({:.1}s, {} colours, ASS)",
                   text, duration_sec, hk.palette.len());
-            (None, Some(ass))
+            Ok((None, Some(ass)))
         }
         Err(e) => {
             warn!("hook title generation failed: {e}");
-            (None, None)
+            Ok((None, None))
         }
     }
 }
 
 /// Build the AI cover intro (Novita bg + rembg cutout + headline text) via the
 /// Python script. Reuses the hook-title styling (palette/font/stroke/shadow) so
-/// the cover text matches the rest of the brand. Returns `None` on any failure so
-/// the caller falls back to the normal hook title.
+/// the cover text matches the rest of the brand. Ordinary failures return `None`
+/// so the caller falls back to the normal hook title; cancellation stays typed.
 #[allow(clippy::too_many_arguments)]
-fn build_cover(
+async fn build_cover(
     cfg: &crate::config::CoverConfig,
     hk: &crate::config::HookTitleConfig,
     headline: &str,
@@ -132,7 +138,8 @@ fn build_cover(
     chat_base_url: &str,
     vision_model: &str,
     vision_base_url: &str,
-) -> Option<super::ffmpeg::HeadlineImage> {
+    execution: &JobExecutionContext,
+) -> Result<Option<super::ffmpeg::HeadlineImage>, EditError> {
     let (w, h) = match layout {
         OutputLayout::Vertical   => (1080u32, 1920u32),
         OutputLayout::Horizontal => (1920u32, 1080u32),
@@ -207,15 +214,16 @@ fn build_cover(
         out: out.to_string_lossy().to_string(),
     };
     let script = Path::new("scripts/render/render_cover.py");
-    match spec.render(&super::headline_png::python_cmd(), script) {
+    match spec.render(execution, &super::headline_png::python_cmd(), script).await {
         Ok(p) => {
             info!("       🖼️  AI cover: \"{}\" ({:.1}s, Novita FLUX + rembg)",
                   headline, duration_sec);
-            Some(super::ffmpeg::HeadlineImage { path: p, duration_sec })
+            Ok(Some(super::ffmpeg::HeadlineImage { path: p, duration_sec }))
         }
+        Err(error @ EditError::Cancelled(_)) => Err(error),
         Err(e) => {
             warn!("AI cover failed ({e}) — falling back to hook title");
-            None
+            Ok(None)
         }
     }
 }
@@ -475,11 +483,38 @@ pub struct EditResult {
 pub struct EditService<'a> {
     config: &'a AppConfig,
     job: &'a JobContext,
+    execution: &'a JobExecutionContext,
+}
+
+/// Preserve typed cancellation when the narrator renderer crosses from its
+/// additive overlay fetch into the `EditError` API.
+fn narrator_overlay_result<T>(result: Result<T>) -> std::result::Result<T, EditError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) if crate::execution::is_cancelled(&error) => {
+            Err(EditError::Cancelled(crate::execution::Cancelled))
+        }
+        Err(error) => Err(EditError::FfmpegFailed(format!("overlay fetch: {error:#}"))),
+    }
+}
+
+/// Keep GPU enhancements best-effort, except that job cancellation must stop
+/// the owning edit path instead of being logged as a recoverable GPU failure.
+fn propagate_gpu_cancellation(error: anyhow::Error) -> Result<anyhow::Error> {
+    if crate::execution::is_cancelled(&error) {
+        Err(error)
+    } else {
+        Ok(error)
+    }
 }
 
 impl<'a> EditService<'a> {
-    pub fn new(config: &'a AppConfig, job: &'a JobContext) -> Self {
-        Self { config, job }
+    pub fn new(
+        config: &'a AppConfig,
+        job: &'a JobContext,
+        execution: &'a JobExecutionContext,
+    ) -> Self {
+        Self { config, job, execution }
     }
 
     /// Resolve the cookie source for footage (overlay) downloads, mirroring the
@@ -509,7 +544,8 @@ impl<'a> EditService<'a> {
         source_channel:     &str,
         social_name:        &str,
         style_profile_name: &str,   // "auto" or "" = LLM per-clip, named = apply profile
-    ) -> Result<EditResult, EditError> {
+    ) -> Result<EditResult> {
+        self.execution.check_cancelled()?;
         let t0 = Instant::now();
 
         // ── Validate social icon (if provided) ───────────────────────────────
@@ -517,25 +553,25 @@ impl<'a> EditService<'a> {
             if !icon.path.exists() {
                 return Err(EditError::FfmpegFailed(format!(
                     "social icon not found: {}", icon.path.display()
-                )));
+                )).into());
             }
             let ext = icon.path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("png") {
                 return Err(EditError::FfmpegFailed(
                     "social icon must be a PNG file (extension .png)".to_owned()
-                ));
+                ).into());
             }
             if icon.size < audio_opts.social_icon_min_size {
                 return Err(EditError::FfmpegFailed(format!(
                     "social icon size {} px is below the minimum {} px",
                     icon.size, audio_opts.social_icon_min_size
-                )));
+                )).into());
             }
             if icon.size > audio_opts.social_icon_max_size {
                 return Err(EditError::FfmpegFailed(format!(
                     "social icon size {} px exceeds the maximum {} px",
                     icon.size, audio_opts.social_icon_max_size
-                )));
+                )).into());
             }
         }
 
@@ -674,11 +710,13 @@ impl<'a> EditService<'a> {
                     pb_clips.finish_with_message("narrator-driven video rendered".to_owned());
                     return Ok(EditResult { output_clips, completed_at: Utc::now() });
                 }
+                Err(error @ EditError::Cancelled(_)) => return Err(error.into()),
                 Err(e) => warn!("narration render failed ({e}) — falling back to per-clip edit"),
             }
         }
 
         for (i, moment) in moments.moments.iter().enumerate() {
+            self.execution.check_cancelled()?;
             let slug     = slugify(&moment.title);
             let ass_path = self.job.ass_path(i, &slug);
             let out_path = self.job.clip_path(i, &slug);
@@ -719,7 +757,7 @@ impl<'a> EditService<'a> {
                     start,
                     end,
                     duration: video_duration,
-                });
+                }.into());
             }
 
             info!(
@@ -846,7 +884,15 @@ impl<'a> EditService<'a> {
                 if !text.trim().is_empty() {
                     let clip_dur = end - start;
                     let duration_sec = hk.duration_sec.min(clip_dur - 0.2).max(0.5);
-                    let (png, ass) = build_hook_overlay(hk, &text, duration_sec, layout, &ass_path);
+                    let (png, ass) = build_hook_overlay(
+                        hk,
+                        &text,
+                        duration_sec,
+                        layout,
+                        &ass_path,
+                        &self.execution,
+                    )
+                    .await?;
                     if png.is_some() || ass.is_some() {
                         audio_clone.hook_title_png = png;
                         audio_clone.hook_title_ass = ass;
@@ -1130,15 +1176,19 @@ impl<'a> EditService<'a> {
                 let mut spec = if has_enrich_pool {
                     let cand = &enrich_pool[i % enrich_pool.len()];
                     overlay_source = format!("{} [{}]", cand.url, cand.platform);
-                    fetch_overlay_from_url(
-                        &cand.url,
-                        at_clamped,
-                        dur_clamped,
-                        &self.config.overlay,
-                        &overlay_ytdlp,
-                        &ffmpeg_dir,
-                        overlay_cookie.as_ref(),
-                    ).await
+                    run_cooperative_item(self.execution, || async {
+                        fetch_overlay_from_url(
+                            self.execution,
+                            &cand.url,
+                            at_clamped,
+                            dur_clamped,
+                            &self.config.overlay,
+                            &overlay_ytdlp,
+                            &ffmpeg_dir,
+                            overlay_cookie.as_ref(),
+                        )
+                        .await
+                    }).await?
                 } else {
                     None
                 };
@@ -1171,11 +1221,12 @@ impl<'a> EditService<'a> {
                     } else {
                         // Legacy: greenscreen → sticker, LLM hint respected.
                         ov.style = detect_overlay_style(
+                            self.execution,
                             &ov.path,
                             &moment.overlay_style,    // LLM hint: "sticker"|"pip"|"fullscreen"|"auto"
                             &ffmpeg_dir,
                             &moment.overlay_position, // LLM position: "bottom_right"|"bottom_left"|...
-                        ).await;
+                        ).await?;
                     }
 
                     info!(
@@ -1205,6 +1256,7 @@ impl<'a> EditService<'a> {
                         let mut win_start = seg * 2.0 + gap; // start after the primary card
                         let mut placed = 0usize;
                         for k in 0..extra {
+                            self.execution.check_cancelled()?;
                             if win_start + 1.0 >= clip_duration { break; }
                             let dur = seg
                                 .min(clip_duration - win_start)
@@ -1212,11 +1264,15 @@ impl<'a> EditService<'a> {
                                 .max(1.0);
                             // Rotate to clips DIFFERENT from the primary (i % len).
                             let cand = &enrich_pool[(i + 1 + k) % enrich_pool.len()];
-                            if let Some(fspec) = fetch_overlay_from_url(
-                                &cand.url, win_start, dur,
-                                &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
-                                overlay_cookie.as_ref(),
-                            ).await {
+                            if let Some(fspec) = run_cooperative_item(self.execution, || async {
+                                fetch_overlay_from_url(
+                                    self.execution,
+                                    &cand.url, win_start, dur,
+                                    &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
+                                    overlay_cookie.as_ref(),
+                                )
+                                .await
+                            }).await? {
                                 audio_clone.footage_cards.push(super::ffmpeg::FootageCardCue {
                                     path:         fspec.path,
                                     at_sec:       win_start,
@@ -1259,7 +1315,7 @@ impl<'a> EditService<'a> {
             // ── Beat-sync: align transitions + SFX to BGM downbeats ─────────
             if self.config.assets.beat_sync {
                 if let Some(ref bgm_path) = audio_clone.bgm {
-                    let bpm      = beat_detect::detect_bpm(bgm_path, &effective_moment_bgm_vibe).await;
+                    let bpm      = beat_detect::detect_bpm(self.execution, bgm_path, &effective_moment_bgm_vibe).await?;
                     let interval = beat_detect::beat_interval_ms(bpm);
 
                     // Snap SFX beat offset (additive to sfx_at_sec)
@@ -1391,26 +1447,19 @@ impl<'a> EditService<'a> {
                 bgm_label,
             );
 
-            let video_path_clone = video_path.to_owned();
-            let ass_path_clone   = ass_path.clone();
-            let out_path_clone   = out_path.clone();
-            let layout_clone     = layout.clone();
-            let cfg_clone        = self.config.ffmpeg.clone();
-
-            tokio::task::spawn_blocking(move || {
-                encode_clip_direct(
-                    &video_path_clone,
-                    start, end,
-                    &ass_path_clone,
-                    &layout_clone,
-                    &out_path_clone,
-                    &cfg_clone,
-                    None,       // no intro card
-                    &audio_clone,
-                )
-            })
-            .await
-            .map_err(|e| EditError::FfmpegFailed(e.to_string()))??;
+            encode_clip_direct(
+                &self.execution,
+                video_path,
+                start,
+                end,
+                &ass_path,
+                &layout,
+                &out_path,
+                &self.config.ffmpeg,
+                None, // no intro card
+                &audio_clone,
+            )
+            .await?;
 
             let out_mb = std::fs::metadata(&out_path)
                 .map(|m| m.len() as f64 / 1_048_576.0)
@@ -1428,14 +1477,14 @@ impl<'a> EditService<'a> {
                         if let Some(ref seg_path) = enrichment.avatar_video_path {
                             if seg_path.exists() && self.config.reaction.position == "post_roll" {
                                 let concat_tmp = out_path.with_extension("concat_tmp.mp4");
-                                let concat_result = tokio::task::spawn_blocking({
-                                    let main  = out_path.clone();
-                                    let seg   = seg_path.clone();
-                                    let tmp   = concat_tmp.clone();
-                                    let cfg   = self.config.ffmpeg.clone();
-                                    move || concat_post_roll(&main, &seg, &tmp, &cfg)
-                                }).await
-                                .map_err(|e| EditError::FfmpegFailed(e.to_string()))?;
+                                let concat_result = concat_post_roll(
+                                    &self.execution,
+                                    &out_path,
+                                    seg_path,
+                                    &concat_tmp,
+                                    &self.config.ffmpeg,
+                                )
+                                .await;
 
                                 match concat_result {
                                     Ok(()) => {
@@ -1444,6 +1493,7 @@ impl<'a> EditService<'a> {
                                             .map_err(EditError::Io)?;
                                         info!("       📎 Post-roll appended → {}", out_path.display());
                                     }
+                                    Err(error @ EditError::Cancelled(_)) => return Err(error.into()),
                                     Err(e) => {
                                         warn!("post-roll concat failed (clip kept as-is): {e}");
                                         let _ = std::fs::remove_file(&concat_tmp);
@@ -1473,11 +1523,17 @@ impl<'a> EditService<'a> {
             
             let sp_thumb = sub_spinner(&mp, &format!("Generating thumbnail at {:.1}s…", thumb_time));
             let mut final_thumb_path = None;
-            let thumb_result = tokio::task::spawn_blocking({
-                let p = out_path.clone(); let t = thumb_path.clone();
-                move || generate_thumbnail(&p, &t, thumb_time)
-            }).await.map_err(|e| EditError::FfmpegFailed(e.to_string()))?;
+            let thumb_result = generate_thumbnail(
+                &self.execution,
+                &out_path,
+                &thumb_path,
+                thumb_time,
+            )
+            .await;
             if let Err(e) = thumb_result {
+                if matches!(&e, EditError::Cancelled(_)) {
+                    return Err(e.into());
+                }
                 warn!("failed to generate thumbnail: {}", e);
                 sp_thumb.finish_with_message("  ✗ thumbnail failed");
             } else {
@@ -1568,15 +1624,21 @@ impl<'a> EditService<'a> {
                             .parent().unwrap_or(std::path::Path::new("."))
                             .join("final_concat.mp4");
 
-                        match gpu.concat_gpu(&jobs, &concat_path, self.config.ffmpeg.nvenc).await {
+                        match gpu.concat_gpu(
+                            self.execution,
+                            &jobs,
+                            &concat_path,
+                            self.config.ffmpeg.nvenc,
+                        ).await {
                             Ok(()) => {
                                 sp.finish_with_message(format!(
                                     "  ✓ GPU concat → {}", concat_path.display()
                                 ));
                                 info!("GPU concat complete: {}", concat_path.display());
                             }
-                            Err(e) => {
-                                warn!("GPU concat failed: {e}");
+                            Err(error) => {
+                                let error = propagate_gpu_cancellation(error)?;
+                                warn!("GPU concat failed: {error}");
                                 sp.finish_with_message("  ✗ GPU concat failed");
                             }
                         }
@@ -1589,6 +1651,7 @@ impl<'a> EditService<'a> {
 
                         let mut graded = 0usize;
                         for (i, clip) in output_clips.iter_mut().enumerate() {
+                            self.execution.check_cancelled()?;
                             let mood = if !gpu_cfg.default_color_mood.is_empty() {
                                 gpu_cfg.default_color_mood.clone()
                             } else {
@@ -1604,6 +1667,7 @@ impl<'a> EditService<'a> {
 
                             let gpu_out = clip.path.with_extension("gpu.mp4");
                             match gpu.apply_color(
+                                self.execution,
                                 &clip.path, &gpu_out,
                                 0.0, clip.duration_secs,
                                 &grading.to_gpu_params(),
@@ -1617,7 +1681,10 @@ impl<'a> EditService<'a> {
                                         graded += 1;
                                     }
                                 }
-                                Err(e) => warn!("GPU color grading clip {i}: {e}"),
+                                Err(error) => {
+                                    let error = propagate_gpu_cancellation(error)?;
+                                    warn!("GPU color grading clip {i}: {error}");
+                                }
                             }
                         }
 
@@ -1750,13 +1817,24 @@ impl<'a> EditService<'a> {
                     let at = (start + cover_cfg.subject_at_sec).clamp(start, (end - 0.1).max(start));
                     // Dodge mirror/kaleidoscope TRANSITION frames (subject appears doubled on the cover)
                     // by picking the least-symmetric frame in a small window around the chosen moment.
-                    // Both pick_cover_frame_time and generate_thumbnail are blocking (std::process::Command)
-                    // — run via spawn_blocking to avoid stalling the Tokio worker thread.
-                    let vp = video_path.to_owned(); let sf = subject_frame.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let at = super::ffmpeg::pick_cover_frame_time(&vp, at, start, end);
-                        let _ = super::ffmpeg::generate_thumbnail(&vp, &sf, at);
-                    }).await;
+                    let at = super::ffmpeg::pick_cover_frame_time(
+                        &self.execution,
+                        video_path,
+                        at,
+                        start,
+                        end,
+                    )
+                    .await?;
+                    if let Err(error @ EditError::Cancelled(_)) = super::ffmpeg::generate_thumbnail(
+                        &self.execution,
+                        video_path,
+                        &subject_frame,
+                        at,
+                    )
+                    .await
+                    {
+                        return Err(error);
+                    }
                 }
                 let cover_dur = cover_cfg.duration_sec.min(dur - 0.2).max(0.5);
                 // Detailed topic description (beyond the short hook) → grounds the AI scene in what the
@@ -1790,7 +1868,8 @@ impl<'a> EditService<'a> {
                     cover_dur, layout, &ass_path,
                     &self.config.llm.novita_model, &self.config.llm.novita_base_url,
                     &self.config.vision.novita_model, &self.config.vision.novita_base_url,
-                ) {
+                    self.execution,
+                ).await? {
                     audio.cover = Some(cov);
                     cover_done = true;
                 }
@@ -1798,7 +1877,15 @@ impl<'a> EditService<'a> {
             // Fallback: the giant hook title (PNG or ASS) over the footage.
             if !cover_done {
                 let hk = &self.config.hook_title;
-                let (png, ass) = build_hook_overlay(hk, &hook, hook_dur, layout, &ass_path);
+                let (png, ass) = build_hook_overlay(
+                    hk,
+                    &hook,
+                    hook_dur,
+                    layout,
+                    &ass_path,
+                    self.execution,
+                )
+                .await?;
                 audio.hook_title_png = png;
                 audio.hook_title_ass = ass;
             }
@@ -1913,10 +2000,13 @@ impl<'a> EditService<'a> {
                         }
                         Kind::Video => {
                             let cand = &enrich_pool[cands[ci].idx];
-                            if let Some(spec) = super::overlay::fetch_overlay_from_url(
-                                &cand.url, wt, wdur, &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
-                                overlay_cookie.as_ref(),
-                            ).await {
+                            if let Some(spec) = narrator_overlay_result(
+                                super::overlay::fetch_overlay_from_url(
+                                    self.execution,
+                                    &cand.url, wt, wdur, &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
+                                    overlay_cookie.as_ref(),
+                                ).await,
+                            )? {
                                 fcards.push(super::ffmpeg::FootageCardCue {
                                     path: spec.path, at_sec: wt, duration_sec: wdur, scale_pct: anim.footage_scale_pct,
                                 });
@@ -2145,27 +2235,31 @@ impl<'a> EditService<'a> {
               if loop_source { format!(" (looped from {video_dur:.0}s source)") } else { String::new() },
               hook);
 
-        // 5) Encode (blocking ffmpeg) — run via spawn_blocking to avoid stalling the async runtime.
-        let enc_vp    = video_path.to_owned();
-        let enc_ass   = ass_path.clone();
-        let enc_out   = out_path.clone();
-        let enc_lay   = layout.clone();
-        let enc_cfg   = self.config.ffmpeg.clone();
-        let enc_audio = audio.clone();
-        tokio::task::spawn_blocking(move || {
-            super::ffmpeg::encode_clip_direct(
-                &enc_vp, start, end, &enc_ass, &enc_lay, &enc_out,
-                &enc_cfg, None, &enc_audio,
-            )
-        })
-        .await
-        .map_err(|e| EditError::FfmpegFailed(e.to_string()))??;
+        super::ffmpeg::encode_clip_direct(
+            &self.execution,
+            video_path,
+            start,
+            end,
+            &ass_path,
+            &layout,
+            &out_path,
+            &self.config.ffmpeg,
+            None,
+            &audio,
+        )
+        .await?;
 
         let thumb = out_path.with_extension("jpg");
-        let thumb2 = thumb.clone(); let enc_out2 = out_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            super::ffmpeg::generate_thumbnail(&enc_out2, &thumb2, 1.0)
-        }).await;
+        if let Err(error @ EditError::Cancelled(_)) = super::ffmpeg::generate_thumbnail(
+            &self.execution,
+            &out_path,
+            &thumb,
+            1.0,
+        )
+        .await
+        {
+            return Err(error);
+        }
 
         Ok(ClipOutput {
             clip_index: 0,
@@ -2175,5 +2269,33 @@ impl<'a> EditService<'a> {
             duration_secs: dur,
             layout: layout.to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_cancellation_is_returned_instead_of_continuing_best_effort_fallback() {
+        let error = propagate_gpu_cancellation(anyhow::Error::new(
+            crate::execution::Cancelled,
+        ))
+        .expect_err("cancelled GPU work must stop the owning edit path");
+
+        assert!(crate::execution::is_cancelled(&error));
+    }
+
+    #[test]
+    fn narrator_overlay_cancellation_reaches_the_owning_edit_path() {
+        let error = narrator_overlay_result::<Option<super::super::overlay::OverlaySpec>>(Err(
+            anyhow::Error::new(crate::execution::Cancelled),
+        ))
+        .expect_err("cancelled overlay must not be converted to a skipped narrator card");
+
+        let EditError::Cancelled(cancelled) = error else {
+            panic!("narrator overlay cancellation must remain typed");
+        };
+        assert!(crate::execution::is_cancelled(&anyhow::Error::new(cancelled)));
     }
 }

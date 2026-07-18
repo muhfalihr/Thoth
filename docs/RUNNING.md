@@ -122,6 +122,59 @@ curl -H "Authorization: Bearer <key>" http://127.0.0.1:8787/api/jobs/<job_id>
 curl -N "http://127.0.0.1:8787/api/jobs/<job_id>/stream?token=<key>"
 ```
 
+### Job lifecycle, validation, and cancellation
+
+`POST /api/jobs` accepts only a `run` job with exactly one non-blank `url` or
+`content_set`. The server validates the request before enqueueing it. Invalid requests
+return `422 Unprocessable Entity` and do not create a job row, with this envelope:
+
+```json
+{
+  "error": {
+    "field": "source",
+    "code": "invalid_source",
+    "message": "exactly one non-blank `url` or `content_set` is required"
+  }
+}
+```
+
+`params.extra_args` remains available to the trusted local operator, but it must be an
+array of non-empty option strings. It cannot add positional input or override
+worker-owned output/source flags: `-o`, `--output-dir`, `--job-id`, and `--content`,
+including their `--flag=value` forms.
+
+Cancel a job with:
+
+```bash
+curl -X POST -H "Authorization: Bearer <key>" \
+  http://127.0.0.1:8787/api/jobs/<job_id>/cancel
+```
+
+- A queued job becomes terminal `cancelled` immediately and receives one terminal
+  cancellation event.
+- A running job remains `running` with `cancel_requested` set. Its worker owns the
+  terminal transition: it polls the shared SQLite flag, stops cooperative work, and
+  terminates and reaps job-owned child processes before recording `cancelled`.
+- The watcher polls at most every 250 ms. While SQLite is readable, a running
+  cancellation is observed and begins shutdown within two seconds.
+- `cancelled` is distinct from `error`. The job SSE stream closes after exactly one
+  terminal `done`, `error`, or `cancelled` event. Cancelling an already terminal job
+  returns `409 Conflict` without changing it.
+
+### Artifact downloads
+
+Job artifacts at `/api/artifacts/<job_id>/<relative_path>` and authenticated Scout
+output use asynchronous streaming rather than loading the whole file into memory.
+
+- `GET` without `Range` returns `200`, `Content-Type`, `Content-Length`, and
+  `Accept-Ranges: bytes`.
+- `HEAD` returns the same status and representation headers as `GET`, with no body.
+- One valid prefix, suffix, or open-ended `Range: bytes=...` request returns `206` with
+  `Content-Range` and the matching `Content-Length`.
+- A malformed, unsatisfiable, or multi-range request returns `416` with
+  `Content-Range: bytes */<full-length>`.
+- Missing or non-regular files return `404`.
+
 ### Scaling & crash behaviour
 
 - Run **multiple `thoth worker` processes** against the same DB for parallelism — the
@@ -130,5 +183,13 @@ curl -N "http://127.0.0.1:8787/api/jobs/<job_id>/stream?token=<key>"
 - If a worker crashes mid-job, the server's **reaper** notices the stale heartbeat
   (~30s) and fails the job so it never hangs in `running` forever.
 - Cancellation is **cooperative**: the server flips `cancel_requested` on the job row;
-  the worker polls it. No process signalling, no `taskkill` — it works identically on
-  Windows, Linux, and macOS.
+  the worker polls it and owns process-tree cleanup. The server and worker remain
+  independent peers; the server does not signal the worker directly.
+
+### Trusted local/LAN boundary
+
+This deployment is intended for one trusted operator on a local machine or trusted LAN.
+`127.0.0.1` is the default bind address. If you set `THOTH_ADDR` to a LAN address, use a
+non-default API key and restrict network access accordingly. This is not an
+Internet-facing authentication or authorization design; bind policy, token handling, and
+the remaining local/LAN hardening are deferred to the next hardening subproject.
