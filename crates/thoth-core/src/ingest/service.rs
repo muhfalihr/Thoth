@@ -693,7 +693,7 @@ impl<'a> IngestService<'a> {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut command = tokio::process::Command::from(std::process::Command::from(ffmpeg));
-        let status = run_merge_ffmpeg(self.execution, &mut command).await?;
+        let status = run_merge_ffmpeg(self.execution, &mut command, None).await?;
 
         pb.finish_and_clear();
 
@@ -922,8 +922,19 @@ fn scan_copyright_text(text: &str) -> Vec<String> {
 async fn run_merge_ffmpeg(
     execution: &JobExecutionContext,
     command: &mut tokio::process::Command,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<std::process::ExitStatus> {
-    execution.status(command).await
+    let child = execution.spawn(command).map_err(|error| {
+        if is_cancelled(&error) {
+            error
+        } else {
+            IngestError::Io(std::io::Error::other(error.to_string())).into()
+        }
+    })?;
+    if let Some(started) = started {
+        let _ = started.send(());
+    }
+    child.status().await
 }
 
 /// Parse percentage from yt-dlp progress lines.
@@ -977,6 +988,7 @@ mod tests {
     #[tokio::test]
     async fn ingest_merge_honors_job_cancellation() {
         let execution = JobExecutionContext::new();
+        let (started, ready) = tokio::sync::oneshot::channel();
         #[cfg(windows)]
         let mut command = {
             let mut command = tokio::process::Command::new("powershell");
@@ -992,10 +1004,13 @@ mod tests {
 
         let waiting_execution = execution.clone();
         let waiting = tokio::spawn(async move {
-            run_merge_ffmpeg(&waiting_execution, &mut command).await
+            run_merge_ffmpeg(&waiting_execution, &mut command, Some(started)).await
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(2), ready)
+            .await
+            .expect("ingest merge child must start")
+            .expect("ingest merge start signal must be sent");
         execution.cancel();
 
         let error = tokio::time::timeout(Duration::from_secs(2), waiting)
