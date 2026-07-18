@@ -1,6 +1,56 @@
 mod validation;
 
+#[cfg(test)]
+mod home_tests {
+    use std::path::Path;
+
+    use super::home::{ThothHome, resolve_home_with_env};
+
+    #[test]
+    fn explicit_home_wins_over_environment() {
+        let home =
+            resolve_home_with_env(Some(Path::new("explicit")), Some(Path::new("env"))).unwrap();
+
+        assert_eq!(home.root(), Path::new("explicit"));
+    }
+
+    #[test]
+    fn project_output_is_owned_by_home() {
+        let root = std::env::temp_dir().join(format!("thoth-home-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+
+        home.ensure_layout().unwrap();
+
+        assert!(home.data_dir().is_dir());
+        assert!(home.root().join("projects").is_dir());
+        assert!(home.root().join("cache").is_dir());
+        assert!(home.root().join("logs").is_dir());
+        assert_eq!(
+            home.project_outputs("p1"),
+            home.root().join("projects/p1/outputs")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn project_workspace_layout_is_created_under_home() {
+        let root = std::env::temp_dir().join(format!("thoth-home-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+
+        home.ensure_project_layout("p1").unwrap();
+
+        let project = home.project_root("p1");
+        assert!(project.join("content-sets").is_dir());
+        assert!(project.join("sources").is_dir());
+        assert!(project.join("outputs").is_dir());
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+mod home;
+
 pub mod types;
+pub use home::{ThothHome, resolve_home};
 pub use types::*;
 pub use validation::{
     JobValidationError, PROTECTED_EXTRA_FLAGS, SCALAR_PARAM_FLAGS, scalar_param_flag,
