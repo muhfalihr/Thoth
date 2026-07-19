@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use thoth_jobs::{JobStore, ProfileSettings, ResourceError};
@@ -67,6 +68,14 @@ pub async fn import_legacy_config(
     store: &JobStore,
     config_path: &Path,
 ) -> anyhow::Result<ImportReport> {
+    // Read and parse BEFORE reserving the one-time import (the unique
+    // `Imported` project name). A malformed or unreadable file must fail loudly
+    // without consuming the import, so a corrected file can still be retried.
+    // The parse error is deliberately generic so no TOML content reaches logs.
+    let text = std::fs::read_to_string(config_path).context("cannot read legacy config.toml")?;
+    let legacy: LegacyConfig = toml::from_str(&text)
+        .map_err(|_| anyhow::anyhow!("legacy config.toml is not valid TOML"))?;
+
     let project = match store.create_project(IMPORTED_PROJECT).await {
         Ok(project) => project,
         Err(ResourceError::DuplicateName) => {
@@ -78,8 +87,6 @@ pub async fn import_legacy_config(
         Err(other) => return Err(other.into()),
     };
 
-    let text = std::fs::read_to_string(config_path).unwrap_or_default();
-    let legacy: LegacyConfig = toml::from_str(&text).unwrap_or_default();
     let (settings, warnings) = map_settings(legacy);
 
     // ponytail: project-created-but-profile-create-fails (e.g. disk full) is

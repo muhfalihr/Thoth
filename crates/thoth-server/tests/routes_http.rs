@@ -2563,3 +2563,57 @@ async fn import_reports_warning_for_unmapped_legacy_key_and_does_not_store_it() 
     assert_eq!(profile.settings.visual_edit.layout, "vertical");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[tokio::test]
+async fn import_rejects_malformed_toml_without_consuming_the_one_time_import() {
+    let tmp = std::env::temp_dir().join(format!("thoth-migrate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = store_with_home(&tmp).await;
+    let cfg = tmp.join("config.toml");
+    std::fs::write(&cfg, "[styles.profiles.default]\nlayout = = broken\n").unwrap();
+
+    // A malformed file must fail loudly, not be silently coerced into an empty
+    // import that reports imported:true.
+    let _error = thoth_server::migration::import_legacy_config(&store, &cfg)
+        .await
+        .unwrap_err();
+
+    // Critically, the failed import must NOT have consumed the one-time slot:
+    // the `Imported` project must not exist, so a retry after fixing the file
+    // still works. (Idempotency is keyed on that project's existence.)
+    assert!(
+        store
+            .list_projects()
+            .await
+            .unwrap()
+            .iter()
+            .all(|p| p.name != "Imported"),
+        "a malformed import must not create the Imported project"
+    );
+
+    std::fs::write(&cfg, "[styles.profiles.default]\nlayout = \"square\"\n").unwrap();
+    let report = thoth_server::migration::import_legacy_config(&store, &cfg)
+        .await
+        .unwrap();
+    assert!(report.imported, "retry after fixing the file must import: {report:?}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn wrong_method_on_live_api_route_is_405_not_404() {
+    // Pins the new `/api` 404 fallback: it must fire only on a true path miss.
+    // A matched path hit with an unsupported method is still answered 405 by
+    // that route's own method router, not swallowed into 404 by the fallback.
+    let (app, tmp) = build_test_app().await;
+    let request = Request::builder()
+        .method("DELETE")
+        .uri("/api/jobs")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let _ = std::fs::remove_dir_all(tmp);
+}
