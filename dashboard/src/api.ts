@@ -322,7 +322,9 @@ export type ProfileSettings = {
   analysis: { provider: string; model: string; max_clips: number; keywords: string[] };
   ingest_source: { source: string | null; content_set: string | null };
   output: { directory: string | null };
-  advanced: Record<string, unknown>;
+  // Rust `AdvancedSettings` is `#[serde(deny_unknown_fields)] struct {}` — the
+  // server accepts only `{}`, so keep this empty-object shape compile-time visible.
+  advanced: Record<string, never>;
 };
 
 export type ProfileRecord = {
@@ -342,7 +344,6 @@ export type ProfileRevision = {
   revision: number;
   name: string;
   description: string;
-  schema_version: number;
   settings: ProfileSettings;
   credential_ref: string | null;
   created_at: string;

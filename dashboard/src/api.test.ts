@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { createProfileJob, getEffectiveSettings, migrateConfigToml } from "./api";
+import { createProfileJob, getEffectiveSettings, migrateConfigToml, updateProfile } from "./api";
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; init?: RequestInit }[] = [];
@@ -53,6 +53,23 @@ test("getEffectiveSettings gets the job effective-settings route", async () => {
   expect(calls[0].url).toBe("/api/jobs/job-9/effective-settings");
   expect(calls[0].init?.method ?? "GET").toBe("GET");
   expect(result?.settings.schema_version).toBe(1);
+});
+
+test("updateProfile sends tri-state credential_ref: null clears, omitted stays unchanged", async () => {
+  // Explicit null must be serialized (clears the credential server-side).
+  stub({ id: "prof-1" });
+  await updateProfile("p1", "prof-1", { credential_ref: null });
+  expect(calls[0].url).toBe("/api/projects/p1/profiles/prof-1");
+  expect(calls[0].init?.method).toBe("PATCH");
+  expect(JSON.parse(String(calls[0].init?.body))).toEqual({ credential_ref: null });
+
+  // An omitted credential_ref must NOT appear in the body (leaves it unchanged).
+  calls = [];
+  stub({ id: "prof-1" });
+  await updateProfile("p1", "prof-1", { name: "Renamed" });
+  const body = JSON.parse(String(calls[0].init?.body));
+  expect(body).toEqual({ name: "Renamed" });
+  expect("credential_ref" in body).toBe(false);
 });
 
 test("migrateConfigToml posts to the migration route and returns the report", async () => {
