@@ -61,6 +61,19 @@ test("creating a profile posts the typed name + settings via createProfile", asy
   expect(onProfileChanged).toHaveBeenCalled();
 });
 
+test("validate is disabled while creating an unsaved profile", async () => {
+  const user = userEvent.setup();
+  const { ProfileStudio } = await import("./ProfileStudio");
+  render(<ProfileStudio projectId="p1" onProfileChanged={() => {}} />);
+
+  await user.click(await screen.findByRole("button", { name: /new profile/i }));
+
+  // A brand-new profile has no id yet; the server validate route requires an
+  // existing profile, so Validate must stay disabled until the first save.
+  const validate = screen.getByRole("button", { name: /validate/i }) as HTMLButtonElement;
+  expect(validate.disabled).toBe(true);
+});
+
 test("shows an empty state before any profile is selected", async () => {
   const { ProfileStudio } = await import("./ProfileStudio");
   render(<ProfileStudio projectId="p1" onProfileChanged={() => {}} />);

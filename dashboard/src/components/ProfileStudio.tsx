@@ -69,9 +69,12 @@ function orNull(value: string): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+// Mirrors the shadcn `Input` classes so native <select>s render at the same
+// size and pick up the same focus/disabled/dark states as the text inputs.
 const fieldClass =
-  "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs " +
-  "outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:border-ring";
+  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors " +
+  "outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 " +
+  "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30";
 
 /**
  * Profile Studio: browse a project's profiles (left), edit the six typed
@@ -91,13 +94,19 @@ export function ProfileStudio({
   const [revisions, setRevisions] = useState<ProfileRevision[]>([]);
   const [validation, setValidation] = useState<ProfileValidation | null>(null);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    setProfiles(await listProfiles(projectId));
+    try {
+      setProfiles(await listProfiles(projectId));
+    } finally {
+      setLoading(false);
+    }
   }, [projectId]);
 
   useEffect(() => {
+    setLoading(true);
     void refresh();
     setSelectedId(null);
     setCreating(false);
@@ -176,8 +185,10 @@ export function ProfileStudio({
   }
 
   async function runValidation() {
-    if (!draft) return;
-    setValidation(await validateProfile(projectId, selectedId ?? "", draft.settings));
+    // The server validates against an existing profile's scope, so a profile
+    // must be saved first. The button is disabled until then; guard anyway.
+    if (!draft || selectedId === null) return;
+    setValidation(await validateProfile(projectId, selectedId, draft.settings));
   }
 
   async function restore(revisionId: string) {
@@ -206,7 +217,9 @@ export function ProfileStudio({
           </Button>
         </div>
         <ScrollArea className="h-64 rounded-md border">
-          {profiles.length === 0 ? (
+          {loading ? (
+            <p className="p-3 text-sm text-muted-foreground">Loading profiles…</p>
+          ) : profiles.length === 0 ? (
             <p className="p-3 text-sm text-muted-foreground">
               No profiles yet. Create one to get started.
             </p>
@@ -526,9 +539,11 @@ export function ProfileStudio({
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
             <div className="flex gap-2">
-              {/* onClick (not type=submit) so a click reliably saves even where
-                  the DOM doesn't synthesize a form submit; the form's onSubmit
-                  still handles Enter. */}
+              {/* A visually-hidden submit button enables real Enter-to-save via
+                  the form's onSubmit. The visible button uses onClick so a click
+                  saves even where the DOM doesn't synthesize a submit on click —
+                  it is type=button, so the two paths never double-fire. */}
+              <button type="submit" className="sr-only" tabIndex={-1} aria-hidden="true" />
               <Button type="button" onClick={() => void save()} disabled={saving}>
                 {saving ? "Saving…" : "Save profile"}
               </Button>
@@ -547,7 +562,13 @@ export function ProfileStudio({
         <div className="rounded-md border p-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold">Validation</h3>
-            <Button size="sm" variant="outline" onClick={() => void runValidation()} disabled={!editing}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void runValidation()}
+              disabled={selectedId === null}
+              title={selectedId === null ? "Save the profile first" : undefined}
+            >
               Validate
             </Button>
           </div>
