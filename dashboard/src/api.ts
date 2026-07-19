@@ -291,3 +291,243 @@ export function scoutImageUrl(imagePath: string, outputRoot: string): string {
   const enc = tail.split("/").map(encodeURIComponent).join("/");
   return `/api/scout/output/${enc}?token=${encodeURIComponent(KEY)}`;
 }
+
+// ---- Projects, profiles & profile-first jobs -------------------------------
+// Hand-synced with crates/thoth-jobs/src/profiles.rs (ProjectRecord,
+// ProfileRecord, ProfileSettings, RunOverrides) and the thoth-server routes in
+// crates/thoth-server/src/lib.rs. Keep field names byte-aligned with the Rust
+// structs — the server rejects unknown JSON fields (`deny_unknown_fields`).
+
+export type ProjectRecord = {
+  id: string;
+  name: string;
+  workspace_path: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProfileSettings = {
+  schema_version: number;
+  narration: { language: string | null };
+  visual_edit: {
+    layout: string;
+    clip_style: string;
+    style_profile: string;
+    social: string;
+    bgm: string | null;
+    bgm_volume: number;
+    sfx_intro: string | null;
+    headline_dur: number;
+  };
+  analysis: { provider: string; model: string; max_clips: number; keywords: string[] };
+  ingest_source: { source: string | null; content_set: string | null };
+  output: { directory: string | null };
+  advanced: Record<string, unknown>;
+};
+
+export type ProfileRecord = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  settings: ProfileSettings;
+  credential_ref: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProfileRevision = {
+  id: string;
+  profile_id: string;
+  revision: number;
+  name: string;
+  description: string;
+  schema_version: number;
+  settings: ProfileSettings;
+  credential_ref: string | null;
+  created_at: string;
+};
+
+/** Typed one-off overrides. Each present field overrides the selected profile;
+ * an omitted field keeps the profile's value. Nullable fields accept `null` to
+ * clear. Field names mirror `RunOverrides` in profiles.rs exactly. */
+export type RunOverrides = {
+  narration_language?: string | null;
+  visual_edit_layout?: string;
+  visual_edit_clip_style?: string;
+  visual_edit_style_profile?: string;
+  visual_edit_social?: string;
+  visual_edit_bgm?: string | null;
+  visual_edit_bgm_volume?: number;
+  visual_edit_sfx_intro?: string | null;
+  visual_edit_headline_dur?: number;
+  analysis_provider?: string;
+  analysis_model?: string;
+  analysis_max_clips?: number;
+  analysis_keywords?: string[];
+  ingest_source_source?: string | null;
+  ingest_source_content_set?: string | null;
+  output_directory?: string | null;
+};
+
+export type CreateProfileBody = {
+  name: string;
+  description?: string;
+  settings?: ProfileSettings;
+  credential_ref?: string | null;
+};
+
+/** Partial profile update. Omit a field to leave it unchanged; for
+ * `credential_ref`, omit = keep, `null` = clear, string = set (tri-state).
+ * `JSON.stringify` drops `undefined` keys, so only provided fields are sent. */
+export type ProfilePatch = {
+  name?: string;
+  description?: string;
+  settings?: ProfileSettings;
+  credential_ref?: string | null;
+};
+
+/** The redacted immutable snapshot for a job — never carries a credential. */
+export type EffectiveSettings = { settings: ProfileSettings };
+
+export type ProfileValidation = { valid: boolean; message?: string };
+
+export type ConfigImportReport = { imported: boolean; warnings: string[] };
+
+async function ok<T>(r: Response, label: string): Promise<T> {
+  if (!r.ok) throw new Error(`${label} ${r.status}`);
+  return r.json() as Promise<T>;
+}
+
+export async function createProject(name: string): Promise<ProjectRecord> {
+  const r = await fetch("/api/projects", { method: "POST", headers: H, body: JSON.stringify({ name }) });
+  return ok(r, "createProject");
+}
+
+export async function listProjects(): Promise<ProjectRecord[]> {
+  const r = await fetch("/api/projects", { headers: H });
+  return r.ok ? r.json() : [];
+}
+
+export async function getProject(projectId: string): Promise<ProjectRecord | null> {
+  const r = await fetch(`/api/projects/${projectId}`, { headers: H });
+  return r.ok ? r.json() : null;
+}
+
+export async function updateProject(projectId: string, name: string): Promise<ProjectRecord> {
+  const r = await fetch(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    headers: H,
+    body: JSON.stringify({ name }),
+  });
+  return ok(r, "updateProject");
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const r = await fetch(`/api/projects/${projectId}`, { method: "DELETE", headers: H });
+  if (!r.ok) throw new Error(`deleteProject ${r.status}`);
+}
+
+export async function createProfile(projectId: string, body: CreateProfileBody): Promise<ProfileRecord> {
+  const r = await fetch(`/api/projects/${projectId}/profiles`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(body),
+  });
+  return ok(r, "createProfile");
+}
+
+export async function listProfiles(projectId: string): Promise<ProfileRecord[]> {
+  const r = await fetch(`/api/projects/${projectId}/profiles`, { headers: H });
+  return r.ok ? r.json() : [];
+}
+
+export async function getProfile(projectId: string, profileId: string): Promise<ProfileRecord | null> {
+  const r = await fetch(`/api/projects/${projectId}/profiles/${profileId}`, { headers: H });
+  return r.ok ? r.json() : null;
+}
+
+export async function updateProfile(
+  projectId: string,
+  profileId: string,
+  patch: ProfilePatch,
+): Promise<ProfileRecord> {
+  const r = await fetch(`/api/projects/${projectId}/profiles/${profileId}`, {
+    method: "PATCH",
+    headers: H,
+    body: JSON.stringify(patch),
+  });
+  return ok(r, "updateProfile");
+}
+
+export async function deleteProfile(projectId: string, profileId: string): Promise<void> {
+  const r = await fetch(`/api/projects/${projectId}/profiles/${profileId}`, { method: "DELETE", headers: H });
+  if (!r.ok) throw new Error(`deleteProfile ${r.status}`);
+}
+
+export async function duplicateProfile(
+  projectId: string,
+  profileId: string,
+  name: string,
+): Promise<ProfileRecord> {
+  const r = await fetch(`/api/projects/${projectId}/profiles/${profileId}/duplicate`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify({ name }),
+  });
+  return ok(r, "duplicateProfile");
+}
+
+export async function listProfileRevisions(projectId: string, profileId: string): Promise<ProfileRevision[]> {
+  const r = await fetch(`/api/projects/${projectId}/profiles/${profileId}/revisions`, { headers: H });
+  return r.ok ? r.json() : [];
+}
+
+export async function restoreProfileRevision(
+  projectId: string,
+  profileId: string,
+  revisionId: string,
+): Promise<ProfileRecord> {
+  const r = await fetch(
+    `/api/projects/${projectId}/profiles/${profileId}/revisions/${revisionId}/restore`,
+    { method: "POST", headers: H },
+  );
+  return ok(r, "restoreProfileRevision");
+}
+
+export async function validateProfile(
+  projectId: string,
+  profileId: string,
+  settings?: ProfileSettings,
+): Promise<ProfileValidation> {
+  const r = await fetch(`/api/projects/${projectId}/profiles/${profileId}/validate`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(settings ? { settings } : {}),
+  });
+  if (r.ok) return { valid: true };
+  const body = await r.json().catch(() => ({}));
+  return { valid: false, message: typeof body.message === "string" ? body.message : `validateProfile ${r.status}` };
+}
+
+export async function createProfileJob(
+  projectId: string,
+  req: { profile_id: string; overrides: RunOverrides },
+): Promise<{ job_id: string }> {
+  const r = await fetch(`/api/projects/${projectId}/jobs`, {
+    method: "POST",
+    headers: H,
+    body: JSON.stringify(req),
+  });
+  return ok(r, "createProfileJob");
+}
+
+export async function getEffectiveSettings(jobId: string): Promise<EffectiveSettings | null> {
+  const r = await fetch(`/api/jobs/${jobId}/effective-settings`, { headers: H });
+  return r.ok ? r.json() : null;
+}
+
+export async function migrateConfigToml(): Promise<ConfigImportReport> {
+  const r = await fetch("/api/migrations/config-toml", { method: "POST", headers: H });
+  return ok(r, "migrateConfigToml");
+}
