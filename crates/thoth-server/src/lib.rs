@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod artifact;
+pub mod migration;
 pub mod reaper;
 pub mod routes;
 pub mod scout;
@@ -70,10 +71,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/jobs/:id/manifest", get(routes::get_manifest))
         .route(
-            "/config",
-            get(routes::get_config).put(routes::put_config),
+            "/migrations/config-toml",
+            post(routes::migrate_config_toml),
         )
-        .route("/style-profiles", get(routes::get_style_profiles))
         .route("/scout/status", get(routes::scout_status))
         .route("/scout/browser/start", post(routes::scout_browser_start))
         .route("/scout/discover", post(routes::scout_discover))
@@ -99,7 +99,11 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/scout/output/*path",
             get(routes::scout_output_file).head(routes::scout_output_file),
-        );
+        )
+        // Any unmatched `/api/*` path (e.g. a retired endpoint) is a 404, not a
+        // 405 from the SPA static fallback or an HTML page. API paths must never
+        // fall through to `ServeDir`.
+        .fallback(|| async { axum::http::StatusCode::NOT_FOUND });
 
     Router::new()
         .route("/health", get(|| async { "ok" }))

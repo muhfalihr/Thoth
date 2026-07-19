@@ -1023,60 +1023,74 @@ async fn manifest_empty_for_unknown_job() {
 }
 
 #[tokio::test]
-async fn config_get_put_roundtrip_and_validation() {
+async fn legacy_config_endpoints_are_retired() {
+    // Experience Tasks 1 & 3 own removing the dashboard callers; the server
+    // side of that retirement is these three routes now returning 404.
     let (app, tmp) = build_test_app().await;
-    let cfg = tmp.join("config.toml");
-    std::fs::write(&cfg, "[llm]\nprovider = \"novita\"\n").unwrap();
+    for (method, uri) in [
+        ("GET", "/api/config"),
+        ("PUT", "/api/config"),
+        ("GET", "/api/style-profiles"),
+    ] {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", "Bearer test-key")
+            .header("content-type", "application/json")
+            .body(Body::from(if method == "PUT" { r#"{"text":""}"# } else { "" }))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
 
-    // GET returns the seeded text.
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/config")
-                .header("authorization", "Bearer test-key")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
+#[tokio::test]
+async fn migrate_config_toml_missing_file_is_404() {
+    let (app, tmp) = build_test_app().await; // no config.toml seeded
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/migrations/config-toml")
+        .header("authorization", "Bearer test-key")
+        .body(Body::empty())
         .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn migrate_config_toml_endpoint_imports_then_is_idempotent() {
+    let (app, tmp) = build_test_app().await;
+    std::fs::write(
+        tmp.join("config.toml"),
+        "[styles.profiles.default]\nlayout = \"vertical\"\nsubtitle_style = \"bold\"\n",
+    )
+    .unwrap();
+
+    let req = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/migrations/config-toml")
+            .header("authorization", "Bearer test-key")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let res = app.clone().oneshot(req()).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(v["text"].as_str().unwrap().contains("novita"), "body: {v}");
+    let body = body_json(res).await;
+    assert_eq!(body["imported"], true, "body: {body}");
+    let warnings = body["warnings"].as_array().unwrap();
+    assert!(
+        warnings.iter().any(|w| w.as_str().unwrap().contains("subtitle_style")),
+        "warnings: {warnings:?}"
+    );
 
-    // PUT invalid TOML → 400, file unchanged.
-    let res = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/config")
-                .header("authorization", "Bearer test-key")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"text":"this = = broken"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    assert!(std::fs::read_to_string(&cfg).unwrap().contains("novita"));
-
-    // PUT valid TOML → 200, file updated.
-    let res = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/config")
-                .header("authorization", "Bearer test-key")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"text":"[llm]\nprovider = \"groq\"\n"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let res = app.oneshot(req()).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    assert!(std::fs::read_to_string(&cfg).unwrap().contains("groq"));
+    let body = body_json(res).await;
+    assert_eq!(body["imported"], false, "body: {body}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -1174,32 +1188,6 @@ async fn scout_stream_wrong_token_is_401() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-    let _ = std::fs::remove_dir_all(&tmp);
-}
-
-#[tokio::test]
-async fn style_profiles_lists_names() {
-    let (app, tmp) = build_test_app().await;
-    std::fs::write(
-        tmp.join("config.toml"),
-        "[styles.profiles.tiktok_id_2025]\nx = 1\n[styles.profiles.drama]\ny = 2\n",
-    )
-    .unwrap();
-    let res = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/style-profiles")
-                .header("authorization", "Bearer test-key")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
-    let names: Vec<String> = serde_json::from_slice(&body).unwrap();
-    assert!(names.contains(&"tiktok_id_2025".to_string()), "names: {names:?}");
-    assert!(names.contains(&"drama".to_string()), "names: {names:?}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -2475,4 +2463,103 @@ async fn project_job_rejects_profile_with_no_ingest_source() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let _ = std::fs::remove_dir_all(tmp);
+}
+
+// --- legacy config.toml migration (Server Task 4) ----------------------------
+
+async fn store_with_home(tmp: &std::path::Path) -> thoth_jobs::JobStore {
+    let home = test_home(tmp);
+    home.ensure_layout().unwrap();
+    let db_path = server_db_path(&home);
+    thoth_jobs::JobStore::connect_with_home(db_path.to_str().unwrap(), home)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn import_is_idempotent_and_preserves_original_file() {
+    let tmp = std::env::temp_dir().join(format!("thoth-migrate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = store_with_home(&tmp).await;
+    let cfg = tmp.join("legacy-config.toml");
+    let original = "[styles.profiles.default]\nlayout = \"vertical\"\nclip_style = \"fade\"\n";
+    std::fs::write(&cfg, original).unwrap();
+
+    let first = thoth_server::migration::import_legacy_config(&store, &cfg)
+        .await
+        .unwrap();
+    assert!(first.imported, "first import: {first:?}");
+
+    let second = thoth_server::migration::import_legacy_config(&store, &cfg)
+        .await
+        .unwrap();
+    assert!(!second.imported, "second import: {second:?}");
+    assert!(second.warnings.is_empty(), "second import: {second:?}");
+
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), original);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn import_maps_recognized_visual_edit_fields() {
+    let tmp = std::env::temp_dir().join(format!("thoth-migrate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = store_with_home(&tmp).await;
+    let cfg = tmp.join("config.toml");
+    std::fs::write(
+        &cfg,
+        "[styles.profiles.default]\nlayout = \"vertical\"\nclip_style = \"fade\"\n",
+    )
+    .unwrap();
+
+    let report = thoth_server::migration::import_legacy_config(&store, &cfg)
+        .await
+        .unwrap();
+    assert!(report.imported, "report: {report:?}");
+
+    let projects = store.list_projects().await.unwrap();
+    let project = projects.iter().find(|p| p.name == "Imported").unwrap();
+    let profiles = store.list_profiles(&project.id).await.unwrap();
+    let profile = profiles.iter().find(|p| p.name == "Default").unwrap();
+    assert_eq!(profile.settings.visual_edit.layout, "vertical");
+    assert_eq!(profile.settings.visual_edit.clip_style, "fade");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn import_reports_warning_for_unmapped_legacy_key_and_does_not_store_it() {
+    let tmp = std::env::temp_dir().join(format!("thoth-migrate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = store_with_home(&tmp).await;
+    let cfg = tmp.join("config.toml");
+    std::fs::write(
+        &cfg,
+        "[styles.profiles.default]\nlayout = \"vertical\"\nsubtitle_style = \"bold\"\nbgm_vibe = \"chill\"\n",
+    )
+    .unwrap();
+
+    let report = thoth_server::migration::import_legacy_config(&store, &cfg)
+        .await
+        .unwrap();
+    assert!(report.imported, "report: {report:?}");
+    assert!(
+        report.warnings.iter().any(|w| w.contains("subtitle_style")),
+        "warnings: {:?}",
+        report.warnings
+    );
+    assert!(
+        report.warnings.iter().any(|w| w.contains("bgm_vibe")),
+        "warnings: {:?}",
+        report.warnings
+    );
+
+    // Unmapped keys have no field in ProfileSettings — this is a structural
+    // guarantee, not just an absence check. Confirm the recognized sibling
+    // field still landed, proving the mapped/unmapped split actually ran.
+    let projects = store.list_projects().await.unwrap();
+    let project = projects.iter().find(|p| p.name == "Imported").unwrap();
+    let profiles = store.list_profiles(&project.id).await.unwrap();
+    let profile = profiles.iter().find(|p| p.name == "Default").unwrap();
+    assert_eq!(profile.settings.visual_edit.layout, "vertical");
+    let _ = std::fs::remove_dir_all(&tmp);
 }
