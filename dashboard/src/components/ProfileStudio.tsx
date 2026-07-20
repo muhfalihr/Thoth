@@ -207,7 +207,7 @@ export function ProfileStudio({
   const s = draft?.settings;
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[16rem_1fr_18rem]">
+    <div className="grid h-full gap-4 lg:grid-cols-[16rem_1fr_18rem]">
       {/* Left: profile list */}
       <aside className="flex min-h-0 flex-col gap-3">
         <div className="flex items-center justify-between">

@@ -23,30 +23,42 @@ export default function App() {
   };
 
   const needsProject = (
-    <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
-      Select or create a project to begin.
+    <div className="flex flex-1 flex-col items-center justify-center gap-1 p-8 text-sm text-muted-foreground">
+      <p>Select or create a project to begin.</p>
+      <p className="text-xs">Use “New project” at the top right.</p>
     </div>
   );
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
-      <div className="flex items-center gap-2 border-b border-border bg-card px-4 py-1">
-        <Button size="sm" variant={view === "runs" ? "default" : "ghost"}
-          onClick={() => setView("runs")}>Runs</Button>
-        <Button size="sm" variant={view === "profiles" ? "default" : "ghost"}
-          onClick={() => setView("profiles")}>Profiles</Button>
-        <Button size="sm" variant={view === "discovery" ? "default" : "ghost"}
-          onClick={() => setView("discovery")}>Discovery</Button>
-        <Button size="sm" variant={view === "contentset" ? "default" : "ghost"}
-          onClick={() => setView("contentset")}>Content Set</Button>
-        <div className="ml-auto">
+      <div className="flex items-center gap-2 border-b border-border bg-card px-4 py-1.5">
+        <span className="font-mono text-lg leading-none text-primary" aria-hidden>🪶</span>
+        <span className="font-mono text-sm font-semibold tracking-wide text-foreground">Thoth</span>
+        <div className="ml-3 flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+          {([
+            ["runs", "Runs"],
+            ["profiles", "Profiles"],
+            ["discovery", "Discovery"],
+            ["contentset", "Content Set"],
+          ] as const).map(([id, label]) => (
+            <Button key={id} size="sm" variant={view === id ? "secondary" : "ghost"}
+              onClick={() => setView(id)}>
+              {label}
+            </Button>
+          ))}
+        </div>
+        <div className="ml-auto border-l border-border pl-3">
           <ProjectSwitcher projectId={projectId} onSelect={setProjectId} />
         </div>
       </div>
       {view === "profiles" ? (
-        projectId
-          ? <ProfileStudio projectId={projectId} onProfileChanged={() => {}} />
-          : needsProject
+        projectId ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
+            <ProfileStudio projectId={projectId} onProfileChanged={() => {}} />
+          </div>
+        ) : (
+          needsProject
+        )
       ) : view === "discovery" ? (
         <Discovery />
       ) : view === "contentset" ? (

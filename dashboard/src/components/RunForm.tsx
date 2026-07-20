@@ -162,10 +162,6 @@ export function RunForm({
     <form onSubmit={handleSubmit}
       className="flex flex-col gap-3 border-b border-border bg-card px-4 py-3">
       <div className="flex flex-wrap items-end gap-3">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-lg leading-none text-primary" aria-hidden>🪶</span>
-          <span className="font-mono text-sm font-semibold tracking-wide text-foreground">Thoth</span>
-        </div>
         <div className="flex flex-col gap-1">
           <Label htmlFor="profile" className="text-xs text-muted-foreground">Profile</Label>
           <Select value={profileId === "" ? null : profileId}
@@ -197,14 +193,20 @@ export function RunForm({
       </div>
 
       {v && (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <span>Effective:</span>
-          <span>provider <b className="text-foreground">{provider || v.analysis.provider}</b></span>
-          <span>model <b className="text-foreground">{model || v.analysis.model}</b></span>
-          <span>layout <b className="text-foreground">{layout || v.visual_edit.layout}</b></span>
-          <span>clip-style <b className="text-foreground">{clipStyle || v.visual_edit.clip_style}</b></span>
-          <span>max-clips <b className="text-foreground">{maxClips || v.analysis.max_clips}</b></span>
-          <span>language <b className="text-foreground">{language || v.narration.language || "auto"}</b></span>
+          {([
+            ["provider", provider || v.analysis.provider],
+            ["model", model || v.analysis.model],
+            ["layout", layout || v.visual_edit.layout],
+            ["clip-style", clipStyle || v.visual_edit.clip_style],
+            ["max-clips", String(maxClips || v.analysis.max_clips)],
+            ["language", language || v.narration.language || "auto"],
+          ] as const).map(([k, val]) => (
+            <span key={k} className="rounded bg-secondary px-1.5 py-0.5 font-mono">
+              {k} <b className="text-foreground">{val}</b>
+            </span>
+          ))}
         </div>
       )}
 
