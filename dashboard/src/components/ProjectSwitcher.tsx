@@ -28,9 +28,15 @@ export function ProjectSwitcher({
   async function newProject() {
     const name = window.prompt("New project name")?.trim();
     if (!name) return;
-    const p = await createProject(name);
-    setProjects((cur) => [...cur, p]);
-    onSelect(p.id);
+    try {
+      const p = await createProject(name);
+      setProjects((cur) => [...cur, p]);
+      onSelect(p.id);
+    } catch (err) {
+      // Most commonly a 409 duplicate name — surface it instead of an
+      // unhandled rejection that leaves the user with no feedback.
+      window.alert(err instanceof Error ? err.message : "could not create project");
+    }
   }
 
   return (

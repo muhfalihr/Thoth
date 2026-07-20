@@ -327,8 +327,11 @@ export type ProfileRevision = {
 };
 
 /** Typed one-off overrides. Each present field overrides the selected profile;
- * an omitted field keeps the profile's value. Nullable fields accept `null` to
- * clear. Field names mirror `RunOverrides` in profiles.rs exactly. */
+ * an omitted field keeps the profile's value. Note: the nullable fields decode
+ * `null` as "keep" (not "clear") — the server's `RunOverrides` uses a plain
+ * `Option<Option<T>>` without a present-vs-absent deserializer, so only a
+ * concrete value overrides. Callers should omit, never send `null`. Field names
+ * mirror `RunOverrides` in profiles.rs exactly. */
 export type RunOverrides = {
   narration_language?: string | null;
   visual_edit_layout?: string;
