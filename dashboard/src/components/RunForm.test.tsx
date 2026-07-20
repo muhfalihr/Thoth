@@ -65,9 +65,11 @@ test("run sends profile_id + typed overrides and never mutates the profile", asy
 
   render(<RunForm projectId="p1" onCreated={onCreated} />);
 
-  await user.selectOptions(await screen.findByLabelText("Profile"), "profile-1");
+  await user.click(await screen.findByLabelText("Profile"));
+  await user.click(await screen.findByRole("option", { name: "Default" }));
   await user.click(screen.getByRole("button", { name: /overrides for this run/i }));
-  await user.selectOptions(screen.getByLabelText("Layout"), "horizontal");
+  await user.click(screen.getByLabelText("Layout"));
+  await user.click(await screen.findByRole("option", { name: "horizontal" }));
   await user.click(screen.getByRole("button", { name: /^run$/i }));
 
   expect(createProfileJob).toHaveBeenCalledTimes(1);

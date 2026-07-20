@@ -7,15 +7,20 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-
-// Mirrors the shadcn `Input` classes so native <select>s match text inputs.
-// Kept identical to ProfileStudio's fieldClass for a consistent dropdown look.
-const fieldClass =
-  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 /** Trim + empty→undefined so blank overrides are omitted (profile value kept). */
 const s = (v: string) => (v.trim() ? v.trim() : undefined);
 const n = (v: string) => (v.trim() ? Number(v) : undefined);
+
+// base-ui Select has no native empty option; sentinel maps back to "" in setters.
+const KEEP = "__keep__";
 
 /**
  * Profile-first run composer. Picks a project profile, shows its effective
@@ -127,10 +132,16 @@ export function RunForm({
   ) => (
     <div className="flex flex-col gap-1">
       <Label htmlFor={id} className="text-xs text-muted-foreground">{label}</Label>
-      <select id={id} className={`${fieldClass} w-40`} value={value} onChange={(e) => set(e.target.value)}>
-        <option value="">(keep profile)</option>
-        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-      </select>
+      <Select value={value === "" ? KEEP : value}
+        onValueChange={(v) => set(v === KEEP ? "" : String(v))}>
+        <SelectTrigger id={id} className="w-40">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={KEEP}>(keep profile)</SelectItem>
+          {opts.map((o) => <SelectItem key={o} value={o}>{o}</SelectItem>)}
+        </SelectContent>
+      </Select>
     </div>
   );
 
@@ -157,11 +168,15 @@ export function RunForm({
         </div>
         <div className="flex flex-col gap-1">
           <Label htmlFor="profile" className="text-xs text-muted-foreground">Profile</Label>
-          <select id="profile" className={`${fieldClass} w-52`}
-            value={profileId} onChange={(e) => setProfileId(e.target.value)}>
-            {profiles.length === 0 && <option value="">No profiles — create one in Profiles</option>}
-            {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+          <Select value={profileId === "" ? null : profileId}
+            onValueChange={(v) => setProfileId(String(v))}>
+            <SelectTrigger id="profile" className="w-52">
+              <SelectValue placeholder="No profiles — create one in Profiles" />
+            </SelectTrigger>
+            <SelectContent>
+              {profiles.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
         </div>
         <div className="flex min-w-56 flex-1 flex-col gap-1">
           <Label htmlFor="url" className="text-xs text-muted-foreground">URL (optional — overrides profile source)</Label>
