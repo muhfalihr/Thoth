@@ -68,6 +68,37 @@ The server is designed for a trusted local machine or LAN. Internet-facing bind,
 and path-hardening policy is intentionally deferred to the next Local/LAN Security
 subproject.
 
+## Running the dashboard
+
+Two processes, both started from the repo root (they share `thoth.db`):
+
+```
+cargo run -p thoth-server                       # API + dashboard on :8787
+./target/release/thoth.exe worker --db thoth.db # executes queued jobs
+```
+
+Then open **http://127.0.0.1:8787**. Without the worker, jobs stay `queued`.
+
+**The server serves the prebuilt SPA from `dashboard/dist`** (a gitignored build
+artifact — it is NOT updated by `git pull`/merge). After any dashboard change, or the
+first time you check out a branch whose UI differs, **rebuild it** or the server keeps
+serving a stale UI:
+
+```
+bun --cwd dashboard install    # first run, or when dashboard deps change
+bun --cwd dashboard run build  # regenerates dashboard/dist
+```
+
+For UI hot-reload during development, run the Vite dev server instead and open its URL
+(default http://localhost:5173):
+
+```
+bun --cwd dashboard run dev
+```
+
+Vite proxies `/api` to `127.0.0.1:8787`, so in dev mode the server must be on the default
+port `8787` (or edit the proxy target in `dashboard/vite.config.ts`).
+
 ## Project profiles
 
 Editing style is configured with **typed, project-scoped profiles** instead of raw
