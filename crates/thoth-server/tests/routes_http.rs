@@ -1899,6 +1899,7 @@ async fn delete_resources_are_scoped_and_project_delete_rejects_active_jobs() {
                 project_id: owner_id.to_owned(),
                 profile_id: Some(profile_id.to_owned()),
                 profile_revision: None,
+                override_summary: None,
                 resolved_settings: thoth_jobs::ResolvedSettings::default(),
             },
             "out/active-job",
@@ -2035,6 +2036,62 @@ async fn project_job_from_profile_resolves_overrides_and_effective_settings() {
     )
     .await;
     assert_eq!(settings["settings"]["analysis"]["max_clips"], 5);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn project_job_records_profile_revision_and_override_summary() {
+    let (app, tmp) = build_test_app().await;
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": "P" })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let profile = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "description": "",
+            "settings": {},
+            "credential_ref": null
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let profile_id = profile["id"].as_str().unwrap();
+    let created = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({
+            "profile_id": profile_id,
+            "overrides": { "analysis_max_clips": 7, "ingest_source_source": "https://x.test/v" }
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let job_id = created["job_id"].as_str().unwrap();
+
+    // The job pins the profile version (1 = never edited) and a redacted summary
+    // of exactly the overridden fields. RunOverrides has no credential field, so
+    // the summary can never carry a secret.
+    let job = project_api_json(
+        app.clone(),
+        "GET",
+        &format!("/api/jobs/{job_id}"),
+        None,
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(job["profile_revision"], 1);
+    assert_eq!(job["override_summary"]["analysis_max_clips"], 7);
+    assert_eq!(job["override_summary"]["ingest_source_source"], "https://x.test/v");
     let _ = std::fs::remove_dir_all(tmp);
 }
 

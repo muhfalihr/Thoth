@@ -1544,7 +1544,7 @@ impl JobStore {
             "INSERT INTO jobs
                 (id, command, url, content_set, params, status, output_dir, created_at, updated_at,
                  project_id, profile_id, profile_revision, resolved_settings_snapshot, override_summary)
-             VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, NULL)",
+             VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(&request.spec.command)
@@ -1558,9 +1558,23 @@ impl JobStore {
         .bind(&request.profile_id)
         .bind(request.profile_revision)
         .bind(snapshot)
+        .bind(request.override_summary.as_deref())
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Current revision number of a live profile — one past the highest archived
+    /// revision (a never-edited profile is revision 1). Recorded on a job so the
+    /// snapshot can be traced back to the exact profile version that produced it.
+    pub async fn current_profile_revision(&self, profile_id: &str) -> anyhow::Result<i64> {
+        let next: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(revision), 0) + 1 FROM profile_revisions WHERE profile_id = ?",
+        )
+        .bind(profile_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(next)
     }
 
     pub async fn get(&self, id: &str) -> anyhow::Result<Option<JobRecord>> {
@@ -1960,6 +1974,7 @@ mod tests {
                     project_id: project.id.clone(),
                     profile_id: Some(profile.id.clone()),
                     profile_revision: None,
+                    override_summary: None,
                     resolved_settings: resolved,
                 },
                 output_dir.to_str().unwrap(),

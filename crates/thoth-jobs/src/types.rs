@@ -61,6 +61,11 @@ pub struct EnqueueRequest {
     pub profile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_revision: Option<i64>,
+    /// Redacted, human-auditable summary of which fields this run overrode
+    /// (JSON of the set override fields; never contains a secret value). `None`
+    /// when the run used the profile unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_summary: Option<String>,
     pub resolved_settings: crate::ResolvedSettings,
 }
 

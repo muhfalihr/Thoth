@@ -433,6 +433,23 @@ pub async fn create_job(
     (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job_id }))).into_response()
 }
 
+/// Compact JSON of only the override fields a run actually set, for auditing
+/// which knobs were changed. Returns `None` when nothing was overridden.
+/// `RunOverrides` has no credential field, so this can never carry a secret.
+fn override_summary(overrides: &RunOverrides) -> Option<String> {
+    let value = serde_json::to_value(overrides).ok()?;
+    let set: serde_json::Map<_, _> = value
+        .as_object()?
+        .iter()
+        .filter(|(_, v)| !v.is_null())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if set.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&serde_json::Value::Object(set)).ok()
+}
+
 /// Enqueue a job from a project-scoped profile plus typed one-off overrides.
 /// The stored settings snapshot is the fully resolved, redacted result —
 /// immune to later edits of the selected profile.
@@ -486,11 +503,16 @@ pub async fn create_project_job(
         )
             .into_response();
     }
+    // Record which profile version + which fields this run overrode, for audit.
+    // The revision is read right after the profile fetch above; a concurrent
+    // profile edit is an inherent TOCTOU that equally affects `resolved`.
+    let profile_revision = state.store.current_profile_revision(&profile.id).await.ok();
     let request = EnqueueRequest {
         spec,
         project_id: project_id.clone(),
         profile_id: Some(profile.id.clone()),
-        profile_revision: None,
+        profile_revision,
+        override_summary: override_summary(&body.overrides),
         resolved_settings: resolved,
     };
     if state
