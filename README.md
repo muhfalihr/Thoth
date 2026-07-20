@@ -68,6 +68,30 @@ The server is designed for a trusted local machine or LAN. Internet-facing bind,
 and path-hardening policy is intentionally deferred to the next Local/LAN Security
 subproject.
 
+## Project profiles
+
+Editing style is configured with **typed, project-scoped profiles** instead of raw
+`config.toml`. A profile holds narration, visual-edit, analysis, ingest-source, and
+output settings; credentials are referenced by **name** only (an env-var the server
+resolves) — no secret value is ever stored in a profile, a job snapshot, an API
+response, or a log.
+
+- **Dashboard:** the **Profiles** tab edits profiles; **Runs** picks a profile, shows
+  its effective settings, and starts a job. Per-run tweaks live in an overrides drawer
+  and never mutate the profile.
+- **CLI:**
+  ```
+  thoth project create Demo
+  thoth project use Demo
+  thoth profile create Vertical --description "ID vertical"
+  thoth profile set Vertical --provider novita --layout vertical --max-clips 3
+  thoth configure               # interactive wizard
+  thoth configure --import      # one-way migration of an existing config.toml
+  ```
+  Every field is an explicit flag — no raw TOML and no generic `--set key=value`.
+
+Manual acceptance checklist: **[docs/superpowers/plans/2026-07-18-project-profile-manual-test.md](docs/superpowers/plans/2026-07-18-project-profile-manual-test.md)**.
+
 ## Documentation
 
 | Document | What's in it |
