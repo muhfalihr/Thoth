@@ -50,7 +50,8 @@ test("creating a profile posts the typed name + settings via createProfile", asy
   const nameInput = screen.getByLabelText("Profile name") as HTMLInputElement;
   await user.type(nameInput, "Berita Indonesian");
   expect(nameInput.value).toBe("Berita Indonesian");
-  await user.selectOptions(screen.getByLabelText("Layout"), "horizontal");
+  await user.click(screen.getByLabelText("Layout"));
+  await user.click(await screen.findByRole("option", { name: "horizontal" }));
   await user.click(screen.getByRole("button", { name: /save profile/i }));
 
   expect(createProfile).toHaveBeenCalledTimes(1);

@@ -20,6 +20,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 // Mirrors `ProfileSettings::default()` in crates/thoth-jobs/src/profiles.rs so a
@@ -68,13 +75,6 @@ function orNull(value: string): string | null {
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed;
 }
-
-// Mirrors the shadcn `Input` classes so native <select>s render at the same
-// size and pick up the same focus/disabled/dark states as the text inputs.
-const fieldClass =
-  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors " +
-  "outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 " +
-  "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30";
 
 /**
  * Profile Studio: browse a project's profiles (left), edit the six typed
@@ -209,14 +209,14 @@ export function ProfileStudio({
   return (
     <div className="grid gap-4 lg:grid-cols-[16rem_1fr_18rem]">
       {/* Left: profile list */}
-      <aside className="flex flex-col gap-3">
+      <aside className="flex min-h-0 flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Profiles</h2>
           <Button size="sm" variant="secondary" onClick={startNew}>
             New profile
           </Button>
         </div>
-        <ScrollArea className="h-64 rounded-md border">
+        <ScrollArea className="min-h-0 flex-1 rounded-md border">
           {loading ? (
             <p className="p-3 text-sm text-muted-foreground">Loading profiles…</p>
           ) : profiles.length === 0 ? (
@@ -301,40 +301,46 @@ export function ProfileStudio({
 
             <Fieldset legend="Visual edit">
               <Field label="Layout" htmlFor="ve-layout">
-                <select
-                  id="ve-layout"
-                  className={fieldClass}
+                <Select
                   value={s.visual_edit.layout}
-                  onChange={(e) =>
+                  onValueChange={(v) =>
                     patchSettings((n) => {
-                      n.visual_edit.layout = e.target.value;
+                      n.visual_edit.layout = String(v);
                     })
                   }
                 >
-                  {LAYOUTS.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger id="ve-layout" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LAYOUTS.map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
               <Field label="Clip style" htmlFor="ve-clip">
-                <select
-                  id="ve-clip"
-                  className={fieldClass}
+                <Select
                   value={s.visual_edit.clip_style}
-                  onChange={(e) =>
+                  onValueChange={(v) =>
                     patchSettings((n) => {
-                      n.visual_edit.clip_style = e.target.value;
+                      n.visual_edit.clip_style = String(v);
                     })
                   }
                 >
-                  {CLIP_STYLES.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger id="ve-clip" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CLIP_STYLES.map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
               <Field label="Style profile" htmlFor="ve-style">
                 <Input
@@ -415,40 +421,46 @@ export function ProfileStudio({
 
             <Fieldset legend="Analysis">
               <Field label="Provider" htmlFor="an-provider">
-                <select
-                  id="an-provider"
-                  className={fieldClass}
+                <Select
                   value={s.analysis.provider}
-                  onChange={(e) =>
+                  onValueChange={(v) =>
                     patchSettings((n) => {
-                      n.analysis.provider = e.target.value;
+                      n.analysis.provider = String(v);
                     })
                   }
                 >
-                  {PROVIDERS.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger id="an-provider" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROVIDERS.map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
               <Field label="Model" htmlFor="an-model">
-                <select
-                  id="an-model"
-                  className={fieldClass}
+                <Select
                   value={s.analysis.model}
-                  onChange={(e) =>
+                  onValueChange={(v) =>
                     patchSettings((n) => {
-                      n.analysis.model = e.target.value;
+                      n.analysis.model = String(v);
                     })
                   }
                 >
-                  {WHISPER_MODELS.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger id="an-model" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {WHISPER_MODELS.map((v) => (
+                      <SelectItem key={v} value={v}>
+                        {v}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
               <Field label="Max clips" htmlFor="an-maxclips">
                 <Input
@@ -576,7 +588,7 @@ export function ProfileStudio({
             <p
               className={cn(
                 "mt-2 text-sm",
-                validation.valid ? "text-emerald-600 dark:text-emerald-400" : "text-destructive",
+                validation.valid ? "text-status-succeeded" : "text-destructive",
               )}
             >
               {validation.valid ? "Settings are valid." : validation.message}
