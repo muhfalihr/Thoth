@@ -140,6 +140,9 @@ export function ContentSet({ onSendToRender }: { onSendToRender: (path: string) 
       const ok = await save();
       if (!ok) return; // save failed → stay put; notice already shown
     }
+    // `data.path` is the canonical content-set path; a save never changes it
+    // (save() re-fetches the same file), so reading it from the pre-save
+    // closure is safe. Revisit if a future path-picker lets save() relocate it.
     onSendToRender(data.path);
   };
 
