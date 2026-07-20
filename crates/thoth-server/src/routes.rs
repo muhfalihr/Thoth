@@ -859,7 +859,8 @@ pub async fn scout_browser_start(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let kind = state.scout.lock().await.kind;
-    match scout::start(&state.scout, ScoutKind::Browser, vec![]).await {
+    let args = scout::build_scout_args(ScoutKind::Browser, None, None, None);
+    match scout::start(&state.scout, ScoutKind::Browser, args).await {
         Ok(()) => accepted(),
         Err(()) => busy(kind),
     }
@@ -871,7 +872,7 @@ pub async fn scout_discover(
 ) -> (StatusCode, Json<serde_json::Value>) {
     let args = scout::build_scout_args(ScoutKind::Discover, Some(&req), None, None);
     let kind = state.scout.lock().await.kind;
-    match scout::start(&state.scout, ScoutKind::Discover, args[1..].to_vec()).await {
+    match scout::start(&state.scout, ScoutKind::Discover, args).await {
         Ok(()) => accepted(),
         Err(()) => busy(kind),
     }
@@ -891,7 +892,7 @@ pub async fn scout_run(
     let cs = scout::resolve_content_set(req.out.as_deref());
     let args = scout::build_scout_args(ScoutKind::Run, None, Some(&req), None);
     let kind = state.scout.lock().await.kind;
-    match scout::start(&state.scout, ScoutKind::Run, args[1..].to_vec()).await {
+    match scout::start(&state.scout, ScoutKind::Run, args).await {
         Ok(()) => {
             state.scout.lock().await.last_content_set = Some(cs);
             accepted()
@@ -912,7 +913,7 @@ pub async fn scout_validate(
     }
     let args = scout::build_scout_args(ScoutKind::Validate, None, None, Some(&req));
     let kind = state.scout.lock().await.kind;
-    match scout::start(&state.scout, ScoutKind::Validate, args[1..].to_vec()).await {
+    match scout::start(&state.scout, ScoutKind::Validate, args).await {
         Ok(()) => accepted(),
         Err(()) => busy(kind),
     }
