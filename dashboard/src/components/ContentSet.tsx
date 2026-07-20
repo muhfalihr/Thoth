@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { LogPane, type LogLine } from "@/components/LogPane";
 import {
   getContentSetData,
@@ -155,23 +158,26 @@ export function ContentSet({ onSendToRender }: { onSendToRender: (path: string) 
 
   if (loadErr)
     return (
-      <div className="p-4 text-destructive">
+      <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-destructive">
         Couldn't load the content-set: {loadErr}
       </div>
     );
-  if (!data) return <div className="p-4 text-muted-foreground">Loading…</div>;
+  if (!data)
+    return (
+      <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">
+        Loading…
+      </div>
+    );
   if (!data.exists)
     return (
-      <div className="p-4 text-muted-foreground">
+      <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">
         No content-set yet — run Discovery first.
       </div>
     );
   if (data.error === "malformed" || !content)
     return (
-      <div className="p-4">
-        <p className="mb-2 text-destructive">
-          The content-set on disk isn't valid JSON ({data.path}).
-        </p>
+      <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-destructive">
+        The content-set on disk isn't valid JSON ({data.path}).
       </div>
     );
 
@@ -186,108 +192,156 @@ export function ContentSet({ onSendToRender }: { onSendToRender: (path: string) 
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
         {/* Main */}
-        <section className="rounded border border-border bg-card p-3">
-          <h3 className="mb-2 font-semibold">Main</h3>
-          <div className="flex gap-3">
-            {mainImg && (
-              <img
-                src={mainImg}
-                alt=""
-                className="h-24 w-24 shrink-0 rounded object-cover"
-              />
-            )}
-            <div className="flex-1 space-y-2">
-              <input
-                className="w-full rounded border border-border bg-background px-2 py-1"
-                value={main.title ?? ""}
-                placeholder="title"
-                onChange={(e) => setMain("title", e.target.value)}
-              />
-              <textarea
-                className="h-20 w-full rounded border border-border bg-background px-2 py-1"
-                value={main.description ?? ""}
-                placeholder="description"
-                onChange={(e) => setMain("description", e.target.value)}
-              />
+        <Card size="sm" className="gap-2">
+          <CardHeader>
+            <CardTitle className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+              Main
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-3">
+              {mainImg && (
+                <img
+                  src={mainImg}
+                  alt=""
+                  className="h-24 w-24 shrink-0 rounded object-cover"
+                />
+              )}
+              <div className="flex-1 space-y-2">
+                <Input
+                  value={main.title ?? ""}
+                  placeholder="title"
+                  onChange={(e) => setMain("title", e.target.value)}
+                />
+                <Textarea
+                  className="h-20"
+                  value={main.description ?? ""}
+                  placeholder="description"
+                  onChange={(e) => setMain("description", e.target.value)}
+                />
+              </div>
             </div>
-          </div>
-        </section>
+          </CardContent>
+        </Card>
 
         {/* Footage */}
-        <section>
-          <h3 className="mb-2 font-semibold">Footage ({footage.length})</h3>
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-            {footage.map((f, i) => {
-              const src = imgSrc(f.thumbnail ?? f.image_path);
-              return (
-              <div key={`${f.url ?? "f"}-${i}`} className="relative rounded border border-border bg-card p-2">
-                {src && (
-                  <img src={src} alt="" className="mb-1 h-20 w-full rounded object-cover" />
-                )}
-                <div className="truncate text-xs">{f.title ?? f.url}</div>
-                <div className="text-xs text-muted-foreground">{f.platform}</div>
-                <button
-                  className="absolute right-1 top-1 rounded bg-destructive px-1 text-xs text-destructive-foreground"
-                  onClick={() => removeAt("footage", i)}
-                >
-                  ✕
-                </button>
-              </div>
-              );
-            })}
-          </div>
-        </section>
+        <Card size="sm" className="gap-2">
+          <CardHeader>
+            <CardTitle className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+              Footage ({footage.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              {footage.map((f, i) => {
+                const src = imgSrc(f.thumbnail ?? f.image_path);
+                return (
+                <div key={`${f.url ?? "f"}-${i}`} className="relative rounded border border-border bg-background p-2">
+                  {src && (
+                    <img src={src} alt="" className="mb-1 h-20 w-full rounded object-cover" />
+                  )}
+                  <div className="truncate text-xs">{f.title ?? f.url}</div>
+                  <div className="text-xs text-muted-foreground">{f.platform}</div>
+                  <Button
+                    size="icon-xs"
+                    variant="destructive"
+                    aria-label="Remove footage"
+                    className="absolute right-1 top-1"
+                    onClick={() => removeAt("footage", i)}
+                  >
+                    ✕
+                  </Button>
+                </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Comments */}
-        <section>
-          <h3 className="mb-2 font-semibold">Comments ({comments.length})</h3>
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-            {comments.map((c, i) => {
-              const src = imgSrc(c.image_path);
-              return (
-              <div key={`${c.image_path ?? c.author ?? "c"}-${i}`} className="relative rounded border border-border bg-card p-2">
-                {src && (
-                  <img src={src} alt="" className="mb-1 w-full rounded object-contain" />
-                )}
-                <div className="truncate text-xs">{c.author}</div>
-                <div className="line-clamp-2 text-xs text-muted-foreground">{c.text}</div>
-                <button
-                  className="absolute right-1 top-1 rounded bg-destructive px-1 text-xs text-destructive-foreground"
-                  onClick={() => removeAt("comments", i)}
-                >
-                  ✕
-                </button>
-              </div>
-              );
-            })}
-          </div>
-        </section>
+        <Card size="sm" className="gap-2">
+          <CardHeader>
+            <CardTitle className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+              Comments ({comments.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+              {comments.map((c, i) => {
+                const src = imgSrc(c.image_path);
+                return (
+                <div key={`${c.image_path ?? c.author ?? "c"}-${i}`} className="relative rounded border border-border bg-background p-2">
+                  {src && (
+                    <img src={src} alt="" className="mb-1 w-full rounded object-contain" />
+                  )}
+                  <div className="truncate text-xs">{c.author}</div>
+                  <div className="line-clamp-2 text-xs text-muted-foreground">{c.text}</div>
+                  <Button
+                    size="icon-xs"
+                    variant="destructive"
+                    aria-label="Remove comment"
+                    className="absolute right-1 top-1"
+                    onClick={() => removeAt("comments", i)}
+                  >
+                    ✕
+                  </Button>
+                </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Figures + References */}
         <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div>
-            <h3 className="mb-2 font-semibold">Figures ({figures.length})</h3>
-            {figures.map((f, i) => (
-              <div key={`${f.name ?? "fig"}-${i}`} className="mb-1 flex items-center justify-between rounded border border-border bg-card px-2 py-1">
-                <span className="truncate text-xs">
-                  {f.name} <span className="text-muted-foreground">· {f.kind} · {f.role}</span>
-                </span>
-                <button className="text-destructive" onClick={() => removeAt("figures", i)}>✕</button>
-              </div>
-            ))}
-          </div>
-          <div>
-            <h3 className="mb-2 font-semibold">References ({references.length})</h3>
-            {references.map((r, i) => (
-              <div key={`${r.term ?? "ref"}-${i}`} className="mb-1 flex items-center justify-between rounded border border-border bg-card px-2 py-1">
-                <span className="truncate text-xs">
-                  {r.term} <span className="text-muted-foreground">· {r.kind}</span>
-                </span>
-                <button className="text-destructive" onClick={() => removeAt("references", i)}>✕</button>
-              </div>
-            ))}
-          </div>
+          <Card size="sm" className="gap-2">
+            <CardHeader>
+              <CardTitle className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+                Figures ({figures.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {figures.map((f, i) => (
+                <div key={`${f.name ?? "fig"}-${i}`} className="mb-1 flex items-center justify-between rounded border border-border bg-background px-2 py-1">
+                  <span className="truncate text-xs">
+                    {f.name} <span className="text-muted-foreground">· {f.kind} · {f.role}</span>
+                  </span>
+                  <Button size="icon-xs" variant="ghost" aria-label="Remove figure"
+                    className="text-destructive" onClick={() => removeAt("figures", i)}>
+                    ✕
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+          <Card size="sm" className="gap-2">
+            <CardHeader>
+              <CardTitle className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+                References ({references.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {references.map((r, i) => (
+                <div key={`${r.term ?? "ref"}-${i}`} className="mb-1 flex items-center justify-between rounded border border-border bg-background px-2 py-1">
+                  <span className="truncate text-xs">
+                    {r.term} <span className="text-muted-foreground">· {r.kind}</span>
+                  </span>
+                  <Button size="icon-xs" variant="ghost" aria-label="Remove reference"
+                    className="text-destructive" onClick={() => removeAt("references", i)}>
+                    ✕
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         </section>
+
+        {/* Validate log — lives in the scroll area, not squeezed into the footer. */}
+        {logLines.length > 0 && (
+          <div className="h-32">
+            <LogPane lines={logLines} />
+          </div>
+        )}
       </div>
 
       {/* Footer */}
@@ -305,9 +359,6 @@ export function ContentSet({ onSendToRender }: { onSendToRender: (path: string) 
         {dirty && <span className="text-xs text-muted-foreground">unsaved changes</span>}
         {running && <span className="text-xs text-muted-foreground">scout busy — save disabled</span>}
         {notice && <span className="text-xs">{notice}</span>}
-        <div className="ml-auto h-24 min-w-0 flex-1">
-          <LogPane lines={logLines} />
-        </div>
       </div>
     </div>
   );
