@@ -126,29 +126,6 @@ export const WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"] as
 export const LAYOUTS = ["vertical", "horizontal", "square"] as const;
 export const CLIP_STYLES = ["fade", "flash", "zoom", "smooth", "none"] as const;
 
-export async function getStyleProfiles(): Promise<string[]> {
-  const r = await fetch("/api/style-profiles", { headers: H });
-  return r.ok ? r.json() : [];
-}
-
-export async function getConfig(): Promise<string> {
-  const r = await fetch("/api/config", { headers: H });
-  if (!r.ok) return "";
-  const j = await r.json();
-  return typeof j.text === "string" ? j.text : "";
-}
-
-export async function putConfig(text: string): Promise<{ ok: boolean; error?: string }> {
-  const r = await fetch("/api/config", {
-    method: "PUT",
-    headers: H,
-    body: JSON.stringify({ text }),
-  });
-  if (r.ok) return { ok: true };
-  const j = await r.json().catch(() => ({}));
-  return { ok: false, error: typeof j.error === "string" ? j.error : `PUT ${r.status}` };
-}
-
 // ---- Scout orchestration (Operator Console sub-project B) ----
 // Hand-synced to crates/thoth-server/src/scout.rs + routes.rs::scout_*.
 // Keep byte-aligned when the Rust route bodies change.
