@@ -11,6 +11,7 @@
 
 pub mod analyze;
 pub mod cli;
+pub mod profile_cli;
 pub mod config;
 pub mod edit;
 pub mod execution;
@@ -317,6 +318,15 @@ pub async fn run_cli() -> Result<()> {
     let cli = Cli::parse();
     util::progress::set_json_mode(cli.progress_json);
     tracing::debug!("CLI arguments parsed: {:?}", cli);
+
+    // Profile-management commands are thin HTTP clients to the local thoth-server;
+    // they need neither the pipeline config nor ffmpeg/yt-dlp, so dispatch early.
+    match cli.command {
+        Commands::Project(args) => return profile_cli::run_project(args.command).await,
+        Commands::Profile(args) => return profile_cli::run_profile(args.command).await,
+        Commands::Configure(args) => return profile_cli::run_configure(args).await,
+        _ => {}
+    }
 
     let config = AppConfig::load().context("failed to load configuration")?;
     tracing::info!("Configuration loaded.");
@@ -778,6 +788,9 @@ pub async fn run_cli() -> Result<()> {
         Commands::Worker(args) => {
             worker::run_worker(&args.db).await?;
         }
+
+        // Dispatched early (before config/ffmpeg setup) — see the top of run_cli.
+        Commands::Project(_) | Commands::Profile(_) | Commands::Configure(_) => unreachable!(),
     }
 
     Ok(())

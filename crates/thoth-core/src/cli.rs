@@ -18,6 +18,19 @@ pub enum ClipStyleArg {
     None,
 }
 
+impl std::fmt::Display for ClipStyleArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ClipStyleArg::Fade => "fade",
+            ClipStyleArg::Flash => "flash",
+            ClipStyleArg::Zoom => "zoom",
+            ClipStyleArg::Smooth => "smooth",
+            ClipStyleArg::None => "none",
+        };
+        write!(f, "{s}")
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "thoth",
@@ -69,6 +82,164 @@ pub enum Commands {
     /// and execute them in-process (models stay resident between jobs). Peer to
     /// `thoth-server` — they share only the SQLite DB, no parent/child link.
     Worker(WorkerArgs),
+
+    /// Manage projects on the local thoth-server (create / list / select active).
+    Project(ProjectArgs),
+
+    /// Manage typed project profiles on the local thoth-server. Every mutable
+    /// field is an explicit flag — no raw TOML, no generic `--set key=value`,
+    /// and credential *reference names* only (never a secret value).
+    Profile(ProfileArgs),
+
+    /// Interactive wizard to create a project + profile with typed, non-default
+    /// fields, or `--import` an existing config.toml (one-way migration).
+    Configure(ConfigureArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub command: ProjectCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectCommand {
+    /// Create a new project
+    Create {
+        /// Project name (unique)
+        name: String,
+    },
+    /// List all projects
+    List,
+    /// Select the active project — used when `--project` is omitted elsewhere
+    Use {
+        /// Existing project name to make active
+        name: String,
+    },
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ProfileArgs {
+    #[command(subcommand)]
+    pub command: ProfileCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileCommand {
+    /// Create a new profile (seeded with server defaults)
+    Create {
+        /// Profile name
+        name: String,
+        /// Project name (falls back to the active project)
+        #[arg(long)]
+        project: Option<String>,
+        /// Optional description
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// List profiles in a project
+    List {
+        /// Project name (falls back to the active project)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show a profile's settings (secrets never shown — credential name only)
+    Show {
+        /// Profile name
+        name: String,
+        /// Project name (falls back to the active project)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Duplicate a profile under a new name
+    Duplicate {
+        /// Source profile name
+        name: String,
+        /// New profile name
+        #[arg(long = "as")]
+        new_name: String,
+        /// Project name (falls back to the active project)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Update explicit typed fields on a profile (omitted flags stay unchanged)
+    Set(ProfileSetArgs),
+}
+
+/// Explicit, typed per-field updates for `profile set`. Each `Option` left
+/// `None` leaves the profile's existing value untouched. There is deliberately
+/// no generic `--set key=value` — that would re-introduce raw config editing.
+#[derive(clap::Args, Debug)]
+pub struct ProfileSetArgs {
+    /// Profile name to update
+    pub name: String,
+    /// Project name (falls back to the active project)
+    #[arg(long)]
+    pub project: Option<String>,
+
+    // ── narration ──
+    /// Transcription language code (e.g. "id", "en"); empty = auto
+    #[arg(long)]
+    pub language: Option<String>,
+
+    // ── visual_edit ──
+    /// Output aspect ratio / layout
+    #[arg(long)]
+    pub layout: Option<OutputLayout>,
+    /// Clip transition style
+    #[arg(long)]
+    pub clip_style: Option<ClipStyleArg>,
+    /// Named style profile ("auto" = LLM decides)
+    #[arg(long)]
+    pub style_profile: Option<String>,
+    /// Social handle shown in the headline panel
+    #[arg(long)]
+    pub social: Option<String>,
+    /// Background music volume (0.0–1.0)
+    #[arg(long)]
+    pub bgm_volume: Option<f32>,
+    /// Headline panel duration in seconds
+    #[arg(long)]
+    pub headline_dur: Option<f64>,
+
+    // ── analysis ──
+    /// LLM provider for analysis
+    #[arg(long)]
+    pub provider: Option<LlmProviderName>,
+    /// Whisper model size
+    #[arg(long)]
+    pub model: Option<WhisperModelSize>,
+    /// Maximum number of viral clips
+    #[arg(long)]
+    pub max_clips: Option<usize>,
+    /// Focus keywords (comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    pub keywords: Option<Vec<String>>,
+
+    // ── ingest_source ──
+    /// Default source URL for runs
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Default content-set path for runs
+    #[arg(long)]
+    pub content_set: Option<String>,
+
+    // ── credential (reference name only — never a secret value) ──
+    /// Credential reference name (an env-var name resolved server-side)
+    #[arg(long)]
+    pub credential_ref: Option<String>,
+
+    /// Free-text description
+    #[arg(long)]
+    pub description: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ConfigureArgs {
+    /// Import an existing config.toml into a project (one-way migration) instead
+    /// of running the interactive wizard.
+    #[arg(long)]
+    pub import: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -581,5 +752,39 @@ impl std::fmt::Display for OutputLayout {
             OutputLayout::Horizontal => write!(f, "horizontal"),
             OutputLayout::Square => write!(f, "square"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_set_has_explicit_fields_not_generic_key_value() {
+        // Every mutable field is an explicit, typed flag.
+        assert!(
+            Cli::try_parse_from([
+                "thoth", "profile", "set", "Default", "--project", "Demo", "--layout", "vertical",
+            ])
+            .is_ok()
+        );
+        // No generic `--set key=value` escape hatch (that path re-invents raw TOML).
+        assert!(Cli::try_parse_from(["thoth", "profile", "set", "Default", "--set", "x=y"]).is_err());
+    }
+
+    #[test]
+    fn configure_wizard_command_parses() {
+        assert!(Cli::try_parse_from(["thoth", "configure"]).is_ok());
+    }
+
+    #[test]
+    fn project_and_profile_subcommands_parse() {
+        assert!(Cli::try_parse_from(["thoth", "project", "create", "Demo"]).is_ok());
+        assert!(Cli::try_parse_from(["thoth", "project", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["thoth", "project", "use", "Demo"]).is_ok());
+        assert!(Cli::try_parse_from(["thoth", "profile", "list", "--project", "Demo"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["thoth", "profile", "show", "Default", "--project", "Demo"]).is_ok()
+        );
     }
 }
