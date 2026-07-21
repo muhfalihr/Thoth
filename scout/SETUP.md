@@ -67,7 +67,7 @@ menyalin nilainya ke file ter-git.**
 
 ## 4. CKB (Cultural Knowledge Base) — opsional
 
-Dipakai `enrich/enrich_context.ts` & `enrich/pulse_harvest.ts` untuk cache referensi/meme/pulse
+Dipakai `enrich/topic_dossier.ts` & `enrich/pulse_harvest.ts` untuk cache referensi/meme/pulse
 lintas-mesin di Supabase Postgres:
 
 ```powershell

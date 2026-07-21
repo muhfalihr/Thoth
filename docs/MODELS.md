@@ -57,7 +57,7 @@ vars; defaults are embedded in the scripts.
 |---|---|---|---|
 | `lib/footage_objects.ts` | `THOTH_LLM_MODEL` | `deepseek/deepseek-v3.1` | extract subject/object (text) |
 | `pipeline/extract_figures.ts` | `THOTH_LLM_MODEL` | `deepseek/deepseek-v3.1` | extract figures (text) |
-| `enrich/enrich_context.ts` | `THOTH_CONTEXT_MODEL` | `deepseek/deepseek-v3.1` | decode comment subtext (text) |
+| `enrich/topic_dossier.ts` | `THOTH_CONTEXT_MODEL` | `deepseek/deepseek-v3.1` | decode comment subtext (text) |
 | `enrich/pulse_harvest.ts` | `THOTH_CONTEXT_MODEL` | `deepseek/deepseek-v3.1` | distill discourse trends (text) |
 | `pipeline/resolve_source.ts` | `THOTH_LLM_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | determine the original source |
 | `scrapers/vision_crop.ts` | `THOTH_VISION_MODEL` | `qwen/qwen3-vl-30b-a3b-instruct` | bounding-box crop (vision) — **last-resort fallback only**; the primary crop is `scrapers/crop_post.ts` (DOM pixel-perfect, no LLM) |

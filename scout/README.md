@@ -71,7 +71,7 @@ saja. Panggil script pakai path folder: `bun pipeline/discover_reels.ts`,
 | `pipeline/build_footage.ts` | Footage dari OBJEK cerita (per objek: video+post, di-gate relevansi) + reel relevan dari profil creator + story-gate embedding. |
 | `pipeline/extract_figures.ts` | LLM: tokoh/organisasi subjek cerita → `figures[]`. |
 | `pipeline/collect_comments.ts` | Komentar multi-sumber (main + footage + `--extra`), dedupe, sort likes, cap. **Krusial untuk narasi.** |
-| `enrich/enrich_context.ts` | LLM: decode subteks komentar → `references` (entitas/meme/slang) + `comments[].context` + `discourse` (sikap audiens). +web-grounding status terkini +cache CKB. Bikin narasi paham sarkasme & tak menyalahkan netizen. |
+| `enrich/topic_dossier.ts` | LLM: decode subteks komentar → `references` (entitas/meme/slang) + `comments[].context` + `discourse` (sikap audiens). +web-grounding status terkini +cache CKB. Bikin narasi paham sarkasme & tak menyalahkan netizen. |
 | `pipeline/enrich_image_paths.ts` | Crop post non-video → `image_path` + gate relevansi. |
 | `scrapers/search_news.ts` | Google News/chart kurs → kartu image news ke `footage[]`. |
 | `pipeline/topic_to_urls.ts` / `pipeline/urls_to_contentset.ts` | Search topik-string lintas platform → content-set dasar (jalur sekunder). |
