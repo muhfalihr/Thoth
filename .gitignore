@@ -39,6 +39,10 @@ style_profiles/
 logs/
 downloads/
 .understand-anything/
+*.db
+*.db-shm
+*.db-wal
+.opencode/
 
 # ── Fontconfig cache + raw font download dump (hanya .ttf yang dipakai) ──────────
 assets/fonts/.fc-cache/
