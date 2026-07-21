@@ -24,6 +24,7 @@ import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
+import { hasReactionSubtitle } from '../lib/subtitle_vision.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
@@ -446,6 +447,12 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
               src_url = e.url;
             }
           } catch (err) {}
+        }
+        // Filter subtitle-vision: buang klip dgn caption-ucapan/overlay react (best-effort).
+        // Jalan hanya jika URL bisa di-frame (CDN mp4 hasil resolve). Gagal → lolos (text-gate).
+        if (await hasReactionSubtitle(furl)) {
+          dropReact++;
+          return false;
         }
         set.footage.push({
           url: furl,
