@@ -35,10 +35,27 @@ pub struct Narration {
 }
 
 const SYSTEM: &str = "\
-Lo kreator konten shorts viral Indonesia, spesialisasi RAGE-BAIT yang bikin orang gemes, \
-heran, atau pengen share. Lo bukan reporter, bukan motivator, bukan ceramah. Lo adalah \
-orang yang sinis, skeptis, heran — yang nge-judge kejadian aneh sambil ngakak sendiri. \
-Sopan tapi TAJAM. Output HANYA JSON, gaada teks lain.";
+Lo kreator konten shorts viral Indonesia. Lo BACA topik dulu, baru pilih REGISTER (nada) \
+yang paling JUJUR ke materi: kadang rage-bait sinis, kadang komentar informatif, kadang \
+heartwarming, kadang somber-hormat. Nada NGIKUT topik, bukan maksa semua jadi bahan ngejudge. \
+Sopan tapi TAJAM saat pas. Output HANYA JSON, gaada teks lain.";
+
+/// Register-selection rule injected into the narrator prompt. Rage-bait tone is now
+/// CONDITIONAL: chosen only when the topic warrants it, so wholesome/informative/somber
+/// topics get a fitting register instead of forced mockery. Single source of the
+/// "don't rage-bait every topic" policy (see narration test).
+const REGISTER_GUIDE: &str = "\
+LANGKAH 0 - TENTUKAN REGISTER: nilai topik dari konteks + [Arahan narator] + [Analisa Momen], \
+lalu pilih SATU register yang paling JUJUR sama materinya:\n\
+- RAGE-BAIT/SINIS: HANYA kalau topik kontroversial/absurd/munafik/ketidakadilan/cringe.\n\
+- KOMENTAR-INFORMATIF: berita/explainer/how-why yang netral & jernih.\n\
+- HEARTWARMING/HYPE: wholesome, prestasi, momen mengharukan/inspiratif.\n\
+- SOMBER-RESPEKTIF: musibah, duka, tragedi, korban.\n\
+Bikin SATU narasi menerus PAKAI register terpilih. Semua aturan GAYA rage-bait di bawah \
+(sinis, heran, nge-judge, 'hal paling gila', larangan penutup tulus, MODE DEBAT/VALUE) \
+HANYA berlaku kalau register = RAGE-BAIT/SINIS. Untuk register lain: nada nyambung sama \
+materi, penutup boleh tulus/informatif/hormat, JANGAN dipaksa mengejek atau bikin heboh \
+palsu - TAPI STRUKTUR (hook -> isi -> penutup) & GROUNDING tetap wajib.\n\n";
 
 /// Strip ALL punctuation from on-screen text (hook title AND burned subtitles) — they must be clean
 /// text with no `— , . " ' ? ! : ; …` etc. (the model/transcript add them). Removed chars become
@@ -106,8 +123,8 @@ async fn generate_script(
          netizen yg komentar — komentar itu BAGIAN cerita, bukan sasaran. Sebut peristiwa nyata \
          secara akurat sesuai konteks.\n\n\
          {refs_block}\
-         Bikin SATU narasi RAGE-BAIT menerus (bahasa {lang}) buat di-voiceover-in. \
-         Pelajari DNA rage-bait konten viral Indonesia dan terapkan:\n\n\
+         {register_guide}\
+         Narasi dalam bahasa {lang}, buat di-voiceover-in.\n\n\
          STRUKTUR WAJIB:\n\
          1. HOOK: Buka dengan ranking/list bikin penasaran ATAU pernyataan gila yang langsung \
             bikin dahi berkerut. Contoh pola: \"Ada N hal [tokoh] yang bikin geleng-geleng:\", \
@@ -121,7 +138,7 @@ async fn generate_script(
             b. INTI KASUS = PORSI TERBESAR: kupas detail yang ditahan di (a) — ceritakan APA yang \
                sebenarnya terjadi dari [Judul]+[Deskripsi]+[Tokoh]+[Deskripsi Visual]+[Analisa Momen] \
                — tokoh, kronologi, lokasi, angka/fakta kunci. Bangun kasusnya sampai penonton paham \
-               duduk perkaranya. Gaya SINIS + HERAN (bukan empati, bukan bahasa berita formal).\n\
+               duduk perkaranya. Kalau register RAGE-BAIT/SINIS: gaya sinis + heran (bukan empati); register lain: nada ngikut materi (informatif/hangat/hormat), tetap spesifik & padat.\n\
             c. REAKSI NETIZEN = PELENGKAP (bukan tulang punggung): SETELAH fakta jelas, bumbui HANYA \
                1-2 komentar paling nyeleneh/kontroversial — PARAFRASE jadi kalimat sendiri yang natural \
                (kutip singkat HANYA kalau punchy). ABAIKAN komentar receh: keluhan badan ('paha gatel',\
@@ -170,6 +187,7 @@ async fn generate_script(
         src = source_text.chars().take(3500).collect::<String>().trim(),
         lang = language, words = words, secs = target_secs,
         refs_block = refs_block,
+        register_guide = REGISTER_GUIDE,
     );
 
     let raw = provider.chat_completion_json(SYSTEM, &user).await
@@ -346,5 +364,16 @@ mod tests {
         let raw = "```json\n{\"hook\":\"H\",\"narration\":\"satu dua tiga empat lima enam tujuh delapan sembilan\"}\n```";
         let (narr, _) = super::parse_narration_reply(raw).expect("valid json");
         assert_eq!(narr.split_whitespace().count(), 9);
+    }
+
+    #[test]
+    fn register_guide_gates_rage_bait_and_system_is_not_forced() {
+        // Rage-bait must be CONDITIONAL, not the default for every topic.
+        assert!(super::REGISTER_GUIDE.contains("HANYA berlaku kalau register = RAGE-BAIT"));
+        assert!(super::REGISTER_GUIDE.contains("KOMENTAR-INFORMATIF"));
+        assert!(super::REGISTER_GUIDE.contains("SOMBER-RESPEKTIF"));
+        // The narrator persona no longer *specializes* in rage-bait.
+        assert!(super::SYSTEM.contains("REGISTER"));
+        assert!(!super::SYSTEM.contains("spesialisasi RAGE-BAIT"));
     }
 }
