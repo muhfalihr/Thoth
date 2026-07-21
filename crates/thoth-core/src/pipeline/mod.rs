@@ -339,6 +339,10 @@ impl<'a> PipelineRunner<'a> {
             if !refs.is_empty() {
                 sources.push(format!("[Konteks Budaya]\n{}", refs.join("\n")));
             }
+            // Topic Dossier (scout topic_dossier.ts): entitas+relasi+sudut cerita → spine narasi.
+            for b in dossier_blocks(&ctx.dossier) {
+                sources.push(b);
+            }
             // Collective audience reading — emitted after the comments block (see below).
             let d = &ctx.discourse;
             if !d.audience_stance.trim().is_empty() || !d.narration_guidance.trim().is_empty() || !d.trends.is_empty() {
@@ -665,6 +669,65 @@ impl<'a> PipelineRunner<'a> {
             }
         }
         if out.is_empty() { None } else { Some(out) }
+    }
+}
+
+/// Rakit blok grounding narasi dari Topic Dossier. Hanya emit seksi yang terisi.
+fn dossier_blocks(d: &crate::ingest::content_search::Dossier) -> Vec<String> {
+    let mut out = Vec::new();
+    let ents: Vec<String> = d.entities.iter()
+        .filter(|e| !e.term.trim().is_empty() && !e.summary.trim().is_empty())
+        .map(|e| {
+            let kind = e.kind.trim();
+            if kind.is_empty() { format!("- {}: {}", e.term.trim(), e.summary.trim()) }
+            else { format!("- {} ({}): {}", e.term.trim(), kind, e.summary.trim()) }
+        }).collect();
+    let rels: Vec<String> = d.relations.iter().map(|r| r.trim()).filter(|r| !r.is_empty()).map(|r| format!("- {r}")).collect();
+    if !ents.is_empty() || !rels.is_empty() {
+        let mut s = String::from("[Entitas & Fakta]");
+        if !ents.is_empty() { s.push('\n'); s.push_str(&ents.join("\n")); }
+        if !rels.is_empty() { s.push_str("\nRelasi:\n"); s.push_str(&rels.join("\n")); }
+        out.push(s);
+    }
+    let angles: Vec<String> = d.angles.iter().map(|a| a.trim()).filter(|a| !a.is_empty()).map(|a| format!("- {a}")).collect();
+    if !angles.is_empty() {
+        out.push(format!("[Sudut Cerita]\n{}", angles.join("\n")));
+    }
+    let tl: Vec<String> = d.timeline.iter().map(|t| t.trim()).filter(|t| !t.is_empty()).map(|t| format!("- {t}")).collect();
+    if !tl.is_empty() {
+        out.push(format!("[Kronologi]\n{}", tl.join("\n")));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dossier_blocks;
+
+    #[test]
+    fn dossier_blocks_emits_present_sections_only() {
+        use crate::ingest::content_search::{Dossier, Reference};
+        let d = Dossier {
+            topic: "Kasus X".into(),
+            entities: vec![Reference { term: "Nvidia".into(), kind: "org".into(), summary: "chip".into(), as_of_date: String::new(), source_url: String::new() }],
+            relations: vec!["A kaitan B".into()],
+            angles: vec!["sudut 1".into(), "sudut 2".into()],
+            timeline: vec![],
+        };
+        let blocks = dossier_blocks(&d);
+        let joined = blocks.join("\n---\n");
+        assert!(joined.contains("[Entitas & Fakta]"));
+        assert!(joined.contains("Nvidia"));
+        assert!(joined.contains("A kaitan B"));
+        assert!(joined.contains("[Sudut Cerita]"));
+        assert!(joined.contains("sudut 1"));
+        assert!(!joined.contains("[Kronologi]")); // timeline kosong → tak diemit
+    }
+
+    #[test]
+    fn dossier_blocks_empty_when_all_empty() {
+        use crate::ingest::content_search::Dossier;
+        assert!(dossier_blocks(&Dossier::default()).is_empty());
     }
 }
 
