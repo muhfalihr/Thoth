@@ -473,6 +473,8 @@ pub async fn create_project_job(
 
     if let Some(reference) = &profile.credential_ref {
         if !state.credentials.is_available(reference) {
+            // Deliberately generic: the reference name is never echoed (see
+            // `project_job_rejects_when_credential_reference_is_unavailable`).
             return resource_error_response(ResourceError::Validation {
                 message: "required credential is unavailable".to_owned(),
             });

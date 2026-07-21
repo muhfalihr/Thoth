@@ -26,6 +26,9 @@ fn parse_home_arg(args: impl IntoIterator<Item = OsString>) -> anyhow::Result<Op
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load `.env` like the CLI/worker (thoth-core) do, so the credential gate
+    // (`EnvCredentialProvider`) can see the same API keys the worker will use.
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt().with_env_filter("info").init();
 
     let api_key = std::env::var("THOTH_API_KEY").unwrap_or_else(|_| "dev-key".to_owned());

@@ -3532,6 +3532,7 @@ dependencies = [
  "async-stream",
  "axum",
  "chrono",
+ "dotenvy",
  "futures-util",
  "serde",
  "serde_json",
