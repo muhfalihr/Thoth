@@ -110,6 +110,12 @@ export function RunForm({
       setError("select a profile first");
       return;
     }
+    // A run needs exactly one source; the profile carries none by default, so
+    // require a URL or content-set unless the selected profile stored one.
+    if (!s(url) && !s(contentSet) && !selected?.settings?.ingest_source?.source) {
+      setError("provide a URL or content-set (this profile has no saved source)");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {

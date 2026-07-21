@@ -376,7 +376,14 @@ export type ProfileValidation = { valid: boolean; message?: string };
 export type ConfigImportReport = { imported: boolean; warnings: string[] };
 
 async function ok<T>(r: Response, label: string): Promise<T> {
-  if (!r.ok) throw new Error(`${label} ${r.status}`);
+  if (!r.ok) {
+    // Surface the server's error envelope ({error:{message}} or {error:"..."})
+    // instead of a bare status code, so callers show WHY a request failed.
+    const body = await r.json().catch(() => null);
+    // Server uses two envelopes: {error:{...,message}} and {error:"code", message}.
+    const detail = body?.error?.message ?? body?.message ?? body?.error ?? r.status;
+    throw new Error(`${label}: ${detail}`);
+  }
   return r.json() as Promise<T>;
 }
 

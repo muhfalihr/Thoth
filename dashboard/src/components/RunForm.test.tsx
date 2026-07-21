@@ -24,7 +24,7 @@ const P1_PROFILE = {
       headline_dur: 4,
     },
     analysis: { provider: "novita", model: "medium", max_clips: 3, keywords: [] },
-    ingest_source: { source: null, content_set: null },
+    ingest_source: { source: "https://seed.test/v", content_set: null },
     output: { directory: null },
     advanced: {},
   },
@@ -32,7 +32,14 @@ const P1_PROFILE = {
   updated_at: "",
 };
 
-const listProfiles = mock(async () => [P1_PROFILE] as unknown[]);
+// Same profile with no stored source — a run must supply a URL/content-set.
+const P1_NO_SOURCE = {
+  ...P1_PROFILE,
+  settings: { ...P1_PROFILE.settings, ingest_source: { source: null, content_set: null } },
+};
+
+let profileList: unknown[] = [P1_PROFILE];
+const listProfiles = mock(async () => profileList);
 const createProfileJob = mock(
   async (_projectId: string, _req: { profile_id: string; overrides: Record<string, unknown> }) => ({ job_id: "job-1" }),
 );
@@ -53,6 +60,7 @@ mock.module("../api", () => ({
 
 afterEach(() => {
   cleanup();
+  profileList = [P1_PROFILE];
   listProfiles.mockClear();
   createProfileJob.mockClear();
   updateProfile.mockClear();
@@ -80,4 +88,17 @@ test("run sends profile_id + typed overrides and never mutates the profile", asy
   expect(req.overrides).toEqual({ visual_edit_layout: "horizontal" });
   expect(updateProfile).not.toHaveBeenCalled();
   expect(onCreated).toHaveBeenCalledWith("job-1");
+});
+
+test("run with no source (profile has none, no URL/content-set) shows an error and never posts", async () => {
+  profileList = [P1_NO_SOURCE];
+  const user = userEvent.setup();
+  const { RunForm } = await import("./RunForm");
+  render(<RunForm projectId="p1" onCreated={mock(() => {})} />);
+  await screen.findByText("Default");
+
+  await user.click(screen.getByRole("button", { name: /^run$/i }));
+
+  expect(createProfileJob).not.toHaveBeenCalled();
+  expect(await screen.findByText(/provide a URL or content-set/i)).toBeDefined();
 });
