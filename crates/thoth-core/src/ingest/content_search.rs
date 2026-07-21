@@ -213,6 +213,22 @@ pub struct Figure {
     pub description: String,
 }
 
+/// Topic Dossier (scout `topic_dossier.ts`): entities + relations + story angles for narration
+/// grounding. `search_queries` is scout-only (drives footage search) — NOT carried into Rust.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Dossier {
+    #[serde(default)]
+    pub topic: String,
+    #[serde(default)]
+    pub entities: Vec<Reference>,
+    #[serde(default)]
+    pub relations: Vec<String>,
+    #[serde(default)]
+    pub angles: Vec<String>,
+    #[serde(default)]
+    pub timeline: Vec<String>,
+}
+
 /// The scout content set passed via `thoth run --content <set.json>`:
 /// one main video to clip + a footage pool for cutaways/narration enrichment +
 /// (optionally) the subject's real profile and scraped viral comments.
@@ -233,6 +249,10 @@ pub struct ContentSet {
     /// Collective audience reading of the comments (so the narrator doesn't misread sarcasm).
     #[serde(default)]
     pub discourse: Discourse,
+    /// Topic dossier (entities/relations/angles/timeline) from scout `topic_dossier.ts`.
+    /// Narration grounding. `[]`/empty defaults when scout doesn't supply one.
+    #[serde(default)]
+    pub dossier: Dossier,
 }
 
 /// Parsed content set, split into the parts each pipeline stage consumes.
@@ -262,6 +282,8 @@ pub struct LoadedSet {
     pub references: Vec<Reference>,
     /// Collective audience reading of the comments. Empty fields when none.
     pub discourse: Discourse,
+    /// Topic dossier (entities/relations/angles/timeline). Empty defaults when none.
+    pub dossier: Dossier,
 }
 
 /// Load and validate an scout content set file.
@@ -288,6 +310,7 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
         figures: set.figures,
         references: set.references,
         discourse: set.discourse,
+        dossier: set.dossier,
     })
 }
 
@@ -316,6 +339,10 @@ pub struct MainContext {
     /// references correctly instead of taking them literally. Empty fields when none.
     #[serde(default)]
     pub discourse: Discourse,
+    /// Topic dossier (entities/relations/angles/timeline) from scout `topic_dossier.ts` —
+    /// narration grounding. Empty defaults when scout didn't supply one.
+    #[serde(default)]
+    pub dossier: Dossier,
 }
 
 /// Load the main-context sidecar from `base_dir/content_context.json`. Returns
@@ -323,6 +350,19 @@ pub struct MainContext {
 pub fn load_main_context(base_dir: &Path) -> Option<MainContext> {
     let raw = std::fs::read_to_string(base_dir.join(MAIN_CONTEXT_FILE)).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+/// Assemble the `MainContext` sidecar from a loaded content-set. Used by `lib.rs` when
+/// handling `thoth run --content <set.json>` (extracted here so it's unit-testable).
+pub fn to_main_context(set: LoadedSet) -> MainContext {
+    MainContext {
+        title: set.main_title.trim().to_string(),
+        description: set.main_description.trim().to_string(),
+        figures: set.figures,
+        references: set.references,
+        discourse: set.discourse,
+        dossier: set.dossier,
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +451,41 @@ mod tests {
         assert!(!set.footage[0].is_video);
         assert!(set.footage[1].image_path.is_empty()); // defaulted for video item
         assert!(set.main_image_path.is_empty());
+    }
+
+    #[test]
+    fn content_set_parses_dossier_into_main_context() {
+        let json = r#"{
+            "main": {"url":"u","title":"T","description":"D"},
+            "footage": [], "comments": [],
+            "dossier": {
+                "topic":"Kasus X",
+                "entities":[{"term":"Nvidia","kind":"org","summary":"chip"}],
+                "relations":["A kaitan B"],
+                "angles":["sudut 1"],
+                "search_queries":[{"q":"chip ai","for":"entity:nvidia"}],
+                "timeline":["t1"]
+            }
+        }"#;
+        let mut f = tempfile_like();
+        f.write_all(json.as_bytes()).unwrap();
+        let set = load_content_set(f.path()).unwrap();
+        let ctx = to_main_context(set);
+        assert_eq!(ctx.dossier.topic, "Kasus X");
+        assert_eq!(ctx.dossier.entities.len(), 1);
+        assert_eq!(ctx.dossier.angles, vec!["sudut 1".to_string()]);
+        assert_eq!(ctx.dossier.timeline, vec!["t1".to_string()]);
+    }
+
+    #[test]
+    fn content_set_without_dossier_defaults_empty() {
+        let json = r#"{"main":{"url":"u"},"footage":[],"comments":[]}"#;
+        let mut f = tempfile_like();
+        f.write_all(json.as_bytes()).unwrap();
+        let set = load_content_set(f.path()).unwrap();
+        let ctx = to_main_context(set);
+        assert!(ctx.dossier.topic.is_empty());
+        assert!(ctx.dossier.entities.is_empty());
     }
 
     #[test]
