@@ -869,14 +869,9 @@ pub async fn run_once(
                     let names = set.figures.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
                     tracing::info!("👤 scout figures: {names} → narration grounding");
                 }
-                if !set.main_title.trim().is_empty() || !set.main_description.trim().is_empty() || !set.figures.is_empty() {
-                    let ctx = ingest::content_search::MainContext {
-                        title: set.main_title.trim().to_string(),
-                        description: set.main_description.trim().to_string(),
-                        figures: set.figures.clone(),
-                        references: set.references.clone(),
-                        discourse: set.discourse.clone(),
-                    };
+                if !set.main_title.trim().is_empty() || !set.main_description.trim().is_empty() || !set.figures.is_empty()
+                    || !set.dossier.topic.trim().is_empty() || !set.dossier.entities.is_empty() {
+                    let ctx = ingest::content_search::to_main_context(set.clone());
                     let dest = args.output_dir.join(ingest::content_search::MAIN_CONTEXT_FILE);
                     match serde_json::to_string_pretty(&ctx) {
                         Ok(j) => {

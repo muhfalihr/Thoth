@@ -1,14 +1,19 @@
-// enrich_context.js — decode the CULTURAL CONTEXT of a content-set so the narration LLM understands
+// topic_dossier.ts — decode the CULTURAL CONTEXT of a content-set so the narration LLM understands
 // the subtext (named entities, memes, coded slang, current events, audience sentiment) instead of
-// misreading it (e.g. taking sarcastic comments literally and "blaming the netizens").
+// misreading it (e.g. taking sarcastic comments literally and "blaming the netizens"). ALSO produces
+// a Topic Dossier (topic/entities/relations/angles/search_queries/timeline) from the SAME LLM call —
+// search_queries drives footage search (runs BEFORE build_footage); entities/relations/angles ground
+// narration.
 //
 // Phase 1: ONE LLM call using the model's own knowledge. Writes back into the content-set:
 //   - references[]        : {term, kind, summary} — entities/memes/slang/events the audience assumes
 //   - comments[].context  : 1-line decoded meaning (subtext + tone) per meaningful comment
 //   - discourse{}         : {audience_stance, themes[], narration_guidance} — collective reading
-// Consumed by Thoth `generate_narration` ([Konteks Budaya] + [Maksud Komentar] blocks).
+//   - dossier{}           : {topic, entities[], relations[], angles[], search_queries[], timeline[]}
+// Consumed by Thoth `generate_narration` ([Konteks Budaya] + [Maksud Komentar] blocks) and by
+// build_footage (dossier.search_queries).
 //
-//   bun enrich_context.js <content_set.json>
+//   bun topic_dossier.js <content_set.json>
 //
 // Uses Novita (THOTH_NOVITA_API_KEY via lib/env.js); model via env THOTH_CONTEXT_MODEL (default deepseek-v3.1 — reasoning
 // about subtext/recent memes needs a strong model). Best-effort: any failure leaves the set unchanged.
@@ -16,6 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as ckb from './ckb.ts';
+import { parseDossier } from './dossier_parse.ts';
 
 import { novitaKey } from '../lib/env.ts';
 import { ui } from '../lib/ui.ts';
@@ -24,7 +30,7 @@ const MODEL = process.env.THOTH_CONTEXT_MODEL || 'deepseek/deepseek-v3.1'; // re
 
 const FILE = process.argv[2];
 if (!FILE) {
-  console.log('Usage: bun enrich_context.ts <content_set.json>');
+  console.log('Usage: bun topic_dossier.ts <content_set.json>');
   process.exit(1);
 }
 if (!fs.existsSync(FILE)) {
@@ -63,9 +69,21 @@ LAKUKAN:
 3. discourse: {"audience_stance":"1 kalimat maksud/perasaan KOLEKTIF audiens","themes":["2-4 tema
    singkat"],"narration_guidance":"1 kalimat nada/sudut yg harus diambil narator (mis. selami ironi,
    JANGAN menyalahkan komentator)"}.
+4. dossier: bongkar TOPIK inti + entitas + relasi + sudut cerita + query pencarian footage + linimasa.
 
-Keluarkan HANYA JSON valid:
-{"references":[{"term":"","kind":"","summary":""}],"comments":[{"i":0,"context":""}],"discourse":{"audience_stance":"","themes":[""],"narration_guidance":""}}`;
+Keluarkan HANYA JSON valid (satu objek):
+{"references":[{"term":"","kind":"","summary":""}],
+ "comments":[{"i":0,"context":""}],
+ "discourse":{"audience_stance":"","themes":[""],"narration_guidance":""},
+ "topic":"1 kalimat inti kejadian",
+ "entities":[{"term":"","kind":"person|org|place|event|meme|slang","summary":"1 baris faktual"}],
+ "relations":["kalimat: bagaimana 2 entitas berhubungan di cerita ini"],
+ "angles":["3-5 sudut/sub-cerita untuk narasi"],
+ "search_queries":[{"q":"kata kunci KONKRET untuk cari footage b-roll","for":"entity:<term> | angle:<n>"}],
+ "timeline":["peristiwa berurut waktu (kosongkan bila topik tak temporal)"]}
+
+ATURAN search_queries: 6-12 query. Setiap query = subjek/objek VISUAL yang bisa difilmkan
+(orang, tempat, benda, brand, aksi) — BUKAN pertanyaan/opini. Sertakan subjek utama di tiap query.`;
 
 async function enrich(set) {
   if (!KEY) {
@@ -234,6 +252,14 @@ async function enrich(set) {
       `  ${ui.OK} ${refs.length} ref, ${tagged} komentar di-decode, stance="${(set.discourse.audience_stance || '').slice(0, 60)}"`,
     ),
   );
+
+  // ── Topic Dossier: field baru dari respons LLM yang sama (search_queries men-drive footage) ──
+  const dossier = parseDossier(txt); // txt = raw LLM content (sudah ada di enrich())
+  if (dossier) {
+    set.dossier = dossier;
+    console.log(`  📚 dossier: ${dossier.entities.length} entitas, ${dossier.search_queries.length} query, ${dossier.angles.length} sudut`);
+  }
+
   return true;
 }
 
@@ -292,7 +318,7 @@ Keluarkan HANYA JSON: {"items":[{"term":"","summary":"","as_of_date":""}]}`;
 
 (async () => {
   console.log(ui.rule());
-  console.log('  Enrich Context (referensi budaya + maksud komentar)');
+  console.log('  Topic Dossier (referensi budaya + maksud komentar + dossier topik)');
   console.log(ui.rule());
   let set;
   try {
@@ -304,6 +330,6 @@ Keluarkan HANYA JSON: {"items":[{"term":"","summary":"","as_of_date":""}]}`;
   const changed = await enrich(set);
   if (changed) {
     fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
-    console.log(`📄 ${FILE} (references/discourse/comment-context ditulis)`);
+    console.log(`📄 ${FILE} (references/discourse/comment-context/dossier ditulis)`);
   }
 })();

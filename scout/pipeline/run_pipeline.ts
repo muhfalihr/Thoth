@@ -146,14 +146,12 @@ run(async () => {
       '--extra',
       URL,
     ]);
-  step('build_footage (objek→footage)', 'build_footage.ts', [file, '--per', PER, '--max', MAX]);
-  step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file]);
-  // Decode cultural context (entitas/meme/slang + maksud komentar) → narasi paham subteks,
-  // tak menyalahkan netizen. Best-effort (skip diam bila tak ada key / gagal).
+  // topic_dossier SEBELUM build_footage: search_queries-nya men-drive pencarian footage.
+  // Best-effort; bila gagal, build_footage fallback ke footageObjects.
   if (!NO_COMMENTS)
-    step('enrich_context (referensi budaya + maksud komentar)', '../enrich/enrich_context.ts', [
-      file,
-    ]);
+    step('topic_dossier (enrich topik + query footage)', '../enrich/topic_dossier.ts', [file]);
+  step('build_footage (dossier→footage)', 'build_footage.ts', [file, '--per', PER, '--max', MAX]);
+  step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file]);
 
   // 6) Validate + summary.
   step('validate', 'validate_content_set.ts', [file]);

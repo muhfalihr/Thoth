@@ -107,8 +107,11 @@ async fn generate_script(
     let user = format!(
         "Ini SUMBER KONTEKS sebuah kejadian. Bisa berisi beberapa blok: [Judul], \
          [Deskripsi], [Tokoh], [Konteks Budaya] (penjelasan entitas/meme/slang/peristiwa yang \
-         dirujuk audiens), [Komentar Netizen Teratas] (tiap komentar bisa diikuti '[maksud: ...]' \
-         = arti tersirat & nada-nya), [Maksud Komentar] (sikap kolektif audiens), [Deskripsi Visual] \
+         dirujuk audiens), [Entitas & Fakta] (fakta wajib-ground dari Topic Dossier: entitas kunci \
+         + relasi antar-entitas), [Sudut Cerita] (kerangka arah/angle cerita dari Topic Dossier), \
+         [Kronologi] (urutan kejadian dari Topic Dossier), [Komentar Netizen Teratas] (tiap komentar \
+         bisa diikuti '[maksud: ...]' = arti tersirat & nada-nya), [Maksud Komentar] (sikap kolektif \
+         audiens), [Deskripsi Visual] \
          (apa yang TERLIHAT di layar dari model vision), [Analisa Momen] (kenapa momen ini viral), \
          [Transkrip Audio], dan/atau [Video Terkait]. Pahami TOPIK & FAKTA nyatanya dari SEMUA blok:\n\
          ====================\n{src}\n====================\n\n\

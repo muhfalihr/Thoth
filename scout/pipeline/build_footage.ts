@@ -23,6 +23,8 @@ import { rankBySimilarity, embed, cosine } from '../lib/embed.ts';
 import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
+import { resolveFootageTasks } from './footage_queries.ts';
+import { hasReactionSubtitle } from '../lib/subtitle_vision.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
@@ -89,18 +91,6 @@ function looksSpam(text) {
 const REACTION_RE =
   /\b(reaction|reaksi|bereaksi|ngereact|nge-?react|react(?:ing|s|ed)?|reupload|nonton bareng)\b/i;
 const looksReaction = (t) => REACTION_RE.test(t || '');
-
-// Compound footage query: object + topic subject (recall+precision). "chip ai" + "nvidia" →
-// "chip ai nvidia". Skip if the object already carries a subject token (avoid "nvidia chip nvidia").
-function composeQuery(obj, subject) {
-  if (!subject) return obj;
-  const o = (obj || '').toLowerCase();
-  const hit = subject
-    .toLowerCase()
-    .split(/\s+/)
-    .some((t) => t.length >= 3 && o.includes(t));
-  return hit ? obj : `${obj} ${subject}`;
-}
 
 // Platform video/post id → content-identity dedup (a repost of MAIN under a different URL still counts).
 function videoId(u) {
@@ -248,36 +238,28 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
     PROFILE_FLAG ||
     (main.source_traced && /instagram/i.test(main.platform || '') ? main.source_traced : '');
 
-  let subjects = [],
-    people = [],
-    objects = [];
-  if (OBJ_FLAG) {
-    objects = OBJ_FLAG.split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } else {
-    const ex = await footageObjects({
-      description: main.description || '',
-      headline: main.title || '',
-      comments: topComments(set),
-    });
-    subjects = ex.subjects;
-    objects = ex.objects;
-    people = ex.people;
-  }
-  const primarySubject = subjects[0] || '';
-  console.log(ui.rule());
-  console.log('  Build Footage dari OBJEK' + (profileUser ? ' + PROFIL @' + profileUser : ''));
+  // --objects manual override bypasses resolveFootageTasks (query = obj verbatim); otherwise
+  // dossier.search_queries (Task 1) drives tasks, falling back to footageObjects extraction.
+  const tasks = OBJ_FLAG
+    ? OBJ_FLAG.split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((obj) => ({ obj, query: obj }))
+    : await resolveFootageTasks(
+        set,
+        (input) => footageObjects(input),
+        (s) => topComments(s),
+      );
   console.log(ui.rule());
   console.log(
-    'Subject:',
-    subjects.join(' | ') || '(kosong)',
-    '| People:',
-    people.join(' | ') || '(kosong)',
+    '  Build Footage' +
+      (set.dossier?.search_queries?.length ? ' (dossier-driven)' : ' (footageObjects fallback)') +
+      (profileUser ? ' + PROFIL @' + profileUser : ''),
   );
-  console.log('Objek  :', objects.join(' | ') || '(kosong)');
-  if (!objects.length && !profileUser) {
-    console.log('Tak ada objek. Selesai.');
+  console.log(ui.rule());
+  console.log('Query  :', tasks.map((t) => t.query).join(' | ') || '(kosong)');
+  if (!tasks.length && !profileUser) {
+    console.log('Tak ada query/objek. Selesai.');
     process.exit(0);
   }
 
@@ -319,10 +301,11 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
         captions: true,
         includePosts: true,
       });
-      // Topic text = objects + title (the EVENT), NOT figure names. We're ranking the creator's OWN
+      // Topic text = task queries + title (the EVENT), NOT figure names. We're ranking the creator's OWN
       // posts, so the figure's name matches EVERY post and discriminates nothing — it lets the creator's
       // off-topic posts (e.g. a sales rant) score above the floor. Rank by event relevance only.
-      const topic = [...objects, main.title || ''].filter(Boolean).join(', ');
+      const taskQueries = tasks.map((t) => t.query);
+      const topic = [...taskQueries, main.title || ''].filter(Boolean).join(', ');
       const ranked = await rankBySimilarity(topic, reels, (r) => r.caption || '');
       // No embeddings (sim all 0) → fall back to literal token overlap so we still add something useful.
       const useSim = ranked.some((r) => r.sim > 0);
@@ -332,7 +315,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
           .toLowerCase()
           .split(/\s+/)
           .forEach((w) => w.length >= 4 && toks.add(w));
-      objects.forEach(addToks);
+      taskQueries.forEach(addToks);
       addToks(main.title); // event tokens only (no figure name — see above)
       for (const r of ranked) {
         if (added >= PER + 1) break;
@@ -402,13 +385,6 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
     } catch (e) {}
     console.log(`+${added} reel relevan`);
   }
-  // Compound queries: each object + topic subject; +1 enriched query (primary object + subject + person).
-  const tasks = objects.map((obj) => ({ obj, query: composeQuery(obj, primarySubject) }));
-  if (people[0] && objects[0] && primarySubject)
-    tasks.push({
-      obj: objects[0],
-      query: `${composeQuery(objects[0], primarySubject)} ${people[0]}`,
-    });
 
   for (const { obj, query } of tasks) {
     try {
@@ -471,6 +447,12 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
               src_url = e.url;
             }
           } catch (err) {}
+        }
+        // Filter subtitle-vision: buang klip dgn caption-ucapan/overlay react (best-effort).
+        // Jalan hanya jika URL bisa di-frame (CDN mp4 hasil resolve). Gagal → lolos (text-gate).
+        if (await hasReactionSubtitle(furl)) {
+          dropReact++;
+          return false;
         }
         set.footage.push({
           url: furl,
@@ -589,8 +571,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
   // image-cards. LOOSE admit (no object-token gate) — the story-gate cosine below drops off-topic. Video
   // tweets self-skip: cropPost returns no image_path for a video slide (we only want NON-video here).
   if (!NO_CROP) {
-    const twQuery =
-      (main.title || '').trim() || [primarySubject, people[0]].filter(Boolean).join(' ').trim();
+    const twQuery = (main.title || '').trim() || (tasks[0]?.query || '');
     if (twQuery) {
       process.stdout.write(`• twitter "${twQuery.slice(0, 50)}" … `);
       let tw = 0;

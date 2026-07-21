@@ -28,7 +28,7 @@ const CMDS: Record<string, [string, string]> = {
   ],
   footage: ['pipeline/build_footage.ts', '<set.json> b-roll objek cerita (--per --max)'],
   figures: ['pipeline/extract_figures.ts', '<set.json> tokoh/organisasi → figures[]'],
-  enrich: ['enrich/enrich_context.ts', '<set.json> konteks budaya komentar (references/discourse)'],
+  enrich: ['enrich/topic_dossier.ts', '<set.json> konteks budaya komentar (references/discourse)'],
   images: [
     'pipeline/enrich_image_paths.ts',
     '<set.json> crop post non-video → image_path (--force)',
