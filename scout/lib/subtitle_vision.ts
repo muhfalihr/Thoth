@@ -45,7 +45,12 @@ export function classifyClip(frames: FrameDet[], duration: number): ClipVerdict 
     // Guard: a present frame may carry a null region (type permits it); localize only
     // if some frame gave a box. No box anywhere → still SUBTITLE + mute, just no blur.
     const r = withText.find((f) => f.region)?.region;
-    if (r) wins = [{ s: 0, e: duration, r }];
+    // Subtitles in EVERY sampled frame → they span the whole clip. Emit the
+    // {s:0,e:0} whole-clip sentinel (Rust ungates the blur for the entire render
+    // clip) instead of {e:duration}: `duration` is a 20s default here, but the
+    // narration render clip is often 30-50s, so a bounded window would leave the
+    // tail un-blurred and leak captions. See ffmpeg.rs build_subtitle_blur_overlay.
+    if (r) wins = [{ s: 0, e: 0, r }];
   } else {
     for (let i = 0; i < fs.length; i++) {
       const f = fs[i];

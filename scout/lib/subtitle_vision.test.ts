@@ -40,7 +40,10 @@ assert.equal(
   assert.ok(Math.abs(v.subtitle_blur[0].w - 0.8) < 1e-9);  // x1-x0
 }
 
-// SUBTITLE everywhere -> single whole-clip region [0,duration]
+// SUBTITLE everywhere -> single whole-clip region via {start:0,end:0} sentinel.
+// `duration` (20) is a sampling default, but the narration render clip is often
+// 30-50s; a bounded [0,20] window would leave the tail un-blurred and leak
+// captions. end:0 tells Rust to ungate the blur for the entire render clip.
 {
   const v = classifyClip([
     { t: 1, present: true, region: R(0.7) }, { t: 5, present: true, region: R(0.7) },
@@ -49,7 +52,7 @@ assert.equal(
   assert.equal(v.outcome, 'subtitle');
   assert.equal(v.subtitle_blur.length, 1);
   assert.equal(v.subtitle_blur[0].start, 0);
-  assert.equal(v.subtitle_blur[0].end, 20);
+  assert.equal(v.subtitle_blur[0].end, 0);
 }
 
 // SUBTITLE, all frames present but no region boxes → mute, no crash, empty blur

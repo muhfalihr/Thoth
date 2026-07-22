@@ -602,6 +602,27 @@ fn build_footage_card_overlay(
     }
 }
 
+/// Audio fade duration (s) at clip head/tail.
+const FADE_DUR: f64 = 0.5;
+/// Resample+reformat every audio stream to 48000 Hz stereo fltp before mixing.
+const NORMALIZE: &str = "aresample=48000:resampler=swr:async=1:first_pts=0,\
+                          aformat=sample_fmts=fltp:channel_layouts=stereo";
+
+/// Main-clip audio filter: trim → normalize → fade in/out. When `mute` is set the
+/// main's baked audio is silenced (`,volume=0`) — used when the source is a
+/// subtitle-baked reaction whose commentary must not leak. `volume=0` keeps a
+/// silent stream (safer than `-an` for downstream concat stream-consistency).
+fn main_audio_filter(rel_start: f64, rel_end: f64, fade_out_start: f64, mute: bool) -> String {
+    let mute_suffix = if mute { ",volume=0" } else { "" };
+    format!(
+        "atrim=start={rel_start:.3}:end={rel_end:.3},\
+         asetpts=PTS-STARTPTS,\
+         {NORMALIZE},\
+         afade=t=in:st=0:d={FADE_DUR:.3},\
+         afade=t=out:st={fade_out_start:.3}:d={FADE_DUR:.3}{mute_suffix}"
+    )
+}
+
 /// Per region k: crop the normalized band from `base_label`, boxblur it, overlay it back
 /// at the same spot. Gated `enable='between(t,start,end)'` unless start==end==0 (whole clip).
 /// Unique labels per k avoid filtergraph collisions. Empty regions → passthrough relabel.
@@ -908,7 +929,6 @@ pub async fn encode_clip_direct(
     let sub_suffix = subtitle_burn_suffix(ass_path, audio.hook_title_ass.as_deref(), &audio.font);
     let (vcodec, extra_args) = build_encoder(cfg);
 
-    const FADE_DUR: f64 = 0.5;
     let fade_out_start = (duration - FADE_DUR).max(0.0);
 
     // ── NORMALIZE all audio to 48000 Hz stereo ────────────────────────────────
@@ -917,17 +937,14 @@ pub async fn encode_clip_direct(
     // must be resampled to the SAME rate before mixing.
     // Using swr resampler with async=1 prevents click/pop at loop boundaries.
     const AR: u32 = 48_000; // target sample rate for all audio
-    const NORMALIZE: &str = "aresample=48000:resampler=swr:async=1:first_pts=0,\
-                              aformat=sample_fmts=fltp:channel_layouts=stereo";
 
-    // Main clip voice: trim → normalize → fade
-    let main_af = format!(
-        "atrim=start={rel_start:.3}:end={rel_end:.3},\
-         asetpts=PTS-STARTPTS,\
-         {NORMALIZE},\
-         afade=t=in:st=0:d={FADE_DUR:.3},\
-         afade=t=out:st={fade_out_start:.3}:d={FADE_DUR:.3}"
-    );
+    // Main clip voice: trim → normalize → fade. `main_af` is used ONLY by the
+    // non-narration audio paths (filter_complex `[voice]` at ~1352 and the plain
+    // `-af` fast path at ~1483); narration mode builds `[voice]` from the narrator
+    // and never touches it. So gating mute in `main_audio_filter` silences the
+    // main's baked audio in clip-mode too — closing the leak where a subtitle-baked
+    // reaction main is the source and narration has fallen back to clip-mode.
+    let main_af = main_audio_filter(rel_start, rel_end, fade_out_start, audio.mute_event);
 
     // ── Resolve audio/overlay options ────────────────────────────────────────
     let has_sfx        = audio.sfx_intro.is_some();
@@ -2763,6 +2780,17 @@ mod tests {
         assert!(f.contains("[blurred]")); // final label emitted
         // unique intermediate labels per index → no collision
         assert!(f.contains("[sb0]") && f.contains("[sb1]"));
+    }
+
+    #[test]
+    fn main_audio_filter_mutes_only_when_flagged() {
+        // Locks the clip-mode audio-leak fix: mute_event must silence the main's
+        // baked audio in the non-narration paths, and leave the clean path unchanged.
+        let clean = main_audio_filter(0.0, 5.0, 4.5, false);
+        let muted = main_audio_filter(0.0, 5.0, 4.5, true);
+        assert!(!clean.contains("volume=0"), "clean path must not mute: {clean}");
+        assert!(muted.ends_with(",volume=0"), "muted path must silence baked audio: {muted}");
+        assert_eq!(muted, format!("{clean},volume=0")); // byte-identical + suffix only
     }
 
     #[test]
