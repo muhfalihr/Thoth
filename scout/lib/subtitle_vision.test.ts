@@ -1,5 +1,25 @@
 import assert from 'node:assert';
-import { classifyVisionText, classifyClip } from './subtitle_vision.ts';
+import { classifyVisionText, classifyClip, normalizeRegion, parseVisionFrame } from './subtitle_vision.ts';
+
+// normalizeRegion: qwen3-vl returns 0-1000 grid coords; must rescale to [0..1]
+// so Rust doesn't clamp w→1.0 and blur the whole frame (the reported bug).
+{
+  const r = normalizeRegion(53, 460, 821, 617); // observed real output
+  assert.ok(Math.abs(r.x0 - 0.053) < 1e-9 && Math.abs(r.y0 - 0.460) < 1e-9);
+  assert.ok(Math.abs(r.x1 - 0.821) < 1e-9 && Math.abs(r.y1 - 0.617) < 1e-9);
+  // width/height are a band, NOT full-frame
+  assert.ok(r.x1 - r.x0 < 0.8 && r.y1 - r.y0 < 0.2);
+  // already-normalized coords pass through unscaled
+  const n = normalizeRegion(0.1, 0.4, 0.9, 0.5);
+  assert.deepEqual(n, { x0: 0.1, y0: 0.4, x1: 0.9, y1: 0.5 });
+  // reversed corners get ordered; out-of-range clamps to [0,1]
+  const rev = normalizeRegion(900, 700, 100, 300);
+  assert.deepEqual(rev, { x0: 0.1, y0: 0.3, x1: 0.9, y1: 0.7 });
+  // parseVisionFrame applies normalization end-to-end
+  const pf = parseVisionFrame('{"present":true,"region":[53,460,821,617],"why":"x"}');
+  assert.equal(pf.present, true);
+  assert.ok(pf.region && pf.region.x1 - pf.region.x0 < 0.8);
+}
 
 // Vision diinstruksi balas JSON {"reject":bool,"why":""}. Uji parsing + default aman.
 assert.equal(classifyVisionText('{"reject":true,"why":"auto-caption ucapan"}'), true);

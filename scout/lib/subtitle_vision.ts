@@ -94,6 +94,24 @@ const PROMPT =
   `face-cam/PiP react). region = kotak NORMALISASI [0..1] (x0,y0=kiri-atas; x1,y1=kanan-bawah) yang membungkus teks itu.\n` +
   `present=false (region null) untuk: lower-third berita, logo channel, watermark, headline grafis, teks judul singkat, tanpa teks.`;
 
+// Normalize a vision bbox to [0..1]. qwen3-vl IGNORES the prompt's "normalized"
+// instruction and returns 0-1000 grid coords (observed e.g. [53,460,821,617]);
+// detect that (any value >1) and rescale by 1000, then clamp to [0..1] and fix
+// corner ordering. WITHOUT this, downstream w=x1-x0=768 reaches Rust, which
+// clamps it to 1.0 and blurs the ENTIRE frame instead of just the subtitle band.
+// ponytail: 1000-grid is the qwen3-vl convention; if the model is swapped for one
+// that returns absolute pixels, clamp still bounds it (over-wide, not full-frame-safe) — revisit divisor then.
+export function normalizeRegion(
+  x0: number, y0: number, x1: number, y1: number,
+): NonNullable<FrameDet['region']> {
+  const s = Math.max(Math.abs(x0), Math.abs(y0), Math.abs(x1), Math.abs(y1)) > 1 ? 1000 : 1;
+  const c = (n: number) => Math.min(1, Math.max(0, n / s));
+  let [ax, ay, bx, by] = [c(x0), c(y0), c(x1), c(y1)];
+  if (bx < ax) [ax, bx] = [bx, ax];
+  if (by < ay) [ay, by] = [by, ay];
+  return { x0: ax, y0: ay, x1: bx, y1: by };
+}
+
 // Parse respons vision satu frame. Tak ada JSON / ragu → present:false (aman).
 export function parseVisionFrame(resp: string): { present: boolean; region: FrameDet['region'] } {
   const m = (resp || '').match(/\{[\s\S]*?\}/);
@@ -103,7 +121,7 @@ export function parseVisionFrame(resp: string): { present: boolean; region: Fram
     if (o?.present !== true) return { present: false, region: null };
     const a = o.region;
     const region = Array.isArray(a) && a.length === 4 && a.every((n: any) => typeof n === 'number')
-      ? { x0: a[0], y0: a[1], x1: a[2], y1: a[3] } : null;
+      ? normalizeRegion(a[0], a[1], a[2], a[3]) : null;
     return { present: true, region };
   } catch { return { present: false, region: null }; }
 }
