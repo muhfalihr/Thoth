@@ -830,6 +830,13 @@ pub async fn encode_clip_direct(
     // Narration is appended AFTER paper → its index sits one past the paper slot.
     let narration_idx = paper_idx + audio.montage.is_some() as usize;
 
+    // Windows during which a footage/image card is covering the main card —
+    // gate the main card off then so it never gets overlaid (menimpa).
+    let main_hide: Vec<(f64, f64)> = audio.footage_cards.iter()
+        .map(|c| (c.at_sec, c.at_sec + c.duration_sec))
+        .chain(audio.image_cards.iter().map(|c| (c.at_sec, c.at_sec + c.duration_sec)))
+        .collect();
+
     let main_vf = build_video_filter(
         layout, ass_path, rel_start, rel_end,
         &audio.clip_style,
@@ -843,6 +850,7 @@ pub async fn encode_clip_direct(
         &audio.comment_cards,
         anim_arg,
         true,   // defer subtitle burn → re-applied LAST as the topmost layer
+        &main_hide,
     );
     // Subtitle + hook burn-in, applied as the ABSOLUTE topmost layer so footage
     // cards / image cards / meme PiPs / crops never cover the captions.
@@ -1483,6 +1491,10 @@ fn build_video_filter(
     // meme / crop overlay. This keeps captions always readable on top of cutaways.
     // See `subtitle_burn_suffix` and `encode_clip_direct`.
     defer_subs: bool,
+    // Time windows (start,end secs, relative to clip) during which the main
+    // card must be hidden because a footage/image card is covering it —
+    // prevents footage overlaying (menimpa) the main card. Empty = no gate.
+    main_hide: &[(f64, f64)],
 ) -> String {
     // Subtitle + hook fragment (`subs`) is comma-LEADING-or-empty, matching the
     // convention of every other effect fragment (headline/profile/callout/comment/
@@ -1558,6 +1570,19 @@ fn build_video_filter(
         .collect();
 
     // ── Assemble the full filtergraph ─────────────────────────────────────────
+    // Main-card visibility gate: hide the main card during footage/image windows
+    // so footage never overlays (menimpa) it -- it cuts to footage on the paper
+    // canvas instead. Empty windows means no gate (unchanged behaviour).
+    let main_gate = if main_hide.is_empty() {
+        String::new()
+    } else {
+        let terms = main_hide.iter()
+            .map(|(a, b)| format!("between(t,{a:.3},{b:.3})"))
+            .collect::<Vec<_>>()
+            .join("+");
+        format!(":enable='not({terms})'")
+    };
+
     match layout {
         // Montage vertical: footage as a centred CARD on the crumpled-paper
         // canvas (paper from input `paper_idx`), instead of the blurred-self bg.
@@ -1578,7 +1603,7 @@ fn build_video_filter(
                  {pre_filter}\
                  scale={cardw}:-2,setsar=1[fg];\
                  [{paper_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[bg];\
-                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
+                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{main_gate}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Vertical => {
@@ -2617,6 +2642,41 @@ mod tests {
     }
 
     #[test]
+    fn montage_main_card_hidden_during_footage_windows() {
+        let render = MontageRender {
+            paper_bg: PathBuf::from("paper.mp4"),
+            footage_scale_pct: 88,
+            card_y_offset: 0,
+        };
+        let font = FontConfig::default();
+        let vf = build_video_filter(
+            &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
+            &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
+            Some((&render, 7)), false,
+            &[(4.0, 7.0)],
+        );
+        assert!(vf.contains("enable='not(between(t,4.000,7.000))'"),
+            "main card must be gated off during footage window: {vf}");
+    }
+
+    #[test]
+    fn montage_main_card_ungated_when_no_windows() {
+        let render = MontageRender {
+            paper_bg: PathBuf::from("paper.mp4"),
+            footage_scale_pct: 88,
+            card_y_offset: 0,
+        };
+        let font = FontConfig::default();
+        let vf = build_video_filter(
+            &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
+            &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
+            Some((&render, 7)), false,
+            &[],
+        );
+        assert!(!vf.contains(":enable='not("), "no windows → no gate: {vf}");
+    }
+
+    #[test]
     fn montage_branch_composites_on_paper() {
         let render = MontageRender {
             paper_bg: PathBuf::from("paper.mp4"),
@@ -2628,6 +2688,7 @@ mod tests {
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
+            &[],
         );
         assert!(f.contains("[7:v]scale=1080:1920")); // paper bg (input 7) composited at native framerate
         assert!(f.contains("crop=1080:1920"));
@@ -2643,6 +2704,7 @@ mod tests {
         let f = build_video_filter(
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None, false,
+            &[],
         );
         assert!(f.contains("gblur=sigma=20"));               // legacy blurred-self bg
         assert!(!f.contains("paper"));
@@ -2656,6 +2718,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 true, // defer
+                &[],
             );
             assert!(!f.contains("subtitles="), "deferred build must NOT burn subtitles: {f}");
             assert!(!f.contains(",,"), "no empty filter (double comma) allowed: {f}");
@@ -2671,6 +2734,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 false,
+                &[],
             );
             assert!(f.contains("subtitles='x.ass'"), "non-deferred must burn subtitles: {f}");
             assert!(!f.contains(",,"), "no empty filter (double comma) allowed: {f}");
