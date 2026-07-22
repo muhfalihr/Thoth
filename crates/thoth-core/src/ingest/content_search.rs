@@ -59,6 +59,19 @@ pub struct ContentResult {
     /// CARD (see `enrichment::load_image_pool`). Empty for video items.
     #[serde(default)]
     pub image_path: String,
+    /// Seconds to trim from the start (skip a cover/headline intro baked into
+    /// the source clip). Supplied by scout when it couldn't avoid picking a
+    /// video with an unavoidable intro. `0.0` = no trim.
+    #[serde(default)]
+    pub trim_start: f64,
+    /// Drop this item's own audio track (e.g. a reaction upload whose audio
+    /// would clash with the narration voiceover). Supplied by scout.
+    #[serde(default)]
+    pub mute_audio: bool,
+    /// Regions/time-windows of baked-in subtitles scout couldn't avoid, to be
+    /// blurred out during render. Empty = nothing to blur.
+    #[serde(default)]
+    pub subtitle_blur: Vec<SubtitleBlur>,
 }
 
 /// The MAIN clippable video chosen by scout. Only `url` is required — ingest
@@ -93,6 +106,38 @@ pub struct MainVideo {
     /// hallucinated follower counts). `None` = fall back to the LLM's guess.
     #[serde(default)]
     pub profile: Option<ProfileInfo>,
+    /// Seconds to trim from the start (skip a cover/headline intro baked into
+    /// the source clip). Supplied by scout when it couldn't avoid picking a
+    /// video with an unavoidable intro. `0.0` = no trim.
+    #[serde(default)]
+    pub trim_start: f64,
+    /// Drop this item's own audio track (e.g. a reaction upload whose audio
+    /// would clash with the narration voiceover). Supplied by scout.
+    #[serde(default)]
+    pub mute_audio: bool,
+    /// Regions/time-windows of baked-in subtitles scout couldn't avoid, to be
+    /// blurred out during render. Empty = nothing to blur.
+    #[serde(default)]
+    pub subtitle_blur: Vec<SubtitleBlur>,
+}
+
+/// A region + time-window of baked-in subtitles to blur during render.
+/// `x`,`y`,`w`,`h` are normalized (0.0-1.0) region coordinates; `start`,`end`
+/// are seconds into the clip the blur should be active.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SubtitleBlur {
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default)]
+    pub w: f64,
+    #[serde(default)]
+    pub h: f64,
+    #[serde(default)]
+    pub start: f64,
+    #[serde(default)]
+    pub end: f64,
 }
 
 /// Real social-profile metadata for the Beat-2 character intro card. Acquired by
@@ -525,5 +570,24 @@ mod tests {
         p.push(format!("thoth_cset_{}.json", uuid::Uuid::new_v4()));
         let f = std::fs::File::create(&p).unwrap();
         TmpFile(p, f)
+    }
+
+    #[test]
+    fn subtitle_fields_default_and_parse() {
+        // legacy JSON without the fields → defaults
+        let m: MainVideo = serde_json::from_str(r#"{"url":"u","is_video":true}"#).unwrap();
+        assert_eq!(m.trim_start, 0.0);
+        assert!(!m.mute_audio);
+        assert!(m.subtitle_blur.is_empty());
+
+        // new JSON populates them
+        let m2: MainVideo = serde_json::from_str(
+            r#"{"url":"u","is_video":true,"trim_start":4.0,"mute_audio":true,
+                 "subtitle_blur":[{"x":0.1,"y":0.7,"w":0.8,"h":0.08,"start":6.0,"end":14.0}]}"#).unwrap();
+        assert_eq!(m2.trim_start, 4.0);
+        assert!(m2.mute_audio);
+        assert_eq!(m2.subtitle_blur.len(), 1);
+        assert_eq!(m2.subtitle_blur[0].w, 0.8);
+        assert_eq!(m2.subtitle_blur[0].end, 14.0);
     }
 }

@@ -146,6 +146,7 @@ mod tests {
             snippet: String::new(), source: String::new(), published: None,
             thumbnail: String::new(), is_video, duration_sec: 120, views: 0,
             query: "q".into(), description: String::new(), relevance: relevance.into(), image_path: String::new(),
+            trim_start: 0.0, mute_audio: false, subtitle_blur: Vec::new(),
         }
     }
 
