@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connect, sleep } from '../lib/cdp.ts';
-import { tiktokOembed, youtubeOembed, matchesTopic, probeVideo } from '../lib/verify.ts';
+import { tiktokOembed, youtubeOembed, matchesTopic, probeVideo, directStreamUrl } from '../lib/verify.ts';
 import { resolveSource, composeSearchQuery, tightenQuery } from './resolve_source.ts';
 import { threadsVideoSrc, downloadThreads } from '../scrapers/threads_video.ts';
 import { igProfileReels } from '../scrapers/ig_profile.ts';
@@ -821,7 +821,14 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
   // Subtitle-vision penalty: burned-in-subtitle candidates (reaction/react-caption uploads) are
   // deprioritized so a clean/cover original wins when one exists. Never hard-rejected here — a sole
   // subtitle candidate must still survive to reach the final main-emission fallback below.
-  for (const c of onTopicU) c.sv = await analyzeSubtitles(c.videoSrc || c.url);
+  // ffmpeg (inside analyzeSubtitles) can't frame-grab a platform *page* URL — resolve each candidate
+  // to a direct CDN stream first (yt-dlp -g), falling back to the raw URL for already-direct sources.
+  // Without this the vision check fail-opens to 'clean' for every non-TikTok-CDN candidate and the
+  // penalty silently never fires (the whole point is to rank subtitle reactions down before selection).
+  for (const c of onTopicU) {
+    const src = c.videoSrc || directStreamUrl(c.url) || c.url;
+    c.sv = await analyzeSubtitles(src);
+  }
   const SUBTITLE_PENALTY = 1e6; // dwarfs any positive similarity score
   const scoreOf = (c) => (c.sim || 0) - (c.sv && c.sv.outcome === 'subtitle' ? SUBTITLE_PENALTY : 0);
   const tierOf = (c) => {
@@ -1423,7 +1430,9 @@ async function setMainTo(set, orig, username) {
   // intro gets trimmed; continuous burned-in subtitles (no better source existed → ranking penalty above
   // couldn't avoid it) get muted + blur-censored at render instead of silently shipping the reaction upload.
   if (set.main.is_video && set.main.url) {
-    const mv = await analyzeSubtitles(set.main.url);
+    // Resolve to a direct stream first so the check works on YT/Twitter/IG/FB mains too (not just a
+    // TikTok CDN url already resolved upstream); fall back to set.main.url for already-direct sources.
+    const mv = await analyzeSubtitles(directStreamUrl(set.main.url) || set.main.url);
     if (mv.outcome === 'cover') {
       set.main.trim_start = mv.trim_start;
     } else if (mv.outcome === 'subtitle') {
