@@ -454,6 +454,43 @@ fn narration_window_text(words: &[crate::transcribe::model::WordTimestamp], lo_s
         .join(" ")
 }
 
+/// Split the narration word-timeline into sentence-ish spans `(text, start_sec,
+/// end_sec)`. Boundary = sentence punctuation at a word's end, OR a silence gap
+/// > 0.6 s before the next word. Empty input → empty vec.
+fn narration_sentences(words: &[crate::transcribe::model::WordTimestamp]) -> Vec<(String, f64, f64)> {
+    let mut out = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    let mut start_ms: Option<i64> = None;
+    let mut last_end_ms: i64 = 0;
+    for (i, wd) in words.iter().enumerate() {
+        let tok = wd.word.trim();
+        if tok.is_empty() { continue; }
+        if start_ms.is_none() { start_ms = Some(wd.start_ms); }
+        cur.push(tok);
+        last_end_ms = wd.end_ms.max(wd.start_ms);
+        let ends_sentence = tok.ends_with(['.', '!', '?', '…']);
+        let big_gap = words.get(i + 1)
+            .map(|n| n.start_ms - last_end_ms > 600)
+            .unwrap_or(true);
+        if ends_sentence || big_gap {
+            if let Some(s) = start_ms.take() {
+                let text = cur.join(" ");
+                if !text.trim().is_empty() {
+                    out.push((text, s as f64 / 1000.0, last_end_ms as f64 / 1000.0));
+                }
+            }
+            cur.clear();
+        }
+    }
+    if let Some(s) = start_ms {
+        let text = cur.join(" ");
+        if !text.trim().is_empty() {
+            out.push((text, s as f64 / 1000.0, last_end_ms as f64 / 1000.0));
+        }
+    }
+    out
+}
+
 /// Cosine similarity of two equal-length vectors. `-1.0` on degenerate input.
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() { return -1.0; }
@@ -1912,8 +1949,22 @@ impl<'a> EditService<'a> {
 
                 // (a) Card WINDOWS (clip-time start + duration). One card per "card beat";
                 // between them the main event B-roll shows on the paper canvas.
+                // Card WINDOWS: prefer the narration sentence timeline so each card
+                // sits where a distinct topic is spoken (footage is then embedding-
+                // matched to that sentence below). Fall back to fixed intervals when
+                // there are no word timings.
+                let max_cuts = anim.intercut_max_cuts.max(1) as usize;
                 let mut windows: Vec<(f64, f64)> = Vec::new();
-                {
+                for (_, s_start, s_end) in narration_sentences(&words) {
+                    if windows.len() >= max_cuts { break; }
+                    let at = (s_start - lead).max(hook_dur.max(0.3));
+                    if let Some(&(pt, _)) = windows.last() {
+                        if at - pt < seg { continue; } // spacing ≥ seg
+                    }
+                    let card_dur = (s_end - s_start).clamp(1.0, seg).min((dur - at).max(0.0));
+                    if at + 1.0 < dur && card_dur >= 1.0 { windows.push((at, card_dur)); }
+                }
+                if windows.is_empty() {
                     let mut t = hook_dur.max(0.3) + seg;
                     while t + 1.0 < dur && windows.len() < 4 {
                         let card_dur = seg.min(dur - t - 0.2);
@@ -1926,10 +1977,10 @@ impl<'a> EditService<'a> {
                 enum Kind { Video, Image }
                 struct Cand { kind: Kind, idx: usize, desc: String }
                 let footage_desc = |c: &crate::ingest::content_search::ContentResult| -> String {
-                    if !c.description.trim().is_empty() { c.description.trim().to_string() }
+                    if !c.query.trim().is_empty() { c.query.trim().to_string() }
+                    else if !c.description.trim().is_empty() { c.description.trim().to_string() }
                     else if !c.title.trim().is_empty() { c.title.trim().to_string() }
-                    else if !c.snippet.trim().is_empty() { c.snippet.trim().to_string() }
-                    else { c.query.trim().to_string() }
+                    else { c.snippet.trim().to_string() }
                 };
                 let mut cands: Vec<Cand> = Vec::new();
                 for (i, c) in enrich_pool.iter().enumerate() { cands.push(Cand { kind: Kind::Video, idx: i, desc: footage_desc(c) }); }
@@ -2008,9 +2059,12 @@ impl<'a> EditService<'a> {
                                     overlay_cookie.as_ref(),
                                 ).await,
                             )? {
+                                let cover = super::overlay::footage_is_cover(
+                                    self.execution, &spec.path, ffmpeg_dir,
+                                ).await;
                                 fcards.push(super::ffmpeg::FootageCardCue {
                                     path: spec.path, at_sec: wt, duration_sec: wdur, scale_pct: anim.footage_scale_pct,
-                                    cover: false,
+                                    cover,
                                 });
                             }
                         }
@@ -2299,5 +2353,36 @@ mod tests {
             panic!("narrator overlay cancellation must remain typed");
         };
         assert!(crate::execution::is_cancelled(&anyhow::Error::new(cancelled)));
+    }
+}
+
+#[cfg(test)]
+mod sp2_placement_tests {
+    use super::narration_sentences;
+    use crate::transcribe::model::WordTimestamp;
+
+    fn w(word: &str, s: i64, e: i64) -> WordTimestamp {
+        WordTimestamp { word: word.into(), start_ms: s, end_ms: e, probability: 1.0 }
+    }
+
+    #[test]
+    fn splits_on_punctuation_and_gaps() {
+        let words = vec![
+            w("Banjir", 0, 400), w("Jakarta.", 400, 900),   // sentence 1 ends on '.'
+            w("Warga", 1000, 1400), w("panik", 1400, 1800),  // sentence 2 (no punct)…
+            w("hari", 4000, 4300), w("ini", 4300, 4600),     // …gap >0.6s starts sentence 3
+        ];
+        let s = narration_sentences(&words);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].0, "Banjir Jakarta.");
+        assert!((s[0].1 - 0.0).abs() < 1e-6 && (s[0].2 - 0.9).abs() < 1e-6);
+        assert_eq!(s[1].0, "Warga panik");
+        assert_eq!(s[2].0, "hari ini");
+        assert!((s[2].1 - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn empty_words_no_sentences() {
+        assert!(narration_sentences(&[]).is_empty());
     }
 }
