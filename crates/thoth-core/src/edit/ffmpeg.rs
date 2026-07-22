@@ -250,6 +250,9 @@ pub struct FootageCardCue {
     pub duration_sec: f64,
     /// Card width as % of frame width (≈88).
     pub scale_pct: u32,
+    /// Full-frame cover-crop (true) vs contained card + drop-shadow (false).
+    /// Set by the placement stage from the clip's probed aspect ratio.
+    pub cover: bool,
 }
 
 /// One time-windowed IMAGE CARD in a montage — a STATIC cropped screenshot of a
@@ -550,19 +553,41 @@ fn build_footage_card_overlay(
     k: usize,
     cue: &FootageCardCue,
     clip_w: u32,
+    clip_h: u32,
     in_label: &str,
     out_label: &str,
 ) -> String {
-    let at    = cue.at_sec.max(0.0);
-    let dur   = cue.duration_sec.clamp(0.8, 8.0);
-    let end   = at + dur;
-    let cardw = (clip_w * cue.scale_pct.clamp(40, 100) / 100).max(160);
-    format!(
-        "[{input_idx}:v]trim=duration={dur:.3},setpts=PTS-STARTPTS+{at:.3}/TB,\
-         scale={cardw}:-2,setsar=1[fc{k}];\
-         [{in_label}][fc{k}]overlay=x=(W-w)/2:y=(H-h)/2:\
-         enable='between(t,{at:.3},{end:.3})'[{out_label}]"
-    )
+    let at   = cue.at_sec.max(0.0);
+    let dur  = cue.duration_sec.clamp(0.8, 8.0);
+    let end  = at + dur;
+    let trim = format!("trim=duration={dur:.3},setpts=PTS-STARTPTS+{at:.3}/TB");
+    if cue.cover {
+        // Full-frame cover-crop — footage owns the whole frame. Main is hidden
+        // during this window by the main-card enable gate (Task 3), so this reads
+        // as a clean cut. Opaque overlay at 0:0.
+        format!(
+            "[{input_idx}:v]{trim},\
+             scale={clip_w}:{clip_h}:force_original_aspect_ratio=increase,\
+             crop={clip_w}:{clip_h},setsar=1[fc{k}];\
+             [{in_label}][fc{k}]overlay=x=0:y=0:\
+             enable='between(t,{at:.3},{end:.3})'[{out_label}]"
+        )
+    } else {
+        // Contain — footage at natural aspect, centred on the paper canvas, with a
+        // drop-shadow beneath it. Main is hidden during the window (Task 3), so the
+        // paper canvas — not the main card — fills the area around the footage.
+        let cardw = (clip_w * cue.scale_pct.clamp(40, 100) / 100).max(160);
+        format!(
+            "[{input_idx}:v]{trim},\
+             scale={cardw}:-2,setsar=1,split=2[fcbody{k}][fcsrc{k}];\
+             [fcsrc{k}]colorchannelmixer=rr=0:gg=0:bb=0,boxblur=14,\
+             format=yuva420p,colorchannelmixer=aa=0.5[fcsh{k}];\
+             [{in_label}][fcsh{k}]overlay=x=(W-w)/2:y=(H-h)/2+18:\
+             enable='between(t,{at:.3},{end:.3})'[fcs{k}];\
+             [fcs{k}][fcbody{k}]overlay=x=(W-w)/2:y=(H-h)/2:\
+             enable='between(t,{at:.3},{end:.3})'[{out_label}]"
+        )
+    }
 }
 
 /// Build the video-filter fragment overlaying one full-width IMAGE CARD (centred,
@@ -805,6 +830,13 @@ pub async fn encode_clip_direct(
     // Narration is appended AFTER paper → its index sits one past the paper slot.
     let narration_idx = paper_idx + audio.montage.is_some() as usize;
 
+    // Windows during which a footage/image card is covering the main card —
+    // gate the main card off then so it never gets overlaid (menimpa).
+    let main_hide: Vec<(f64, f64)> = audio.footage_cards.iter()
+        .map(|c| (c.at_sec, c.at_sec + c.duration_sec))
+        .chain(audio.image_cards.iter().map(|c| (c.at_sec, c.at_sec + c.duration_sec)))
+        .collect();
+
     let main_vf = build_video_filter(
         layout, ass_path, rel_start, rel_end,
         &audio.clip_style,
@@ -818,6 +850,7 @@ pub async fn encode_clip_direct(
         &audio.comment_cards,
         anim_arg,
         true,   // defer subtitle burn → re-applied LAST as the topmost layer
+        &main_hide,
     );
     // Subtitle + hook burn-in, applied as the ABSOLUTE topmost layer so footage
     // cards / image cards / meme PiPs / crops never cover the captions.
@@ -978,7 +1011,7 @@ pub async fn encode_clip_direct(
                 for (k, c) in fc_cues.iter().enumerate() {
                     let out = if k == last { "outv".to_string() } else { format!("fcx{}", k + 1) };
                     s.push(';');
-                    s.push_str(&build_footage_card_overlay(fc_base_idx + k, k, c, clip_w, &cur, &out));
+                    s.push_str(&build_footage_card_overlay(fc_base_idx + k, k, c, clip_w, clip_h, &cur, &out));
                     cur = out;
                 }
                 s
@@ -1458,6 +1491,10 @@ fn build_video_filter(
     // meme / crop overlay. This keeps captions always readable on top of cutaways.
     // See `subtitle_burn_suffix` and `encode_clip_direct`.
     defer_subs: bool,
+    // Time windows (start,end secs, relative to clip) during which the main
+    // card must be hidden because a footage/image card is covering it —
+    // prevents footage overlaying (menimpa) the main card. Empty = no gate.
+    main_hide: &[(f64, f64)],
 ) -> String {
     // Subtitle + hook fragment (`subs`) is comma-LEADING-or-empty, matching the
     // convention of every other effect fragment (headline/profile/callout/comment/
@@ -1533,6 +1570,19 @@ fn build_video_filter(
         .collect();
 
     // ── Assemble the full filtergraph ─────────────────────────────────────────
+    // Main-card visibility gate: hide the main card during footage/image windows
+    // so footage never overlays (menimpa) it -- it cuts to footage on the paper
+    // canvas instead. Empty windows means no gate (unchanged behaviour).
+    let main_gate = if main_hide.is_empty() {
+        String::new()
+    } else {
+        let terms = main_hide.iter()
+            .map(|(a, b)| format!("between(t,{a:.3},{b:.3})"))
+            .collect::<Vec<_>>()
+            .join("+");
+        format!(":enable='not({terms})'")
+    };
+
     match layout {
         // Montage vertical: footage as a centred CARD on the crumpled-paper
         // canvas (paper from input `paper_idx`), instead of the blurred-self bg.
@@ -1553,7 +1603,7 @@ fn build_video_filter(
                  {pre_filter}\
                  scale={cardw}:-2,setsar=1[fg];\
                  [{paper_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[bg];\
-                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
+                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{main_gate}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Vertical => {
@@ -2568,6 +2618,65 @@ mod tests {
     }
 
     #[test]
+    fn footage_cover_branch_crops_full_frame() {
+        let cue = FootageCardCue {
+            path: std::path::PathBuf::from("f.mp4"),
+            at_sec: 4.0, duration_sec: 3.0, scale_pct: 88, cover: true,
+        };
+        let f = build_footage_card_overlay(7, 0, &cue, 1080, 1920, "in", "out");
+        assert!(f.contains("crop=1080:1920"), "cover must crop to full frame: {f}");
+        assert!(f.contains("overlay=x=0:y=0"), "cover overlays full-frame: {f}");
+        assert!(f.contains("enable='between(t,4.000,7.000)'"));
+    }
+
+    #[test]
+    fn footage_contain_branch_has_shadow_and_centre() {
+        let cue = FootageCardCue {
+            path: std::path::PathBuf::from("f.mp4"),
+            at_sec: 4.0, duration_sec: 3.0, scale_pct: 88, cover: false,
+        };
+        let f = build_footage_card_overlay(7, 0, &cue, 1080, 1920, "in", "out");
+        assert!(f.contains("boxblur"), "contain must draw a drop-shadow: {f}");
+        assert!(f.contains("scale=950:-2"), "contain scales to card width (88% of 1080): {f}");
+        assert!(!f.contains("crop=1080:1920"), "contain must NOT full-frame crop: {f}");
+    }
+
+    #[test]
+    fn montage_main_card_hidden_during_footage_windows() {
+        let render = MontageRender {
+            paper_bg: PathBuf::from("paper.mp4"),
+            footage_scale_pct: 88,
+            card_y_offset: 0,
+        };
+        let font = FontConfig::default();
+        let vf = build_video_filter(
+            &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
+            &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
+            Some((&render, 7)), false,
+            &[(4.0, 7.0)],
+        );
+        assert!(vf.contains("enable='not(between(t,4.000,7.000))'"),
+            "main card must be gated off during footage window: {vf}");
+    }
+
+    #[test]
+    fn montage_main_card_ungated_when_no_windows() {
+        let render = MontageRender {
+            paper_bg: PathBuf::from("paper.mp4"),
+            footage_scale_pct: 88,
+            card_y_offset: 0,
+        };
+        let font = FontConfig::default();
+        let vf = build_video_filter(
+            &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
+            &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
+            Some((&render, 7)), false,
+            &[],
+        );
+        assert!(!vf.contains(":enable='not("), "no windows → no gate: {vf}");
+    }
+
+    #[test]
     fn montage_branch_composites_on_paper() {
         let render = MontageRender {
             paper_bg: PathBuf::from("paper.mp4"),
@@ -2579,6 +2688,7 @@ mod tests {
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
+            &[],
         );
         assert!(f.contains("[7:v]scale=1080:1920")); // paper bg (input 7) composited at native framerate
         assert!(f.contains("crop=1080:1920"));
@@ -2594,6 +2704,7 @@ mod tests {
         let f = build_video_filter(
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None, false,
+            &[],
         );
         assert!(f.contains("gblur=sigma=20"));               // legacy blurred-self bg
         assert!(!f.contains("paper"));
@@ -2607,6 +2718,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 true, // defer
+                &[],
             );
             assert!(!f.contains("subtitles="), "deferred build must NOT burn subtitles: {f}");
             assert!(!f.contains(",,"), "no empty filter (double comma) allowed: {f}");
@@ -2622,6 +2734,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 false,
+                &[],
             );
             assert!(f.contains("subtitles='x.ass'"), "non-deferred must burn subtitles: {f}");
             assert!(!f.contains(",,"), "no empty filter (double comma) allowed: {f}");
