@@ -791,6 +791,12 @@ impl<'a> EditService<'a> {
                 let e = transcript.find_sentence_end_after(moment.end_sec,   3.0).min(video_duration);
                 (s, e)
             };
+            let (start, end) = super::source_timing::clamp_segment(
+                start,
+                end,
+                video_duration,
+                main_ctx.trim_start,
+            );
             let duration = end - start;
 
             if start >= end || end > video_duration + 1.0 {
@@ -911,11 +917,16 @@ impl<'a> EditService<'a> {
             let mut audio_clone  = audio_opts.clone();
             // Reaction/subtitle-baked main: drop baked audio + blur baked subtitles
             // so neither leaks (same censor as narration mode; no-op without sidecar).
-            // ponytail: cover-intro trim_start is skipped on this fallback path —
-            // per-moment selection isn't cover-aware; wire it if clip-mode ever
-            // becomes the primary content-set render.
             audio_clone.mute_event   = main_ctx.mute_audio;
-            audio_clone.subtitle_blur = main_ctx.subtitle_blur.clone();
+            audio_clone.source_duration_secs = video_duration;
+            audio_clone.source_trim_start = main_ctx.trim_start;
+            audio_clone.subtitle_blur = super::source_timing::project_blur_regions(
+                &main_ctx.subtitle_blur,
+                start,
+                end,
+                duration,
+                false,
+            );
             let has_headline     = headline.is_some();
             audio_clone.headline = headline;
 
@@ -1800,18 +1811,20 @@ impl<'a> EditService<'a> {
         // a ~10s source clip because `dur` was `.min(video_dur)`).
         let lead = self.config.narration.lead_in_secs.clamp(0.0, 3.0);
         let dur  = narr_dur + lead;
-        let loop_source = dur > video_dur - 0.2;
-        // Cover-exception: skip the main's headline/cover intro (`trim_start`) so its
-        // baked text never shows. Only meaningful for a long-enough source (a short,
-        // looped B-roll has no separate intro to skip), so it clamps the non-loop
-        // in-point; if the trim would overrun the source, fall back as far as it fits.
-        let (start, end) = if loop_source {
-            (0.0, dur) // play B-roll from the top, looped (-stream_loop) to cover the narration
+        let clean_start = main_ctx.trim_start.clamp(0.0, (video_dur - 0.1).max(0.0));
+        let clean_duration = (video_dur - clean_start).max(0.0);
+        let loop_source = dur > clean_duration - 0.2;
+        // A loop is built from the headline-free segment. The logical encode
+        // timestamps remain 0..dur; ffmpeg's modulo-select drops the intro on every
+        // source cycle. Non-loop segments simply start no earlier than clean_start.
+        let (start, end, source_segment_start, source_segment_end) = if loop_source {
+            (0.0, dur, clean_start, video_dur)
         } else {
             let prefer = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0)
-                .max(main_ctx.trim_start);
-            let start = if prefer + dur <= video_dur { prefer } else { (video_dur - dur).max(0.0) };
-            (start, start + dur)
+                .max(clean_start);
+            let latest_start = (video_dur - dur).max(clean_start);
+            let start = prefer.min(latest_start);
+            (start, start + dur, start, start + dur)
         };
 
         // Hook window — the giant headline reads ALONE (no running subtitle). It
@@ -1850,10 +1863,18 @@ impl<'a> EditService<'a> {
         // 4) Build audio/video directives.
         let mut audio = audio_opts.clone();
         audio.loop_source = loop_source; // loop short B-roll to fill the narration (Bug 6)
+        audio.source_duration_secs = video_dur;
+        audio.source_trim_start = clean_start;
         // Reaction/subtitle-baked main: drop its baked audio and blur its subtitles
         // so neither leaks under the narration. No-ops when the sidecar is absent.
         audio.mute_event = main_ctx.mute_audio;
-        audio.subtitle_blur = main_ctx.subtitle_blur.clone();
+        audio.subtitle_blur = super::source_timing::project_blur_regions(
+            &main_ctx.subtitle_blur,
+            source_segment_start,
+            source_segment_end,
+            dur,
+            loop_source,
+        );
         audio.headline = None;
         audio.narration = Some(super::ffmpeg::NarrationVoice {
             mp3: self.job.narration_mp3(),

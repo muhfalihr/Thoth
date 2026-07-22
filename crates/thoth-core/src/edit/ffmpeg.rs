@@ -10,6 +10,7 @@ use crate::ingest::content_search::SubtitleBlur;
 use super::error::EditError;
 use super::fonts::FontConfig;
 use super::layout::OutputLayout;
+use super::source_timing::{clean_loop_audio_prefix, clean_loop_video_prefix};
 
 // ── Clip transition styles ────────────────────────────────────────────────────
 
@@ -368,6 +369,11 @@ pub struct AudioOptions {
     /// exact passthrough. Consumed by `build_video_filter`.
     pub subtitle_blur: Vec<SubtitleBlur>,
 
+    /// Original source duration and headline-free in-point. These are used only
+    /// when an input loops, so every cycle drops the intro instead of replaying it.
+    pub source_duration_secs: f64,
+    pub source_trim_start: f64,
+
     /// Montage footage cards (narrator-driven mode): relevant clips cutting over the
     /// base B-roll at intervals so the video keeps changing. Empty = single B-roll.
     pub footage_cards: Vec<FootageCardCue>,
@@ -613,14 +619,79 @@ const NORMALIZE: &str = "aresample=48000:resampler=swr:async=1:first_pts=0,\
 /// subtitle-baked reaction whose commentary must not leak. `volume=0` keeps a
 /// silent stream (safer than `-an` for downstream concat stream-consistency).
 fn main_audio_filter(rel_start: f64, rel_end: f64, fade_out_start: f64, mute: bool) -> String {
+    main_audio_filter_with_timing(
+        rel_start,
+        rel_end,
+        fade_out_start,
+        mute,
+        false,
+        0.0,
+        0.0,
+        rel_end - rel_start,
+    )
+}
+
+fn main_audio_filter_with_timing(
+    rel_start: f64,
+    rel_end: f64,
+    fade_out_start: f64,
+    mute: bool,
+    loop_source: bool,
+    source_duration: f64,
+    trim_start: f64,
+    output_duration: f64,
+) -> String {
     let mute_suffix = if mute { ",volume=0" } else { "" };
+    let timing = build_main_audio_timing_prefix(
+        loop_source,
+        source_duration,
+        trim_start,
+        output_duration,
+        rel_start,
+        rel_end,
+    );
     format!(
-        "atrim=start={rel_start:.3}:end={rel_end:.3},\
-         asetpts=PTS-STARTPTS,\
+        "{timing},\
          {NORMALIZE},\
          afade=t=in:st=0:d={FADE_DUR:.3},\
          afade=t=out:st={fade_out_start:.3}:d={FADE_DUR:.3}{mute_suffix}"
     )
+}
+
+fn build_main_audio_timing_prefix(
+    loop_source: bool,
+    source_duration: f64,
+    trim_start: f64,
+    output_duration: f64,
+    start_sec: f64,
+    end_sec: f64,
+) -> String {
+    if loop_source && trim_start > 0.0 && source_duration > trim_start {
+        format!(
+            "{},atrim=duration={output_duration:.3},asetpts=PTS-STARTPTS",
+            clean_loop_audio_prefix(source_duration, trim_start)
+        )
+    } else {
+        format!("atrim=start={start_sec:.3}:end={end_sec:.3},asetpts=PTS-STARTPTS")
+    }
+}
+
+fn build_main_timing_prefix(
+    loop_source: bool,
+    source_duration: f64,
+    trim_start: f64,
+    output_duration: f64,
+    start_sec: f64,
+    end_sec: f64,
+) -> String {
+    if loop_source && trim_start > 0.0 && source_duration > trim_start {
+        format!(
+            "{},trim=duration={output_duration:.3},setpts=PTS-STARTPTS",
+            clean_loop_video_prefix(source_duration, trim_start)
+        )
+    } else {
+        format!("trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS")
+    }
 }
 
 /// Per region k: crop the normalized band from `base_label`, boxblur it, overlay it back
@@ -908,7 +979,7 @@ pub async fn encode_clip_direct(
         .chain(audio.image_cards.iter().map(|c| (c.at_sec, c.at_sec + c.duration_sec)))
         .collect();
 
-    let main_vf = build_video_filter(
+    let main_vf_legacy = build_video_filter(
         layout, ass_path, rel_start, rel_end,
         &audio.clip_style,
         audio.headline.as_ref(),
@@ -924,6 +995,19 @@ pub async fn encode_clip_direct(
         &main_hide,
         &audio.subtitle_blur, // baked-subtitle censor regions (from MainContext)
     );
+    let main_vf = if audio.loop_source && audio.source_trim_start > 0.0 {
+        let legacy = build_main_timing_prefix(
+            false, audio.source_duration_secs, audio.source_trim_start,
+            duration, rel_start, rel_end,
+        );
+        let clean_loop = build_main_timing_prefix(
+            true, audio.source_duration_secs, audio.source_trim_start,
+            duration, rel_start, rel_end,
+        );
+        main_vf_legacy.replacen(&legacy, &clean_loop, 1)
+    } else {
+        main_vf_legacy
+    };
     // Subtitle + hook burn-in, applied as the ABSOLUTE topmost layer so footage
     // cards / image cards / meme PiPs / crops never cover the captions.
     let sub_suffix = subtitle_burn_suffix(ass_path, audio.hook_title_ass.as_deref(), &audio.font);
@@ -944,7 +1028,16 @@ pub async fn encode_clip_direct(
     // and never touches it. So gating mute in `main_audio_filter` silences the
     // main's baked audio in clip-mode too — closing the leak where a subtitle-baked
     // reaction main is the source and narration has fallen back to clip-mode.
-    let main_af = main_audio_filter(rel_start, rel_end, fade_out_start, audio.mute_event);
+    let main_af = main_audio_filter_with_timing(
+        rel_start,
+        rel_end,
+        fade_out_start,
+        audio.mute_event,
+        audio.loop_source,
+        audio.source_duration_secs,
+        audio.source_trim_start,
+        duration,
+    );
 
     // ── Resolve audio/overlay options ────────────────────────────────────────
     let has_sfx        = audio.sfx_intro.is_some();
@@ -1359,9 +1452,17 @@ pub async fn encode_clip_direct(
                     // entirely — only the narration voice remains.
                     voice_chain
                 } else {
+                    let event_timing = build_main_audio_timing_prefix(
+                        audio.loop_source,
+                        audio.source_duration_secs,
+                        audio.source_trim_start,
+                        duration,
+                        rel_start,
+                        rel_end,
+                    );
                     format!(
                         "{voice_chain};\
-                         [0:a]atrim=start={rel_start:.3}:end={rel_end:.3},asetpts=PTS-STARTPTS,\
+                         [0:a]{event_timing},\
                          {NORMALIZE},{evt_vol}[evt]"
                     )
                 }
@@ -1601,7 +1702,7 @@ fn build_video_filter(
     };
 
     let duration = end_sec - start_sec;
-    let trim = format!("trim=start={start_sec:.3}:end={end_sec:.3},setpts=PTS-STARTPTS");
+    let trim = build_main_timing_prefix(false, 0.0, 0.0, duration, start_sec, end_sec);
 
     // ── Canvas dimensions ─────────────────────────────────────────────────────
     let (w, h) = match layout {
@@ -2780,6 +2881,21 @@ mod tests {
         assert!(f.contains("[blurred]")); // final label emitted
         // unique intermediate labels per index → no collision
         assert!(f.contains("[sb0]") && f.contains("[sb1]"));
+    }
+
+    #[test]
+    fn looped_main_filter_removes_intro_each_cycle() {
+        let filter = build_main_timing_prefix(true, 26.935, 4.0, 44.65, 0.0, 44.65);
+        assert!(filter.contains("select='gte(mod(t\\,26.935000)\\,4.000000)'"));
+        assert!(filter.contains("trim=duration=44.650"));
+    }
+
+    #[test]
+    fn non_loop_filter_keeps_exact_segment() {
+        assert_eq!(
+            build_main_timing_prefix(false, 26.935, 4.0, 8.0, 4.0, 12.0),
+            "trim=start=4.000:end=12.000,setpts=PTS-STARTPTS"
+        );
     }
 
     #[test]
