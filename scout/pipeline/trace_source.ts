@@ -27,6 +27,7 @@ import { tiktokDirectUrl, downloadTiktok } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator } from '../lib/aggregators.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
+import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n) => {
@@ -817,6 +818,12 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
     console.log('    ↪ fallback: semua kandidat on-topik dari akun kurator (ig_accounts) → batal.');
     return null;
   }
+  // Subtitle-vision penalty: burned-in-subtitle candidates (reaction/react-caption uploads) are
+  // deprioritized so a clean/cover original wins when one exists. Never hard-rejected here — a sole
+  // subtitle candidate must still survive to reach the final main-emission fallback below.
+  for (const c of onTopicU) c.sv = await analyzeSubtitles(c.videoSrc || c.url);
+  const SUBTITLE_PENALTY = 1e6; // dwarfs any positive similarity score
+  const scoreOf = (c) => (c.sim || 0) - (c.sv && c.sv.outcome === 'subtitle' ? SUBTITLE_PENALTY : 0);
   const tierOf = (c) => {
     const h = normHandle(urlHandle(c.url));
     if (credited && h && h === credited) return 0; // the credited original creator — best
@@ -834,7 +841,8 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
   const bestOf = (list) => {
     if (!list.length) return null;
     const foot = PREFER_FOOTAGE ? list.filter((c) => c.kind === 'footage') : [];
-    return (foot.length ? foot : list)[0];
+    const pool = foot.length ? foot : list;
+    return [...pool].sort((a, b) => scoreOf(b) - scoreOf(a))[0];
   };
   let pick = null,
     why = '';
@@ -1409,6 +1417,19 @@ async function setMainTo(set, orig, username) {
   if (caption) {
     if (!(set.main.title || '').trim()) set.main.title = caption.slice(0, 120);
     if (!(set.main.description || '').trim()) set.main.description = caption;
+  }
+
+  // Subtitle-vision fallback on the FINALIZED main (post any CDN-URL resolution above): a cover/headline
+  // intro gets trimmed; continuous burned-in subtitles (no better source existed → ranking penalty above
+  // couldn't avoid it) get muted + blur-censored at render instead of silently shipping the reaction upload.
+  if (set.main.is_video && set.main.url) {
+    const mv = await analyzeSubtitles(set.main.url);
+    if (mv.outcome === 'cover') {
+      set.main.trim_start = mv.trim_start;
+    } else if (mv.outcome === 'subtitle') {
+      set.main.mute_audio = true;
+      set.main.subtitle_blur = mv.subtitle_blur;
+    }
   }
 
   fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');

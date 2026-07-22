@@ -20,6 +20,12 @@ export interface MainVideo {
   /** Crop kartu postingan (PNG absolut) untuk main non-video. */
   image_path?: string;
   profile?: ProfileInfo;
+  /** In-point detik: lewati konten sumber sebelum ini (cover/headline intro dipangkas). */
+  trim_start?: number;
+  /** Drop audio sumber ini dari mix (main subtitle-reaction tak terhindarkan). */
+  mute_audio?: boolean;
+  /** Region sensor blur ternormalisasi [0..1] + window waktu. */
+  subtitle_blur?: { x: number; y: number; w: number; h: number; start?: number; end?: number }[];
   [k: string]: any;
 }
 
@@ -32,6 +38,12 @@ export interface ContentResult {
   query?: string;
   /** Crop kartu postingan (PNG absolut) untuk footage non-video. */
   image_path?: string;
+  /** In-point detik: lewati konten sumber sebelum ini (cover/headline intro dipangkas). */
+  trim_start?: number;
+  /** Drop audio sumber ini dari mix (main subtitle-reaction tak terhindarkan). */
+  mute_audio?: boolean;
+  /** Region sensor blur ternormalisasi [0..1] + window waktu. */
+  subtitle_blur?: { x: number; y: number; w: number; h: number; start?: number; end?: number }[];
   [k: string]: any;
 }
 
