@@ -14,6 +14,7 @@ pub mod layout;
 pub mod overlay;
 pub mod profile_card;
 pub mod service;
+pub(crate) mod source_timing;
 pub mod sfx;
 pub mod speed;
 pub mod subtitle;
