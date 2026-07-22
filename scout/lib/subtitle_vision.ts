@@ -62,6 +62,147 @@ export function buildSampleTimes(duration: number, maxFrames = 12): number[] {
   return [...new Set([...intro, ...tail])].sort((a, b) => a - b).slice(0, limit);
 }
 
+function normText(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+function boxArea(box: OcrBox): number {
+  return Math.max(0, box.x1 - box.x0) * Math.max(0, box.y1 - box.y0);
+}
+
+function boxIou(a: OcrBox, b: OcrBox): number {
+  const intersection = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) *
+    Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+  const union = boxArea(a) + boxArea(b) - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+function verticalOverlap(a: OcrBox, b: OcrBox): number {
+  const overlap = Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+  return overlap / Math.max(.000001, Math.min(a.y1 - a.y0, b.y1 - b.y0));
+}
+
+function textSimilarity(a: string, b: string): number {
+  const aa = normText(a);
+  const bb = normText(b);
+  if (!aa || !bb) return 0;
+  if (aa === bb) return 1;
+  const tokensA = new Set(aa.split(' '));
+  const tokensB = new Set(bb.split(' '));
+  const tokenIntersection = [...tokensA].filter((token) => tokensB.has(token)).length;
+  const tokenUnion = new Set([...tokensA, ...tokensB]).size;
+  const tokenScore = tokenUnion ? tokenIntersection / tokenUnion : 0;
+  const bigrams = (s: string) => {
+    const out = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) out.add(s.slice(i, i + 2));
+    return out;
+  };
+  const bigramsA = bigrams(aa);
+  const bigramsB = bigrams(bb);
+  const shared = [...bigramsA].filter((pair) => bigramsB.has(pair)).length;
+  const dice = bigramsA.size + bigramsB.size ? (2 * shared) / (bigramsA.size + bigramsB.size) : 0;
+  return Math.max(tokenScore, dice);
+}
+
+function envelope(boxes: OcrBox[]): OcrBox {
+  const x0 = Math.max(0, Math.min(...boxes.map((box) => box.x0)) - .02);
+  const y0 = Math.max(0, Math.min(...boxes.map((box) => box.y0)) - .015);
+  const x1 = Math.min(1, Math.max(...boxes.map((box) => box.x1)) + .02);
+  const y1 = Math.min(1, Math.max(...boxes.map((box) => box.y1)) + .015);
+  return { text: boxes.map((box) => box.text).join(' '), x0, y0, x1, y1 };
+}
+
+// Headline removal and subtitle censorship are deliberately independent. A clip
+// can therefore retain a positive trim_start while also carrying later blur
+// windows (the common social-video hybrid case).
+export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVerdict {
+  const clean: ClipVerdict = { outcome: 'clean', trim_start: 0, mute_audio: false, subtitle_blur: [] };
+  const sorted = [...frames].sort((a, b) => a.t - b.t);
+  if (sorted.length === 0) return clean;
+
+  const usableCount = sorted.filter((frame) => !frame.error).length || sorted.length;
+  const stableThreshold = Math.max(2, Math.ceil(usableCount * .6));
+  const isStableSmall = (candidate: OcrBox) => {
+    if (boxArea(candidate) >= .02) return false;
+    let matches = 0;
+    for (const frame of sorted) {
+      if (frame.boxes.some((box) => boxArea(box) < .02 &&
+        normText(box.text) === normText(candidate.text) && boxIou(box, candidate) >= .6)) matches++;
+    }
+    return matches >= stableThreshold;
+  };
+  const filtered = sorted.map((frame) => ({
+    ...frame,
+    boxes: frame.boxes.filter((box) => !isStableSmall(box)),
+  }));
+
+  let trimStart = 0;
+  for (let frameIndex = 0; frameIndex < filtered.length; frameIndex++) {
+    const frame = filtered[frameIndex];
+    if (frame.t > COVER_MAX) break;
+    for (const anchor of frame.boxes.filter((box) => boxArea(box) >= .04)) {
+      const matchingIndexes: number[] = [];
+      for (let i = frameIndex; i < filtered.length && filtered[i].t <= COVER_MAX; i++) {
+        if (filtered[i].boxes.some((box) => textSimilarity(anchor.text, box.text) >= .5 && boxIou(anchor, box) >= .45)) {
+          matchingIndexes.push(i);
+        }
+      }
+      if (matchingIndexes.length < 2) continue;
+      const lastIndex = matchingIndexes[matchingIndexes.length - 1];
+      const absentIndex = filtered.findIndex((later, i) => i > lastIndex &&
+        !later.boxes.some((box) => textSimilarity(anchor.text, box.text) >= .5 && boxIou(anchor, box) >= .45));
+      if (absentIndex > lastIndex) {
+        trimStart = Math.max(trimStart, (filtered[lastIndex].t + filtered[absentIndex].t) / 2);
+      }
+    }
+  }
+
+  const candidateFrames = filtered.map((frame) => ({
+    ...frame,
+    boxes: frame.t + 1e-9 >= trimStart
+      ? frame.boxes.filter((box) => box.x1 - box.x0 >= .18 && box.y1 - box.y0 >= .025)
+      : [],
+  }));
+  const selectedByFrame = candidateFrames.map((frame, frameIndex) => frame.boxes.filter((box) =>
+    candidateFrames.some((other, otherIndex) => otherIndex !== frameIndex && other.boxes.some((otherBox) =>
+      verticalOverlap(box, otherBox) >= .5 && normText(box.text) !== normText(otherBox.text)))));
+
+  type Window = { start: number; end: number; region: OcrBox };
+  const windows: Window[] = [];
+  for (let i = 0; i < selectedByFrame.length; i++) {
+    if (selectedByFrame[i].length === 0) continue;
+    const start = i > 0 ? (filtered[i - 1].t + filtered[i].t) / 2 : 0;
+    const end = i + 1 < filtered.length ? (filtered[i].t + filtered[i + 1].t) / 2 : duration;
+    windows.push({ start: Math.max(trimStart, start), end: Math.min(duration, end), region: envelope(selectedByFrame[i]) });
+  }
+
+  const merged: Window[] = [];
+  for (const window of windows) {
+    const previous = merged[merged.length - 1];
+    if (previous && window.start < previous.end - 1e-6 && boxIou(previous.region, window.region) >= .6) {
+      previous.end = Math.max(previous.end, window.end);
+      previous.region = envelope([previous.region, window.region]);
+    } else {
+      merged.push({ ...window });
+    }
+  }
+  const subtitleBlur = merged.map(({ start, end, region }) => ({
+    x: region.x0,
+    y: region.y0,
+    w: region.x1 - region.x0,
+    h: region.y1 - region.y0,
+    start,
+    end,
+  }));
+  if (subtitleBlur.length > 0) {
+    return { outcome: 'subtitle', trim_start: trimStart, mute_audio: true, subtitle_blur: subtitleBlur };
+  }
+  if (trimStart > 0) {
+    return { outcome: 'cover', trim_start: trimStart, mute_audio: false, subtitle_blur: [] };
+  }
+  return clean;
+}
+
 const COVER_MAX = 5.0;
 
 // Pure: given per-frame detections (sorted by t) + clip duration → verdict.

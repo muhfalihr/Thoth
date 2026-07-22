@@ -1,12 +1,14 @@
 import assert from 'node:assert';
 import {
   buildSampleTimes,
+  classifyOcrFrames,
   classifyVisionText,
   classifyClip,
   normalizeRegion,
   parseDeepSeekOcr,
   parseVisionFrame,
 } from './subtitle_vision.ts';
+import type { OcrBox } from './subtitle_vision.ts';
 
 // DeepSeek-OCR grounding output uses a 0..1000 coordinate grid.
 {
@@ -114,3 +116,78 @@ assert.equal(
   assert.deepEqual(v.subtitle_blur, []);
 }
 console.log('ok classifyClip');
+
+const b = (text: string, x0: number, y0: number, x1: number, y1: number): OcrBox =>
+  ({ text, x0, y0, x1, y1 });
+const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
+
+// A headline and later captions are independent actions: trim the former and
+// retain output-relative blur windows for the latter.
+{
+  const hybrid = classifyOcrFrames([
+    f(.5, b('CUCURELLA BUNGKUS TROFI', .05, .46, .82, .54)),
+    f(1, b('CUCURELLA BUNGKUS TROFI', .05, .46, .82, .54)),
+    f(3, b('CUCURELLA BUNGKUS TROFI', .05, .46, .82, .54)),
+    f(5, b('BAWA PULANG', .25, .78, .75, .85)),
+    f(8, b('KOK PIALA SEMEWAH', .18, .76, .82, .86)),
+    f(12, b('REPLIKA RESMI YANG', .20, .75, .80, .86)),
+  ], 26.935);
+  assert.equal(hybrid.outcome, 'subtitle');
+  assert.equal(hybrid.trim_start, 4);
+  assert.equal(hybrid.mute_audio, true);
+  assert.ok(hybrid.subtitle_blur.length >= 3);
+  assert.ok(hybrid.subtitle_blur.every((r) => r.y > .70));
+}
+
+// A small, stable corner watermark is neither headline nor subtitle.
+{
+  const watermark = classifyOcrFrames([
+    f(1, b('@channel', .86, .03, .98, .06)),
+    f(3, b('@channel', .86, .03, .98, .06)),
+    f(8, b('@channel', .86, .03, .98, .06)),
+  ], 10);
+  assert.equal(watermark.outcome, 'clean');
+}
+
+// Cover-only headline clears before body footage.
+{
+  const cover = classifyOcrFrames([
+    f(.5, b('MATCH DAY', .10, .30, .90, .43)),
+    f(2, b('MATCH DAY', .11, .30, .91, .43)),
+    f(4),
+    f(8),
+  ], 12);
+  assert.equal(cover.outcome, 'cover');
+  assert.equal(cover.trim_start, 3);
+  assert.equal(cover.mute_audio, false);
+}
+
+// Moving captions remain one positional band but preserve per-window geometry.
+{
+  const subtitle = classifyOcrFrames([
+    f(1),
+    f(3, b('SATU', .16, .73, .70, .80)),
+    f(5, b('DUA', .25, .75, .85, .84)),
+    f(8, b('TIGA', .10, .72, .74, .81)),
+  ], 10);
+  assert.equal(subtitle.outcome, 'subtitle');
+  assert.equal(subtitle.trim_start, 0);
+  assert.ok(subtitle.subtitle_blur.length >= 2);
+  assert.ok(subtitle.subtitle_blur.some((r) => r.x < .15));
+}
+
+// Two OCR lines in one frame become a single padded subtitle envelope.
+{
+  const twoLine = classifyOcrFrames([
+    f(1),
+    f(3,
+      b('BARIS SATU', .16, .70, .82, .76),
+      b('BARIS DUA', .22, .77, .76, .84)),
+    f(5,
+      b('KALIMAT BARU', .14, .71, .80, .77),
+      b('LANJUTANNYA', .20, .78, .78, .85)),
+  ], 8);
+  assert.equal(twoLine.subtitle_blur.length, 2);
+  assert.ok(twoLine.subtitle_blur.every((r) => r.h > .14));
+}
+console.log('ok classifyOcrFrames');
