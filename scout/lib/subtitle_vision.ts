@@ -24,6 +24,63 @@ export function classifyVisionText(resp: string): boolean {
   try { return JSON.parse(m[0]).reject === true; } catch { return false; }
 }
 
+export type SubtitleRegion = { x: number; y: number; w: number; h: number; start?: number; end?: number };
+export type FrameDet = { t: number; present: boolean; region: { x0: number; y0: number; x1: number; y1: number } | null };
+export type ClipVerdict = { outcome: 'clean' | 'cover' | 'subtitle'; trim_start: number; mute_audio: boolean; subtitle_blur: SubtitleRegion[] };
+
+const COVER_MAX = 5.0;
+
+// Pure: given per-frame detections (sorted by t) + clip duration → verdict.
+export function classifyClip(frames: FrameDet[], duration: number): ClipVerdict {
+  const clean: ClipVerdict = { outcome: 'clean', trim_start: 0, mute_audio: false, subtitle_blur: [] };
+  const fs = [...frames].sort((a, b) => a.t - b.t);
+  const withText = fs.filter((f) => f.present);
+  if (withText.length === 0) return clean;
+
+  const lastText = withText[withText.length - 1].t;
+  const cleanAfter = fs.find((f) => !f.present && f.t > lastText);
+
+  // COVER: text confined to the intro, and a later frame confirms it clears.
+  if (lastText <= COVER_MAX && cleanAfter) {
+    return { outcome: 'cover', trim_start: (lastText + cleanAfter.t) / 2, mute_audio: false, subtitle_blur: [] };
+  }
+
+  // SUBTITLE: build a blur window per detecting frame, merge overlaps into union regions.
+  const gap = (i: number) => {
+    const prev = i > 0 ? fs[i].t - fs[i - 1].t : (fs.length > 1 ? fs[1].t - fs[0].t : 2);
+    const next = i < fs.length - 1 ? fs[i + 1].t - fs[i].t : prev;
+    return Math.max(prev, next) / 2;
+  };
+  const allText = withText.length === fs.length;
+  type W = { s: number; e: number; r: NonNullable<FrameDet['region']> };
+  let wins: W[] = [];
+  if (allText) {
+    wins = [{ s: 0, e: duration, r: withText[0].region! }];
+  } else {
+    for (let i = 0; i < fs.length; i++) {
+      const f = fs[i];
+      if (!f.present || !f.region) continue;
+      const d = gap(i);
+      wins.push({ s: Math.max(0, f.t - d), e: Math.min(duration, f.t + d), r: f.region });
+    }
+    wins.sort((a, b) => a.s - b.s);
+    const merged: W[] = [];
+    for (const w of wins) {
+      const last = merged[merged.length - 1];
+      if (last && w.s <= last.e) {
+        last.e = Math.max(last.e, w.e);
+        last.r = { x0: Math.min(last.r.x0, w.r.x0), y0: Math.min(last.r.y0, w.r.y0),
+                   x1: Math.max(last.r.x1, w.r.x1), y1: Math.max(last.r.y1, w.r.y1) };
+      } else merged.push({ ...w });
+    }
+    wins = merged;
+  }
+  const subtitle_blur = wins.map((w) => ({
+    x: w.r.x0, y: w.r.y0, w: w.r.x1 - w.r.x0, h: w.r.y1 - w.r.y0, start: w.s, end: w.e,
+  }));
+  return { outcome: 'subtitle', trim_start: 0, mute_audio: true, subtitle_blur };
+}
+
 // Ambil 1 frame tengah → data URL base64 JPEG. Gagal → null.
 function midFrameDataUrl(videoUrl: string): string | null {
   const tmp = path.join(os.tmpdir(), `subv_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
