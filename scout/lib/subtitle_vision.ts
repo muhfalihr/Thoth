@@ -49,22 +49,31 @@ export function parseDuration(value: string): number {
 // pairs elsewhere in the response.
 export function parseDeepSeekOcr(content: string): OcrBox[] {
   const out: OcrBox[] = [];
+  const append = (rawText: string, encodedBoxes: string) => {
+    const text = rawText.replace(/\s+/g, ' ').trim();
+    const boxes = JSON.parse(encodedBoxes);
+    if (!text || !Array.isArray(boxes)) return;
+    for (const raw of boxes) {
+      if (!Array.isArray(raw) || raw.length !== 4 || raw.some((n) => typeof n !== 'number' || !Number.isFinite(n))) continue;
+      const scale = Math.max(...raw.map((n: number) => Math.abs(n))) > 1 ? 1000 : 1;
+      const clamp = (n: number) => Math.min(1, Math.max(0, n / scale));
+      let [x0, y0, x1, y1] = raw.map(clamp);
+      if (x1 < x0) [x0, x1] = [x1, x0];
+      if (y1 < y0) [y0, y1] = [y1, y0];
+      if (x1 - x0 >= .01 && y1 - y0 >= .01) out.push({ text, x0, y0, x1, y1 });
+    }
+  };
   const pair = /<\|ref\|>([\s\S]*?)<\|\/ref\|>\s*<\|det\|>(\[\[[\s\S]*?\]\])<\|\/det\|>/g;
   for (const match of (content || '').matchAll(pair)) {
-    try {
-      const text = match[1].replace(/\s+/g, ' ').trim();
-      const boxes = JSON.parse(match[2]);
-      if (!text || !Array.isArray(boxes)) continue;
-      for (const raw of boxes) {
-        if (!Array.isArray(raw) || raw.length !== 4 || raw.some((n) => typeof n !== 'number' || !Number.isFinite(n))) continue;
-        const scale = Math.max(...raw.map((n: number) => Math.abs(n))) > 1 ? 1000 : 1;
-        const clamp = (n: number) => Math.min(1, Math.max(0, n / scale));
-        let [x0, y0, x1, y1] = raw.map(clamp);
-        if (x1 < x0) [x0, x1] = [x1, x0];
-        if (y1 < y0) [y0, y1] = [y1, y0];
-        if (x1 - x0 >= .01 && y1 - y0 >= .01) out.push({ text, x0, y0, x1, y1 });
-      }
-    } catch {}
+    try { append(match[1], match[2]); } catch {}
+  }
+  // Novita currently strips DeepSeek's <|ref|>/<|det|> markers from message
+  // content, leaving one `recognized text[[x0,y0,x1,y1]]` payload per line.
+  if (out.length === 0) {
+    const plainPair = /^\s*(.*?)\s*(\[\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\]\])\s*$/gm;
+    for (const match of (content || '').matchAll(plainPair)) {
+      try { append(match[1], match[2]); } catch {}
+    }
   }
   return out;
 }
@@ -161,7 +170,10 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
   for (let frameIndex = 0; frameIndex < filtered.length; frameIndex++) {
     const frame = filtered[frameIndex];
     if (frame.t > COVER_MAX) break;
-    for (const anchor of frame.boxes.filter((box) => boxArea(box) >= .04)) {
+    // Headlines are often emitted one line at a time: visually dominant width,
+    // but only ~1.5-2% frame area because the box is thin.
+    for (const anchor of frame.boxes.filter((box) =>
+      boxArea(box) >= .015 && box.x1 - box.x0 >= .45)) {
       const matchingIndexes: number[] = [];
       for (let i = frameIndex; i < filtered.length && filtered[i].t <= COVER_MAX; i++) {
         if (filtered[i].boxes.some((box) => textSimilarity(anchor.text, box.text) >= .5 && boxIou(anchor, box) >= .45)) {

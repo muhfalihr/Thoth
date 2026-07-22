@@ -42,6 +42,15 @@ assert.deepEqual(mainDirectiveFields({
     parseDeepSeekOcr('<|ref|>valid<|/ref|><|det|>[[900,700,100,300]]<|/det|>'),
     [{ text: 'valid', x0: .1, y0: .3, x1: .9, y1: .7 }],
   );
+  // Novita's OpenAI-compatible adapter may strip the ref/det control tokens
+  // while retaining the same text + grounding-grid payload.
+  assert.deepEqual(
+    parseDeepSeekOcr('CURELLA BUNGKUS TROFI[[90, 521, 803, 546]]\n24[[449, 650, 524, 690]]'),
+    [
+      { text: 'CURELLA BUNGKUS TROFI', x0: .09, y0: .521, x1: .803, y1: .546 },
+      { text: '24', x0: .449, y0: .65, x1: .524, y1: .69 },
+    ],
+  );
   assert.deepEqual(buildSampleTimes(.3, 12), [0]);
   const samples = buildSampleTimes(26.935, 12);
   assert.deepEqual(samples.slice(0, 6), [.5, 1, 2, 3, 4, 5]);
@@ -154,6 +163,27 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   assert.equal(hybrid.mute_audio, true);
   assert.ok(hybrid.subtitle_blur.length >= 3);
   assert.ok(hybrid.subtitle_blur.every((r) => r.y > .70));
+}
+
+// Regression from the reported source: DeepSeek emits each headline line as a
+// thin box (~1.8% frame area), so width + temporal stability must carry it.
+{
+  const realGeometry = classifyOcrFrames([
+    f(1,
+      b('CURELLA BUNGKUS TROFI', .09, .521, .803, .546),
+      b('PIALA DUNIA PAKE KRESEK', .09, .568, .777, .595)),
+    f(2,
+      b('CUCURELLA BUNGKUS TROFI', .114, .521, .924, .546),
+      b('PIALA DUNIA PAKE KRESEK', .114, .568, .894, .593)),
+    f(3,
+      b('CUCURELLA BUNGKUS TROFI', .117, .521, .919, .546),
+      b('PIALA DUNIA PAKE KRESEK', .117, .567, .891, .592)),
+    f(4, b('DIA NGGAK TAHU', .174, .758, .83, .799)),
+    f(5, b('BAWA PULANG', .215, .755, .787, .799)),
+    f(8, b('KOK PIALA SEMEWAH', .277, .733, .70, .824)),
+  ], 10);
+  assert.equal(realGeometry.trim_start, 3.5);
+  assert.ok(realGeometry.subtitle_blur.every((region) => region.y > .70));
 }
 
 // A small, stable corner watermark is neither headline nor subtitle.
