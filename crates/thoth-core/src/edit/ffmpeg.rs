@@ -356,6 +356,12 @@ pub struct AudioOptions {
     /// Narrator voiceover spine. `Some` = narration drives the audio (event ducked).
     pub narration: Option<NarrationVoice>,
 
+    /// When `true`, drop the event/main clip's own ducked audio (`[evt]`) from the
+    /// mix entirely — used when the source clip has baked-in talking/subtitles
+    /// (e.g. a reaction upload) that must not leak into the narration. Default
+    /// `false` = unchanged behavior (event audio ducked under narration as before).
+    pub mute_event: bool,
+
     /// Montage footage cards (narrator-driven mode): relevant clips cutting over the
     /// base B-roll at intervals so the video keeps changing. Empty = single B-roll.
     pub footage_cards: Vec<FootageCardCue>,
@@ -1283,11 +1289,20 @@ pub async fn encode_clip_direct(
                     let ms = (narr.lead_in_secs * 1000.0) as u64;
                     format!(",adelay={ms}|{ms}")
                 } else { String::new() };
-                format!(
-                    "[{narration_idx}:a]{NORMALIZE},afade=t=in:st=0:d=0.15{lead}{voice_duck}[voice];\
-                     [0:a]atrim=start={rel_start:.3}:end={rel_end:.3},asetpts=PTS-STARTPTS,\
-                     {NORMALIZE},{evt_vol}[evt]"
-                )
+                let voice_chain = format!(
+                    "[{narration_idx}:a]{NORMALIZE},afade=t=in:st=0:d=0.15{lead}{voice_duck}[voice]"
+                );
+                if audio.mute_event {
+                    // Reaction/subtitle-baked source: drop the event clip's own audio
+                    // entirely — only the narration voice remains.
+                    voice_chain
+                } else {
+                    format!(
+                        "{voice_chain};\
+                         [0:a]atrim=start={rel_start:.3}:end={rel_end:.3},asetpts=PTS-STARTPTS,\
+                         {NORMALIZE},{evt_vol}[evt]"
+                    )
+                }
             } else {
                 format!("[0:a]{main_af}{voice_duck}[voice]")
             };
@@ -1364,8 +1379,8 @@ pub async fn encode_clip_direct(
 
             // Step 4: mix all audio streams (voice + optional sfx/bgm + cues + meme audio)
             let mut mix_labels: Vec<String> = vec!["[voice]".into()];
-            // Ducked event audio (only present in narration mode).
-            if audio.narration.is_some() { mix_labels.push("[evt]".into()); }
+            // Ducked event audio (only present in narration mode, unless muted).
+            if audio.narration.is_some() && !audio.mute_event { mix_labels.push("[evt]".into()); }
             if sfx_idx.is_some() { mix_labels.push("[sfx_out]".into()); }
             if bgm_idx.is_some() { mix_labels.push("[bgm_out]".into()); }
             for k in 0..cue_audio.len() { mix_labels.push(format!("[cue{k}]")); }
