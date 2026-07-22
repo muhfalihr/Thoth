@@ -5,6 +5,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::FfmpegConfig;
 use crate::execution::JobExecutionContext;
+use crate::ingest::content_search::SubtitleBlur;
 
 use super::error::EditError;
 use super::fonts::FontConfig;
@@ -596,6 +597,43 @@ fn build_footage_card_overlay(
     }
 }
 
+/// Per region k: crop the normalized band from `base_label`, boxblur it, overlay it back
+/// at the same spot. Gated `enable='between(t,start,end)'` unless start==end==0 (whole clip).
+/// Unique labels per k avoid filtergraph collisions. Empty regions → passthrough relabel.
+fn build_subtitle_blur_overlay(regions: &[SubtitleBlur], w: u32, h: u32, base_label: &str, out_label: &str) -> String {
+    if regions.is_empty() {
+        return format!("{base_label}null{out_label}"); // relabel base → out
+    }
+    let (fw, fh) = (w as f64, h as f64);
+    let mut prev = base_label.to_string();
+    let mut out = String::new();
+    for (k, r) in regions.iter().enumerate() {
+        // pixel-align crop rect, clamp inside the frame
+        let cw = (r.w * fw).round().max(2.0).min(fw);
+        let ch = (r.h * fh).round().max(2.0).min(fh);
+        let cx = (r.x * fw).round().clamp(0.0, fw - cw);
+        let cy = (r.y * fh).round().clamp(0.0, fh - ch);
+        let gate = if r.start == 0.0 && r.end == 0.0 {
+            String::new()
+        } else {
+            format!(":enable='between(t,{:.3},{:.3})'", r.start, r.end)
+        };
+        let last = k == regions.len() - 1;
+        let dst = if last { out_label.to_string() } else { format!("[sbo{k}]") };
+        // crop → strong blur → overlay back at (cx,cy), gated
+        out.push_str(&format!(
+            "{prev}split[sbb{k}][sbc{k}];\
+             [sbc{k}]crop={cw}:{ch}:{cx}:{cy},boxblur=12:2[sb{k}];\
+             [sbb{k}][sb{k}]overlay={cx}:{cy}{gate}{dst};",
+            prev = prev, k = k, cw = cw as i64, ch = ch as i64, cx = cx as i64, cy = cy as i64,
+            gate = gate, dst = dst,
+        ));
+        prev = dst;
+    }
+    out.pop(); // trailing ';'
+    out
+}
+
 /// Build the video-filter fragment overlaying one full-width IMAGE CARD (centred,
 /// static cropped post screenshot) onto the running chain, shown only during
 /// `[at, at+dur]`. Mirrors [`build_footage_card_overlay`] but the source is a looped
@@ -857,6 +895,7 @@ pub async fn encode_clip_direct(
         anim_arg,
         true,   // defer subtitle burn → re-applied LAST as the topmost layer
         &main_hide,
+        &[],    // subtitle_blur: not yet wired from content-set (Task 7)
     );
     // Subtitle + hook burn-in, applied as the ABSOLUTE topmost layer so footage
     // cards / image cards / meme PiPs / crops never cover the captions.
@@ -1510,6 +1549,11 @@ fn build_video_filter(
     // card must be hidden because a footage/image card is covering it —
     // prevents footage overlaying (menimpa) the main card. Empty = no gate.
     main_hide: &[(f64, f64)],
+    // Reaction-video regions with baked-in subtitles that must be censored —
+    // gated crop→boxblur→overlay per region, applied to the composited main
+    // spine BEFORE Thoth's own caption/headline/card overlays (blur sits
+    // underneath captions). Empty = no-op passthrough (unchanged behaviour).
+    subtitle_blur: &[SubtitleBlur],
 ) -> String {
     // Subtitle + hook fragment (`subs`) is comma-LEADING-or-empty, matching the
     // convention of every other effect fragment (headline/profile/callout/comment/
@@ -1598,6 +1642,19 @@ fn build_video_filter(
         format!(":enable='not({terms})'")
     };
 
+    // Subtitle-blur censor: gated crop→boxblur→overlay per flagged region,
+    // spliced onto the composited main spine right before Thoth's own
+    // caption/headline/card overlays (`{subs}` below) so the blur sits
+    // underneath captions. Empty list ⇒ exact passthrough, no graph change.
+    let blur_seg = if subtitle_blur.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "[mblur_in];{};[mblur_out]null",
+            build_subtitle_blur_overlay(subtitle_blur, w, h, "[mblur_in]", "[mblur_out]")
+        )
+    };
+
     match layout {
         // Montage vertical: footage as a centred CARD on the crumpled-paper
         // canvas (paper from input `paper_idx`), instead of the blurred-self bg.
@@ -1618,7 +1675,7 @@ fn build_video_filter(
                  {pre_filter}\
                  scale={cardw}:-2,setsar=1[fg];\
                  [{paper_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[bg];\
-                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{main_gate}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
+                 [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{main_gate}{blur_seg}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Vertical => {
@@ -1628,7 +1685,7 @@ fn build_video_filter(
                  split=2[main][blur];\
                  [blur]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=20[bg];\
                  [main]scale=-2:1080,setsar=1[fg];\
-                 [bg][fg]overlay=(W-w)/2:(H-h)/2{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
+                 [bg][fg]overlay=(W-w)/2:(H-h)/2{blur_seg}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Horizontal => {
@@ -1636,14 +1693,14 @@ fn build_video_filter(
                 "{trim},\
                  scale=1920:1080:force_original_aspect_ratio=decrease,\
                  pad=1920:1080:(ow-iw)/2:(oh-ih)/2\
-                 {in_fx_lead}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
+                 {in_fx_lead}{blur_seg}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
             )
         }
         OutputLayout::Square => {
             format!(
                 "{trim},\
                  crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080\
-                 {in_fx_lead}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
+                 {in_fx_lead}{blur_seg}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
             )
         }
     }
@@ -2657,6 +2714,22 @@ mod tests {
     }
 
     #[test]
+    fn subtitle_blur_overlay_gates_and_uniquely_labels() {
+        let regions = vec![
+            SubtitleBlur { x: 0.1, y: 0.7, w: 0.8, h: 0.08, start: 6.0, end: 14.0 },
+            SubtitleBlur { x: 0.0, y: 0.0, w: 0.5, h: 0.1, start: 0.0, end: 0.0 }, // whole-clip
+        ];
+        let f = build_subtitle_blur_overlay(&regions, 1080, 1920, "[base]", "[blurred]");
+        assert!(f.contains("crop="));
+        assert!(f.contains("boxblur"));
+        assert!(f.contains("enable='between(t,6.000,14.000)'")); // region 0 gated
+        assert!(!f.contains("enable='between") || f.matches("enable='between").count() == 1); // region 1 (0,0) ungated
+        assert!(f.contains("[blurred]")); // final label emitted
+        // unique intermediate labels per index → no collision
+        assert!(f.contains("[sb0]") && f.contains("[sb1]"));
+    }
+
+    #[test]
     fn montage_main_card_hidden_during_footage_windows() {
         let render = MontageRender {
             paper_bg: PathBuf::from("paper.mp4"),
@@ -2669,6 +2742,7 @@ mod tests {
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
             &[(4.0, 7.0)],
+            &[],
         );
         assert!(vf.contains("enable='not(between(t,4.000,7.000))'"),
             "main card must be gated off during footage window: {vf}");
@@ -2687,6 +2761,7 @@ mod tests {
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
             &[],
+            &[],
         );
         assert!(!vf.contains(":enable='not("), "no windows → no gate: {vf}");
     }
@@ -2704,6 +2779,7 @@ mod tests {
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
             &[],
+            &[],
         );
         assert!(f.contains("[7:v]scale=1080:1920")); // paper bg (input 7) composited at native framerate
         assert!(f.contains("crop=1080:1920"));
@@ -2720,6 +2796,7 @@ mod tests {
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None, false,
             &[],
+            &[],
         );
         assert!(f.contains("gblur=sigma=20"));               // legacy blurred-self bg
         assert!(!f.contains("paper"));
@@ -2733,6 +2810,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 true, // defer
+                &[],
                 &[],
             );
             assert!(!f.contains("subtitles="), "deferred build must NOT burn subtitles: {f}");
@@ -2749,6 +2827,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 false,
+                &[],
                 &[],
             );
             assert!(f.contains("subtitles='x.ass'"), "non-deferred must burn subtitles: {f}");
