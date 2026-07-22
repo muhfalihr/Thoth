@@ -363,6 +363,11 @@ pub struct AudioOptions {
     /// `false` = unchanged behavior (event audio ducked under narration as before).
     pub mute_event: bool,
 
+    /// Baked-subtitle regions to blur-censor on the main clip, normalized against
+    /// the SOURCE frame (from `MainContext.subtitle_blur`). Empty = no censor,
+    /// exact passthrough. Consumed by `build_video_filter`.
+    pub subtitle_blur: Vec<SubtitleBlur>,
+
     /// Montage footage cards (narrator-driven mode): relevant clips cutting over the
     /// base B-roll at intervals so the video keeps changing. Empty = single B-roll.
     pub footage_cards: Vec<FootageCardCue>,
@@ -896,7 +901,7 @@ pub async fn encode_clip_direct(
         anim_arg,
         true,   // defer subtitle burn → re-applied LAST as the topmost layer
         &main_hide,
-        &[],    // subtitle_blur: not yet wired from content-set (Task 7)
+        &audio.subtitle_blur, // baked-subtitle censor regions (from MainContext)
     );
     // Subtitle + hook burn-in, applied as the ABSOLUTE topmost layer so footage
     // cards / image cards / meme PiPs / crops never cover the captions.

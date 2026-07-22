@@ -329,6 +329,12 @@ pub struct LoadedSet {
     pub discourse: Discourse,
     /// Topic dossier (entities/relations/angles/timeline). Empty defaults when none.
     pub dossier: Dossier,
+    /// Cover/headline intro to skip on the main B-roll (seconds). `0.0` = none.
+    pub main_trim_start: f64,
+    /// Drop the main clip's baked audio (reaction/subtitle source). `false` = keep.
+    pub main_mute_audio: bool,
+    /// Baked-subtitle regions to blur-censor on the main (source-normalized). `[]` = none.
+    pub main_subtitle_blur: Vec<SubtitleBlur>,
 }
 
 /// Load and validate an scout content set file.
@@ -356,6 +362,9 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
         references: set.references,
         discourse: set.discourse,
         dossier: set.dossier,
+        main_trim_start: set.main.trim_start,
+        main_mute_audio: set.main.mute_audio,
+        main_subtitle_blur: set.main.subtitle_blur,
     })
 }
 
@@ -388,6 +397,19 @@ pub struct MainContext {
     /// narration grounding. Empty defaults when scout didn't supply one.
     #[serde(default)]
     pub dossier: Dossier,
+    /// Cover/headline intro to skip on the main B-roll, in seconds (scout's
+    /// cover-exception: text only in the first few seconds → trim, don't blur).
+    /// `0.0` = no trim.
+    #[serde(default)]
+    pub trim_start: f64,
+    /// Drop the main clip's baked audio from the mix — set when the main is a
+    /// reaction/subtitle-baked source whose talking must not leak. `false` = keep.
+    #[serde(default)]
+    pub mute_audio: bool,
+    /// Baked-subtitle regions to blur-censor on the main clip, normalized against
+    /// the SOURCE frame. `[]` = no censor.
+    #[serde(default)]
+    pub subtitle_blur: Vec<SubtitleBlur>,
 }
 
 /// Load the main-context sidecar from `base_dir/content_context.json`. Returns
@@ -407,6 +429,9 @@ pub fn to_main_context(set: LoadedSet) -> MainContext {
         references: set.references,
         discourse: set.discourse,
         dossier: set.dossier,
+        trim_start: set.main_trim_start,
+        mute_audio: set.main_mute_audio,
+        subtitle_blur: set.main_subtitle_blur,
     }
 }
 
