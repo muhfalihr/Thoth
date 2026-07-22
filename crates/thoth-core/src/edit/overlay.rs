@@ -625,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn trim_args_seek_before_input() {
+    fn trim_args_decode_before_precise_seek() {
         let args = trim_clip_args(
             Path::new("raw.mp4"),
             Path::new("out.mp4"),
@@ -633,8 +633,10 @@ mod tests {
             6.0,
         );
         assert_eq!(args, vec![
-            "-y", "-ss", "4.000", "-i", "raw.mp4", "-t", "6.000",
-            "-c", "copy", "-movflags", "+faststart", "out.mp4",
+            "-y", "-i", "raw.mp4", "-ss", "4.000", "-t", "6.000",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-c:a", "aac", "-b:a", "160k", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart", "out.mp4",
         ]);
     }
 
@@ -657,14 +659,27 @@ fn trim_clip_args(
 ) -> Vec<String> {
     vec![
         "-y".into(),
-        "-ss".into(),
-        format!("{:.3}", source_start.max(0.0)),
         "-i".into(),
         src.to_string_lossy().to_string(),
+        // Output-side seek decodes and discards every frame before the clean
+        // in-point. Stream-copy/input seek is only keyframe-accurate and can leak
+        // headline preroll from long-GOP social video.
+        "-ss".into(),
+        format!("{:.3}", source_start.max(0.0)),
         "-t".into(),
         format!("{:.3}", max_dur.max(0.0)),
-        "-c".into(),
-        "copy".into(),
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "veryfast".into(),
+        "-crf".into(),
+        "18".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "160k".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
         "-movflags".into(),
         "+faststart".into(),
         dest.to_string_lossy().to_string(),

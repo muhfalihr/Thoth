@@ -1,10 +1,12 @@
 import assert from 'node:assert';
 import {
   buildSampleTimes,
+  buildClassifiedDiagnostics,
   classifyOcrFrames,
   classifyVisionText,
   classifyClip,
   hashVideoId,
+  fetchWithTimeout,
   mainDirectiveFields,
   normalizeRegion,
   parseDeepSeekOcr,
@@ -16,6 +18,15 @@ import type { OcrBox } from './subtitle_vision.ts';
 assert.match(hashVideoId('https://example.test/private?a=secret'), /^[a-f0-9]{16}$/);
 assert.equal(parseDuration('26.935011\n'), 26.935011);
 assert.equal(parseDuration('N/A'), 0);
+await assert.rejects(
+  () => fetchWithTimeout(
+    'https://never.test',
+    {},
+    5,
+    (() => new Promise(() => {})) as typeof fetch,
+  ),
+  (error: any) => error?.name === 'TimeoutError',
+);
 assert.deepEqual(mainDirectiveFields({
   outcome: 'subtitle',
   trim_start: 4,
@@ -26,6 +37,9 @@ assert.deepEqual(mainDirectiveFields({
   mute_audio: true,
   subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 5, end: 8 }],
 });
+assert.deepEqual(mainDirectiveFields({
+  outcome: 'clean', trim_start: 0, mute_audio: false, subtitle_blur: [],
+}), { trim_start: 0, mute_audio: false, subtitle_blur: [] });
 
 // DeepSeek-OCR grounding output uses a 0..1000 coordinate grid.
 {
@@ -161,8 +175,20 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   assert.equal(hybrid.outcome, 'subtitle');
   assert.equal(hybrid.trim_start, 4);
   assert.equal(hybrid.mute_audio, true);
-  assert.ok(hybrid.subtitle_blur.length >= 3);
+  assert.ok(hybrid.subtitle_blur.length >= 1);
   assert.ok(hybrid.subtitle_blur.every((r) => r.y > .70));
+}
+
+// An unreadable sample is not evidence that a tracked headline disappeared.
+{
+  const partialFailure = classifyOcrFrames([
+    f(1, b('MATCH DAY', .1, .3, .9, .4)),
+    f(2, b('MATCH DAY', .1, .3, .9, .4)),
+    { t: 3, boxes: [], error: 'TimeoutError' },
+    f(4, b('MATCH DAY', .1, .3, .9, .4)),
+    f(5),
+  ], 8);
+  assert.equal(partialFailure.trim_start, 4.5);
 }
 
 // Regression from the reported source: DeepSeek emits each headline line as a
@@ -184,6 +210,35 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   ], 10);
   assert.equal(realGeometry.trim_start, 3.5);
   assert.ok(realGeometry.subtitle_blur.every((region) => region.y > .70));
+}
+
+// Changing, left-anchored text in a stable lower-third slot is a chyron, not
+// spoken caption text, and must not cause footage rejection.
+{
+  const lowerThird = classifyOcrFrames([
+    f(1, b('BREAKING NEWS', .05, .84, .58, .89)),
+    f(3, b('MARKETS RALLY', .055, .84, .51, .89)),
+    f(5, b('MORE AT TEN', .052, .84, .48, .89)),
+  ], 8);
+  assert.equal(lowerThird.outcome, 'clean');
+}
+
+// Persistent two-line captions are still subtitles even when OCR text does not
+// change between samples.
+{
+  const stableTwoLine = classifyOcrFrames([
+    f(1,
+      b('THIS LINE STAYS', .18, .70, .82, .75),
+      b('SO DOES THIS', .25, .76, .75, .81)),
+    f(3,
+      b('THIS LINE STAYS', .18, .70, .82, .75),
+      b('SO DOES THIS', .25, .76, .75, .81)),
+    f(5,
+      b('THIS LINE STAYS', .18, .70, .82, .75),
+      b('SO DOES THIS', .25, .76, .75, .81)),
+  ], 8);
+  assert.equal(stableTwoLine.outcome, 'subtitle');
+  assert.ok(stableTwoLine.subtitle_blur.every((region) => region.h > .12));
 }
 
 // A small, stable corner watermark is neither headline nor subtitle.
@@ -234,7 +289,21 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
       b('KALIMAT BARU', .14, .71, .80, .77),
       b('LANJUTANNYA', .20, .78, .78, .85)),
   ], 8);
-  assert.equal(twoLine.subtitle_blur.length, 2);
+  assert.equal(twoLine.subtitle_blur.length, 1);
   assert.ok(twoLine.subtitle_blur.every((r) => r.h > .14));
+}
+
+{
+  const frames = [
+    f(1, b('HEADLINE', .1, .3, .9, .4)),
+    f(2, b('HEADLINE', .1, .3, .9, .4)),
+    f(3),
+    f(5, b('CAPTION A', .2, .72, .8, .8)),
+    f(7, b('CAPTION B', .2, .72, .8, .8)),
+  ];
+  const verdict = classifyOcrFrames(frames, 9);
+  const diagnostics = buildClassifiedDiagnostics(frames, verdict);
+  assert.ok(diagnostics.find((frame) => frame.t === 1)!.headline_boxes.length > 0);
+  assert.ok(diagnostics.find((frame) => frame.t === 5)!.subtitle_boxes.length > 0);
 }
 console.log('ok classifyOcrFrames');

@@ -26,12 +26,11 @@ export type OcrBox = {
 };
 export type OcrFrame = { t: number; boxes: OcrBox[]; error?: string };
 
-export function mainDirectiveFields(verdict: ClipVerdict): Partial<Pick<ClipVerdict, 'trim_start' | 'mute_audio' | 'subtitle_blur'>> {
+export function mainDirectiveFields(verdict: ClipVerdict): Pick<ClipVerdict, 'trim_start' | 'mute_audio' | 'subtitle_blur'> {
   return {
-    ...(verdict.trim_start > 0 ? { trim_start: verdict.trim_start } : {}),
-    ...(verdict.outcome === 'subtitle'
-      ? { mute_audio: true, subtitle_blur: verdict.subtitle_blur }
-      : {}),
+    trim_start: verdict.trim_start > 0 ? verdict.trim_start : 0,
+    mute_audio: verdict.outcome === 'subtitle',
+    subtitle_blur: verdict.outcome === 'subtitle' ? verdict.subtitle_blur : [],
   };
 }
 
@@ -42,6 +41,32 @@ export function hashVideoId(videoUrl: string): string {
 export function parseDuration(value: string): number {
   const parsed = Number.parseFloat((value || '').trim());
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+export async function fetchWithTimeout(
+  input: string | URL | Request,
+  init: RequestInit = {},
+  timeoutMs = 20_000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`request exceeded ${timeoutMs}ms`);
+      error.name = 'TimeoutError';
+      reject(error);
+      controller.abort();
+    }, Math.max(1, timeoutMs));
+  });
+  try {
+    return await Promise.race([
+      fetchImpl(input, { ...init, signal: controller.signal }),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // DeepSeek-OCR returns one or more 0..1000 grounding boxes for every ref block.
@@ -112,6 +137,34 @@ function verticalOverlap(a: OcrBox, b: OcrBox): number {
   return overlap / Math.max(.000001, Math.min(a.y1 - a.y0, b.y1 - b.y0));
 }
 
+function horizontalOverlap(a: OcrBox, b: OcrBox): number {
+  const overlap = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0));
+  return overlap / Math.max(.000001, Math.min(a.x1 - a.x0, b.x1 - b.x0));
+}
+
+function hasMultilineLayout(boxes: OcrBox[]): boolean {
+  return boxes.some((box, index) => boxes.some((other, otherIndex) => {
+    if (index === otherIndex) return false;
+    const gap = Math.max(0, Math.max(box.y0, other.y0) - Math.min(box.y1, other.y1));
+    return gap <= .07 && horizontalOverlap(box, other) >= .3;
+  }));
+}
+
+function isLikelyLowerThird(box: OcrBox, frameIndex: number, frames: OcrFrame[]): boolean {
+  const center = (box.x0 + box.x1) / 2;
+  if (box.y0 < .65 || box.x0 > .2 || Math.abs(center - .5) <= .1) return false;
+  const alignedLefts: number[] = [];
+  for (let index = 0; index < frames.length; index++) {
+    for (const other of frames[index].boxes) {
+      if (verticalOverlap(box, other) >= .5 && other.x0 <= .2) alignedLefts.push(other.x0);
+    }
+  }
+  if (alignedLefts.length < 2) return false;
+  return Math.max(...alignedLefts) - Math.min(...alignedLefts) <= .035 &&
+    frames.some((frame, index) => index !== frameIndex && frame.boxes.some((other) =>
+      verticalOverlap(box, other) >= .5 && normText(box.text) !== normText(other.text)));
+}
+
 function textSimilarity(a: string, b: string): number {
   const aa = normText(a);
   const bb = normText(b);
@@ -147,10 +200,12 @@ function envelope(boxes: OcrBox[]): OcrBox {
 // windows (the common social-video hybrid case).
 export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVerdict {
   const clean: ClipVerdict = { outcome: 'clean', trim_start: 0, mute_audio: false, subtitle_blur: [] };
-  const sorted = [...frames].sort((a, b) => a.t - b.t);
+  // Failed samples are unknown, not clean. Excluding them prevents an HTTP/frame
+  // error from becoming false evidence that a headline disappeared.
+  const sorted = frames.filter((frame) => !frame.error).sort((a, b) => a.t - b.t);
   if (sorted.length === 0) return clean;
 
-  const usableCount = sorted.filter((frame) => !frame.error).length || sorted.length;
+  const usableCount = sorted.length;
   const stableThreshold = Math.max(2, Math.ceil(usableCount * .6));
   const isStableSmall = (candidate: OcrBox) => {
     if (boxArea(candidate) >= .02) return false;
@@ -190,15 +245,23 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
     }
   }
 
-  const candidateFrames = filtered.map((frame) => ({
+  const rawCandidateFrames = filtered.map((frame) => ({
     ...frame,
     boxes: frame.t + 1e-9 >= trimStart
       ? frame.boxes.filter((box) => box.x1 - box.x0 >= .18 && box.y1 - box.y0 >= .025)
       : [],
   }));
+  const candidateFrames = rawCandidateFrames.map((frame, frameIndex) => ({
+    ...frame,
+    boxes: frame.boxes.filter((box) => !isLikelyLowerThird(box, frameIndex, rawCandidateFrames)),
+  }));
+  const multilineFrames = candidateFrames.map((frame) => hasMultilineLayout(frame.boxes));
   const selectedByFrame = candidateFrames.map((frame, frameIndex) => frame.boxes.filter((box) =>
     candidateFrames.some((other, otherIndex) => otherIndex !== frameIndex && other.boxes.some((otherBox) =>
-      verticalOverlap(box, otherBox) >= .5 && normText(box.text) !== normText(otherBox.text)))));
+      verticalOverlap(box, otherBox) >= .5 && normText(box.text) !== normText(otherBox.text))) ||
+    (multilineFrames[frameIndex] && candidateFrames.some((other, otherIndex) =>
+      otherIndex !== frameIndex && multilineFrames[otherIndex] && other.boxes.some((otherBox) =>
+        verticalOverlap(box, otherBox) >= .5)))));
 
   type Window = { start: number; end: number; region: OcrBox };
   const windows: Window[] = [];
@@ -212,7 +275,7 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
   const merged: Window[] = [];
   for (const window of windows) {
     const previous = merged[merged.length - 1];
-    if (previous && window.start < previous.end - 1e-6 && boxIou(previous.region, window.region) >= .6) {
+    if (previous && window.start <= previous.end + 1e-6 && boxIou(previous.region, window.region) >= .6) {
       previous.end = Math.max(previous.end, window.end);
       previous.region = envelope([previous.region, window.region]);
     } else {
@@ -234,6 +297,35 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
     return { outcome: 'cover', trim_start: trimStart, mute_audio: false, subtitle_blur: [] };
   }
   return clean;
+}
+
+export type ClassifiedOcrDiagnostic = {
+  t: number;
+  headline_boxes: OcrBox[];
+  subtitle_boxes: OcrBox[];
+};
+
+export function buildClassifiedDiagnostics(
+  frames: OcrFrame[],
+  verdict: ClipVerdict,
+): ClassifiedOcrDiagnostic[] {
+  return frames.map((frame) => {
+    if (frame.error) return { t: frame.t, headline_boxes: [], subtitle_boxes: [] };
+    const headline_boxes = verdict.trim_start > 0 && frame.t < verdict.trim_start
+      ? frame.boxes.filter((box) => boxArea(box) >= .015 && box.x1 - box.x0 >= .45)
+      : [];
+    const subtitle_boxes = frame.boxes.filter((box) => {
+      const centerX = (box.x0 + box.x1) / 2;
+      const centerY = (box.y0 + box.y1) / 2;
+      return verdict.subtitle_blur.some((region) => {
+        const active = region.start === 0 && region.end === 0 ||
+          frame.t >= (region.start ?? 0) - 1e-6 && frame.t <= (region.end ?? 0) + 1e-6;
+        return active && centerX >= region.x && centerX <= region.x + region.w &&
+          centerY >= region.y && centerY <= region.y + region.h;
+      });
+    });
+    return { t: frame.t, headline_boxes, subtitle_boxes };
+  });
 }
 
 const COVER_MAX = 5.0;
@@ -347,7 +439,9 @@ export function classifyVisionText(resp: string): boolean {
 
 async function ocrFrame(img: string): Promise<{ boxes: OcrBox[]; error?: string }> {
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
+    const configuredTimeout = Number.parseInt(process.env.THOTH_SUBTITLE_OCR_TIMEOUT_MS || '20000', 10);
+    const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 20_000;
+    const resp = await fetchWithTimeout('https://api.novita.ai/v3/openai/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
       body: JSON.stringify({
@@ -357,7 +451,7 @@ async function ocrFrame(img: string): Promise<{ boxes: OcrBox[]; error?: string 
           { type: 'image_url', image_url: { url: img, detail: 'high' } },
         ] }],
       }),
-    });
+    }, timeoutMs);
     if (!resp.ok) return { boxes: [], error: `http_${resp.status}` };
     const d: any = await resp.json();
     const content = d?.choices?.[0]?.message?.content;
@@ -406,11 +500,18 @@ export async function analyzeSubtitles(videoUrl: string, duration = 0): Promise<
   const verdict = frames.some((frame) => !frame.error)
     ? classifyOcrFrames(frames, effectiveDuration)
     : clean;
+  const classified = buildClassifiedDiagnostics(frames, verdict);
   appendDiagnostics({
     model: MODEL,
     video_id: hashVideoId(videoUrl),
     duration: effectiveDuration,
-    samples: frames.map(({ t, boxes, error }) => ({ t, boxes, ...(error ? { error } : {}) })),
+    samples: frames.map(({ t, boxes, error }, index) => ({
+      t,
+      boxes,
+      headline_boxes: classified[index].headline_boxes,
+      subtitle_boxes: classified[index].subtitle_boxes,
+      ...(error ? { error } : {}),
+    })),
     verdict,
   });
   return verdict;
