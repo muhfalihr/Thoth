@@ -4,11 +4,17 @@ import {
   classifyOcrFrames,
   classifyVisionText,
   classifyClip,
+  hashVideoId,
   normalizeRegion,
   parseDeepSeekOcr,
+  parseDuration,
   parseVisionFrame,
 } from './subtitle_vision.ts';
 import type { OcrBox } from './subtitle_vision.ts';
+
+assert.match(hashVideoId('https://example.test/private?a=secret'), /^[a-f0-9]{16}$/);
+assert.equal(parseDuration('26.935011\n'), 26.935011);
+assert.equal(parseDuration('N/A'), 0);
 
 // DeepSeek-OCR grounding output uses a 0..1000 coordinate grid.
 {

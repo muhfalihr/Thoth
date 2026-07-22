@@ -4,12 +4,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { novitaKey } from './env.ts';
+import { outPath } from './paths.ts';
 
 const KEY = novitaKey();
-const MODEL = process.env.THOTH_VISION_MODEL_JS || 'qwen/qwen3-vl-30b-a3b-instruct';
+const MODEL = process.env.THOTH_SUBTITLE_OCR_MODEL || 'deepseek/deepseek-ocr';
 const FFMPEG = process.env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
+const FFPROBE = process.env.THOTH_FFPROBE || path.join(path.dirname(FFMPEG), 'ffprobe.exe');
 
 export type SubtitleRegion = { x: number; y: number; w: number; h: number; start?: number; end?: number };
 export type FrameDet = { t: number; present: boolean; region: { x0: number; y0: number; x1: number; y1: number } | null };
@@ -22,6 +25,15 @@ export type OcrBox = {
   y1: number;
 };
 export type OcrFrame = { t: number; boxes: OcrBox[]; error?: string };
+
+export function hashVideoId(videoUrl: string): string {
+  return createHash('sha256').update(videoUrl || '').digest('hex').slice(0, 16);
+}
+
+export function parseDuration(value: string): number {
+  const parsed = Number.parseFloat((value || '').trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
 
 // DeepSeek-OCR returns one or more 0..1000 grounding boxes for every ref block.
 // Keep parsing fail-open: malformed fragments are ignored without discarding valid
@@ -268,7 +280,7 @@ export function classifyClip(frames: FrameDet[], duration: number): ClipVerdict 
 function frameDataUrl(videoUrl: string, t: number): string | null {
   const tmp = path.join(os.tmpdir(), `subv_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
   try {
-    execFileSync(FFMPEG, ['-y', '-ss', String(t), '-i', videoUrl, '-frames:v', '1', '-vf', 'scale=512:-1', '-q:v', '5', tmp],
+    execFileSync(FFMPEG, ['-y', '-ss', String(t), '-i', videoUrl, '-frames:v', '1', '-vf', 'scale=960:-1', '-q:v', '4', tmp],
       { stdio: 'pipe', timeout: 30000 });
     const b64 = fs.readFileSync(tmp).toString('base64');
     return `data:image/jpeg;base64,${b64}`;
@@ -276,19 +288,9 @@ function frameDataUrl(videoUrl: string, t: number): string | null {
   finally { try { fs.rmSync(tmp); } catch {} }
 }
 
-const PROMPT =
-  `Lihat frame video ini. Jawab HANYA JSON {"present":bool,"region":[x0,y0,x1,y1]|null,"why":"<=8 kata"}.\n` +
-  `present=true HANYA jika ada subtitle transkrip UCAPAN yang di-burn-in (auto-caption gaya TikTok/CapCut, ` +
-  `face-cam/PiP react). region = kotak NORMALISASI [0..1] (x0,y0=kiri-atas; x1,y1=kanan-bawah) yang membungkus teks itu.\n` +
-  `present=false (region null) untuk: lower-third berita, logo channel, watermark, headline grafis, teks judul singkat, tanpa teks.`;
-
-// Normalize a vision bbox to [0..1]. qwen3-vl IGNORES the prompt's "normalized"
-// instruction and returns 0-1000 grid coords (observed e.g. [53,460,821,617]);
-// detect that (any value >1) and rescale by 1000, then clamp to [0..1] and fix
-// corner ordering. WITHOUT this, downstream w=x1-x0=768 reaches Rust, which
-// clamps it to 1.0 and blurs the ENTIRE frame instead of just the subtitle band.
-// ponytail: 1000-grid is the qwen3-vl convention; if the model is swapped for one
-// that returns absolute pixels, clamp still bounds it (over-wide, not full-frame-safe) — revisit divisor then.
+// Normalize a legacy vision bbox to [0..1]. The previous adapter returned a
+// 0..1000 grid even when asked for normalized coordinates; retain this parser
+// only for backwards-compatible pure callers. Live bbox detection uses DeepSeek.
 export function normalizeRegion(
   x0: number, y0: number, x1: number, y1: number,
 ): NonNullable<FrameDet['region']> {
@@ -322,41 +324,75 @@ export function classifyVisionText(resp: string): boolean {
   try { return !!m && JSON.parse(m[0]).reject === true; } catch { return false; }
 }
 
-const SAMPLE_TIMES = [1, 3, 5, 8, 12];
-
-async function visionFrame(img: string): Promise<{ present: boolean; region: FrameDet['region'] }> {
+async function ocrFrame(img: string): Promise<{ boxes: OcrBox[]; error?: string }> {
   try {
     const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
       body: JSON.stringify({
-        model: MODEL, max_tokens: 80, temperature: 0,
+        model: MODEL, max_tokens: 4096, temperature: 0,
         messages: [{ role: 'user', content: [
-          { type: 'text', text: PROMPT },
-          { type: 'image_url', image_url: { url: img } },
+          { type: 'text', text: '<|grounding|>OCR this image.' },
+          { type: 'image_url', image_url: { url: img, detail: 'high' } },
         ] }],
       }),
     });
-    if (!resp.ok) return { present: false, region: null };
+    if (!resp.ok) return { boxes: [], error: `http_${resp.status}` };
     const d: any = await resp.json();
-    return parseVisionFrame(d?.choices?.[0]?.message?.content || '');
-  } catch { return { present: false, region: null }; }
+    const content = d?.choices?.[0]?.message?.content;
+    return { boxes: parseDeepSeekOcr(typeof content === 'string' ? content : '') };
+  } catch (error) {
+    return { boxes: [], error: error instanceof Error ? error.name : 'unknown_error' };
+  }
 }
 
-// Multi-frame subtitle analysis → verdict. Vision unavailable → CLEAN (never blocks).
-export async function analyzeSubtitles(videoUrl: string, duration = 20): Promise<ClipVerdict> {
+function probeDuration(videoUrl: string): number {
+  try {
+    const raw = execFileSync(FFPROBE, [
+      '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', videoUrl,
+    ], { encoding: 'utf8', stdio: 'pipe', timeout: 30000 });
+    return parseDuration(raw);
+  } catch {
+    return 0;
+  }
+}
+
+function appendDiagnostics(record: unknown): void {
+  try {
+    fs.appendFileSync(outPath('subtitle_ocr_debug.jsonl'), `${JSON.stringify(record)}\n`, 'utf8');
+  } catch {}
+}
+
+// Multi-frame OCR analysis → independent trim + blur actions. OCR unavailable or
+// every request failed remains CLEAN so enrichment never blocks the pipeline.
+export async function analyzeSubtitles(videoUrl: string, duration = 0): Promise<ClipVerdict> {
   const clean: ClipVerdict = { outcome: 'clean', trim_start: 0, mute_audio: false, subtitle_blur: [] };
   if (!KEY || !videoUrl) return clean;
-  const times = SAMPLE_TIMES.filter((t) => t < duration || t <= 1);
-  const frames: FrameDet[] = [];
+  const resolvedDuration = duration > 0 ? duration : probeDuration(videoUrl);
+  const effectiveDuration = resolvedDuration > 0 ? resolvedDuration : 20;
+  const configuredMax = Number.parseInt(process.env.THOTH_SUBTITLE_OCR_MAX_FRAMES || '12', 10);
+  const maxFrames = Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 12;
+  const times = buildSampleTimes(effectiveDuration, maxFrames);
+  const frames: OcrFrame[] = [];
   for (const t of times) {
     const img = frameDataUrl(videoUrl, t);
-    if (!img) continue;                       // frame grab failed → skip (conservative)
-    const { present, region } = await visionFrame(img);
-    frames.push({ t, present, region });
+    if (!img) {
+      frames.push({ t, boxes: [], error: 'frame_extract' });
+      continue;
+    }
+    frames.push({ t, ...await ocrFrame(img) });
   }
-  if (frames.length === 0) return clean;       // no usable frame → don't block
-  return classifyClip(frames, duration);
+  const verdict = frames.some((frame) => !frame.error)
+    ? classifyOcrFrames(frames, effectiveDuration)
+    : clean;
+  appendDiagnostics({
+    model: MODEL,
+    video_id: hashVideoId(videoUrl),
+    duration: effectiveDuration,
+    samples: frames.map(({ t, boxes, error }) => ({ t, boxes, ...(error ? { error } : {}) })),
+    verdict,
+  });
+  return verdict;
 }
 
 export async function hasReactionSubtitle(videoUrl: string): Promise<boolean> {
