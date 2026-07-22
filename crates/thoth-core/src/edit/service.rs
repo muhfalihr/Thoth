@@ -1241,6 +1241,7 @@ impl<'a> EditService<'a> {
                             &cand.url,
                             at_clamped,
                             dur_clamped,
+                            cand.trim_start,
                             &self.config.overlay,
                             &overlay_ytdlp,
                             &ffmpeg_dir,
@@ -1326,7 +1327,7 @@ impl<'a> EditService<'a> {
                             if let Some(fspec) = run_cooperative_item(self.execution, || async {
                                 fetch_overlay_from_url(
                                     self.execution,
-                                    &cand.url, win_start, dur,
+                                    &cand.url, win_start, dur, cand.trim_start,
                                     &self.config.overlay, &overlay_ytdlp, &ffmpeg_dir,
                                     overlay_cookie.as_ref(),
                                 )
@@ -2101,7 +2102,8 @@ impl<'a> EditService<'a> {
                             if let Some(spec) = narrator_overlay_result(
                                 super::overlay::fetch_overlay_from_url(
                                     self.execution,
-                                    &cand.url, wt, wdur, &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
+                                    &cand.url, wt, wdur, cand.trim_start,
+                                    &self.config.overlay, overlay_ytdlp, ffmpeg_dir,
                                     overlay_cookie.as_ref(),
                                 ).await,
                             )? {

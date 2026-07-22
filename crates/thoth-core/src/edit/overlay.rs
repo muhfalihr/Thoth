@@ -134,13 +134,14 @@ pub struct OverlaySpec {
 /// downloads it directly via yt-dlp. This is what powers the Montage
 /// "multiple relevant clips" cutaway style.
 ///
-/// Cache key is `md5(url)` (variant slot 0). Returns `None` on any failure — an
+/// Cache key is `md5(url + source_start)` (variant slot 0). Returns `None` on any failure — an
 /// overlay is purely additive and must never block clip rendering.
 pub async fn fetch_overlay_from_url(
     execution:  &JobExecutionContext,
     url:        &str,
     at_sec:     f64,
     duration:   f64,
+    source_start: f64,
     cfg:        &OverlayConfig,
     ytdlp_path: &str,
     ffmpeg_dir: &str,
@@ -154,28 +155,37 @@ pub async fn fetch_overlay_from_url(
         return Ok(None);
     }
 
-    // Cache by URL hash so the same enrichment clip is downloaded only once.
-    let dest = cache_path_variant(&cfg.cache_dir, url, 0);
+    // A clean in-point changes the bytes represented by a cache entry.
+    let cache_identity = overlay_cache_identity(url, source_start);
+    let dest = cache_path_variant(&cfg.cache_dir, &cache_identity, 0);
     if !dest.exists() {
         info!("overlay: downloading enrichment clip {url}");
         let tmp_prefix = dest.with_extension("tmpurl");
         // Grab only the opening slice — enrichment clips are full-length videos,
         // so a max-duration *filter* (download_clip_direct) would reject them.
         let ok = download_clip_section(
-            execution, ytdlp_path, url, &tmp_prefix, cfg.max_duration, ffmpeg_dir, cookie,
+            execution, ytdlp_path, url, &tmp_prefix, source_start,
+            cfg.max_duration, ffmpeg_dir, cookie,
         ).await?;
         if !ok {
             warn!("overlay: enrichment download failed for {url}");
             return Ok(None);
         }
         if let Some(raw) = find_downloaded(&tmp_prefix) {
-            match trim_clip(execution, &raw, &dest, cfg.max_duration, ffmpeg_dir).await {
+            match trim_clip(
+                execution, &raw, &dest, source_start, cfg.max_duration, ffmpeg_dir,
+            ).await {
                 Ok(()) => {
                     let _ = tokio::fs::remove_file(&raw).await;
                 }
                 Err(error) if crate::execution::is_cancelled(&error) => return Err(error),
-                Err(_) => {
+                Err(_) if source_start <= 0.0 => {
                     let _ = tokio::fs::rename(&raw, &dest).await;
+                }
+                Err(_) => {
+                    let _ = tokio::fs::remove_file(&raw).await;
+                    warn!("overlay: refusing untrimmed fallback for source_start={source_start:.3}");
+                    return Ok(None);
                 }
             }
         } else {
@@ -391,6 +401,10 @@ fn cache_path_variant(cache_dir: &Path, query: &str, idx: usize) -> PathBuf {
     cache_dir.join(format!("{hash}_{idx}.mp4"))
 }
 
+fn overlay_cache_identity(url: &str, source_start: f64) -> String {
+    format!("{}\nsource_start={:.3}", url.trim(), source_start.max(0.0))
+}
+
 fn urlencoded(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -481,13 +495,14 @@ async fn download_clip_section(
     ytdlp:      &str,
     url:        &str,
     out_prefix: &Path,
+    source_start: f64,
     max_dur:    f64,
     ffmpeg_dir: &str,
     cookie:     Option<&crate::ingest::CookieSource>,
 ) -> Result<bool> {
     let template = format!("{}.%(ext)s", out_prefix.to_string_lossy());
     // Grab a little extra so trim_clip has headroom to land on a clean keyframe.
-    let secs = ((max_dur + 2.0) as u64).max(2);
+    let secs = section_download_secs(source_start, max_dur);
 
     let builder = crate::ingest::YtDlpArgs::new(ytdlp)
         .quiet()
@@ -514,6 +529,10 @@ async fn download_clip_section(
 
     cleanup_temp_cookie(temp_cookie).await;
     supervised_overlay_status(result)
+}
+
+fn section_download_secs(source_start: f64, max_dur: f64) -> u64 {
+    (source_start.max(0.0) + max_dur.max(0.0) + 2.0).ceil().max(2.0) as u64
 }
 
 /// Download a single overlay clip via yt-dlp search query.
@@ -592,6 +611,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn section_includes_trim_and_headroom() {
+        assert_eq!(section_download_secs(4.0, 6.0), 12);
+        assert_eq!(section_download_secs(0.0, 6.0), 8);
+    }
+
+    #[test]
+    fn cache_identity_includes_source_start() {
+        assert_ne!(
+            overlay_cache_identity("https://x/video", 0.0),
+            overlay_cache_identity("https://x/video", 4.0)
+        );
+    }
+
+    #[test]
+    fn trim_args_seek_before_input() {
+        let args = trim_clip_args(
+            Path::new("raw.mp4"),
+            Path::new("out.mp4"),
+            4.0,
+            6.0,
+        );
+        assert_eq!(args, vec![
+            "-y", "-ss", "4.000", "-i", "raw.mp4", "-t", "6.000",
+            "-c", "copy", "-movflags", "+faststart", "out.mp4",
+        ]);
+    }
+
+    #[test]
     fn supervised_overlay_cancellation_is_not_soft_failed() {
         let error = supervised_overlay_status(Err(anyhow::Error::new(
             crate::execution::Cancelled,
@@ -602,12 +649,40 @@ mod tests {
     }
 }
 
-async fn trim_clip(execution: &JobExecutionContext, src: &Path, dest: &Path, max_dur: f64, ffmpeg_dir: &str) -> Result<()> {
+fn trim_clip_args(
+    src: &Path,
+    dest: &Path,
+    source_start: f64,
+    max_dur: f64,
+) -> Vec<String> {
+    vec![
+        "-y".into(),
+        "-ss".into(),
+        format!("{:.3}", source_start.max(0.0)),
+        "-i".into(),
+        src.to_string_lossy().to_string(),
+        "-t".into(),
+        format!("{:.3}", max_dur.max(0.0)),
+        "-c".into(),
+        "copy".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        dest.to_string_lossy().to_string(),
+    ]
+}
+
+async fn trim_clip(
+    execution: &JobExecutionContext,
+    src: &Path,
+    dest: &Path,
+    source_start: f64,
+    max_dur: f64,
+    ffmpeg_dir: &str,
+) -> Result<()> {
     let ffmpeg = resolve_ffmpeg(ffmpeg_dir);
     let mut command = tokio::process::Command::new(&ffmpeg);
     command
-        .args(["-y", "-i", &src.to_string_lossy(), "-t", &format!("{max_dur:.3}"),
-               "-c", "copy", "-movflags", "+faststart", &dest.to_string_lossy()])
+        .args(trim_clip_args(src, dest, source_start, max_dur))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let status = execution.status(&mut command).await.context("ffmpeg trim spawn")?;
