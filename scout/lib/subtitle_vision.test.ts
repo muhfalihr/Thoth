@@ -51,4 +51,15 @@ assert.equal(
   assert.equal(v.subtitle_blur[0].start, 0);
   assert.equal(v.subtitle_blur[0].end, 20);
 }
+
+// SUBTITLE, all frames present but no region boxes → mute, no crash, empty blur
+{
+  const v = classifyClip([
+    { t: 1, present: true, region: null }, { t: 5, present: true, region: null },
+    { t: 8, present: true, region: null }, { t: 12, present: true, region: null },
+  ], 20);
+  assert.equal(v.outcome, 'subtitle');
+  assert.equal(v.mute_audio, true);
+  assert.deepEqual(v.subtitle_blur, []);
+}
 console.log('ok classifyClip');

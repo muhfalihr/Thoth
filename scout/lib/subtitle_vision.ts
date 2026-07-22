@@ -55,7 +55,10 @@ export function classifyClip(frames: FrameDet[], duration: number): ClipVerdict 
   type W = { s: number; e: number; r: NonNullable<FrameDet['region']> };
   let wins: W[] = [];
   if (allText) {
-    wins = [{ s: 0, e: duration, r: withText[0].region! }];
+    // Guard: a present frame may carry a null region (type permits it); localize only
+    // if some frame gave a box. No box anywhere → still SUBTITLE + mute, just no blur.
+    const r = withText.find((f) => f.region)?.region;
+    if (r) wins = [{ s: 0, e: duration, r }];
   } else {
     for (let i = 0; i < fs.length; i++) {
       const f = fs[i];
