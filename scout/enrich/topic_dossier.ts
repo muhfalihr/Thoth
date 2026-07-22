@@ -110,7 +110,7 @@ async function enrich(set) {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 1200,
+        max_tokens: 4000,
         temperature: 0.2,
         messages: [{ role: 'user', content: PROMPT(main.title, main.description, promptComments) }],
       }),
@@ -135,7 +135,11 @@ async function enrich(set) {
   try {
     o = JSON.parse(m[0]);
   } catch (e) {
-    console.log(ui.amber(`  ${ui.WARN} JSON parse fail → skip`));
+    // Show WHY: the parse error + the tail of the captured text. A tail that
+    // ends mid-object/mid-string (no clean closing braces) means the LLM output
+    // was truncated by max_tokens; a syntax complaint means malformed JSON.
+    const tail = m[0].slice(-120).replace(/\s+/g, ' ');
+    console.log(ui.amber(`  ${ui.WARN} JSON parse fail → skip: ${String(e.message || e).slice(0, 80)} | …${tail}`));
     return false;
   }
 
