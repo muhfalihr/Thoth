@@ -5,6 +5,7 @@ import {
   classifyVisionText,
   classifyClip,
   hashVideoId,
+  mainDirectiveFields,
   normalizeRegion,
   parseDeepSeekOcr,
   parseDuration,
@@ -15,6 +16,16 @@ import type { OcrBox } from './subtitle_vision.ts';
 assert.match(hashVideoId('https://example.test/private?a=secret'), /^[a-f0-9]{16}$/);
 assert.equal(parseDuration('26.935011\n'), 26.935011);
 assert.equal(parseDuration('N/A'), 0);
+assert.deepEqual(mainDirectiveFields({
+  outcome: 'subtitle',
+  trim_start: 4,
+  mute_audio: true,
+  subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 5, end: 8 }],
+}), {
+  trim_start: 4,
+  mute_audio: true,
+  subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 5, end: 8 }],
+});
 
 // DeepSeek-OCR grounding output uses a 0..1000 coordinate grid.
 {

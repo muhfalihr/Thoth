@@ -27,7 +27,7 @@ import { tiktokDirectUrl, downloadTiktok } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator } from '../lib/aggregators.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
-import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
+import { analyzeSubtitles, mainDirectiveFields } from '../lib/subtitle_vision.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n) => {
@@ -1433,12 +1433,7 @@ async function setMainTo(set, orig, username) {
     // Resolve to a direct stream first so the check works on YT/Twitter/IG/FB mains too (not just a
     // TikTok CDN url already resolved upstream); fall back to set.main.url for already-direct sources.
     const mv = await analyzeSubtitles(directStreamUrl(set.main.url) || set.main.url);
-    if (mv.outcome === 'cover') {
-      set.main.trim_start = mv.trim_start;
-    } else if (mv.outcome === 'subtitle') {
-      set.main.mute_audio = true;
-      set.main.subtitle_blur = mv.subtitle_blur;
-    }
+    Object.assign(set.main, mainDirectiveFields(mv));
   }
 
   fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');

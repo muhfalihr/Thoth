@@ -464,7 +464,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
           relevance: 'match',
           description,
           ...(src_url ? { source_url: src_url } : {}),
-          ...(sv.outcome === 'cover' ? { trim_start: sv.trim_start } : {}),
+          ...(sv.trim_start > 0 ? { trim_start: sv.trim_start } : {}),
         });
         pv++;
         addedV++;

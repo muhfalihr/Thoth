@@ -26,6 +26,15 @@ export type OcrBox = {
 };
 export type OcrFrame = { t: number; boxes: OcrBox[]; error?: string };
 
+export function mainDirectiveFields(verdict: ClipVerdict): Partial<Pick<ClipVerdict, 'trim_start' | 'mute_audio' | 'subtitle_blur'>> {
+  return {
+    ...(verdict.trim_start > 0 ? { trim_start: verdict.trim_start } : {}),
+    ...(verdict.outcome === 'subtitle'
+      ? { mute_audio: true, subtitle_blur: verdict.subtitle_blur }
+      : {}),
+  };
+}
+
 export function hashVideoId(videoUrl: string): string {
   return createHash('sha256').update(videoUrl || '').digest('hex').slice(0, 16);
 }
