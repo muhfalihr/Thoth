@@ -250,6 +250,9 @@ pub struct FootageCardCue {
     pub duration_sec: f64,
     /// Card width as % of frame width (≈88).
     pub scale_pct: u32,
+    /// Full-frame cover-crop (true) vs contained card + drop-shadow (false).
+    /// Set by the placement stage from the clip's probed aspect ratio.
+    pub cover: bool,
 }
 
 /// One time-windowed IMAGE CARD in a montage — a STATIC cropped screenshot of a
@@ -550,19 +553,41 @@ fn build_footage_card_overlay(
     k: usize,
     cue: &FootageCardCue,
     clip_w: u32,
+    clip_h: u32,
     in_label: &str,
     out_label: &str,
 ) -> String {
-    let at    = cue.at_sec.max(0.0);
-    let dur   = cue.duration_sec.clamp(0.8, 8.0);
-    let end   = at + dur;
-    let cardw = (clip_w * cue.scale_pct.clamp(40, 100) / 100).max(160);
-    format!(
-        "[{input_idx}:v]trim=duration={dur:.3},setpts=PTS-STARTPTS+{at:.3}/TB,\
-         scale={cardw}:-2,setsar=1[fc{k}];\
-         [{in_label}][fc{k}]overlay=x=(W-w)/2:y=(H-h)/2:\
-         enable='between(t,{at:.3},{end:.3})'[{out_label}]"
-    )
+    let at   = cue.at_sec.max(0.0);
+    let dur  = cue.duration_sec.clamp(0.8, 8.0);
+    let end  = at + dur;
+    let trim = format!("trim=duration={dur:.3},setpts=PTS-STARTPTS+{at:.3}/TB");
+    if cue.cover {
+        // Full-frame cover-crop — footage owns the whole frame. Main is hidden
+        // during this window by the main-card enable gate (Task 3), so this reads
+        // as a clean cut. Opaque overlay at 0:0.
+        format!(
+            "[{input_idx}:v]{trim},\
+             scale={clip_w}:{clip_h}:force_original_aspect_ratio=increase,\
+             crop={clip_w}:{clip_h},setsar=1[fc{k}];\
+             [{in_label}][fc{k}]overlay=x=0:y=0:\
+             enable='between(t,{at:.3},{end:.3})'[{out_label}]"
+        )
+    } else {
+        // Contain — footage at natural aspect, centred on the paper canvas, with a
+        // drop-shadow beneath it. Main is hidden during the window (Task 3), so the
+        // paper canvas — not the main card — fills the area around the footage.
+        let cardw = (clip_w * cue.scale_pct.clamp(40, 100) / 100).max(160);
+        format!(
+            "[{input_idx}:v]{trim},\
+             scale={cardw}:-2,setsar=1,split=2[fcbody{k}][fcsrc{k}];\
+             [fcsrc{k}]colorchannelmixer=rr=0:gg=0:bb=0,boxblur=14,\
+             format=yuva420p,colorchannelmixer=aa=0.5[fcsh{k}];\
+             [{in_label}][fcsh{k}]overlay=x=(W-w)/2:y=(H-h)/2+18:\
+             enable='between(t,{at:.3},{end:.3})'[fcs{k}];\
+             [fcs{k}][fcbody{k}]overlay=x=(W-w)/2:y=(H-h)/2:\
+             enable='between(t,{at:.3},{end:.3})'[{out_label}]"
+        )
+    }
 }
 
 /// Build the video-filter fragment overlaying one full-width IMAGE CARD (centred,
@@ -978,7 +1003,7 @@ pub async fn encode_clip_direct(
                 for (k, c) in fc_cues.iter().enumerate() {
                     let out = if k == last { "outv".to_string() } else { format!("fcx{}", k + 1) };
                     s.push(';');
-                    s.push_str(&build_footage_card_overlay(fc_base_idx + k, k, c, clip_w, &cur, &out));
+                    s.push_str(&build_footage_card_overlay(fc_base_idx + k, k, c, clip_w, clip_h, &cur, &out));
                     cur = out;
                 }
                 s
@@ -2565,6 +2590,30 @@ mod tests {
         assert!(f.contains("enable='between(t,5.000,8.000)'"));
         assert!(f.ends_with("[outv]"));
         assert!(!f.contains("trim="));                            // still image: no trim/setpts
+    }
+
+    #[test]
+    fn footage_cover_branch_crops_full_frame() {
+        let cue = FootageCardCue {
+            path: std::path::PathBuf::from("f.mp4"),
+            at_sec: 4.0, duration_sec: 3.0, scale_pct: 88, cover: true,
+        };
+        let f = build_footage_card_overlay(7, 0, &cue, 1080, 1920, "in", "out");
+        assert!(f.contains("crop=1080:1920"), "cover must crop to full frame: {f}");
+        assert!(f.contains("overlay=x=0:y=0"), "cover overlays full-frame: {f}");
+        assert!(f.contains("enable='between(t,4.000,7.000)'"));
+    }
+
+    #[test]
+    fn footage_contain_branch_has_shadow_and_centre() {
+        let cue = FootageCardCue {
+            path: std::path::PathBuf::from("f.mp4"),
+            at_sec: 4.0, duration_sec: 3.0, scale_pct: 88, cover: false,
+        };
+        let f = build_footage_card_overlay(7, 0, &cue, 1080, 1920, "in", "out");
+        assert!(f.contains("boxblur"), "contain must draw a drop-shadow: {f}");
+        assert!(f.contains("scale=950:-2"), "contain scales to card width (88% of 1080): {f}");
+        assert!(!f.contains("crop=1080:1920"), "contain must NOT full-frame crop: {f}");
     }
 
     #[test]

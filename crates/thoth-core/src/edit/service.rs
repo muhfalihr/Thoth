@@ -1278,6 +1278,7 @@ impl<'a> EditService<'a> {
                                     at_sec:       win_start,
                                     duration_sec: dur,
                                     scale_pct:    anim_cfg.footage_scale_pct,
+                                    cover:        false,
                                 });
                                 placed += 1;
                                 info!("       🎞️ Montage cut {}: {} [{}] at t={:.1}s",
@@ -2009,6 +2010,7 @@ impl<'a> EditService<'a> {
                             )? {
                                 fcards.push(super::ffmpeg::FootageCardCue {
                                     path: spec.path, at_sec: wt, duration_sec: wdur, scale_pct: anim.footage_scale_pct,
+                                    cover: false,
                                 });
                             }
                         }
