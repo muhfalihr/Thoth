@@ -158,6 +158,43 @@ function igSlideDirectUrl(postUrl, n) {
   }
 }
 
+// Resolve ANY post URL (TikTok/YouTube/Twitter/IG/FB page) to a DIRECT, ffmpeg-openable stream URL
+// via yt-dlp -g. Needed because analyzeSubtitles() frame-grabs with `ffmpeg -i <url>`, and ffmpeg
+// cannot open a platform *page* URL (youtube.com/watch, x.com/…/status) — only a signed CDN media
+// URL. Returns '' on failure (photo-only post, unresolvable, timeout, or an already-direct CDN URL
+// yt-dlp doesn't recognize) so callers can fail-open to the original URL. Same ephemeral-CDN caveat
+// as tiktokDirectUrl/igSlideDirectUrl: the signed URL expires, use it promptly.
+function directStreamUrl(pageUrl) {
+  const YTDLP = process.env.YTDLP || 'yt-dlp';
+  const args = [
+    '--no-warnings',
+    '--skip-download',
+    '--playlist-items',
+    '1',
+    '-f',
+    'best[ext=mp4]/best',
+    '-g',
+    ...ytdlpCookieArgs(),
+    pageUrl,
+  ];
+  try {
+    const out = execFileSync(YTDLP, args, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PROBE_TIMEOUT,
+      maxBuffer: PROBE_MAXBUF,
+    });
+    return (
+      out
+        .toString('utf8')
+        .trim()
+        .split(/\r?\n/)
+        .find((l) => /^https?:\/\//.test(l)) || ''
+    );
+  } catch (_) {
+    return '';
+  }
+}
+
 // Enumerate an IG/X/FB carousel's slides via yt-dlp (RELIABLE — no DOM, unlike cropPost whose
 // biggest-media+ancestor heuristic fails on many carousel layouts). Returns [{index, kind}], 1-based,
 // kind='video' when the slide carries a duration (video), else 'photo'. [] on failure / single media.
@@ -311,6 +348,7 @@ export {
   matchesTopic,
   verifyTikTok,
   probeVideo,
+  directStreamUrl,
   igSlideDirectUrl,
   igCarouselSlides,
   ytdlpCookieArgs,

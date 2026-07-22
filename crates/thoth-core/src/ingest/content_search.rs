@@ -59,6 +59,19 @@ pub struct ContentResult {
     /// CARD (see `enrichment::load_image_pool`). Empty for video items.
     #[serde(default)]
     pub image_path: String,
+    /// Seconds to trim from the start (skip a cover/headline intro baked into
+    /// the source clip). Supplied by scout when it couldn't avoid picking a
+    /// video with an unavoidable intro. `0.0` = no trim.
+    #[serde(default)]
+    pub trim_start: f64,
+    /// Drop this item's own audio track (e.g. a reaction upload whose audio
+    /// would clash with the narration voiceover). Supplied by scout.
+    #[serde(default)]
+    pub mute_audio: bool,
+    /// Regions/time-windows of baked-in subtitles scout couldn't avoid, to be
+    /// blurred out during render. Empty = nothing to blur.
+    #[serde(default)]
+    pub subtitle_blur: Vec<SubtitleBlur>,
 }
 
 /// The MAIN clippable video chosen by scout. Only `url` is required — ingest
@@ -93,6 +106,38 @@ pub struct MainVideo {
     /// hallucinated follower counts). `None` = fall back to the LLM's guess.
     #[serde(default)]
     pub profile: Option<ProfileInfo>,
+    /// Seconds to trim from the start (skip a cover/headline intro baked into
+    /// the source clip). Supplied by scout when it couldn't avoid picking a
+    /// video with an unavoidable intro. `0.0` = no trim.
+    #[serde(default)]
+    pub trim_start: f64,
+    /// Drop this item's own audio track (e.g. a reaction upload whose audio
+    /// would clash with the narration voiceover). Supplied by scout.
+    #[serde(default)]
+    pub mute_audio: bool,
+    /// Regions/time-windows of baked-in subtitles scout couldn't avoid, to be
+    /// blurred out during render. Empty = nothing to blur.
+    #[serde(default)]
+    pub subtitle_blur: Vec<SubtitleBlur>,
+}
+
+/// A region + time-window of baked-in subtitles to blur during render.
+/// `x`,`y`,`w`,`h` are normalized (0.0-1.0) region coordinates; `start`,`end`
+/// are seconds into the clip the blur should be active.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SubtitleBlur {
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default)]
+    pub w: f64,
+    #[serde(default)]
+    pub h: f64,
+    #[serde(default)]
+    pub start: f64,
+    #[serde(default)]
+    pub end: f64,
 }
 
 /// Real social-profile metadata for the Beat-2 character intro card. Acquired by
@@ -284,6 +329,12 @@ pub struct LoadedSet {
     pub discourse: Discourse,
     /// Topic dossier (entities/relations/angles/timeline). Empty defaults when none.
     pub dossier: Dossier,
+    /// Cover/headline intro to skip on the main B-roll (seconds). `0.0` = none.
+    pub main_trim_start: f64,
+    /// Drop the main clip's baked audio (reaction/subtitle source). `false` = keep.
+    pub main_mute_audio: bool,
+    /// Baked-subtitle regions to blur-censor on the main (source-normalized). `[]` = none.
+    pub main_subtitle_blur: Vec<SubtitleBlur>,
 }
 
 /// Load and validate an scout content set file.
@@ -311,6 +362,9 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
         references: set.references,
         discourse: set.discourse,
         dossier: set.dossier,
+        main_trim_start: set.main.trim_start,
+        main_mute_audio: set.main.mute_audio,
+        main_subtitle_blur: set.main.subtitle_blur,
     })
 }
 
@@ -343,6 +397,19 @@ pub struct MainContext {
     /// narration grounding. Empty defaults when scout didn't supply one.
     #[serde(default)]
     pub dossier: Dossier,
+    /// Cover/headline intro to skip on the main B-roll, in seconds (scout's
+    /// cover-exception: text only in the first few seconds → trim, don't blur).
+    /// `0.0` = no trim.
+    #[serde(default)]
+    pub trim_start: f64,
+    /// Drop the main clip's baked audio from the mix — set when the main is a
+    /// reaction/subtitle-baked source whose talking must not leak. `false` = keep.
+    #[serde(default)]
+    pub mute_audio: bool,
+    /// Baked-subtitle regions to blur-censor on the main clip, normalized against
+    /// the SOURCE frame. `[]` = no censor.
+    #[serde(default)]
+    pub subtitle_blur: Vec<SubtitleBlur>,
 }
 
 /// Load the main-context sidecar from `base_dir/content_context.json`. Returns
@@ -362,6 +429,9 @@ pub fn to_main_context(set: LoadedSet) -> MainContext {
         references: set.references,
         discourse: set.discourse,
         dossier: set.dossier,
+        trim_start: set.main_trim_start,
+        mute_audio: set.main_mute_audio,
+        subtitle_blur: set.main_subtitle_blur,
     }
 }
 
@@ -525,5 +595,24 @@ mod tests {
         p.push(format!("thoth_cset_{}.json", uuid::Uuid::new_v4()));
         let f = std::fs::File::create(&p).unwrap();
         TmpFile(p, f)
+    }
+
+    #[test]
+    fn subtitle_fields_default_and_parse() {
+        // legacy JSON without the fields → defaults
+        let m: MainVideo = serde_json::from_str(r#"{"url":"u","is_video":true}"#).unwrap();
+        assert_eq!(m.trim_start, 0.0);
+        assert!(!m.mute_audio);
+        assert!(m.subtitle_blur.is_empty());
+
+        // new JSON populates them
+        let m2: MainVideo = serde_json::from_str(
+            r#"{"url":"u","is_video":true,"trim_start":4.0,"mute_audio":true,
+                 "subtitle_blur":[{"x":0.1,"y":0.7,"w":0.8,"h":0.08,"start":6.0,"end":14.0}]}"#).unwrap();
+        assert_eq!(m2.trim_start, 4.0);
+        assert!(m2.mute_audio);
+        assert_eq!(m2.subtitle_blur.len(), 1);
+        assert_eq!(m2.subtitle_blur[0].w, 0.8);
+        assert_eq!(m2.subtitle_blur[0].end, 14.0);
     }
 }

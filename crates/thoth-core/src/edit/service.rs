@@ -674,6 +674,10 @@ impl<'a> EditService<'a> {
         // plain `--url` runs → cards fall back to LLM data / no comment card.
         let profile_override = super::profile_card::load_profile_override(&self.job.base_dir);
         let comment_pool = super::comment_card::load_comment_pool(&self.job.base_dir);
+        // Content-set censor directives (mute/blur baked subtitles on a reaction main).
+        // Used by the per-clip fallback path below; narration mode loads its own.
+        let main_ctx = crate::ingest::content_search::load_main_context(&self.job.base_dir)
+            .unwrap_or_default();
         if profile_override.is_some() {
             info!("🪪 using scout real profile for the character card");
         }
@@ -905,6 +909,13 @@ impl<'a> EditService<'a> {
             };
 
             let mut audio_clone  = audio_opts.clone();
+            // Reaction/subtitle-baked main: drop baked audio + blur baked subtitles
+            // so neither leaks (same censor as narration mode; no-op without sidecar).
+            // ponytail: cover-intro trim_start is skipped on this fallback path —
+            // per-moment selection isn't cover-aware; wire it if clip-mode ever
+            // becomes the primary content-set render.
+            audio_clone.mute_event   = main_ctx.mute_audio;
+            audio_clone.subtitle_blur = main_ctx.subtitle_blur.clone();
             let has_headline     = headline.is_some();
             audio_clone.headline = headline;
 
@@ -1774,6 +1785,13 @@ impl<'a> EditService<'a> {
         let hook = std::fs::read_to_string(self.job.narration_dir().join("hook.txt"))
             .unwrap_or_default().trim().to_string();
 
+        // Main-context sidecar (scout content-set): carries the censor directives
+        // for a reaction/subtitle-baked main — trim the cover intro, mute the baked
+        // audio, blur the baked subtitles. Absent for plain `--url` runs → default
+        // (no trim / no mute / no blur), so behaviour is unchanged.
+        let main_ctx = crate::ingest::content_search::load_main_context(&self.job.base_dir)
+            .unwrap_or_default();
+
         // 2) Lead-in + B-roll window. The event audio plays LOUD for `lead` secs
         // (establishes the vibe), then the narrator comes in. The narration is the
         // audio SPINE, so the video length = lead-in + narration — NOT capped to the
@@ -1783,10 +1801,15 @@ impl<'a> EditService<'a> {
         let lead = self.config.narration.lead_in_secs.clamp(0.0, 3.0);
         let dur  = narr_dur + lead;
         let loop_source = dur > video_dur - 0.2;
+        // Cover-exception: skip the main's headline/cover intro (`trim_start`) so its
+        // baked text never shows. Only meaningful for a long-enough source (a short,
+        // looped B-roll has no separate intro to skip), so it clamps the non-loop
+        // in-point; if the trim would overrun the source, fall back as far as it fits.
         let (start, end) = if loop_source {
             (0.0, dur) // play B-roll from the top, looped (-stream_loop) to cover the narration
         } else {
-            let prefer = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0);
+            let prefer = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0)
+                .max(main_ctx.trim_start);
             let start = if prefer + dur <= video_dur { prefer } else { (video_dur - dur).max(0.0) };
             (start, start + dur)
         };
@@ -1827,6 +1850,10 @@ impl<'a> EditService<'a> {
         // 4) Build audio/video directives.
         let mut audio = audio_opts.clone();
         audio.loop_source = loop_source; // loop short B-roll to fill the narration (Bug 6)
+        // Reaction/subtitle-baked main: drop its baked audio and blur its subtitles
+        // so neither leaks under the narration. No-ops when the sidecar is absent.
+        audio.mute_event = main_ctx.mute_audio;
+        audio.subtitle_blur = main_ctx.subtitle_blur.clone();
         audio.headline = None;
         audio.narration = Some(super::ffmpeg::NarrationVoice {
             mp3: self.job.narration_mp3(),
@@ -1893,13 +1920,11 @@ impl<'a> EditService<'a> {
                 let mut subject_name = moments.moments.first()
                     .map(|m| m.character_name.trim().to_string()).unwrap_or_default();
                 if subject_name.is_empty() {
-                    if let Some(ctx) = crate::ingest::content_search::load_main_context(&self.job.base_dir) {
-                        subject_name = ctx.figures.iter()
-                            .find(|f| f.kind.eq_ignore_ascii_case("person"))
-                            .or_else(|| ctx.figures.first())
-                            .map(|f| f.name.trim().to_string())
-                            .unwrap_or_default();
-                    }
+                    subject_name = main_ctx.figures.iter()
+                        .find(|f| f.kind.eq_ignore_ascii_case("person"))
+                        .or_else(|| main_ctx.figures.first())
+                        .map(|f| f.name.trim().to_string())
+                        .unwrap_or_default();
                 }
                 if let Some(cov) = build_cover(
                     cover_cfg, &self.config.hook_title, &hook, &topic_desc, &subject_name, &subject_frame,

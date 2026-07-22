@@ -24,7 +24,7 @@ import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
-import { hasReactionSubtitle } from '../lib/subtitle_vision.ts';
+import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
@@ -448,9 +448,11 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
             }
           } catch (err) {}
         }
-        // Filter subtitle-vision: buang klip dgn caption-ucapan/overlay react (best-effort).
+        // Filter subtitle-vision: buang klip dgn caption-ucapan/overlay react (best-effort);
+        // klip cover/headline (teks hanya di intro) dipangkas via trim_start, bukan dibuang.
         // Jalan hanya jika URL bisa di-frame (CDN mp4 hasil resolve). Gagal → lolos (text-gate).
-        if (await hasReactionSubtitle(furl)) {
+        const sv = await analyzeSubtitles(furl);
+        if (sv.outcome === 'subtitle') {
           dropReact++;
           return false;
         }
@@ -462,6 +464,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
           relevance: 'match',
           description,
           ...(src_url ? { source_url: src_url } : {}),
+          ...(sv.outcome === 'cover' ? { trim_start: sv.trim_start } : {}),
         });
         pv++;
         addedV++;

@@ -5,6 +5,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::FfmpegConfig;
 use crate::execution::JobExecutionContext;
+use crate::ingest::content_search::SubtitleBlur;
 
 use super::error::EditError;
 use super::fonts::FontConfig;
@@ -356,6 +357,17 @@ pub struct AudioOptions {
     /// Narrator voiceover spine. `Some` = narration drives the audio (event ducked).
     pub narration: Option<NarrationVoice>,
 
+    /// When `true`, drop the event/main clip's own ducked audio (`[evt]`) from the
+    /// mix entirely — used when the source clip has baked-in talking/subtitles
+    /// (e.g. a reaction upload) that must not leak into the narration. Default
+    /// `false` = unchanged behavior (event audio ducked under narration as before).
+    pub mute_event: bool,
+
+    /// Baked-subtitle regions to blur-censor on the main clip, normalized against
+    /// the SOURCE frame (from `MainContext.subtitle_blur`). Empty = no censor,
+    /// exact passthrough. Consumed by `build_video_filter`.
+    pub subtitle_blur: Vec<SubtitleBlur>,
+
     /// Montage footage cards (narrator-driven mode): relevant clips cutting over the
     /// base B-roll at intervals so the video keeps changing. Empty = single B-roll.
     pub footage_cards: Vec<FootageCardCue>,
@@ -588,6 +600,65 @@ fn build_footage_card_overlay(
              enable='between(t,{at:.3},{end:.3})'[{out_label}]"
         )
     }
+}
+
+/// Audio fade duration (s) at clip head/tail.
+const FADE_DUR: f64 = 0.5;
+/// Resample+reformat every audio stream to 48000 Hz stereo fltp before mixing.
+const NORMALIZE: &str = "aresample=48000:resampler=swr:async=1:first_pts=0,\
+                          aformat=sample_fmts=fltp:channel_layouts=stereo";
+
+/// Main-clip audio filter: trim → normalize → fade in/out. When `mute` is set the
+/// main's baked audio is silenced (`,volume=0`) — used when the source is a
+/// subtitle-baked reaction whose commentary must not leak. `volume=0` keeps a
+/// silent stream (safer than `-an` for downstream concat stream-consistency).
+fn main_audio_filter(rel_start: f64, rel_end: f64, fade_out_start: f64, mute: bool) -> String {
+    let mute_suffix = if mute { ",volume=0" } else { "" };
+    format!(
+        "atrim=start={rel_start:.3}:end={rel_end:.3},\
+         asetpts=PTS-STARTPTS,\
+         {NORMALIZE},\
+         afade=t=in:st=0:d={FADE_DUR:.3},\
+         afade=t=out:st={fade_out_start:.3}:d={FADE_DUR:.3}{mute_suffix}"
+    )
+}
+
+/// Per region k: crop the normalized band from `base_label`, boxblur it, overlay it back
+/// at the same spot. Gated `enable='between(t,start,end)'` unless start==end==0 (whole clip).
+/// Unique labels per k avoid filtergraph collisions. Empty regions → passthrough relabel.
+fn build_subtitle_blur_overlay(regions: &[SubtitleBlur], base_label: &str, out_label: &str) -> String {
+    if regions.is_empty() {
+        return format!("{base_label}null{out_label}"); // relabel base → out
+    }
+    let mut prev = base_label.to_string();
+    let mut out = String::new();
+    for (k, r) in regions.iter().enumerate() {
+        // Coordinates are normalized against the SOURCE frame. Use ffmpeg's
+        // runtime `iw`/`ih` so the crop tracks the source at whatever resolution
+        // it currently has — this filter MUST be spliced onto the main content
+        // stream while it still fills its own frame (before the scale-into-card /
+        // pad / centre-crop compositing shrinks it into a canvas sub-rectangle).
+        let cw = r.w.clamp(0.001, 1.0);
+        let ch = r.h.clamp(0.001, 1.0);
+        let cx = r.x.clamp(0.0, 1.0 - cw);
+        let cy = r.y.clamp(0.0, 1.0 - ch);
+        let gate = if r.start == 0.0 && r.end == 0.0 {
+            String::new()
+        } else {
+            format!(":enable='between(t,{:.3},{:.3})'", r.start, r.end)
+        };
+        let last = k == regions.len() - 1;
+        let dst = if last { out_label.to_string() } else { format!("[sbo{k}]") };
+        // crop the band (source-relative) → strong blur → overlay back in place, gated
+        out.push_str(&format!(
+            "{prev}split[sbb{k}][sbc{k}];\
+             [sbc{k}]crop=iw*{cw:.4}:ih*{ch:.4}:iw*{cx:.4}:ih*{cy:.4},boxblur=12:2[sb{k}];\
+             [sbb{k}][sb{k}]overlay=W*{cx:.4}:H*{cy:.4}{gate}{dst};",
+        ));
+        prev = dst;
+    }
+    out.pop(); // trailing ';'
+    out
 }
 
 /// Build the video-filter fragment overlaying one full-width IMAGE CARD (centred,
@@ -851,13 +922,13 @@ pub async fn encode_clip_direct(
         anim_arg,
         true,   // defer subtitle burn → re-applied LAST as the topmost layer
         &main_hide,
+        &audio.subtitle_blur, // baked-subtitle censor regions (from MainContext)
     );
     // Subtitle + hook burn-in, applied as the ABSOLUTE topmost layer so footage
     // cards / image cards / meme PiPs / crops never cover the captions.
     let sub_suffix = subtitle_burn_suffix(ass_path, audio.hook_title_ass.as_deref(), &audio.font);
     let (vcodec, extra_args) = build_encoder(cfg);
 
-    const FADE_DUR: f64 = 0.5;
     let fade_out_start = (duration - FADE_DUR).max(0.0);
 
     // ── NORMALIZE all audio to 48000 Hz stereo ────────────────────────────────
@@ -866,17 +937,14 @@ pub async fn encode_clip_direct(
     // must be resampled to the SAME rate before mixing.
     // Using swr resampler with async=1 prevents click/pop at loop boundaries.
     const AR: u32 = 48_000; // target sample rate for all audio
-    const NORMALIZE: &str = "aresample=48000:resampler=swr:async=1:first_pts=0,\
-                              aformat=sample_fmts=fltp:channel_layouts=stereo";
 
-    // Main clip voice: trim → normalize → fade
-    let main_af = format!(
-        "atrim=start={rel_start:.3}:end={rel_end:.3},\
-         asetpts=PTS-STARTPTS,\
-         {NORMALIZE},\
-         afade=t=in:st=0:d={FADE_DUR:.3},\
-         afade=t=out:st={fade_out_start:.3}:d={FADE_DUR:.3}"
-    );
+    // Main clip voice: trim → normalize → fade. `main_af` is used ONLY by the
+    // non-narration audio paths (filter_complex `[voice]` at ~1352 and the plain
+    // `-af` fast path at ~1483); narration mode builds `[voice]` from the narrator
+    // and never touches it. So gating mute in `main_audio_filter` silences the
+    // main's baked audio in clip-mode too — closing the leak where a subtitle-baked
+    // reaction main is the source and narration has fallen back to clip-mode.
+    let main_af = main_audio_filter(rel_start, rel_end, fade_out_start, audio.mute_event);
 
     // ── Resolve audio/overlay options ────────────────────────────────────────
     let has_sfx        = audio.sfx_intro.is_some();
@@ -1283,11 +1351,20 @@ pub async fn encode_clip_direct(
                     let ms = (narr.lead_in_secs * 1000.0) as u64;
                     format!(",adelay={ms}|{ms}")
                 } else { String::new() };
-                format!(
-                    "[{narration_idx}:a]{NORMALIZE},afade=t=in:st=0:d=0.15{lead}{voice_duck}[voice];\
-                     [0:a]atrim=start={rel_start:.3}:end={rel_end:.3},asetpts=PTS-STARTPTS,\
-                     {NORMALIZE},{evt_vol}[evt]"
-                )
+                let voice_chain = format!(
+                    "[{narration_idx}:a]{NORMALIZE},afade=t=in:st=0:d=0.15{lead}{voice_duck}[voice]"
+                );
+                if audio.mute_event {
+                    // Reaction/subtitle-baked source: drop the event clip's own audio
+                    // entirely — only the narration voice remains.
+                    voice_chain
+                } else {
+                    format!(
+                        "{voice_chain};\
+                         [0:a]atrim=start={rel_start:.3}:end={rel_end:.3},asetpts=PTS-STARTPTS,\
+                         {NORMALIZE},{evt_vol}[evt]"
+                    )
+                }
             } else {
                 format!("[0:a]{main_af}{voice_duck}[voice]")
             };
@@ -1364,8 +1441,8 @@ pub async fn encode_clip_direct(
 
             // Step 4: mix all audio streams (voice + optional sfx/bgm + cues + meme audio)
             let mut mix_labels: Vec<String> = vec!["[voice]".into()];
-            // Ducked event audio (only present in narration mode).
-            if audio.narration.is_some() { mix_labels.push("[evt]".into()); }
+            // Ducked event audio (only present in narration mode, unless muted).
+            if audio.narration.is_some() && !audio.mute_event { mix_labels.push("[evt]".into()); }
             if sfx_idx.is_some() { mix_labels.push("[sfx_out]".into()); }
             if bgm_idx.is_some() { mix_labels.push("[bgm_out]".into()); }
             for k in 0..cue_audio.len() { mix_labels.push(format!("[cue{k}]")); }
@@ -1495,6 +1572,11 @@ fn build_video_filter(
     // card must be hidden because a footage/image card is covering it —
     // prevents footage overlaying (menimpa) the main card. Empty = no gate.
     main_hide: &[(f64, f64)],
+    // Reaction-video regions with baked-in subtitles that must be censored —
+    // gated crop→boxblur→overlay per region, applied to the composited main
+    // spine BEFORE Thoth's own caption/headline/card overlays (blur sits
+    // underneath captions). Empty = no-op passthrough (unchanged behaviour).
+    subtitle_blur: &[SubtitleBlur],
 ) -> String {
     // Subtitle + hook fragment (`subs`) is comma-LEADING-or-empty, matching the
     // convention of every other effect fragment (headline/profile/callout/comment/
@@ -1583,6 +1665,16 @@ fn build_video_filter(
         format!(":enable='not({terms})'")
     };
 
+    // Subtitle-blur censor: gated crop→boxblur→overlay per flagged region.
+    // Because `SubtitleBlur` coords are normalized against the SOURCE frame,
+    // the censor is spliced onto the main content stream while it still fills
+    // its own frame — before each layout scales/pads/crops it into a canvas
+    // sub-rectangle (a post-composite splice would land on the wrong pixels in
+    // every non-fill layout, and the sub-rect offset can't be computed here
+    // because the source aspect ratio is unknown until runtime). Empty list ⇒
+    // exact passthrough, no graph change.
+    let has_blur = !subtitle_blur.is_empty();
+
     match layout {
         // Montage vertical: footage as a centred CARD on the crumpled-paper
         // canvas (paper from input `paper_idx`), instead of the blurred-self bg.
@@ -1598,36 +1690,67 @@ fn build_video_filter(
             // `shortest=1` is ESSENTIAL: the paper bg is `-stream_loop -1` (infinite),
             // so without it the overlay (and thus the whole encode) would never end.
             // It bounds the output to the footage card `[fg]` length (= clip duration).
+            // Censor the footage card in source space before compositing onto paper.
+            let (fg_label, fg_blur) = if has_blur {
+                ("[fgraw]", format!(";{}", build_subtitle_blur_overlay(subtitle_blur, "[fgraw]", "[fg]")))
+            } else {
+                ("[fg]", String::new())
+            };
             format!(
                 "{trim},\
                  {pre_filter}\
-                 scale={cardw}:-2,setsar=1[fg];\
+                 scale={cardw}:-2,setsar=1{fg_label}{fg_blur};\
                  [{paper_idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[bg];\
                  [bg][fg]overlay=x=(W-w)/2:y='{y_expr}':shortest=1{main_gate}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Vertical => {
+            // Censor the scaled main ([fg]) in source space before the overlay.
+            let (fg_label, fg_blur) = if has_blur {
+                ("[fgraw]", format!(";{}", build_subtitle_blur_overlay(subtitle_blur, "[fgraw]", "[fg]")))
+            } else {
+                ("[fg]", String::new())
+            };
             format!(
                 "{trim},\
                  {pre_filter}\
                  split=2[main][blur];\
                  [blur]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=20[bg];\
-                 [main]scale=-2:1080,setsar=1[fg];\
+                 [main]scale=-2:1080,setsar=1{fg_label}{fg_blur};\
                  [bg][fg]overlay=(W-w)/2:(H-h)/2{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter},setsar=1"
             )
         }
         OutputLayout::Horizontal => {
+            // Censor after the source is scaled to fit, but BEFORE padding adds
+            // bars (pad only borders the existing content, preserving coords).
+            let body = if has_blur {
+                format!(
+                    "scale=1920:1080:force_original_aspect_ratio=decrease[hs];{};\
+                     [hb]pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+                    build_subtitle_blur_overlay(subtitle_blur, "[hs]", "[hb]")
+                )
+            } else {
+                "scale=1920:1080:force_original_aspect_ratio=decrease,\
+                 pad=1920:1080:(ow-iw)/2:(oh-ih)/2".to_string()
+            };
             format!(
-                "{trim},\
-                 scale=1920:1080:force_original_aspect_ratio=decrease,\
-                 pad=1920:1080:(ow-iw)/2:(oh-ih)/2\
+                "{trim},{body}\
                  {in_fx_lead}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
             )
         }
         OutputLayout::Square => {
+            // Censor the FULL source before the centre-crop (coords are
+            // source-normalized; any band cropped out simply isn't shown).
+            let body = if has_blur {
+                format!(
+                    "[ss];{};[sb]crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080",
+                    build_subtitle_blur_overlay(subtitle_blur, "[ss]", "[sb]")
+                )
+            } else {
+                ",crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080".to_string()
+            };
             format!(
-                "{trim},\
-                 crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080\
+                "{trim}{body}\
                  {in_fx_lead}{subs}{hl_filter}{profile_filter}{callout_filter}{comment_filter}{post_filter}"
             )
         }
@@ -2642,6 +2765,35 @@ mod tests {
     }
 
     #[test]
+    fn subtitle_blur_overlay_gates_and_uniquely_labels() {
+        let regions = vec![
+            SubtitleBlur { x: 0.1, y: 0.7, w: 0.8, h: 0.08, start: 6.0, end: 14.0 },
+            SubtitleBlur { x: 0.0, y: 0.0, w: 0.5, h: 0.1, start: 0.0, end: 0.0 }, // whole-clip
+        ];
+        let f = build_subtitle_blur_overlay(&regions, "[base]", "[blurred]");
+        // source-relative crop (iw/ih), never canvas pixels — the coordinate fix
+        assert!(f.contains("crop=iw*0.8000:ih*0.0800:iw*0.1000:ih*0.7000"));
+        assert!(f.contains("overlay=W*0.1000:H*0.7000")); // overlaid back at source origin
+        assert!(f.contains("boxblur"));
+        assert!(f.contains("enable='between(t,6.000,14.000)'")); // region 0 gated
+        assert!(!f.contains("enable='between") || f.matches("enable='between").count() == 1); // region 1 (0,0) ungated
+        assert!(f.contains("[blurred]")); // final label emitted
+        // unique intermediate labels per index → no collision
+        assert!(f.contains("[sb0]") && f.contains("[sb1]"));
+    }
+
+    #[test]
+    fn main_audio_filter_mutes_only_when_flagged() {
+        // Locks the clip-mode audio-leak fix: mute_event must silence the main's
+        // baked audio in the non-narration paths, and leave the clean path unchanged.
+        let clean = main_audio_filter(0.0, 5.0, 4.5, false);
+        let muted = main_audio_filter(0.0, 5.0, 4.5, true);
+        assert!(!clean.contains("volume=0"), "clean path must not mute: {clean}");
+        assert!(muted.ends_with(",volume=0"), "muted path must silence baked audio: {muted}");
+        assert_eq!(muted, format!("{clean},volume=0")); // byte-identical + suffix only
+    }
+
+    #[test]
     fn montage_main_card_hidden_during_footage_windows() {
         let render = MontageRender {
             paper_bg: PathBuf::from("paper.mp4"),
@@ -2654,6 +2806,7 @@ mod tests {
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
             &[(4.0, 7.0)],
+            &[],
         );
         assert!(vf.contains("enable='not(between(t,4.000,7.000))'"),
             "main card must be gated off during footage window: {vf}");
@@ -2672,6 +2825,7 @@ mod tests {
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
             &[],
+            &[],
         );
         assert!(!vf.contains(":enable='not("), "no windows → no gate: {vf}");
     }
@@ -2689,6 +2843,7 @@ mod tests {
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[],
             Some((&render, 7)), false,
             &[],
+            &[],
         );
         assert!(f.contains("[7:v]scale=1080:1920")); // paper bg (input 7) composited at native framerate
         assert!(f.contains("crop=1080:1920"));
@@ -2705,6 +2860,7 @@ mod tests {
             &OutputLayout::Vertical, std::path::Path::new("x.ass"), 0.0, 5.0,
             &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None, false,
             &[],
+            &[],
         );
         assert!(f.contains("gblur=sigma=20"));               // legacy blurred-self bg
         assert!(!f.contains("paper"));
@@ -2718,6 +2874,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 true, // defer
+                &[],
                 &[],
             );
             assert!(!f.contains("subtitles="), "deferred build must NOT burn subtitles: {f}");
@@ -2734,6 +2891,7 @@ mod tests {
                 &layout, std::path::Path::new("x.ass"), 0.0, 5.0,
                 &ClipStyle::None, None, &font, None, 0.0, None, None, &[], &[], None,
                 false,
+                &[],
                 &[],
             );
             assert!(f.contains("subtitles='x.ass'"), "non-deferred must burn subtitles: {f}");

@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connect, sleep } from '../lib/cdp.ts';
-import { tiktokOembed, youtubeOembed, matchesTopic, probeVideo } from '../lib/verify.ts';
+import { tiktokOembed, youtubeOembed, matchesTopic, probeVideo, directStreamUrl } from '../lib/verify.ts';
 import { resolveSource, composeSearchQuery, tightenQuery } from './resolve_source.ts';
 import { threadsVideoSrc, downloadThreads } from '../scrapers/threads_video.ts';
 import { igProfileReels } from '../scrapers/ig_profile.ts';
@@ -27,6 +27,7 @@ import { tiktokDirectUrl, downloadTiktok } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator } from '../lib/aggregators.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
+import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n) => {
@@ -817,6 +818,19 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
     console.log('    ↪ fallback: semua kandidat on-topik dari akun kurator (ig_accounts) → batal.');
     return null;
   }
+  // Subtitle-vision penalty: burned-in-subtitle candidates (reaction/react-caption uploads) are
+  // deprioritized so a clean/cover original wins when one exists. Never hard-rejected here — a sole
+  // subtitle candidate must still survive to reach the final main-emission fallback below.
+  // ffmpeg (inside analyzeSubtitles) can't frame-grab a platform *page* URL — resolve each candidate
+  // to a direct CDN stream first (yt-dlp -g), falling back to the raw URL for already-direct sources.
+  // Without this the vision check fail-opens to 'clean' for every non-TikTok-CDN candidate and the
+  // penalty silently never fires (the whole point is to rank subtitle reactions down before selection).
+  for (const c of onTopicU) {
+    const src = c.videoSrc || directStreamUrl(c.url) || c.url;
+    c.sv = await analyzeSubtitles(src);
+  }
+  const SUBTITLE_PENALTY = 1e6; // dwarfs any positive similarity score
+  const scoreOf = (c) => (c.sim || 0) - (c.sv && c.sv.outcome === 'subtitle' ? SUBTITLE_PENALTY : 0);
   const tierOf = (c) => {
     const h = normHandle(urlHandle(c.url));
     if (credited && h && h === credited) return 0; // the credited original creator — best
@@ -834,7 +848,8 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
   const bestOf = (list) => {
     if (!list.length) return null;
     const foot = PREFER_FOOTAGE ? list.filter((c) => c.kind === 'footage') : [];
-    return (foot.length ? foot : list)[0];
+    const pool = foot.length ? foot : list;
+    return [...pool].sort((a, b) => scoreOf(b) - scoreOf(a))[0];
   };
   let pick = null,
     why = '';
@@ -1409,6 +1424,21 @@ async function setMainTo(set, orig, username) {
   if (caption) {
     if (!(set.main.title || '').trim()) set.main.title = caption.slice(0, 120);
     if (!(set.main.description || '').trim()) set.main.description = caption;
+  }
+
+  // Subtitle-vision fallback on the FINALIZED main (post any CDN-URL resolution above): a cover/headline
+  // intro gets trimmed; continuous burned-in subtitles (no better source existed → ranking penalty above
+  // couldn't avoid it) get muted + blur-censored at render instead of silently shipping the reaction upload.
+  if (set.main.is_video && set.main.url) {
+    // Resolve to a direct stream first so the check works on YT/Twitter/IG/FB mains too (not just a
+    // TikTok CDN url already resolved upstream); fall back to set.main.url for already-direct sources.
+    const mv = await analyzeSubtitles(directStreamUrl(set.main.url) || set.main.url);
+    if (mv.outcome === 'cover') {
+      set.main.trim_start = mv.trim_start;
+    } else if (mv.outcome === 'subtitle') {
+      set.main.mute_audio = true;
+      set.main.subtitle_blur = mv.subtitle_blur;
+    }
   }
 
   fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
