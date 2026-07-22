@@ -43,12 +43,12 @@ export function parseDuration(value: string): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-export async function fetchWithTimeout(
+export async function fetchJsonWithTimeout(
   input: string | URL | Request,
   init: RequestInit = {},
   timeoutMs = 20_000,
   fetchImpl: typeof fetch = fetch,
-): Promise<Response> {
+): Promise<{ response: Response; data: unknown }> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -60,13 +60,23 @@ export async function fetchWithTimeout(
     }, Math.max(1, timeoutMs));
   });
   try {
+    const requestAndBody = (async () => {
+      const response = await fetchImpl(input, { ...init, signal: controller.signal });
+      const data = response.ok ? await response.json() : null;
+      return { response, data };
+    })();
     return await Promise.race([
-      fetchImpl(input, { ...init, signal: controller.signal }),
+      requestAndBody,
       timeout,
     ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+export function parseOcrResponseContent(content: unknown): { boxes: OcrBox[]; error?: string } {
+  if (typeof content !== 'string') return { boxes: [], error: 'malformed_content' };
+  return { boxes: parseDeepSeekOcr(content) };
 }
 
 // DeepSeek-OCR returns one or more 0..1000 grounding boxes for every ref block.
@@ -160,7 +170,9 @@ function isLikelyLowerThird(box: OcrBox, frameIndex: number, frames: OcrFrame[])
     }
   }
   if (alignedLefts.length < 2) return false;
-  return Math.max(...alignedLefts) - Math.min(...alignedLefts) <= .035 &&
+  const editorialCue = /\b(breaking|news|live|exclusive|update|report|sports|market|markets|weather|source|via|more at|headlines?)\b/i;
+  const hasEditorialCue = frames.some((frame) => frame.boxes.some((other) => editorialCue.test(normText(other.text))));
+  return hasEditorialCue && Math.max(...alignedLefts) - Math.min(...alignedLefts) <= .035 &&
     frames.some((frame, index) => index !== frameIndex && frame.boxes.some((other) =>
       verticalOverlap(box, other) >= .5 && normText(box.text) !== normText(other.text)));
 }
@@ -193,6 +205,16 @@ function envelope(boxes: OcrBox[]): OcrBox {
   const x1 = Math.min(1, Math.max(...boxes.map((box) => box.x1)) + .02);
   const y1 = Math.min(1, Math.max(...boxes.map((box) => box.y1)) + .015);
   return { text: boxes.map((box) => box.text).join(' '), x0, y0, x1, y1 };
+}
+
+function unionEnvelope(a: OcrBox, b: OcrBox): OcrBox {
+  return {
+    text: `${a.text} ${b.text}`.trim(),
+    x0: Math.min(a.x0, b.x0),
+    y0: Math.min(a.y0, b.y0),
+    x1: Math.max(a.x1, b.x1),
+    y1: Math.max(a.y1, b.y1),
+  };
 }
 
 // Headline removal and subtitle censorship are deliberately independent. A clip
@@ -277,7 +299,7 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
     const previous = merged[merged.length - 1];
     if (previous && window.start <= previous.end + 1e-6 && boxIou(previous.region, window.region) >= .6) {
       previous.end = Math.max(previous.end, window.end);
-      previous.region = envelope([previous.region, window.region]);
+      previous.region = unionEnvelope(previous.region, window.region);
     } else {
       merged.push({ ...window });
     }
@@ -441,7 +463,7 @@ async function ocrFrame(img: string): Promise<{ boxes: OcrBox[]; error?: string 
   try {
     const configuredTimeout = Number.parseInt(process.env.THOTH_SUBTITLE_OCR_TIMEOUT_MS || '20000', 10);
     const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 20_000;
-    const resp = await fetchWithTimeout('https://api.novita.ai/v3/openai/chat/completions', {
+    const { response: resp, data } = await fetchJsonWithTimeout('https://api.novita.ai/v3/openai/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
       body: JSON.stringify({
@@ -453,9 +475,9 @@ async function ocrFrame(img: string): Promise<{ boxes: OcrBox[]; error?: string 
       }),
     }, timeoutMs);
     if (!resp.ok) return { boxes: [], error: `http_${resp.status}` };
-    const d: any = await resp.json();
+    const d: any = data;
     const content = d?.choices?.[0]?.message?.content;
-    return { boxes: parseDeepSeekOcr(typeof content === 'string' ? content : '') };
+    return parseOcrResponseContent(content);
   } catch (error) {
     return { boxes: [], error: error instanceof Error ? error.name : 'unknown_error' };
   }

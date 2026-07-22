@@ -6,11 +6,12 @@ import {
   classifyVisionText,
   classifyClip,
   hashVideoId,
-  fetchWithTimeout,
+  fetchJsonWithTimeout,
   mainDirectiveFields,
   normalizeRegion,
   parseDeepSeekOcr,
   parseDuration,
+  parseOcrResponseContent,
   parseVisionFrame,
 } from './subtitle_vision.ts';
 import type { OcrBox } from './subtitle_vision.ts';
@@ -19,7 +20,7 @@ assert.match(hashVideoId('https://example.test/private?a=secret'), /^[a-f0-9]{16
 assert.equal(parseDuration('26.935011\n'), 26.935011);
 assert.equal(parseDuration('N/A'), 0);
 await assert.rejects(
-  () => fetchWithTimeout(
+  () => fetchJsonWithTimeout(
     'https://never.test',
     {},
     5,
@@ -27,6 +28,21 @@ await assert.rejects(
   ),
   (error: any) => error?.name === 'TimeoutError',
 );
+await assert.rejects(
+  () => fetchJsonWithTimeout(
+    'https://stalled-body.test',
+    {},
+    5,
+    (async () => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise(() => {}),
+    })) as unknown as typeof fetch,
+  ),
+  (error: any) => error?.name === 'TimeoutError',
+);
+assert.deepEqual(parseOcrResponseContent(null), { boxes: [], error: 'malformed_content' });
+assert.deepEqual(parseOcrResponseContent(''), { boxes: [] });
 assert.deepEqual(mainDirectiveFields({
   outcome: 'subtitle',
   trim_start: 4,
@@ -223,6 +239,16 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   assert.equal(lowerThird.outcome, 'clean');
 }
 
+// Alignment alone is insufficient: ordinary auto-captions can be left-aligned.
+{
+  const leftCaptions = classifyOcrFrames([
+    f(1, b('I NEVER EXPECTED', .05, .72, .55, .79)),
+    f(3, b('THIS TO HAPPEN', .052, .72, .52, .79)),
+    f(5, b('WATCH UNTIL END', .051, .72, .58, .79)),
+  ], 8);
+  assert.equal(leftCaptions.outcome, 'subtitle');
+}
+
 // Persistent two-line captions are still subtitles even when OCR text does not
 // change between samples.
 {
@@ -305,5 +331,20 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   const diagnostics = buildClassifiedDiagnostics(frames, verdict);
   assert.ok(diagnostics.find((frame) => frame.t === 1)!.headline_boxes.length > 0);
   assert.ok(diagnostics.find((frame) => frame.t === 5)!.subtitle_boxes.length > 0);
+}
+
+
+// Repeated merging must not re-pad an already padded region on every sample.
+{
+  const repeated = classifyOcrFrames([
+    f(1, b('ONE', .2, .72, .8, .8)),
+    f(2, b('TWO', .2, .72, .8, .8)),
+    f(3, b('THREE', .2, .72, .8, .8)),
+    f(4, b('FOUR', .2, .72, .8, .8)),
+    f(5, b('FIVE', .2, .72, .8, .8)),
+  ], 6);
+  assert.equal(repeated.subtitle_blur.length, 1);
+  assert.ok(Math.abs(repeated.subtitle_blur[0].x - .18) < 1e-9);
+  assert.ok(Math.abs(repeated.subtitle_blur[0].w - .64) < 1e-9);
 }
 console.log('ok classifyOcrFrames');
