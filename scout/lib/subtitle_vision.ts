@@ -14,6 +14,53 @@ const FFMPEG = process.env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', 
 export type SubtitleRegion = { x: number; y: number; w: number; h: number; start?: number; end?: number };
 export type FrameDet = { t: number; present: boolean; region: { x0: number; y0: number; x1: number; y1: number } | null };
 export type ClipVerdict = { outcome: 'clean' | 'cover' | 'subtitle'; trim_start: number; mute_audio: boolean; subtitle_blur: SubtitleRegion[] };
+export type OcrBox = {
+  text: string;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+};
+export type OcrFrame = { t: number; boxes: OcrBox[]; error?: string };
+
+// DeepSeek-OCR returns one or more 0..1000 grounding boxes for every ref block.
+// Keep parsing fail-open: malformed fragments are ignored without discarding valid
+// pairs elsewhere in the response.
+export function parseDeepSeekOcr(content: string): OcrBox[] {
+  const out: OcrBox[] = [];
+  const pair = /<\|ref\|>([\s\S]*?)<\|\/ref\|>\s*<\|det\|>(\[\[[\s\S]*?\]\])<\|\/det\|>/g;
+  for (const match of (content || '').matchAll(pair)) {
+    try {
+      const text = match[1].replace(/\s+/g, ' ').trim();
+      const boxes = JSON.parse(match[2]);
+      if (!text || !Array.isArray(boxes)) continue;
+      for (const raw of boxes) {
+        if (!Array.isArray(raw) || raw.length !== 4 || raw.some((n) => typeof n !== 'number' || !Number.isFinite(n))) continue;
+        const scale = Math.max(...raw.map((n: number) => Math.abs(n))) > 1 ? 1000 : 1;
+        const clamp = (n: number) => Math.min(1, Math.max(0, n / scale));
+        let [x0, y0, x1, y1] = raw.map(clamp);
+        if (x1 < x0) [x0, x1] = [x1, x0];
+        if (y1 < y0) [y0, y1] = [y1, y0];
+        if (x1 - x0 >= .01 && y1 - y0 >= .01) out.push({ text, x0, y0, x1, y1 });
+      }
+    } catch {}
+  }
+  return out;
+}
+
+export function buildSampleTimes(duration: number, maxFrames = 12): number[] {
+  const limit = Math.max(1, Math.floor(maxFrames));
+  if (!Number.isFinite(duration) || duration <= .5) return [0];
+
+  const intro = [.5, 1, 2, 3, 4, 5].filter((t) => t < duration).slice(0, limit);
+  if (intro.length >= limit || duration <= 5) return intro;
+
+  const remaining = limit - intro.length;
+  const safeEnd = Math.max(5, duration - Math.min(.1, duration / 100));
+  const tail = Array.from({ length: remaining }, (_, i) =>
+    Number((5 + (safeEnd - 5) * ((i + 1) / remaining)).toFixed(6)));
+  return [...new Set([...intro, ...tail])].sort((a, b) => a - b).slice(0, limit);
+}
 
 const COVER_MAX = 5.0;
 

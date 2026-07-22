@@ -1,5 +1,33 @@
 import assert from 'node:assert';
-import { classifyVisionText, classifyClip, normalizeRegion, parseVisionFrame } from './subtitle_vision.ts';
+import {
+  buildSampleTimes,
+  classifyVisionText,
+  classifyClip,
+  normalizeRegion,
+  parseDeepSeekOcr,
+  parseVisionFrame,
+} from './subtitle_vision.ts';
+
+// DeepSeek-OCR grounding output uses a 0..1000 coordinate grid.
+{
+  const boxes = parseDeepSeekOcr(
+    '<|ref|>CUCURELLA BUNGKUS TROFI<|/ref|><|det|>[[53,460,821,540]]<|/det|>\n' +
+    '<|ref|>PIALA DUNIA PAKE KRESEK<|/ref|><|det|>[[70,545,790,617]]<|/det|>',
+  );
+  assert.deepEqual(boxes[0], {
+    text: 'CUCURELLA BUNGKUS TROFI',
+    x0: .053, y0: .46, x1: .821, y1: .54,
+  });
+  assert.equal(boxes.length, 2);
+  assert.deepEqual(
+    parseDeepSeekOcr('<|ref|>valid<|/ref|><|det|>[[900,700,100,300]]<|/det|>'),
+    [{ text: 'valid', x0: .1, y0: .3, x1: .9, y1: .7 }],
+  );
+  assert.deepEqual(buildSampleTimes(.3, 12), [0]);
+  const samples = buildSampleTimes(26.935, 12);
+  assert.deepEqual(samples.slice(0, 6), [.5, 1, 2, 3, 4, 5]);
+  assert.ok(samples.length <= 12 && samples.at(-1)! > 20);
+}
 
 // normalizeRegion: qwen3-vl returns 0-1000 grid coords; must rescale to [0..1]
 // so Rust doesn't clamp w→1.0 and blur the whole frame (the reported bug).
