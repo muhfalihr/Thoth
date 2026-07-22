@@ -333,7 +333,7 @@ async fn sample_center_frame(execution: &JobExecutionContext, path: &Path, ffmpe
 }
 
 /// Get video width × height using ffprobe.
-async fn get_video_aspect(execution: &JobExecutionContext, path: &Path, ffmpeg_dir: &str) -> Result<Option<(u32, u32)>> {
+pub(crate) async fn get_video_aspect(execution: &JobExecutionContext, path: &Path, ffmpeg_dir: &str) -> Result<Option<(u32, u32)>> {
     let ffprobe = {
         let dir = Path::new(ffmpeg_dir);
         let bin = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
@@ -612,4 +612,48 @@ async fn trim_clip(execution: &JobExecutionContext, src: &Path, dest: &Path, max
         .stderr(std::process::Stdio::null());
     let status = execution.status(&mut command).await.context("ffmpeg trim spawn")?;
     if status.success() { Ok(()) } else { Err(anyhow::anyhow!("ffmpeg trim exited {status}")) }
+}
+
+/// Classify a video aspect ratio as cover (true) or contain (false).
+///
+/// Portrait and near-9:16 aspect ratios (h/w ≥ 1.2) are "cover" — they fill
+/// the entire frame in vertical orientation. Landscape or square are "contain".
+///
+/// Uses integer math to avoid floating-point errors: `(h as u64)*100 >= (w as u64)*120`
+pub(crate) fn cover_from_dims(w: u32, h: u32) -> bool {
+    if w == 0 || h == 0 {
+        return false;
+    }
+    (h as u64) * 100 >= (w as u64) * 120
+}
+
+/// Probe a video's aspect ratio and classify as cover or contain.
+///
+/// Returns `true` if the video is portrait/near-9:16 (cover), `false` for landscape/square.
+/// Returns `false` on any probe failure (ffprobe error, missing dimensions, etc.).
+pub(crate) async fn footage_is_cover(
+    execution:  &JobExecutionContext,
+    path:       &Path,
+    ffmpeg_dir: &str,
+) -> bool {
+    match get_video_aspect(execution, path, ffmpeg_dir).await {
+        Ok(Some((w, h))) => cover_from_dims(w, h),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod sp2_aspect_tests {
+    use super::cover_from_dims;
+
+    #[test]
+    fn classifies_cover_vs_contain() {
+        assert!(cover_from_dims(1080, 1920));   // 9:16 portrait → cover
+        assert!(cover_from_dims(720, 1280));    // portrait → cover
+        assert!(cover_from_dims(1000, 1200));   // h/w = 1.2 exactly → cover
+        assert!(!cover_from_dims(1920, 1080));  // landscape → contain
+        assert!(!cover_from_dims(1080, 1080));  // square → contain
+        assert!(!cover_from_dims(0, 0));        // degenerate → contain
+        assert!(!cover_from_dims(1080, 1180));  // h/w < 1.2 → contain
+    }
 }
