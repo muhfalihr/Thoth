@@ -76,7 +76,9 @@ export async function fetchJsonWithTimeout(
 
 export function parseOcrResponseContent(content: unknown): { boxes: OcrBox[]; error?: string } {
   if (typeof content !== 'string') return { boxes: [], error: 'malformed_content' };
-  return { boxes: parseDeepSeekOcr(content) };
+  const boxes = parseDeepSeekOcr(content);
+  if (content.trim() && boxes.length === 0) return { boxes: [], error: 'malformed_content' };
+  return { boxes };
 }
 
 // DeepSeek-OCR returns one or more 0..1000 grounding boxes for every ref block.
@@ -160,21 +162,40 @@ function hasMultilineLayout(boxes: OcrBox[]): boolean {
   }));
 }
 
-function isLikelyLowerThird(box: OcrBox, frameIndex: number, frames: OcrFrame[]): boolean {
-  const center = (box.x0 + box.x1) / 2;
-  if (box.y0 < .65 || box.x0 > .2 || Math.abs(center - .5) <= .1) return false;
-  const alignedLefts: number[] = [];
-  for (let index = 0; index < frames.length; index++) {
-    for (const other of frames[index].boxes) {
-      if (verticalOverlap(box, other) >= .5 && other.x0 <= .2) alignedLefts.push(other.x0);
-    }
-  }
-  if (alignedLefts.length < 2) return false;
-  const editorialCue = /\b(breaking|news|live|exclusive|update|report|sports|market|markets|weather|source|via|more at|headlines?)\b/i;
-  const hasEditorialCue = frames.some((frame) => frame.boxes.some((other) => editorialCue.test(normText(other.text))));
-  return hasEditorialCue && Math.max(...alignedLefts) - Math.min(...alignedLefts) <= .035 &&
-    frames.some((frame, index) => index !== frameIndex && frame.boxes.some((other) =>
-      verticalOverlap(box, other) >= .5 && normText(box.text) !== normText(other.text)));
+function isEditorialLabel(text: string): boolean {
+  return /^(breaking news|live(?: news)?|exclusive|news(?: update)?|sports|weather|headlines?)$/.test(normText(text));
+}
+
+function isLikelyLowerThird(
+  box: OcrBox,
+  frameIndex: number,
+  frames: OcrFrame[],
+  editorialLabels: OcrBox[],
+): boolean {
+  if (box.y0 < .65 || box.x0 > .3) return false;
+
+  // A changing left-aligned caption is ambiguous by itself. Treat it as an
+  // editorial lower-third only when a separate, persistent label anchors the
+  // same band (for example a stable "LIVE NEWS" badge beside a changing chyron).
+  const boxCenterY = (box.y0 + box.y1) / 2;
+  const hasCompanionLabel = editorialLabels.some((label) => {
+    const labelCenterY = (label.y0 + label.y1) / 2;
+    return normText(label.text) !== normText(box.text) &&
+      Math.abs(labelCenterY - boxCenterY) <= .12 &&
+      label.x0 < box.x0 - .03 &&
+      boxIou(label, box) < .2;
+  });
+  if (!hasCompanionLabel) return false;
+
+  const track = frames.flatMap((frame, index) => frame.boxes
+    .filter((other) => verticalOverlap(box, other) >= .5 && Math.abs(other.x0 - box.x0) <= .04)
+    .map((other) => ({ index, box: other })));
+  const frameCount = new Set(track.map((match) => match.index)).size;
+  if (frameCount < 2) return false;
+
+  const lefts = track.map((match) => match.box.x0);
+  return Math.max(...lefts) - Math.min(...lefts) <= .035 &&
+    track.some((match) => match.index !== frameIndex && normText(match.box.text) !== normText(box.text));
 }
 
 function textSimilarity(a: string, b: string): number {
@@ -229,6 +250,13 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
 
   const usableCount = sorted.length;
   const stableThreshold = Math.max(2, Math.ceil(usableCount * .6));
+  const editorialLabels = sorted.flatMap((frame) => frame.boxes).filter((candidate, candidateIndex, all) => {
+    if (!isEditorialLabel(candidate.text) || candidate.y0 < .65 || boxArea(candidate) >= .02) return false;
+    const matches = sorted.filter((frame) => frame.boxes.some((box) =>
+      isEditorialLabel(box.text) && normText(box.text) === normText(candidate.text) && boxIou(box, candidate) >= .6));
+    return matches.length >= stableThreshold &&
+      all.findIndex((box) => normText(box.text) === normText(candidate.text) && boxIou(box, candidate) >= .6) === candidateIndex;
+  });
   const isStableSmall = (candidate: OcrBox) => {
     if (boxArea(candidate) >= .02) return false;
     let matches = 0;
@@ -275,7 +303,7 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
   }));
   const candidateFrames = rawCandidateFrames.map((frame, frameIndex) => ({
     ...frame,
-    boxes: frame.boxes.filter((box) => !isLikelyLowerThird(box, frameIndex, rawCandidateFrames)),
+    boxes: frame.boxes.filter((box) => !isLikelyLowerThird(box, frameIndex, rawCandidateFrames, editorialLabels)),
   }));
   const multilineFrames = candidateFrames.map((frame) => hasMultilineLayout(frame.boxes));
   const selectedByFrame = candidateFrames.map((frame, frameIndex) => frame.boxes.filter((box) =>

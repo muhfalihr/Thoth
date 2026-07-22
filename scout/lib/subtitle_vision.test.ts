@@ -43,6 +43,10 @@ await assert.rejects(
 );
 assert.deepEqual(parseOcrResponseContent(null), { boxes: [], error: 'malformed_content' });
 assert.deepEqual(parseOcrResponseContent(''), { boxes: [] });
+assert.deepEqual(
+  parseOcrResponseContent('service unavailable'),
+  { boxes: [], error: 'malformed_content' },
+);
 assert.deepEqual(mainDirectiveFields({
   outcome: 'subtitle',
   trim_start: 4,
@@ -232,9 +236,15 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
 // spoken caption text, and must not cause footage rejection.
 {
   const lowerThird = classifyOcrFrames([
-    f(1, b('BREAKING NEWS', .05, .84, .58, .89)),
-    f(3, b('MARKETS RALLY', .055, .84, .51, .89)),
-    f(5, b('MORE AT TEN', .052, .84, .48, .89)),
+    f(1,
+      b('LIVE NEWS', .02, .84, .14, .89),
+      b('BREAKING NEWS', .18, .84, .70, .89)),
+    f(3,
+      b('LIVE NEWS', .02, .84, .14, .89),
+      b('MARKETS RALLY', .182, .84, .66, .89)),
+    f(5,
+      b('LIVE NEWS', .02, .84, .14, .89),
+      b('MORE AT TEN', .181, .84, .62, .89)),
   ], 8);
   assert.equal(lowerThird.outcome, 'clean');
 }
@@ -242,7 +252,7 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
 // Alignment alone is insufficient: ordinary auto-captions can be left-aligned.
 {
   const leftCaptions = classifyOcrFrames([
-    f(1, b('I NEVER EXPECTED', .05, .72, .55, .79)),
+    f(1, b('I SAW IT LIVE', .05, .72, .55, .79)),
     f(3, b('THIS TO HAPPEN', .052, .72, .52, .79)),
     f(5, b('WATCH UNTIL END', .051, .72, .58, .79)),
   ], 8);
