@@ -37,6 +37,7 @@ const CMDS: Record<string, [string, string]> = {
     'pipeline/validate_content_set.ts',
     '<set.json> lint WAJIB sebelum hand-off (exit 0 = aman)',
   ],
+  'ocr-local': ['pipeline/ocr_local.ts', '<absolute-video-path> -> one OCR JSON envelope'],
   pulse: ['enrich/pulse_harvest.ts', 'Cultural Pulse harian → CKB (--max --per-video --min-freq)'],
   topics: ['pipeline/discover_topics.ts', 'discovery sekunder trending X/YouTube'],
   news: ['scrapers/search_news.ts', 'kartu image Google News → footage[]'],
@@ -57,8 +58,8 @@ function help(bad?: string) {
   process.exit(bad ? 1 : 0);
 }
 
-ui.banner();
 const [cmd, ...rest] = process.argv.slice(2);
+if (cmd !== 'ocr-local') ui.banner();
 if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') help();
 if (!CMDS[cmd]) help(cmd);
 
