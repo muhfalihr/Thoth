@@ -18,6 +18,16 @@ type StepDeps = {
   warn: (message: string) => void;
 };
 
+const REQUIRED_PIPELINE_STEPS = new Set([
+  'trace_source.ts',
+  'build_footage.ts',
+  'validate_content_set.ts',
+]);
+
+export function isRequiredPipelineStep(script: string): boolean {
+  return REQUIRED_PIPELINE_STEPS.has(script);
+}
+
 export function runPipelineStep(policy: StepPolicy, deps: StepDeps): boolean {
   try {
     deps.execute();

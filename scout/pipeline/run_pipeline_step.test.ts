@@ -1,8 +1,14 @@
 import assert from 'node:assert';
 import {
+  isRequiredPipelineStep,
   PipelineStepError,
   runPipelineStep,
 } from './run_pipeline_step.ts';
+
+assert.equal(isRequiredPipelineStep('trace_source.ts'), true);
+assert.equal(isRequiredPipelineStep('build_footage.ts'), true);
+assert.equal(isRequiredPipelineStep('validate_content_set.ts'), true);
+assert.equal(isRequiredPipelineStep('collect_comments.ts'), false);
 
 {
   let warned = false;
@@ -25,6 +31,27 @@ import {
   );
   assert.equal(warned, false);
 }
+
+assert.throws(
+  () =>
+    runPipelineStep(
+      {
+        label: 'build_footage',
+        required: isRequiredPipelineStep('build_footage.ts'),
+      },
+      {
+        execute: () => {
+          throw new Error('OCR failed');
+        },
+        warn: () => {
+          throw new Error('required footage failure must not warn-and-continue');
+        },
+      },
+    ),
+  (error: unknown) =>
+    error instanceof PipelineStepError &&
+    error.step === 'build_footage',
+);
 
 {
   let warning = '';
