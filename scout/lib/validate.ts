@@ -6,6 +6,10 @@
 // search_tiktok_v2.js and validate_content_set.js.
 
 import fs from 'node:fs';
+import {
+  DEFAULT_OCR_MODEL,
+  OCR_ANALYZER_VERSION,
+} from './ocr_contract.ts';
 import type { ContentSet } from './types.ts';
 import { okCrop } from './crop_guard.ts';
 
@@ -73,6 +77,98 @@ function validUrlFor(url, platform) {
   return { ok: re.test(String(url)), platform: p };
 }
 
+function lintVideoOcr(record, tag: string, kind: 'main' | 'footage', errors: string[]) {
+  if (record.is_video === false) return;
+
+  if (record.ocr_status == null) {
+    errors.push(`${tag}.ocr_status: not analyzed.`);
+    return;
+  }
+  if (record.ocr_status === 'failed') {
+    errors.push(`${tag}.ocr_status: analysis failed.`);
+    return;
+  }
+  if (record.ocr_status !== 'analyzed') {
+    errors.push(`${tag}.ocr_status: malformed value.`);
+    return;
+  }
+
+  if (record.ocr_model !== DEFAULT_OCR_MODEL) {
+    errors.push(`${tag}: stale OCR model "${String(record.ocr_model || '')}".`);
+  }
+  if (record.ocr_analyzer_version !== OCR_ANALYZER_VERSION) {
+    errors.push(
+      `${tag}: stale OCR analyzer "${String(record.ocr_analyzer_version || '')}".`,
+    );
+  }
+  if (
+    typeof record.ocr_analyzed_at !== 'string' ||
+    !record.ocr_analyzed_at ||
+    !Number.isFinite(Date.parse(record.ocr_analyzed_at))
+  ) {
+    errors.push(`${tag}: malformed OCR analyzed_at.`);
+  }
+
+  const requested = record.ocr_requested_frames;
+  const valid = record.ocr_valid_frames;
+  if (
+    !Number.isInteger(requested) ||
+    requested <= 0 ||
+    !Number.isInteger(valid) ||
+    valid !== requested
+  ) {
+    errors.push(`${tag}: malformed OCR frame counts.`);
+  }
+
+  if (!['clean', 'cover', 'subtitle'].includes(record.ocr_outcome)) {
+    errors.push(`${tag}: malformed OCR outcome.`);
+  } else if (kind === 'footage' && record.ocr_outcome === 'subtitle') {
+    errors.push(`${tag}: subtitle-classified footage must be rejected.`);
+  }
+
+  if (
+    typeof record.trim_start !== 'number' ||
+    !Number.isFinite(record.trim_start) ||
+    record.trim_start < 0
+  ) {
+    errors.push(`${tag}: malformed trim_start directive.`);
+  }
+  if (typeof record.mute_audio !== 'boolean') {
+    errors.push(`${tag}: malformed mute_audio directive.`);
+  }
+  if (!Array.isArray(record.subtitle_blur)) {
+    errors.push(`${tag}: malformed subtitle_blur directive.`);
+    return;
+  }
+
+  record.subtitle_blur.forEach((region, ri) => {
+    const numbers = ['x', 'y', 'w', 'h'].map((key) => region?.[key]);
+    const [x, y, w, h] = numbers;
+    const invalidGeometry =
+      numbers.some((value) => typeof value !== 'number' || !Number.isFinite(value)) ||
+      x < 0 ||
+      y < 0 ||
+      w <= 0 ||
+      h <= 0 ||
+      x + w > 1 ||
+      y + h > 1;
+    const hasStart = region?.start != null;
+    const hasEnd = region?.end != null;
+    const invalidWindow =
+      hasStart !== hasEnd ||
+      (hasStart &&
+        (typeof region.start !== 'number' ||
+          !Number.isFinite(region.start) ||
+          region.start < 0 ||
+          typeof region.end !== 'number' ||
+          !Number.isFinite(region.end) ||
+          region.end < region.start));
+    if (invalidGeometry || invalidWindow) {
+      errors.push(`${tag}: malformed subtitle_blur[${ri}] directive.`);
+    }
+  });
+}
+
 // Lint a content-set (single object {main,footage,comments} or an array of them).
 // Returns { errors:[], warnings:[], info:[], ok:boolean }. errors → unsafe to hand off.
 function lintContentSet(data: ContentSet) {
@@ -105,6 +201,7 @@ function lintContentSet(data: ContentSet) {
           if (s) errors.push(`${tag}.main.image_path ${s}: ${main.image_path}`);
         }
       }
+      lintVideoOcr(main, `${tag}.main`, 'main', errors);
       if (!main.description)
         warnings.push(
           `${tag}.main.description kosong — narasi bisa berhalusinasi (kontrak: WAJIB).`,
@@ -135,6 +232,7 @@ function lintContentSet(data: ContentSet) {
           if (s) errors.push(`${ft}.image_path ${s}: ${f.image_path}`);
         }
       }
+      lintVideoOcr(f, ft, 'footage', errors);
     });
     if (!footage.length) info.push(`${tag}: tanpa footage (single-video — sah).`);
 

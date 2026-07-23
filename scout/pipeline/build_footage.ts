@@ -17,14 +17,27 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { footageObjects } from '../lib/footage_objects.ts';
 import { cropPost, inferPlatform } from '../scrapers/crop_post.ts';
-import { tiktokOembed, youtubeOembed, igSlideDirectUrl, igCarouselSlides } from '../lib/verify.ts';
+import {
+  directStreamUrl,
+  igCarouselSlides,
+  igSlideDirectUrl,
+  tiktokOembed,
+  youtubeOembed,
+} from '../lib/verify.ts';
 import { igProfileReels } from '../scrapers/ig_profile.ts';
 import { rankBySimilarity, embed, cosine } from '../lib/embed.ts';
 import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
+import {
+  analysisFields,
+  type AnalyzedOcrAnalysis,
+} from '../lib/ocr_contract.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
-import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
+import {
+  analyzeSubtitlesDetailed,
+  OcrAnalysisError,
+} from '../lib/subtitle_vision.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
@@ -154,12 +167,20 @@ function searchObject(query) {
 // Push one footage entry per cropped slide of an IG/FB post: PHOTO → image-card (is_video:false);
 // VIDEO slide → igSlideDirectUrl CDN .mp4 (is_video:true) so Thoth downloads real video, not a frozen
 // frame. Distinct url (#slideN / CDN) keeps dedup happy. Returns count pushed. Caller crops + gates first.
-function pushSlides(set, postUrl, slides, plat, query, description) {
+async function pushSlides(set, postUrl, slides, plat, query, description) {
   let added = 0;
   for (const s of slides) {
     if (s.kind === 'video') {
       const cdn = igSlideDirectUrl(postUrl, s.index);
-      if (!cdn) continue; // unresolvable video slide → skip (never fall back to a still)
+      if (!cdn) continue;
+      const analysis = await analyzeSubtitlesDetailed(cdn);
+      if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
+        throw new OcrAnalysisError(
+          analysis.error_code || 'unknown_failure',
+          analysis.error_message || 'OCR analysis failed',
+        );
+      }
+      if (analysis.verdict.outcome === 'subtitle') continue;
       set.footage.push({
         url: cdn,
         platform: plat,
@@ -168,6 +189,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
         relevance: 'match',
         source_url: postUrl,
         description,
+        ...analysisFields(analysis as AnalyzedOcrAnalysis),
       });
     } else {
       if (!s.image_path) continue; // photo slide with no cropped image → skip (no broken card)
@@ -217,7 +239,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
         } catch (e) {}
       }
       slides = slides.filter((s) => s.kind === 'video' || s.image_path); // photo tanpa gambar → buang
-      const n = pushSlides(
+      const n = await pushSlides(
         set,
         main.url,
         slides,
@@ -356,7 +378,14 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
             } catch (e2) {}
           }
           slides = slides.filter((s) => s.kind === 'video' || s.image_path); // drop photo slides w/o an image
-          const n = pushSlides(set, r.url, slides, 'instagram', 'profil @' + profileUser, desc);
+          const n = await pushSlides(
+            set,
+            r.url,
+            slides,
+            'instagram',
+            'profil @' + profileUser,
+            desc,
+          );
           if (n) {
             added++;
             addedP++;
@@ -369,6 +398,16 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
               }
           }
         } else {
+          const analysis = await analyzeSubtitlesDetailed(
+            directStreamUrl(r.url) || r.url,
+          );
+          if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
+            throw new OcrAnalysisError(
+              analysis.error_code || 'unknown_failure',
+              analysis.error_message || 'OCR analysis failed',
+            );
+          }
+          if (analysis.verdict.outcome === 'subtitle') continue;
           set.footage.push({
             url: r.url,
             platform: 'instagram',
@@ -376,13 +415,16 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
             is_video: true,
             relevance: 'match',
             description: r.caption || '',
+            ...analysisFields(analysis as AnalyzedOcrAnalysis),
           });
           added++;
           addedV++;
         }
       }
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
-    } catch (e) {}
+    } catch (e) {
+      if (e instanceof OcrAnalysisError) throw e;
+    }
     console.log(`+${added} reel relevan`);
   }
 
@@ -448,10 +490,16 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
             }
           } catch (err) {}
         }
-        // Filter subtitle-vision: buang klip dgn caption-ucapan/overlay react (best-effort);
-        // klip cover/headline (teks hanya di intro) dipangkas via trim_start, bukan dibuang.
-        // Jalan hanya jika URL bisa di-frame (CDN mp4 hasil resolve). Gagal → lolos (text-gate).
-        const sv = await analyzeSubtitles(furl);
+        // OCR is a required safety gate: subtitle footage is rejected, cover footage
+        // is trimmed, and analysis failure aborts content-set construction.
+        const analysis = await analyzeSubtitlesDetailed(directStreamUrl(furl) || furl);
+        if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
+          throw new OcrAnalysisError(
+            analysis.error_code || 'unknown_failure',
+            analysis.error_message || 'OCR analysis failed',
+          );
+        }
+        const sv = analysis.verdict;
         if (sv.outcome === 'subtitle') {
           dropReact++;
           return false;
@@ -464,7 +512,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
           relevance: 'match',
           description,
           ...(src_url ? { source_url: src_url } : {}),
-          ...(sv.trim_start > 0 ? { trim_start: sv.trim_start } : {}),
+          ...analysisFields(analysis as AnalyzedOcrAnalysis),
         });
         pv++;
         addedV++;
@@ -525,7 +573,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
           return true;
         }
         // One footage entry per slide (URL CDN ephemeral → run thoth soon).
-        const added = pushSlides(set, e.url, slides, plat, obj, description);
+        const added = await pushSlides(set, e.url, slides, plat, obj, description);
         if (!added) {
           rmAll();
           return false;
@@ -561,6 +609,7 @@ function pushSlides(set, postUrl, slides, plat, query, description) {
       );
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8'); // persist after EACH object (crash-resilient)
     } catch (e) {
+      if (e instanceof OcrAnalysisError) throw e;
       console.log(
         ui.amber(
           `(${ui.WARN} "${obj}" gagal: ${String((e && e.message) || e).slice(0, 70)} — skip)`,

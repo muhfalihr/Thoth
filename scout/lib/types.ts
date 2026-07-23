@@ -3,6 +3,8 @@
 // Rust memakai #[serde(default)] TANPA deny_unknown_fields → field baru di sini
 // aman (forward-compat); field yang tak dikenal Rust diabaikan.
 
+import type { PersistedOcrFields } from './ocr_contract.ts';
+
 export interface ProfileInfo {
   username?: string;
   display_name?: string;
@@ -10,7 +12,7 @@ export interface ProfileInfo {
   [k: string]: any;
 }
 
-export interface MainVideo {
+export interface MainVideo extends Partial<PersistedOcrFields> {
   url: string;
   title?: string;
   /** Caption/deskripsi asli postingan — WAJIB diisi scout (grounding narasi saat audio kosong). */
@@ -29,7 +31,7 @@ export interface MainVideo {
   [k: string]: any;
 }
 
-export interface ContentResult {
+export interface ContentResult extends Partial<PersistedOcrFields> {
   url: string;
   title?: string;
   platform?: string;

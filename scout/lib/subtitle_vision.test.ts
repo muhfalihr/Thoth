@@ -1,4 +1,9 @@
 import assert from 'node:assert';
+import {
+  analysisFields,
+  type AnalyzedOcrAnalysis,
+  type OcrAnalysis,
+} from './ocr_contract.ts';
 import type { OcrBox } from './subtitle_vision.ts';
 import {
   analyzeSubtitles,
@@ -17,6 +22,54 @@ import {
   parseOcrResponseContent,
   parseVisionFrame,
 } from './subtitle_vision.ts';
+
+{
+  const analysis: AnalyzedOcrAnalysis = {
+    schema_version: 1,
+    ocr_status: 'analyzed',
+    provider: 'novita',
+    model: 'deepseek/deepseek-ocr',
+    analyzer_version: 'deepseek-ocr-v2',
+    requested_frames: 4,
+    valid_frames: 4,
+    analyzed_at: '2026-07-23T00:00:00.000Z',
+    verdict: {
+      outcome: 'cover',
+      trim_start: 3,
+      mute_audio: false,
+      subtitle_blur: [],
+    },
+  };
+  assert.deepEqual(analysisFields(analysis), {
+    ocr_status: 'analyzed',
+    ocr_model: 'deepseek/deepseek-ocr',
+    ocr_analyzer_version: 'deepseek-ocr-v2',
+    ocr_analyzed_at: '2026-07-23T00:00:00.000Z',
+    ocr_requested_frames: 4,
+    ocr_valid_frames: 4,
+    ocr_outcome: 'cover',
+    trim_start: 3,
+    mute_audio: false,
+    subtitle_blur: [],
+  });
+
+  const failed: OcrAnalysis = {
+    schema_version: 1,
+    ocr_status: 'failed',
+    provider: 'novita',
+    model: 'deepseek/deepseek-ocr',
+    analyzer_version: 'deepseek-ocr-v2',
+    requested_frames: 4,
+    valid_frames: 3,
+    analyzed_at: '2026-07-23T00:00:00.000Z',
+    error_code: 'incomplete_frame_coverage',
+    error_message: 'OCR did not analyze every scheduled frame',
+  };
+  assert.throws(
+    () => analysisFields(failed as AnalyzedOcrAnalysis),
+    /requires a successful analyzed OCR result/,
+  );
+}
 
 {
   const analyzedAt = new Date('2026-07-23T00:00:00Z');

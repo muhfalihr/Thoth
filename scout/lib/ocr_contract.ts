@@ -19,3 +19,42 @@ export type OcrAnalysis = {
   error_code?: string;
   error_message?: string;
 };
+
+export type AnalyzedOcrAnalysis = OcrAnalysis & {
+  ocr_status: 'analyzed';
+  verdict: ClipVerdict;
+};
+
+export type PersistedOcrFields = {
+  ocr_status: OcrStatus;
+  ocr_model: string;
+  ocr_analyzer_version: string;
+  ocr_analyzed_at: string;
+  ocr_requested_frames: number;
+  ocr_valid_frames: number;
+  ocr_outcome: ClipVerdict['outcome'];
+  trim_start: number;
+  mute_audio: boolean;
+  subtitle_blur: ClipVerdict['subtitle_blur'];
+};
+
+export function analysisFields(
+  analysis: AnalyzedOcrAnalysis,
+): PersistedOcrFields & { ocr_status: 'analyzed' } {
+  if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
+    throw new Error('analysisFields requires a successful analyzed OCR result');
+  }
+  const { verdict } = analysis;
+  return {
+    ocr_status: 'analyzed',
+    ocr_model: analysis.model,
+    ocr_analyzer_version: analysis.analyzer_version,
+    ocr_analyzed_at: analysis.analyzed_at,
+    ocr_requested_frames: analysis.requested_frames,
+    ocr_valid_frames: analysis.valid_frames,
+    ocr_outcome: verdict.outcome,
+    trim_start: verdict.trim_start > 0 ? verdict.trim_start : 0,
+    mute_audio: verdict.outcome === 'subtitle',
+    subtitle_blur: verdict.outcome === 'subtitle' ? verdict.subtitle_blur : [],
+  };
+}
