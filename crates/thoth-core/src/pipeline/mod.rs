@@ -1,4 +1,5 @@
 pub mod job;
+pub mod ocr;
 pub mod state;
 
 use std::{future::Future, path::Path};

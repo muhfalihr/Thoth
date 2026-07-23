@@ -741,44 +741,21 @@ pub async fn run_cli() -> Result<()> {
         }
 
         Commands::Scout(args) => {
-            // ── Resolve scout/ directory ──────────────────────────────────
-            // The binary lives at <repo>/target/release/thoth.exe — the repo
-            // root is 2 levels up.  Fallback: try cwd/scout/ (when running
-            // from the repo root directly during development).
-            let scout_dir = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent()?.parent()?.parent().map(|r| r.join("scout")))
-                .filter(|d| d.join("cli.ts").exists())
-                .or_else(|| {
-                    let cwd = std::env::current_dir().ok()?.join("scout");
-                    if cwd.join("cli.ts").exists() { Some(cwd) } else { None }
-                })
-                .ok_or_else(|| anyhow::anyhow!(
-                    "scout/cli.ts not found — run from the repo root or ensure \
-                     the thoth binary is in <repo>/target/release/"
-                ))?;
-
-            let cli_ts = scout_dir.join("cli.ts");
-
-            // ── Find Bun ─────────────────────────────────────────────────
-            let bun = which::which("bun").map_err(|_| anyhow::anyhow!(
-                "bun not found in PATH — scout requires Bun ≥1.2 \
-                 (https://bun.sh)"
-            ))?;
+            let runtime = pipeline::ocr::resolve_scout_runtime()?;
 
             // ── Spawn: bun scout/cli.ts <args...> ────────────────────────
             // non-job process: Scout has its own supervisor.
-            let status = std::process::Command::new(&bun)
-                .arg(&cli_ts)
+            let status = std::process::Command::new(&runtime.bun)
+                .arg(&runtime.cli_ts)
                 .args(&args.args)
-                .current_dir(&scout_dir)
+                .current_dir(&runtime.scout_dir)
                 .stdin(std::process::Stdio::inherit())
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit())
                 .status()
                 .with_context(|| format!(
                     "failed to spawn bun {} {}",
-                    cli_ts.display(),
+                    runtime.cli_ts.display(),
                     args.args.join(" ")
                 ))?;
 
