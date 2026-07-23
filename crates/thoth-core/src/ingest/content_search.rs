@@ -16,6 +16,46 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+pub const OCR_SCHEMA_VERSION: u32 = 1;
+pub const OCR_ANALYZER_VERSION: &str = "deepseek-ocr-v2";
+pub const DEFAULT_OCR_MODEL: &str = "deepseek/deepseek-ocr";
+
+const fn default_is_video() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrStatus {
+    Analyzed,
+    #[default]
+    Failed,
+}
+
+/// Flat, persisted identity and coverage metadata for a Scout OCR analysis.
+///
+/// `ocr_status == None` is intentionally distinct from an analyzed-clean
+/// verdict: legacy JSON remains readable, but cannot pass the video safety gate.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct OcrMetadata {
+    #[serde(default)]
+    pub ocr_schema_version: u32,
+    #[serde(default)]
+    pub ocr_status: Option<OcrStatus>,
+    #[serde(default)]
+    pub ocr_model: String,
+    #[serde(default)]
+    pub ocr_analyzer_version: String,
+    #[serde(default)]
+    pub ocr_analyzed_at: String,
+    #[serde(default)]
+    pub ocr_requested_frames: usize,
+    #[serde(default)]
+    pub ocr_valid_frames: usize,
+    #[serde(default)]
+    pub ocr_outcome: String,
+}
+
 /// One normalized footage item. `content_enrichment.json` is a `Vec<ContentResult>`.
 /// `platform` + `url` are required; everything else defaults so scout can send
 /// a minimal entry (`{"platform": "...", "url": "..."}`).
@@ -33,7 +73,7 @@ pub struct ContentResult {
     pub published: Option<String>,
     #[serde(default)]
     pub thumbnail: String,
-    #[serde(default)]
+    #[serde(default = "default_is_video")]
     pub is_video: bool,
     #[serde(default)]
     pub duration_sec: u64,
@@ -59,6 +99,8 @@ pub struct ContentResult {
     /// CARD (see `enrichment::load_image_pool`). Empty for video items.
     #[serde(default)]
     pub image_path: String,
+    #[serde(flatten)]
+    pub ocr: OcrMetadata,
     /// Seconds to trim from the start (skip a cover/headline intro baked into
     /// the source clip). Supplied by scout when it couldn't avoid picking a
     /// video with an unavoidable intro. `0.0` = no trim.
@@ -91,7 +133,7 @@ pub struct MainVideo {
     /// hallucinating from a near-empty transcript. Empty = unknown.
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
+    #[serde(default = "default_is_video")]
     pub is_video: bool,
     #[serde(default)]
     pub duration_sec: u64,
@@ -106,6 +148,8 @@ pub struct MainVideo {
     /// hallucinated follower counts). `None` = fall back to the LLM's guess.
     #[serde(default)]
     pub profile: Option<ProfileInfo>,
+    #[serde(flatten)]
+    pub ocr: OcrMetadata,
     /// Seconds to trim from the start (skip a cover/headline intro baked into
     /// the source clip). Supplied by scout when it couldn't avoid picking a
     /// video with an unavoidable intro. `0.0` = no trim.
@@ -329,6 +373,8 @@ pub struct LoadedSet {
     pub discourse: Discourse,
     /// Topic dossier (entities/relations/angles/timeline). Empty defaults when none.
     pub dossier: Dossier,
+    /// OCR identity and coverage copied from the chosen main video.
+    pub main_ocr: OcrMetadata,
     /// Cover/headline intro to skip on the main B-roll (seconds). `0.0` = none.
     pub main_trim_start: f64,
     /// Drop the main clip's baked audio (reaction/subtitle source). `false` = keep.
@@ -362,6 +408,7 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
         references: set.references,
         discourse: set.discourse,
         dossier: set.dossier,
+        main_ocr: set.main.ocr,
         main_trim_start: set.main.trim_start,
         main_mute_audio: set.main.mute_audio,
         main_subtitle_blur: set.main.subtitle_blur,
@@ -397,6 +444,8 @@ pub struct MainContext {
     /// narration grounding. Empty defaults when scout didn't supply one.
     #[serde(default)]
     pub dossier: Dossier,
+    #[serde(flatten)]
+    pub ocr: OcrMetadata,
     /// Cover/headline intro to skip on the main B-roll, in seconds (scout's
     /// cover-exception: text only in the first few seconds → trim, don't blur).
     /// `0.0` = no trim.
@@ -429,10 +478,130 @@ pub fn to_main_context(set: LoadedSet) -> MainContext {
         references: set.references,
         discourse: set.discourse,
         dossier: set.dossier,
+        ocr: set.main_ocr,
         trim_start: set.main_trim_start,
         mute_audio: set.main_mute_audio,
         subtitle_blur: set.main_subtitle_blur,
     }
+}
+
+/// Resolve the supported OCR model using the same environment contract as Scout.
+pub fn configured_ocr_model() -> String {
+    configured_ocr_model_from(std::env::var("THOTH_SUBTITLE_OCR_MODEL").ok().as_deref())
+}
+
+pub fn configured_ocr_model_from(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .unwrap_or(DEFAULT_OCR_MODEL)
+        .to_string()
+}
+
+/// Validate the required OCR metadata and rendering directives for the main video.
+pub fn validate_main_ocr(context: &MainContext) -> anyhow::Result<()> {
+    validate_main_ocr_for_model(context, &configured_ocr_model())
+}
+
+pub fn validate_main_ocr_for_model(
+    context: &MainContext,
+    configured_model: &str,
+) -> anyhow::Result<()> {
+    validate_ocr_metadata(
+        &context.ocr,
+        context.trim_start,
+        context.mute_audio,
+        &context.subtitle_blur,
+        configured_model,
+    )
+    .map_err(|error| anyhow::anyhow!("main OCR: {error}"))
+}
+
+/// Validate a footage record when it represents video. Still images are exempt.
+pub fn validate_video_ocr(result: &ContentResult) -> anyhow::Result<()> {
+    if !result.is_video {
+        return Ok(());
+    }
+    validate_ocr_metadata(
+        &result.ocr,
+        result.trim_start,
+        result.mute_audio,
+        &result.subtitle_blur,
+        &configured_ocr_model(),
+    )?;
+    if result.ocr.ocr_outcome == "subtitle" {
+        anyhow::bail!("subtitle-classified footage is not renderable");
+    }
+    Ok(())
+}
+
+pub fn validate_subtitle_blur(regions: &[SubtitleBlur]) -> anyhow::Result<()> {
+    for (index, region) in regions.iter().enumerate() {
+        let geometry = [region.x, region.y, region.w, region.h];
+        let invalid_geometry = geometry.iter().any(|value| !value.is_finite())
+            || region.x < 0.0
+            || region.y < 0.0
+            || region.w <= 0.0
+            || region.h <= 0.0
+            || region.x + region.w > 1.0
+            || region.y + region.h > 1.0;
+        let invalid_window = !region.start.is_finite()
+            || !region.end.is_finite()
+            || region.start < 0.0
+            || region.end < region.start;
+        if invalid_geometry || invalid_window {
+            anyhow::bail!("malformed subtitle_blur[{index}] directive");
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_ocr_metadata(
+    metadata: &OcrMetadata,
+    trim_start: f64,
+    mute_audio: bool,
+    subtitle_blur: &[SubtitleBlur],
+    configured_model: &str,
+) -> anyhow::Result<()> {
+    match metadata.ocr_status {
+        None => anyhow::bail!("not analyzed"),
+        Some(OcrStatus::Failed) => anyhow::bail!("analysis failed"),
+        Some(OcrStatus::Analyzed) => {}
+    }
+    if metadata.ocr_schema_version != OCR_SCHEMA_VERSION {
+        anyhow::bail!("unsupported OCR schema");
+    }
+    if metadata.ocr_model != configured_model {
+        anyhow::bail!("unsupported OCR model");
+    }
+    if metadata.ocr_analyzer_version != OCR_ANALYZER_VERSION {
+        anyhow::bail!("unsupported OCR analyzer");
+    }
+    if metadata.ocr_analyzed_at.is_empty()
+        || chrono::DateTime::parse_from_rfc3339(&metadata.ocr_analyzed_at).is_err()
+    {
+        anyhow::bail!("malformed OCR analyzed_at");
+    }
+    if metadata.ocr_requested_frames == 0
+        || metadata.ocr_valid_frames != metadata.ocr_requested_frames
+    {
+        anyhow::bail!("incomplete OCR frame coverage");
+    }
+    if !trim_start.is_finite() || trim_start < 0.0 {
+        anyhow::bail!("malformed trim_start directive");
+    }
+    validate_subtitle_blur(subtitle_blur)?;
+
+    match metadata.ocr_outcome.as_str() {
+        "clean" if trim_start == 0.0 && !mute_audio && subtitle_blur.is_empty() => {}
+        "cover" if trim_start > 0.0 && !mute_audio && subtitle_blur.is_empty() => {}
+        "subtitle" if mute_audio && !subtitle_blur.is_empty() => {}
+        "clean" => anyhow::bail!("inconsistent clean directives"),
+        "cover" => anyhow::bail!("inconsistent cover directives"),
+        "subtitle" => anyhow::bail!("inconsistent subtitle directives"),
+        _ => anyhow::bail!("malformed OCR outcome"),
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -614,5 +783,248 @@ mod tests {
         assert_eq!(m2.subtitle_blur.len(), 1);
         assert_eq!(m2.subtitle_blur[0].w, 0.8);
         assert_eq!(m2.subtitle_blur[0].end, 14.0);
+    }
+
+    #[test]
+    fn ocr_metadata_legacy_json_is_missing_not_clean() {
+        let main: MainVideo = serde_json::from_str(r#"{"url":"u","is_video":true}"#).unwrap();
+        assert_eq!(main.ocr.ocr_status, None);
+        assert!(
+            validate_ocr_metadata(
+                &main.ocr,
+                main.trim_start,
+                main.mute_audio,
+                &main.subtitle_blur,
+                DEFAULT_OCR_MODEL,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ocr_metadata_missing_video_flag_is_not_image_exempt() {
+        let legacy: ContentResult =
+            serde_json::from_str(r#"{"platform":"youtube","url":"u"}"#).unwrap();
+        assert!(legacy.is_video);
+        assert!(validate_video_ocr(&legacy).is_err());
+
+        let image: ContentResult =
+            serde_json::from_str(r#"{"platform":"twitter","url":"u","is_video":false}"#).unwrap();
+        validate_video_ocr(&image).unwrap();
+    }
+
+    #[test]
+    fn ocr_metadata_subtitle_footage_is_rejected() {
+        let mut video: ContentResult = serde_json::from_str(
+            r#"{
+                "platform":"youtube",
+                "url":"u",
+                "is_video":true,
+                "ocr_schema_version":1,
+                "ocr_status":"analyzed",
+                "ocr_model":"deepseek/deepseek-ocr",
+                "ocr_analyzer_version":"deepseek-ocr-v2",
+                "ocr_analyzed_at":"2026-07-23T00:00:00Z",
+                "ocr_requested_frames":4,
+                "ocr_valid_frames":4,
+                "ocr_outcome":"subtitle",
+                "mute_audio":true,
+                "subtitle_blur":[
+                    {"x":0.1,"y":0.7,"w":0.8,"h":0.1,"start":0.0,"end":1.0}
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert!(validate_video_ocr(&video).is_err());
+
+        video.is_video = false;
+        validate_video_ocr(&video).unwrap();
+    }
+
+    #[test]
+    fn ocr_metadata_round_trips_through_main_context() {
+        let json = r#"{
+            "main": {
+                "url": "https://youtu.be/abc",
+                "title": "Main title",
+                "description": "Main description",
+                "is_video": true,
+                "ocr_schema_version": 1,
+                "ocr_status": "analyzed",
+                "ocr_model": "deepseek/deepseek-ocr",
+                "ocr_analyzer_version": "deepseek-ocr-v2",
+                "ocr_analyzed_at": "2026-07-23T00:00:00Z",
+                "ocr_requested_frames": 4,
+                "ocr_valid_frames": 4,
+                "ocr_outcome": "cover",
+                "trim_start": 3.5,
+                "mute_audio": false,
+                "subtitle_blur": []
+            }
+        }"#;
+        let mut file = tempfile_like();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let context = to_main_context(load_content_set(file.path()).unwrap());
+        assert_eq!(context.ocr.ocr_status, Some(OcrStatus::Analyzed));
+        assert_eq!(context.ocr.ocr_schema_version, OCR_SCHEMA_VERSION);
+        assert_eq!(context.ocr.ocr_model, DEFAULT_OCR_MODEL);
+        assert_eq!(context.ocr.ocr_outcome, "cover");
+        assert_eq!(context.trim_start, 3.5);
+
+        let round_trip: MainContext =
+            serde_json::from_str(&serde_json::to_string(&context).unwrap()).unwrap();
+        assert_eq!(round_trip.ocr.ocr_status, Some(OcrStatus::Analyzed));
+        assert_eq!(round_trip.ocr.ocr_requested_frames, 4);
+        assert_eq!(round_trip.ocr.ocr_valid_frames, 4);
+        validate_main_ocr_for_model(&round_trip, DEFAULT_OCR_MODEL).unwrap();
+    }
+
+    #[test]
+    fn ocr_metadata_rejects_missing_failed_and_stale_analysis() {
+        let mut context = analyzed_main_context("clean");
+        validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).unwrap();
+
+        context.ocr.ocr_status = None;
+        assert!(
+            validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL)
+                .unwrap_err()
+                .to_string()
+                .contains("not analyzed")
+        );
+
+        context.ocr.ocr_status = Some(OcrStatus::Failed);
+        assert!(
+            validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL)
+                .unwrap_err()
+                .to_string()
+                .contains("failed")
+        );
+
+        context.ocr.ocr_status = Some(OcrStatus::Analyzed);
+        context.ocr.ocr_schema_version = OCR_SCHEMA_VERSION + 1;
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+        context.ocr.ocr_schema_version = OCR_SCHEMA_VERSION;
+        context.ocr.ocr_analyzer_version = "deepseek-ocr-v1".into();
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+        context.ocr.ocr_analyzer_version = OCR_ANALYZER_VERSION.into();
+        assert!(validate_main_ocr_for_model(&context, "configured/custom-model").is_err());
+    }
+
+    #[test]
+    fn ocr_metadata_respects_configured_model_override() {
+        assert_eq!(
+            configured_ocr_model_from(Some("  custom/current-ocr  ")),
+            "custom/current-ocr"
+        );
+        assert_eq!(configured_ocr_model_from(Some("  ")), DEFAULT_OCR_MODEL);
+        assert_eq!(configured_ocr_model_from(None), DEFAULT_OCR_MODEL);
+
+        let mut context = analyzed_main_context("clean");
+        context.ocr.ocr_model = "custom/current-ocr".into();
+        validate_main_ocr_for_model(&context, "custom/current-ocr").unwrap();
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+    }
+
+    #[test]
+    fn ocr_metadata_rejects_bad_time_counts_geometry_and_windows() {
+        let mut context = analyzed_main_context("subtitle");
+        context.mute_audio = true;
+        context.subtitle_blur = vec![SubtitleBlur {
+            x: 0.1,
+            y: 0.7,
+            w: 0.8,
+            h: 0.1,
+            start: 1.0,
+            end: 2.0,
+        }];
+        validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).unwrap();
+
+        context.ocr.ocr_analyzed_at = "not-a-time".into();
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+        context.ocr.ocr_analyzed_at = "2026-07-23T00:00:00Z".into();
+        context.ocr.ocr_valid_frames = 3;
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+        context.ocr.ocr_valid_frames = 4;
+
+        for invalid in [
+            SubtitleBlur {
+                x: f64::NAN,
+                ..context.subtitle_blur[0].clone()
+            },
+            SubtitleBlur {
+                w: f64::INFINITY,
+                ..context.subtitle_blur[0].clone()
+            },
+            SubtitleBlur {
+                x: -0.1,
+                ..context.subtitle_blur[0].clone()
+            },
+            SubtitleBlur {
+                x: 0.5,
+                w: 0.6,
+                ..context.subtitle_blur[0].clone()
+            },
+            SubtitleBlur {
+                start: -1.0,
+                ..context.subtitle_blur[0].clone()
+            },
+            SubtitleBlur {
+                start: 3.0,
+                end: 2.0,
+                ..context.subtitle_blur[0].clone()
+            },
+        ] {
+            assert!(validate_subtitle_blur(&[invalid]).is_err());
+        }
+
+        context.subtitle_blur[0].start = f64::NEG_INFINITY;
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+        context.subtitle_blur[0].start = 1.0;
+        context.trim_start = f64::NAN;
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+        context.trim_start = -1.0;
+        assert!(validate_main_ocr_for_model(&context, DEFAULT_OCR_MODEL).is_err());
+    }
+
+    #[test]
+    fn ocr_metadata_enforces_outcome_directive_consistency() {
+        let mut clean = analyzed_main_context("clean");
+        clean.trim_start = 1.0;
+        assert!(validate_main_ocr_for_model(&clean, DEFAULT_OCR_MODEL).is_err());
+
+        let mut cover = analyzed_main_context("cover");
+        assert!(validate_main_ocr_for_model(&cover, DEFAULT_OCR_MODEL).is_err());
+        cover.trim_start = 2.0;
+        validate_main_ocr_for_model(&cover, DEFAULT_OCR_MODEL).unwrap();
+
+        let mut subtitle = analyzed_main_context("subtitle");
+        assert!(validate_main_ocr_for_model(&subtitle, DEFAULT_OCR_MODEL).is_err());
+        subtitle.mute_audio = true;
+        subtitle.subtitle_blur = vec![SubtitleBlur {
+            x: 0.1,
+            y: 0.7,
+            w: 0.8,
+            h: 0.1,
+            start: 0.0,
+            end: 1.0,
+        }];
+        validate_main_ocr_for_model(&subtitle, DEFAULT_OCR_MODEL).unwrap();
+    }
+
+    fn analyzed_main_context(outcome: &str) -> MainContext {
+        MainContext {
+            ocr: OcrMetadata {
+                ocr_schema_version: OCR_SCHEMA_VERSION,
+                ocr_status: Some(OcrStatus::Analyzed),
+                ocr_model: DEFAULT_OCR_MODEL.into(),
+                ocr_analyzer_version: OCR_ANALYZER_VERSION.into(),
+                ocr_analyzed_at: "2026-07-23T00:00:00Z".into(),
+                ocr_requested_frames: 4,
+                ocr_valid_frames: 4,
+                ocr_outcome: outcome.into(),
+            },
+            ..MainContext::default()
+        }
     }
 }

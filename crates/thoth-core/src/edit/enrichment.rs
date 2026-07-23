@@ -11,7 +11,7 @@ use std::path::Path;
 
 use tracing::{debug, info, warn};
 
-use crate::ingest::content_search::ContentResult;
+use crate::ingest::content_search::{ContentResult, validate_video_ocr};
 
 /// File name written by `resolve_query_to_url`, relative to the pipeline base dir.
 pub const ENRICHMENT_FILE: &str = "content_enrichment.json";
@@ -136,17 +136,69 @@ pub fn load_pool(base_dir: &Path) -> Vec<ContentResult> {
     pool
 }
 
+/// Strictly parse and validate the video cutaway pool before edit.
+///
+/// Missing enrichment is valid, but a present malformed file or an unsafe
+/// renderable video is fatal. Rendering may keep using [`load_pool`] after this
+/// preflight has succeeded.
+pub fn load_pool_strict(base_dir: &Path) -> anyhow::Result<Vec<ContentResult>> {
+    let path = base_dir.join(ENRICHMENT_FILE);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|error| anyhow::anyhow!("cannot read enrichment file: {error}"))?;
+    let all: Vec<ContentResult> = serde_json::from_str(&raw)
+        .map_err(|error| anyhow::anyhow!("cannot parse enrichment file: {error}"))?;
+
+    for (index, result) in all.iter().enumerate() {
+        if is_downloadable_video(result) {
+            validate_video_ocr(result).map_err(|error| {
+                anyhow::anyhow!("footage[{index}] platform '{}': {error}", result.platform)
+            })?;
+        }
+    }
+
+    let mut pool: Vec<ContentResult> = all
+        .into_iter()
+        .filter(is_downloadable_video)
+        .filter(|result| result.relevance != "unverified")
+        .collect();
+    pool.sort_by_key(|result| if result.relevance == "match" { 0 } else { 1 });
+    Ok(pool)
+}
+
+pub fn preflight_ocr(base_dir: &Path) -> anyhow::Result<()> {
+    load_pool_strict(base_dir).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ingest::content_search::{
+        OCR_ANALYZER_VERSION, OCR_SCHEMA_VERSION, OcrMetadata, OcrStatus, configured_ocr_model,
+    };
 
     fn vid(platform: &str, url: &str, is_video: bool, relevance: &str) -> ContentResult {
         ContentResult {
-            platform: platform.into(), url: url.into(), title: "t".into(),
-            snippet: String::new(), source: String::new(), published: None,
-            thumbnail: String::new(), is_video, duration_sec: 120, views: 0,
-            query: "q".into(), description: String::new(), relevance: relevance.into(), image_path: String::new(),
-            trim_start: 0.0, mute_audio: false, subtitle_blur: Vec::new(),
+            platform: platform.into(),
+            url: url.into(),
+            title: "t".into(),
+            snippet: String::new(),
+            source: String::new(),
+            published: None,
+            thumbnail: String::new(),
+            is_video,
+            duration_sec: 120,
+            views: 0,
+            query: "q".into(),
+            description: String::new(),
+            relevance: relevance.into(),
+            image_path: String::new(),
+            ocr: OcrMetadata::default(),
+            trim_start: 0.0,
+            mute_audio: false,
+            subtitle_blur: Vec::new(),
         }
     }
 
@@ -205,6 +257,91 @@ mod tests {
         // real video platforms all qualify regardless of name
         for p in ["youtube", "instagram", "tiktok", "twitter", "facebook", "vimeo"] {
             assert!(is_downloadable_video(&vid(p, "u", true, "match")), "{p} should qualify");
+        }
+    }
+
+    #[test]
+    fn ocr_metadata_preflight_allows_missing_file_and_image_entries() {
+        let missing = TempDir::new();
+        preflight_ocr(&missing.path).unwrap();
+
+        let dir = TempDir::new();
+        let image = vid("twitter", "https://x.example/image", false, "match");
+        std::fs::write(
+            dir.path.join(ENRICHMENT_FILE),
+            serde_json::to_vec(&vec![image]).unwrap(),
+        )
+        .unwrap();
+        preflight_ocr(&dir.path).unwrap();
+    }
+
+    #[test]
+    fn ocr_metadata_preflight_rejects_unsafe_video_without_leaking_url() {
+        let dir = TempDir::new();
+        let unsafe_url = "https://private.example/video?token=secret";
+        let video = vid("youtube", unsafe_url, true, "match");
+        std::fs::write(
+            dir.path.join(ENRICHMENT_FILE),
+            serde_json::to_vec(&vec![video]).unwrap(),
+        )
+        .unwrap();
+
+        let error = preflight_ocr(&dir.path).unwrap_err().to_string();
+        assert!(error.contains("footage[0]"));
+        assert!(error.contains("youtube"));
+        assert!(!error.contains(unsafe_url));
+        assert!(load_pool_strict(&dir.path).is_err());
+    }
+
+    #[test]
+    fn ocr_metadata_preflight_accepts_current_analyzed_video() {
+        let dir = TempDir::new();
+        let mut video = vid("youtube", "https://youtu.be/abcdef", true, "match");
+        video.ocr = OcrMetadata {
+            ocr_schema_version: OCR_SCHEMA_VERSION,
+            ocr_status: Some(OcrStatus::Analyzed),
+            ocr_model: configured_ocr_model(),
+            ocr_analyzer_version: OCR_ANALYZER_VERSION.into(),
+            ocr_analyzed_at: "2026-07-23T00:00:00Z".into(),
+            ocr_requested_frames: 4,
+            ocr_valid_frames: 4,
+            ocr_outcome: "cover".into(),
+        };
+        video.trim_start = 2.0;
+        std::fs::write(
+            dir.path.join(ENRICHMENT_FILE),
+            serde_json::to_vec(&vec![video]).unwrap(),
+        )
+        .unwrap();
+
+        preflight_ocr(&dir.path).unwrap();
+        assert_eq!(load_pool_strict(&dir.path).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ocr_metadata_preflight_rejects_malformed_present_file() {
+        let dir = TempDir::new();
+        std::fs::write(dir.path.join(ENRICHMENT_FILE), b"{not json").unwrap();
+        assert!(preflight_ocr(&dir.path).is_err());
+        assert!(load_pool_strict(&dir.path).is_err());
+    }
+
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("thoth_enrichment_ocr_{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
         }
     }
 }
