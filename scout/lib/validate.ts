@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import {
-  DEFAULT_OCR_MODEL,
+  configuredOcrModel,
   OCR_ANALYZER_VERSION,
   OCR_SCHEMA_VERSION,
 } from './ocr_contract.ts';
@@ -78,7 +78,13 @@ function validUrlFor(url, platform) {
   return { ok: re.test(String(url)), platform: p };
 }
 
-function lintVideoOcr(record, tag: string, kind: 'main' | 'footage', errors: string[]) {
+function lintVideoOcr(
+  record,
+  tag: string,
+  kind: 'main' | 'footage',
+  errors: string[],
+  configuredModel: string,
+) {
   if (record.is_video === false) return;
 
   if (record.ocr_status == null) {
@@ -99,7 +105,7 @@ function lintVideoOcr(record, tag: string, kind: 'main' | 'footage', errors: str
       `${tag}: stale OCR schema "${String(record.ocr_schema_version ?? '')}".`,
     );
   }
-  if (record.ocr_model !== DEFAULT_OCR_MODEL) {
+  if (record.ocr_model !== configuredModel) {
     errors.push(`${tag}: stale OCR model "${String(record.ocr_model || '')}".`);
   }
   if (record.ocr_analyzer_version !== OCR_ANALYZER_VERSION) {
@@ -197,11 +203,15 @@ function lintVideoOcr(record, tag: string, kind: 'main' | 'footage', errors: str
 
 // Lint a content-set (single object {main,footage,comments} or an array of them).
 // Returns { errors:[], warnings:[], info:[], ok:boolean }. errors → unsafe to hand off.
-function lintContentSet(data: ContentSet) {
+function lintContentSet(
+  data: ContentSet,
+  env: Record<string, string | undefined> = process.env,
+) {
   const errors = [],
     warnings = [],
     info = [];
   const sets = Array.isArray(data) ? data : [data];
+  const configuredModel = configuredOcrModel(env);
 
   if (!sets.length) errors.push('content-set kosong.');
 
@@ -227,7 +237,7 @@ function lintContentSet(data: ContentSet) {
           if (s) errors.push(`${tag}.main.image_path ${s}: ${main.image_path}`);
         }
       }
-      lintVideoOcr(main, `${tag}.main`, 'main', errors);
+      lintVideoOcr(main, `${tag}.main`, 'main', errors, configuredModel);
       if (!main.description)
         warnings.push(
           `${tag}.main.description kosong — narasi bisa berhalusinasi (kontrak: WAJIB).`,
@@ -258,7 +268,7 @@ function lintContentSet(data: ContentSet) {
           if (s) errors.push(`${ft}.image_path ${s}: ${f.image_path}`);
         }
       }
-      lintVideoOcr(f, ft, 'footage', errors);
+      lintVideoOcr(f, ft, 'footage', errors, configuredModel);
     });
     if (!footage.length) info.push(`${tag}: tanpa footage (single-video — sah).`);
 

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { novitaKey } from './env.ts';
 import type { OcrAnalysis } from './ocr_contract.ts';
 import {
-  DEFAULT_OCR_MODEL,
+  configuredOcrModel,
   OcrAnalysisError,
   OCR_ANALYZER_VERSION,
   OCR_SCHEMA_VERSION,
@@ -724,7 +724,7 @@ export async function analyzeSubtitlesDetailed(
   const env = deps.env ?? process.env;
   const writeDiagnostics = deps.appendDiagnostics ?? appendDiagnostics;
   const analyzedAt = (deps.now ?? (() => new Date()))().toISOString();
-  const model = env.THOTH_SUBTITLE_OCR_MODEL?.trim() || DEFAULT_OCR_MODEL;
+  const model = configuredOcrModel(env);
   const apiKey = deps.env
     ? env.THOTH_NOVITA_API_KEY?.trim() || ''
     : novitaKey();

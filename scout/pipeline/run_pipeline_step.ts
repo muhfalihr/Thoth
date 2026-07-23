@@ -1,10 +1,18 @@
 export class PipelineStepError extends Error {
   readonly step: string;
+  readonly exitStatus: number | null;
+  override readonly cause: Error;
 
-  constructor(step: string) {
-    super(`Required pipeline step failed: ${step}`);
+  constructor(step: string, failure: unknown) {
+    const status = extractExitStatus(failure);
+    const sanitizedCause = new Error(
+      status == null ? 'pipeline subprocess failed' : `pipeline subprocess exited with status ${status}`,
+    );
+    super(`Required pipeline step failed: ${step}`, { cause: sanitizedCause });
     this.name = 'PipelineStepError';
     this.step = step;
+    this.exitStatus = status;
+    this.cause = sanitizedCause;
   }
 }
 
@@ -18,22 +26,20 @@ type StepDeps = {
   warn: (message: string) => void;
 };
 
-const REQUIRED_PIPELINE_STEPS = new Set([
-  'trace_source.ts',
-  'build_footage.ts',
-  'validate_content_set.ts',
-]);
-
-export function isRequiredPipelineStep(script: string): boolean {
-  return REQUIRED_PIPELINE_STEPS.has(script);
+function extractExitStatus(failure: unknown): number | null {
+  if (!failure || typeof failure !== 'object') return null;
+  const status = (failure as { status?: unknown }).status;
+  return typeof status === 'number' && Number.isInteger(status) && status >= 0
+    ? status
+    : null;
 }
 
 export function runPipelineStep(policy: StepPolicy, deps: StepDeps): boolean {
   try {
     deps.execute();
     return true;
-  } catch {
-    if (policy.required) throw new PipelineStepError(policy.label);
+  } catch (failure) {
+    if (policy.required) throw new PipelineStepError(policy.label, failure);
     deps.warn(`${policy.label}: optional step failed; continue`);
     return false;
   }

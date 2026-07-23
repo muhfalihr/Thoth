@@ -1,14 +1,8 @@
 import assert from 'node:assert';
 import {
-  isRequiredPipelineStep,
   PipelineStepError,
   runPipelineStep,
 } from './run_pipeline_step.ts';
-
-assert.equal(isRequiredPipelineStep('trace_source.ts'), true);
-assert.equal(isRequiredPipelineStep('build_footage.ts'), true);
-assert.equal(isRequiredPipelineStep('validate_content_set.ts'), true);
-assert.equal(isRequiredPipelineStep('collect_comments.ts'), false);
 
 {
   let warned = false;
@@ -37,7 +31,7 @@ assert.throws(
     runPipelineStep(
       {
         label: 'build_footage',
-        required: isRequiredPipelineStep('build_footage.ts'),
+        required: true,
       },
       {
         execute: () => {
@@ -51,6 +45,27 @@ assert.throws(
   (error: unknown) =>
     error instanceof PipelineStepError &&
     error.step === 'build_footage',
+);
+
+assert.throws(
+  () =>
+    runPipelineStep(
+      { label: 'trace_source', required: true },
+      {
+        execute: () => {
+          const cause = new Error('Bearer secret-token');
+          Object.assign(cause, { status: 23 });
+          throw cause;
+        },
+        warn: () => {},
+      },
+    ),
+  (error: unknown) =>
+    error instanceof PipelineStepError &&
+    error.exitStatus === 23 &&
+    error.cause instanceof Error &&
+    /status 23/.test(error.cause.message) &&
+    !error.cause.message.includes('secret-token'),
 );
 
 {

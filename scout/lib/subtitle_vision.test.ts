@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import {
   analysisFields,
+  configuredOcrModel,
   type AnalyzedOcrAnalysis,
   OcrAnalysisError,
   OCR_SCHEMA_VERSION,
@@ -25,6 +26,12 @@ import {
   parseOcrResponseContent,
   parseVisionFrame,
 } from './subtitle_vision.ts';
+
+assert.equal(configuredOcrModel({}), 'deepseek/deepseek-ocr');
+assert.equal(
+  configuredOcrModel({ THOTH_SUBTITLE_OCR_MODEL: ' custom/current-ocr ' }),
+  'custom/current-ocr',
+);
 
 {
   const analysis: AnalyzedOcrAnalysis = {
@@ -107,12 +114,16 @@ import {
   assert.equal(noDuration.verdict, undefined);
 
   const clean = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
-    env: { THOTH_NOVITA_API_KEY: 'test' },
+    env: {
+      THOTH_NOVITA_API_KEY: 'test',
+      THOTH_SUBTITLE_OCR_MODEL: 'custom/current-ocr',
+    },
     frameDataUrl: (_video, t) => `frame:${t}`,
     ocrFrame: async () => ({ boxes: [] }),
   });
   assert.equal(clean.ocr_status, 'analyzed');
   assert.equal(clean.verdict?.outcome, 'clean');
+  assert.equal(clean.model, 'custom/current-ocr');
   assert.equal(clean.valid_frames, clean.requested_frames);
 
   const partial = await analyzeSubtitlesDetailed('C:/video.mp4', 4, {

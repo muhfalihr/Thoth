@@ -122,6 +122,7 @@ const dedupeKey = (c) =>
           tmp,
           '--max',
           String(PER_SOURCE),
+          '--comments-only',
         ],
         { stdio: 'pipe', timeout: 180000 },
       );

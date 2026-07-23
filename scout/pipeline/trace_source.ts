@@ -29,9 +29,10 @@ import { isCuratedAggregator } from '../lib/aggregators.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
 import {
   attachVideoOcr,
+  carryCurrentOcrMetadata,
+  clearVideoOcrMetadata,
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
-import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n) => {
@@ -831,7 +832,8 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
   // penalty silently never fires (the whole point is to rank subtitle reactions down before selection).
   for (const c of onTopicU) {
     const src = c.videoSrc || directStreamUrl(c.url) || c.url;
-    c.sv = await analyzeSubtitles(src);
+    await attachVideoOcr(c, { resolve: () => src });
+    c.sv = { outcome: c.ocr_outcome };
   }
   const SUBTITLE_PENALTY = 1e6; // dwarfs any positive similarity score
   const scoreOf = (c) => (c.sim || 0) - (c.sv && c.sv.outcome === 'subtitle' ? SUBTITLE_PENALTY : 0);
@@ -884,6 +886,7 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
     );
   if (pick.cover) console.log(`              cover: "${(pick.cover || '').slice(0, 80)}"`);
   return {
+    ...pick,
     url: pick.url,
     platform: pick.platform,
     isVideo: true,
@@ -895,6 +898,7 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
 }
 
 async function setMainTo(set, orig, username) {
+  clearVideoOcrMetadata(set.main);
   set.main.url = orig.url;
   set.main.platform = orig.platform;
   // tiktok/youtube are video by definition; twitter/instagram carry a probed isVideo flag.
@@ -999,6 +1003,7 @@ async function setMainTo(set, orig, username) {
   } else if (typeof set.main.source_traced !== 'string') set.main.source_traced = '';
   delete set.main.rewrap;
   delete set.main.rewrap_source;
+  carryCurrentOcrMetadata(set.main, orig);
 }
 
 (async () => {

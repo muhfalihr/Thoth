@@ -166,15 +166,19 @@ const handleOf = (u) =>
       relevance = cap && matchesTopic(cap, KEYWORDS, MODE) ? 'match' : 'unverified';
       if (relevance === 'match') matched++;
     }
-    const entry = await attachVideoOcr({
+    const baseEntry = {
       url: e.url,
       platform: e.platform,
       query,
-      is_video: isVid,
       relevance,
-    });
-    if (entry.ocr_outcome === 'subtitle') continue;
-    footage.push(entry);
+    };
+    if (isVid) {
+      const entry = await attachVideoOcr({ ...baseEntry, is_video: true });
+      if (entry.ocr_outcome === 'subtitle') continue;
+      footage.push(entry);
+    } else {
+      footage.push(await attachVideoOcr({ ...baseEntry, is_video: false }));
+    }
   }
 
   const set = { main: mainObj, footage, comments: [] };

@@ -9,10 +9,13 @@ import {
 import type { ContentSet } from './types.ts';
 import { lintContentSet } from './validate.ts';
 
-const analyzed = (outcome: 'clean' | 'cover' | 'subtitle' = 'clean') => ({
+const analyzed = (
+  outcome: 'clean' | 'cover' | 'subtitle' = 'clean',
+  model = DEFAULT_OCR_MODEL,
+) => ({
   ocr_status: 'analyzed' as const,
   ocr_schema_version: 1,
-  ocr_model: DEFAULT_OCR_MODEL,
+  ocr_model: model,
   ocr_analyzer_version: OCR_ANALYZER_VERSION,
   ocr_analyzed_at: '2026-07-23T00:00:00.000Z',
   ocr_requested_frames: 4,
@@ -38,6 +41,18 @@ const videoSet = (): ContentSet => ({
 });
 
 const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
+
+{
+  const set = videoSet();
+  Object.assign(set.main, analyzed('clean', 'custom/current-ocr'));
+  assert.equal(
+    lintContentSet(set, {
+      THOTH_SUBTITLE_OCR_MODEL: ' custom/current-ocr ',
+    }).ok,
+    true,
+  );
+  assert.match(lintContentSet(set, {}).errors.join('\n'), /main.*stale.*model/i);
+}
 
 {
   const set = videoSet();

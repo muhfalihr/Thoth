@@ -19,10 +19,7 @@ import { connect, run, sleep } from '../lib/cdp.ts';
 import { tiktokOembed, youtubeOembed } from '../lib/verify.ts';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
-import {
-  isRequiredPipelineStep,
-  runPipelineStep,
-} from './run_pipeline_step.ts';
+import { runPipelineStep } from './run_pipeline_step.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n, d) => {
@@ -100,10 +97,10 @@ async function fetchCaption(url, platform) {
 }
 
 // Required safety steps abort the command; optional enrichment may degrade gracefully.
-function step(label, script, scriptArgs) {
+function step(label, script, scriptArgs, options: { required: boolean }) {
   ui.stage(label);
   return runPipelineStep(
-    { label, required: isRequiredPipelineStep(script) },
+    { label, required: options.required },
     {
       execute: () =>
         execFileSync(process.execPath, [here(script), ...scriptArgs], {
@@ -144,7 +141,7 @@ run(async () => {
   // can mine the comments too (names/brands often surface there). extract_figures runs AFTER build_footage
   // so it can also read footage descriptions — named subjects (e.g. "Sara Wijayanto", "MVP Pictures")
   // often surface there even when the topic/main caption is just a teaser.
-  step('trace_source (sumber/main)', 'trace_source.ts', [file]);
+  step('trace_source (sumber/main)', 'trace_source.ts', [file], { required: true });
   if (!NO_COMMENTS)
     step('collect_comments (multi-sumber)', 'collect_comments.ts', [
       file,
@@ -152,16 +149,25 @@ run(async () => {
       CAP,
       '--extra',
       URL,
-    ]);
+    ], { required: false });
   // topic_dossier SEBELUM build_footage: search_queries-nya men-drive pencarian footage.
   // Best-effort; bila gagal, build_footage fallback ke footageObjects.
   if (!NO_COMMENTS)
-    step('topic_dossier (enrich topik + query footage)', '../enrich/topic_dossier.ts', [file]);
-  step('build_footage (dossier→footage)', 'build_footage.ts', [file, '--per', PER, '--max', MAX]);
-  step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file]);
+    step('topic_dossier (enrich topik + query footage)', '../enrich/topic_dossier.ts', [file], {
+      required: false,
+    });
+  step(
+    'build_footage (dossier→footage)',
+    'build_footage.ts',
+    [file, '--per', PER, '--max', MAX],
+    { required: true },
+  );
+  step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file], {
+    required: false,
+  });
 
   // 6) Validate + summary.
-  step('validate', 'validate_content_set.ts', [file]);
+  step('validate', 'validate_content_set.ts', [file], { required: true });
 
   try {
     const s = JSON.parse(fs.readFileSync(file, 'utf8'));

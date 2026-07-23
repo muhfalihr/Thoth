@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { connect, sleep } from './cdp.ts';
 import { normalizeLikes } from './comments.ts';
-import { attachVideoOcr } from './ocr_content.ts';
+import { finalizeCommentContentSet } from './comment_content.ts';
 import { CROPS_DIR, outPath } from './paths.ts';
 import { ui } from './ui.ts';
 import { okCrop } from './crop_guard.ts';
@@ -55,6 +55,7 @@ async function scrapeComments(opts) {
     pad = PAD,
     skipSticker = true,
     label = platform,
+    commentsOnly = process.argv.includes('--comments-only'),
   } = opts;
 
   if (!fs.existsSync(CROPS_DIR)) fs.mkdirSync(CROPS_DIR, { recursive: true });
@@ -266,7 +267,7 @@ async function scrapeComments(opts) {
       }
     } catch (e) {}
   }
-  await attachVideoOcr(contentSet.main);
+  await finalizeCommentContentSet(contentSet, { commentsOnly });
   fs.writeFileSync(OUT_JSON, JSON.stringify(contentSet, null, 2), 'utf8');
 
   console.log('\n' + ui.rule());
@@ -291,9 +292,15 @@ function parseArgs(argv: string[]) {
     pos: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--max') flags.max = parseInt(argv[++i], 10);
+    else if (argv[i] === '--comments-only') flags.commentsOnly = true;
     else pos.push(argv[i]);
   }
-  return { url: pos[0], out: pos[1], max: flags.max };
+  return {
+    url: pos[0],
+    out: pos[1],
+    max: flags.max,
+    commentsOnly: Boolean(flags.commentsOnly),
+  };
 }
 
 export { scrapeComments, pollCount, parseArgs, isStickerOnly, sleep };

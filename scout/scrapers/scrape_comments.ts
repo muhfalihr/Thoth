@@ -14,8 +14,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { connect, sleep, run } from '../lib/cdp.ts';
+import { finalizeCommentContentSet } from '../lib/comment_content.ts';
 import { normalizeLikes } from '../lib/comments.ts';
-import { attachVideoOcr } from '../lib/ocr_content.ts';
 import { CROPS_DIR, outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 
@@ -27,11 +27,13 @@ const flags: any = {};
 const pos: string[] = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--max') flags.max = parseInt(args[++i], 10);
+  else if (args[i] === '--comments-only') flags.commentsOnly = true;
   else pos.push(args[i]);
 }
 const TARGET_URL = pos[0];
 const OUT_JSON = outPath(pos[1] || 'thoth_content_set.json');
 const MAX = flags.max || 12;
+const COMMENTS_ONLY = Boolean(flags.commentsOnly);
 
 if (!TARGET_URL) {
   console.log('Usage: bun scrape_comments.ts <tiktok_url> [out.json] [--max N]');
@@ -251,7 +253,7 @@ async function main() {
       }
     } catch (e) {}
   }
-  await attachVideoOcr(contentSet.main);
+  await finalizeCommentContentSet(contentSet, { commentsOnly: COMMENTS_ONLY });
   fs.writeFileSync(OUT_JSON, JSON.stringify(contentSet, null, 2), 'utf8');
 
   console.log('\n' + ui.rule());
