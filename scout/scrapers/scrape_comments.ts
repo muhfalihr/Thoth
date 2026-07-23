@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { connect, sleep, run } from '../lib/cdp.ts';
 import { normalizeLikes } from '../lib/comments.ts';
+import { attachVideoOcr } from '../lib/ocr_content.ts';
 import { CROPS_DIR, outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 
@@ -250,6 +251,7 @@ async function main() {
       }
     } catch (e) {}
   }
+  await attachVideoOcr(contentSet.main);
   fs.writeFileSync(OUT_JSON, JSON.stringify(contentSet, null, 2), 'utf8');
 
   console.log('\n' + ui.rule());

@@ -18,7 +18,6 @@ import { execFileSync } from 'node:child_process';
 import { footageObjects } from '../lib/footage_objects.ts';
 import { cropPost, inferPlatform } from '../scrapers/crop_post.ts';
 import {
-  directStreamUrl,
   igCarouselSlides,
   igSlideDirectUrl,
   tiktokOembed,
@@ -29,15 +28,9 @@ import { rankBySimilarity, embed, cosine } from '../lib/embed.ts';
 import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
-import {
-  analysisFields,
-  type AnalyzedOcrAnalysis,
-} from '../lib/ocr_contract.ts';
+import { attachVideoOcr } from '../lib/ocr_content.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
-import {
-  analyzeSubtitlesDetailed,
-  OcrAnalysisError,
-} from '../lib/subtitle_vision.ts';
+import { OcrAnalysisError } from '../lib/subtitle_vision.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
@@ -173,15 +166,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
     if (s.kind === 'video') {
       const cdn = igSlideDirectUrl(postUrl, s.index);
       if (!cdn) continue;
-      const analysis = await analyzeSubtitlesDetailed(cdn);
-      if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
-        throw new OcrAnalysisError(
-          analysis.error_code || 'unknown_failure',
-          analysis.error_message || 'OCR analysis failed',
-        );
-      }
-      if (analysis.verdict.outcome === 'subtitle') continue;
-      set.footage.push({
+      const entry = await attachVideoOcr({
         url: cdn,
         platform: plat,
         query,
@@ -189,8 +174,9 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         relevance: 'match',
         source_url: postUrl,
         description,
-        ...analysisFields(analysis as AnalyzedOcrAnalysis),
       });
+      if (entry.ocr_outcome === 'subtitle') continue;
+      set.footage.push(entry);
     } else {
       if (!s.image_path) continue; // photo slide with no cropped image → skip (no broken card)
       set.footage.push({
@@ -398,25 +384,16 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
               }
           }
         } else {
-          const analysis = await analyzeSubtitlesDetailed(
-            directStreamUrl(r.url) || r.url,
-          );
-          if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
-            throw new OcrAnalysisError(
-              analysis.error_code || 'unknown_failure',
-              analysis.error_message || 'OCR analysis failed',
-            );
-          }
-          if (analysis.verdict.outcome === 'subtitle') continue;
-          set.footage.push({
+          const entry = await attachVideoOcr({
             url: r.url,
             platform: 'instagram',
             query: 'profil @' + profileUser,
             is_video: true,
             relevance: 'match',
             description: r.caption || '',
-            ...analysisFields(analysis as AnalyzedOcrAnalysis),
           });
+          if (entry.ocr_outcome === 'subtitle') continue;
+          set.footage.push(entry);
           added++;
           addedV++;
         }
@@ -492,19 +469,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         }
         // OCR is a required safety gate: subtitle footage is rejected, cover footage
         // is trimmed, and analysis failure aborts content-set construction.
-        const analysis = await analyzeSubtitlesDetailed(directStreamUrl(furl) || furl);
-        if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
-          throw new OcrAnalysisError(
-            analysis.error_code || 'unknown_failure',
-            analysis.error_message || 'OCR analysis failed',
-          );
-        }
-        const sv = analysis.verdict;
-        if (sv.outcome === 'subtitle') {
-          dropReact++;
-          return false;
-        }
-        set.footage.push({
+        const entry = await attachVideoOcr({
           url: furl,
           platform: e.platform,
           query: obj,
@@ -512,8 +477,12 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
           relevance: 'match',
           description,
           ...(src_url ? { source_url: src_url } : {}),
-          ...analysisFields(analysis as AnalyzedOcrAnalysis),
         });
+        if (entry.ocr_outcome === 'subtitle') {
+          dropReact++;
+          return false;
+        }
+        set.footage.push(entry);
         pv++;
         addedV++;
         return true;

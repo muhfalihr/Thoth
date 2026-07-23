@@ -26,6 +26,7 @@ export type AnalyzedOcrAnalysis = OcrAnalysis & {
 };
 
 export type PersistedOcrFields = {
+  ocr_schema_version: number;
   ocr_status: OcrStatus;
   ocr_model: string;
   ocr_analyzer_version: string;
@@ -38,14 +39,44 @@ export type PersistedOcrFields = {
   subtitle_blur: ClipVerdict['subtitle_blur'];
 };
 
-export function analysisFields(
-  analysis: AnalyzedOcrAnalysis,
-): PersistedOcrFields & { ocr_status: 'analyzed' } {
-  if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
-    throw new Error('analysisFields requires a successful analyzed OCR result');
+export class OcrAnalysisError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(`OCR analysis failed (${code}): ${message}`);
+    this.name = 'OcrAnalysisError';
+    this.code = code;
   }
+}
+
+export function requireAnalyzed(analysis: OcrAnalysis): AnalyzedOcrAnalysis {
+  if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
+    throw new OcrAnalysisError(
+      analysis.error_code || 'unknown_failure',
+      'OCR analysis did not complete successfully',
+    );
+  }
+  return analysis as AnalyzedOcrAnalysis;
+}
+
+export async function runRequiredOcr(
+  analyze: () => Promise<OcrAnalysis>,
+): Promise<AnalyzedOcrAnalysis> {
+  try {
+    return requireAnalyzed(await analyze());
+  } catch (error) {
+    if (error instanceof OcrAnalysisError) throw error;
+    throw new OcrAnalysisError('analysis_exception', 'OCR analysis raised an exception');
+  }
+}
+
+export function analysisFields(
+  rawAnalysis: OcrAnalysis,
+): PersistedOcrFields & { ocr_schema_version: 1; ocr_status: 'analyzed' } {
+  const analysis = requireAnalyzed(rawAnalysis);
   const { verdict } = analysis;
   return {
+    ocr_schema_version: analysis.schema_version,
     ocr_status: 'analyzed',
     ocr_model: analysis.model,
     ocr_analyzer_version: analysis.analyzer_version,

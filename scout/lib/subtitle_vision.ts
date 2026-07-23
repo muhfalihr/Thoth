@@ -9,8 +9,10 @@ import { novitaKey } from './env.ts';
 import type { OcrAnalysis } from './ocr_contract.ts';
 import {
   DEFAULT_OCR_MODEL,
+  OcrAnalysisError,
   OCR_ANALYZER_VERSION,
   OCR_SCHEMA_VERSION,
+  runRequiredOcr,
 } from './ocr_contract.ts';
 import { outPath } from './paths.ts';
 
@@ -847,30 +849,18 @@ export async function analyzeSubtitlesDetailed(
   return result;
 }
 
-export class OcrAnalysisError extends Error {
-  readonly code: string;
-
-  constructor(code: string, message: string) {
-    super(`OCR analysis failed (${code}): ${message}`);
-    this.name = 'OcrAnalysisError';
-    this.code = code;
-  }
-}
-
 export async function analyzeSubtitles(
   videoUrl: string,
   duration = 0,
   deps: OcrAnalysisDeps = {},
 ): Promise<ClipVerdict> {
-  const analysis = await analyzeSubtitlesDetailed(videoUrl, duration, deps);
-  if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
-    throw new OcrAnalysisError(
-      analysis.error_code || 'unknown_failure',
-      analysis.error_message || safeErrorMessage('unknown_failure'),
-    );
-  }
+  const analysis = await runRequiredOcr(
+    () => analyzeSubtitlesDetailed(videoUrl, duration, deps),
+  );
   return analysis.verdict;
 }
+
+export { OcrAnalysisError };
 
 export async function hasReactionSubtitle(videoUrl: string): Promise<boolean> {
   return (await analyzeSubtitles(videoUrl)).outcome === 'subtitle';

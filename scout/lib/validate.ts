@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import {
   DEFAULT_OCR_MODEL,
   OCR_ANALYZER_VERSION,
+  OCR_SCHEMA_VERSION,
 } from './ocr_contract.ts';
 import type { ContentSet } from './types.ts';
 import { okCrop } from './crop_guard.ts';
@@ -93,6 +94,11 @@ function lintVideoOcr(record, tag: string, kind: 'main' | 'footage', errors: str
     return;
   }
 
+  if (record.ocr_schema_version !== OCR_SCHEMA_VERSION) {
+    errors.push(
+      `${tag}: stale OCR schema "${String(record.ocr_schema_version ?? '')}".`,
+    );
+  }
   if (record.ocr_model !== DEFAULT_OCR_MODEL) {
     errors.push(`${tag}: stale OCR model "${String(record.ocr_model || '')}".`);
   }
@@ -167,6 +173,26 @@ function lintVideoOcr(record, tag: string, kind: 'main' | 'footage', errors: str
       errors.push(`${tag}: malformed subtitle_blur[${ri}] directive.`);
     }
   });
+
+  if (record.ocr_outcome === 'clean') {
+    if (record.trim_start !== 0 || record.mute_audio || record.subtitle_blur.length) {
+      errors.push(`${tag}: inconsistent clean directives.`);
+    }
+  } else if (record.ocr_outcome === 'cover') {
+    if (!(record.trim_start > 0)) {
+      errors.push(`${tag}: inconsistent cover trim directive.`);
+    }
+    if (record.mute_audio || record.subtitle_blur.length) {
+      errors.push(`${tag}: inconsistent cover subtitle directives.`);
+    }
+  } else if (record.ocr_outcome === 'subtitle') {
+    if (record.mute_audio !== true) {
+      errors.push(`${tag}: inconsistent subtitle mute directive.`);
+    }
+    if (!record.subtitle_blur.length) {
+      errors.push(`${tag}: inconsistent subtitle blur directive.`);
+    }
+  }
 }
 
 // Lint a content-set (single object {main,footage,comments} or an array of them).

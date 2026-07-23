@@ -2,7 +2,10 @@ import assert from 'node:assert';
 import {
   analysisFields,
   type AnalyzedOcrAnalysis,
+  OcrAnalysisError,
+  OCR_SCHEMA_VERSION,
   type OcrAnalysis,
+  runRequiredOcr,
 } from './ocr_contract.ts';
 import type { OcrBox } from './subtitle_vision.ts';
 import {
@@ -41,6 +44,7 @@ import {
     },
   };
   assert.deepEqual(analysisFields(analysis), {
+    ocr_schema_version: OCR_SCHEMA_VERSION,
     ocr_status: 'analyzed',
     ocr_model: 'deepseek/deepseek-ocr',
     ocr_analyzer_version: 'deepseek-ocr-v2',
@@ -67,7 +71,18 @@ import {
   };
   assert.throws(
     () => analysisFields(failed as AnalyzedOcrAnalysis),
-    /requires a successful analyzed OCR result/,
+    (error: unknown) =>
+      error instanceof OcrAnalysisError &&
+      error.code === 'incomplete_frame_coverage',
+  );
+  await assert.rejects(
+    () => runRequiredOcr(async () => {
+      throw new Error('ordinary failure with Bearer secret-token');
+    }),
+    (error: unknown) =>
+      error instanceof OcrAnalysisError &&
+      error.code === 'analysis_exception' &&
+      !error.message.includes('secret-token'),
   );
 }
 

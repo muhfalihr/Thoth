@@ -27,14 +27,8 @@ import { tiktokDirectUrl, downloadTiktok } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator } from '../lib/aggregators.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
-import {
-  analysisFields,
-  type AnalyzedOcrAnalysis,
-} from '../lib/ocr_contract.ts';
-import {
-  analyzeSubtitles,
-  analyzeSubtitlesDetailed,
-} from '../lib/subtitle_vision.ts';
+import { attachVideoOcr } from '../lib/ocr_content.ts';
+import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n) => {
@@ -1439,15 +1433,7 @@ async function setMainTo(set, orig, username) {
   if (set.main.is_video && set.main.url) {
     // Resolve to a direct stream first so the check works on YT/Twitter/IG/FB mains too (not just a
     // TikTok CDN url already resolved upstream); fall back to set.main.url for already-direct sources.
-    const analysis = await analyzeSubtitlesDetailed(
-      directStreamUrl(set.main.url) || set.main.url,
-    );
-    if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
-      throw new Error(
-        `Final main OCR analysis failed (${analysis.error_code || 'unknown_failure'})`,
-      );
-    }
-    Object.assign(set.main, analysisFields(analysis as AnalyzedOcrAnalysis));
+    await attachVideoOcr(set.main);
   }
 
   fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');

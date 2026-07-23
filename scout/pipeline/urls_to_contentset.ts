@@ -9,6 +9,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { attachVideoOcr } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
 import { tiktokOembed, youtubeOembed, matchesTopic } from '../lib/verify.ts';
 import { ui } from '../lib/ui.ts';
@@ -151,6 +152,7 @@ const handleOf = (u) =>
     duration_sec: 0,
     profile: { name: mainAuthor, handle: mainAuthor, followers: '', avatar_url: '' },
   };
+  await attachVideoOcr(mainObj);
 
   // Relevance gate for footage. VIDEO gated here (oEmbed caption); NON-VIDEO left "" and gated
   // later by enrich_image_paths (reads post text while cropping).
@@ -164,7 +166,15 @@ const handleOf = (u) =>
       relevance = cap && matchesTopic(cap, KEYWORDS, MODE) ? 'match' : 'unverified';
       if (relevance === 'match') matched++;
     }
-    footage.push({ url: e.url, platform: e.platform, query, is_video: isVid, relevance });
+    const entry = await attachVideoOcr({
+      url: e.url,
+      platform: e.platform,
+      query,
+      is_video: isVid,
+      relevance,
+    });
+    if (entry.ocr_outcome === 'subtitle') continue;
+    footage.push(entry);
   }
 
   const set = { main: mainObj, footage, comments: [] };

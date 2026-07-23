@@ -11,6 +11,7 @@ import { lintContentSet } from './validate.ts';
 
 const analyzed = (outcome: 'clean' | 'cover' | 'subtitle' = 'clean') => ({
   ocr_status: 'analyzed' as const,
+  ocr_schema_version: 1,
   ocr_model: DEFAULT_OCR_MODEL,
   ocr_analyzer_version: OCR_ANALYZER_VERSION,
   ocr_analyzed_at: '2026-07-23T00:00:00.000Z',
@@ -51,6 +52,14 @@ const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
 }
 
 {
+  const missingSchema = videoSet();
+  delete missingSchema.main.ocr_schema_version;
+  assert.match(errorText(missingSchema), /main.*stale.*schema/i);
+
+  const wrongSchema = videoSet();
+  wrongSchema.main.ocr_schema_version = 2;
+  assert.match(errorText(wrongSchema), /main.*stale.*schema/i);
+
   const wrongModel = videoSet();
   wrongModel.main.ocr_model = 'qwen/qwen3-vl';
   assert.match(errorText(wrongModel), /main.*stale.*model/i);
@@ -58,6 +67,35 @@ const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
   const wrongAnalyzer = videoSet();
   wrongAnalyzer.main.ocr_analyzer_version = 'deepseek-ocr-v1';
   assert.match(errorText(wrongAnalyzer), /main.*stale.*analyzer/i);
+}
+
+{
+  const subtitleWithoutMute = videoSet();
+  Object.assign(subtitleWithoutMute.main, analyzed('subtitle'), { mute_audio: false });
+  assert.match(errorText(subtitleWithoutMute), /main.*inconsistent.*subtitle.*mute/i);
+
+  const subtitleWithoutBlur = videoSet();
+  Object.assign(subtitleWithoutBlur.main, analyzed('subtitle'), { subtitle_blur: [] });
+  assert.match(errorText(subtitleWithoutBlur), /main.*inconsistent.*subtitle.*blur/i);
+
+  const cleanWithDirectives = videoSet();
+  Object.assign(cleanWithDirectives.main, analyzed(), {
+    trim_start: 1,
+    mute_audio: true,
+    subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 1, end: 2 }],
+  });
+  assert.match(errorText(cleanWithDirectives), /main.*inconsistent.*clean/i);
+
+  const coverWithoutTrim = videoSet();
+  Object.assign(coverWithoutTrim.main, analyzed('cover'), { trim_start: 0 });
+  assert.match(errorText(coverWithoutTrim), /main.*inconsistent.*cover.*trim/i);
+
+  const coverWithSubtitleDirectives = videoSet();
+  Object.assign(coverWithSubtitleDirectives.main, analyzed('cover'), {
+    mute_audio: true,
+    subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 1, end: 2 }],
+  });
+  assert.match(errorText(coverWithSubtitleDirectives), /main.*inconsistent.*cover.*subtitle/i);
 }
 
 {

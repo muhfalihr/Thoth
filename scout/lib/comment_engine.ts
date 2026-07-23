@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { connect, sleep } from './cdp.ts';
 import { normalizeLikes } from './comments.ts';
+import { attachVideoOcr } from './ocr_content.ts';
 import { CROPS_DIR, outPath } from './paths.ts';
 import { ui } from './ui.ts';
 import { okCrop } from './crop_guard.ts';
@@ -265,6 +266,7 @@ async function scrapeComments(opts) {
       }
     } catch (e) {}
   }
+  await attachVideoOcr(contentSet.main);
   fs.writeFileSync(OUT_JSON, JSON.stringify(contentSet, null, 2), 'utf8');
 
   console.log('\n' + ui.rule());
