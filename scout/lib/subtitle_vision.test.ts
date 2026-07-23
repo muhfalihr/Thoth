@@ -478,6 +478,26 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   assert.equal(separateTracks.subtitle_blur.length, 2);
 }
 
+// Simultaneous captions in disjoint horizontal tracks must not be enveloped
+// into one nearly full-width blur region.
+{
+  const simultaneousTracks = classifyOcrFrames([
+    f(1),
+    f(3,
+      b('LEFT ONE', .05, .72, .35, .80),
+      b('RIGHT ONE', .65, .72, .95, .80)),
+    f(5,
+      b('LEFT TWO', .06, .72, .36, .80),
+      b('RIGHT TWO', .64, .72, .94, .80)),
+  ], 8);
+  assert.equal(simultaneousTracks.subtitle_blur.length, 2);
+  assert.ok(simultaneousTracks.subtitle_blur.every((region) => region.w < .40));
+  assert.ok(simultaneousTracks.subtitle_blur.some((region) =>
+    region.x <= .05 && region.x + region.w <= .40));
+  assert.ok(simultaneousTracks.subtitle_blur.some((region) =>
+    region.x >= .60 && region.x + region.w >= .95));
+}
+
 // Two OCR lines in one frame become a single padded subtitle envelope.
 {
   const twoLine = classifyOcrFrames([

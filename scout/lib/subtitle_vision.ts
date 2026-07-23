@@ -163,6 +163,33 @@ function horizontalOverlap(a: OcrBox, b: OcrBox): number {
   return overlap / Math.max(.000001, Math.min(a.x1 - a.x0, b.x1 - b.x0));
 }
 
+function axisGap(a0: number, a1: number, b0: number, b1: number): number {
+  return Math.max(0, Math.max(a0, b0) - Math.min(a1, b1));
+}
+
+function groupSpatialBoxes(boxes: OcrBox[]): OcrBox[][] {
+  const groups: OcrBox[][] = [];
+  for (const box of boxes) {
+    const connected = groups.flatMap((group, index) => group.some((other) => {
+      const horizontalGap = axisGap(box.x0, box.x1, other.x0, other.x1);
+      const verticalGap = axisGap(box.y0, box.y1, other.y0, other.y1);
+      return verticalOverlap(box, other) >= .5 && horizontalGap <= .08 ||
+        horizontalOverlap(box, other) >= .3 && verticalGap <= .07;
+    }) ? [index] : []);
+    if (connected.length === 0) {
+      groups.push([box]);
+      continue;
+    }
+    const target = groups[connected[0]];
+    target.push(box);
+    for (let i = connected.length - 1; i >= 1; i--) {
+      target.push(...groups[connected[i]]);
+      groups.splice(connected[i], 1);
+    }
+  }
+  return groups;
+}
+
 function hasMultilineLayout(boxes: OcrBox[]): boolean {
   return boxes.some((box, index) => boxes.some((other, otherIndex) => {
     if (index === otherIndex) return false;
@@ -328,20 +355,30 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
     if (selectedByFrame[i].length === 0) continue;
     const start = i > 0 ? (filtered[i - 1].t + filtered[i].t) / 2 : 0;
     const end = i + 1 < filtered.length ? (filtered[i].t + filtered[i + 1].t) / 2 : duration;
-    windows.push({ start: Math.max(trimStart, start), end: Math.min(duration, end), region: envelope(selectedByFrame[i]) });
+    for (const group of groupSpatialBoxes(selectedByFrame[i])) {
+      windows.push({ start: Math.max(trimStart, start), end: Math.min(duration, end), region: envelope(group) });
+    }
   }
 
   const merged: Window[] = [];
   for (const window of windows) {
-    const previous = merged[merged.length - 1];
-    const sameTrack = previous && (
-      boxIou(previous.region, window.region) >= .6 ||
-      verticalOverlap(previous.region, window.region) >= .5 &&
-        horizontalOverlap(previous.region, window.region) >= .5
-    );
-    if (previous && window.start <= previous.end + 1e-6 && sameTrack) {
-      previous.end = Math.max(previous.end, window.end);
-      previous.region = unionEnvelope(previous.region, window.region);
+    let match: Window | undefined;
+    let matchScore = -1;
+    for (const candidate of merged) {
+      if (window.start > candidate.end + 1e-6) continue;
+      const vertical = verticalOverlap(candidate.region, window.region);
+      const horizontal = horizontalOverlap(candidate.region, window.region);
+      const iou = boxIou(candidate.region, window.region);
+      if (iou < .6 && (vertical < .5 || horizontal < .5)) continue;
+      const score = Math.max(iou, Math.min(vertical, horizontal));
+      if (score > matchScore) {
+        match = candidate;
+        matchScore = score;
+      }
+    }
+    if (match) {
+      match.end = Math.max(match.end, window.end);
+      match.region = unionEnvelope(match.region, window.region);
     } else {
       merged.push({ ...window });
     }
