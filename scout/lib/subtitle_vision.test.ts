@@ -498,6 +498,21 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
     region.x >= .60 && region.x + region.w >= .95));
 }
 
+// A broad track that splits into two simultaneous captions may be consumed by
+// only one of them; otherwise in-place union makes the second reuse it too.
+{
+  const splitTransition = classifyOcrFrames([
+    f(1),
+    f(3, b('BROAD CAPTION', .20, .72, .80, .80)),
+    f(5,
+      b('LEFT SPLIT', .10, .72, .40, .80),
+      b('RIGHT SPLIT', .60, .72, .90, .80)),
+  ], 8);
+  assert.equal(splitTransition.subtitle_blur.length, 2);
+  assert.ok(!splitTransition.subtitle_blur.some((region) =>
+    region.x <= .10 && region.x + region.w >= .90));
+}
+
 // Two OCR lines in one frame become a single padded subtitle envelope.
 {
   const twoLine = classifyOcrFrames([

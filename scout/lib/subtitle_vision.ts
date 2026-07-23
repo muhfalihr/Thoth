@@ -349,22 +349,34 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
       otherIndex !== frameIndex && multilineFrames[otherIndex] && other.boxes.some((otherBox) =>
         verticalOverlap(box, otherBox) >= .5)))));
 
-  type Window = { start: number; end: number; region: OcrBox };
+  type Window = { frameIndex: number; start: number; end: number; region: OcrBox };
   const windows: Window[] = [];
   for (let i = 0; i < selectedByFrame.length; i++) {
     if (selectedByFrame[i].length === 0) continue;
     const start = i > 0 ? (filtered[i - 1].t + filtered[i].t) / 2 : 0;
     const end = i + 1 < filtered.length ? (filtered[i].t + filtered[i + 1].t) / 2 : duration;
     for (const group of groupSpatialBoxes(selectedByFrame[i])) {
-      windows.push({ start: Math.max(trimStart, start), end: Math.min(duration, end), region: envelope(group) });
+      windows.push({
+        frameIndex: i,
+        start: Math.max(trimStart, start),
+        end: Math.min(duration, end),
+        region: envelope(group),
+      });
     }
   }
 
   const merged: Window[] = [];
+  const consumedTracks = new Set<Window>();
+  let currentFrameIndex = -1;
   for (const window of windows) {
+    if (window.frameIndex !== currentFrameIndex) {
+      consumedTracks.clear();
+      currentFrameIndex = window.frameIndex;
+    }
     let match: Window | undefined;
     let matchScore = -1;
     for (const candidate of merged) {
+      if (consumedTracks.has(candidate)) continue;
       if (window.start > candidate.end + 1e-6) continue;
       const vertical = verticalOverlap(candidate.region, window.region);
       const horizontal = horizontalOverlap(candidate.region, window.region);
@@ -379,8 +391,11 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
     if (match) {
       match.end = Math.max(match.end, window.end);
       match.region = unionEnvelope(match.region, window.region);
+      consumedTracks.add(match);
     } else {
-      merged.push({ ...window });
+      const created = { ...window };
+      merged.push(created);
+      consumedTracks.add(created);
     }
   }
   const subtitleBlur = merged.map(({ start, end, region }) => ({
