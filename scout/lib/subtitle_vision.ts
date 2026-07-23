@@ -1,18 +1,18 @@
-// subtitle_vision.ts — buang footage video yang punya CAPTION UCAPAN / overlay REACT (auto-caption
-// TikTok, subtitle react, face-cam/PiP). BIARKAN lower-third berita, logo, chyron. Best-effort:
-// frame/vision gagal → false (jangan buang; fallback ke text-gate build_footage).
+// Detect speech captions and intro headlines while preserving editorial
+// lower-thirds. Missing or incomplete OCR evidence is an explicit failure.
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { novitaKey } from './env.ts';
+import type { OcrAnalysis } from './ocr_contract.ts';
+import {
+  DEFAULT_OCR_MODEL,
+  OCR_ANALYZER_VERSION,
+  OCR_SCHEMA_VERSION,
+} from './ocr_contract.ts';
 import { outPath } from './paths.ts';
-
-const KEY = novitaKey();
-const MODEL = process.env.THOTH_SUBTITLE_OCR_MODEL || 'deepseek/deepseek-ocr';
-const FFMPEG = process.env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
-const FFPROBE = process.env.THOTH_FFPROBE || path.join(path.dirname(FFMPEG), 'ffprobe.exe');
 
 export type SubtitleRegion = { x: number; y: number; w: number; h: number; start?: number; end?: number };
 export type FrameDet = { t: number; present: boolean; region: { x0: number; y0: number; x1: number; y1: number } | null };
@@ -25,6 +25,14 @@ export type OcrBox = {
   y1: number;
 };
 export type OcrFrame = { t: number; boxes: OcrBox[]; error?: string };
+export type OcrAnalysisDeps = {
+  env?: Record<string, string | undefined>;
+  now?: () => Date;
+  probeDuration?: (video: string) => number;
+  frameDataUrl?: (video: string, t: number) => string | null;
+  ocrFrame?: (image: string) => Promise<{ boxes: OcrBox[]; error?: string }>;
+  retryCount?: number;
+};
 
 export function mainDirectiveFields(verdict: ClipVerdict): Pick<ClipVerdict, 'trim_start' | 'mute_audio' | 'subtitle_blur'> {
   return {
@@ -440,10 +448,11 @@ export function classifyClip(frames: FrameDet[], duration: number): ClipVerdict 
 }
 
 // Ambil 1 frame di detik t → data URL base64 JPEG. Gagal → null.
-function frameDataUrl(videoUrl: string, t: number): string | null {
+function frameDataUrl(videoUrl: string, t: number, env: Record<string, string | undefined>): string | null {
+  const ffmpeg = env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
   const tmp = path.join(os.tmpdir(), `subv_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
   try {
-    execFileSync(FFMPEG, ['-y', '-ss', String(t), '-i', videoUrl, '-frames:v', '1', '-vf', 'scale=960:-1', '-q:v', '4', tmp],
+    execFileSync(ffmpeg, ['-y', '-ss', String(t), '-i', videoUrl, '-frames:v', '1', '-vf', 'scale=960:-1', '-q:v', '4', tmp],
       { stdio: 'pipe', timeout: 30000 });
     const b64 = fs.readFileSync(tmp).toString('base64');
     return `data:image/jpeg;base64,${b64}`;
@@ -487,15 +496,20 @@ export function classifyVisionText(resp: string): boolean {
   try { return !!m && JSON.parse(m[0]).reject === true; } catch { return false; }
 }
 
-async function ocrFrame(img: string): Promise<{ boxes: OcrBox[]; error?: string }> {
+async function ocrFrame(
+  img: string,
+  apiKey: string,
+  model: string,
+  env: Record<string, string | undefined>,
+): Promise<{ boxes: OcrBox[]; error?: string }> {
   try {
-    const configuredTimeout = Number.parseInt(process.env.THOTH_SUBTITLE_OCR_TIMEOUT_MS || '20000', 10);
+    const configuredTimeout = Number.parseInt(env.THOTH_SUBTITLE_OCR_TIMEOUT_MS || '20000', 10);
     const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 20_000;
     const { response: resp, data } = await fetchJsonWithTimeout('https://api.novita.ai/v3/openai/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: MODEL, max_tokens: 4096, temperature: 0,
+        model, max_tokens: 4096, temperature: 0,
         messages: [{ role: 'user', content: [
           { type: 'text', text: '<|grounding|>OCR this image.' },
           { type: 'image_url', image_url: { url: img, detail: 'high' } },
@@ -511,9 +525,11 @@ async function ocrFrame(img: string): Promise<{ boxes: OcrBox[]; error?: string 
   }
 }
 
-function probeDuration(videoUrl: string): number {
+function probeDuration(videoUrl: string, env: Record<string, string | undefined>): number {
+  const ffmpeg = env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
+  const ffprobe = env.THOTH_FFPROBE || path.join(path.dirname(ffmpeg), 'ffprobe.exe');
   try {
-    const raw = execFileSync(FFPROBE, [
+    const raw = execFileSync(ffprobe, [
       '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', videoUrl,
     ], { encoding: 'utf8', stdio: 'pipe', timeout: 30000 });
     return parseDuration(raw);
@@ -528,33 +544,57 @@ function appendDiagnostics(record: unknown): void {
   } catch {}
 }
 
-// Multi-frame OCR analysis → independent trim + blur actions. OCR unavailable or
-// every request failed remains CLEAN so enrichment never blocks the pipeline.
-export async function analyzeSubtitles(videoUrl: string, duration = 0): Promise<ClipVerdict> {
-  const clean: ClipVerdict = { outcome: 'clean', trim_start: 0, mute_audio: false, subtitle_blur: [] };
-  if (!KEY || !videoUrl) return clean;
-  const resolvedDuration = duration > 0 ? duration : probeDuration(videoUrl);
-  const effectiveDuration = resolvedDuration > 0 ? resolvedDuration : 20;
-  const configuredMax = Number.parseInt(process.env.THOTH_SUBTITLE_OCR_MAX_FRAMES || '12', 10);
-  const maxFrames = Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 12;
-  const times = buildSampleTimes(effectiveDuration, maxFrames);
-  const frames: OcrFrame[] = [];
-  for (const t of times) {
-    const img = frameDataUrl(videoUrl, t);
-    if (!img) {
-      frames.push({ t, boxes: [], error: 'frame_extract' });
-      continue;
-    }
-    frames.push({ t, ...await ocrFrame(img) });
+// Multi-frame OCR analysis produces independent trim + blur actions. Runtime
+// failures remain explicit below; they are never converted into clean evidence.
+function safeErrorMessage(errorCode: string): string {
+  switch (errorCode) {
+    case 'missing_video_path': return 'Video path is required';
+    case 'missing_api_key': return 'OCR API key is not configured';
+    case 'duration_probe_failed': return 'Video duration could not be determined';
+    case 'incomplete_frame_coverage': return 'OCR did not analyze every scheduled frame';
+    default: return 'OCR analysis failed';
   }
-  const verdict = frames.some((frame) => !frame.error)
-    ? classifyOcrFrames(frames, effectiveDuration)
-    : clean;
-  const classified = buildClassifiedDiagnostics(frames, verdict);
+}
+
+function resultBase(
+  status: OcrAnalysis['ocr_status'],
+  model: string,
+  analyzedAt: string,
+  requestedFrames: number,
+  validFrames: number,
+): Omit<OcrAnalysis, 'verdict' | 'error_code' | 'error_message'> {
+  return {
+    schema_version: OCR_SCHEMA_VERSION,
+    ocr_status: status,
+    provider: 'novita',
+    model,
+    analyzer_version: OCR_ANALYZER_VERSION,
+    requested_frames: requestedFrames,
+    valid_frames: validFrames,
+    analyzed_at: analyzedAt,
+  };
+}
+
+function appendAnalysisDiagnostics(
+  videoUrl: string,
+  duration: number,
+  analysis: OcrAnalysis,
+  frames: OcrFrame[] = [],
+): void {
+  const classified = analysis.verdict
+    ? buildClassifiedDiagnostics(frames, analysis.verdict)
+    : frames.map((frame) => ({ t: frame.t, headline_boxes: [], subtitle_boxes: [] }));
   appendDiagnostics({
-    model: MODEL,
+    schema_version: analysis.schema_version,
+    ocr_status: analysis.ocr_status,
+    provider: analysis.provider,
+    model: analysis.model,
+    analyzer_version: analysis.analyzer_version,
+    analyzed_at: analysis.analyzed_at,
     video_id: hashVideoId(videoUrl),
-    duration: effectiveDuration,
+    duration,
+    requested_frames: analysis.requested_frames,
+    valid_frames: analysis.valid_frames,
     samples: frames.map(({ t, boxes, error }, index) => ({
       t,
       boxes,
@@ -562,9 +602,139 @@ export async function analyzeSubtitles(videoUrl: string, duration = 0): Promise<
       subtitle_boxes: classified[index].subtitle_boxes,
       ...(error ? { error } : {}),
     })),
-    verdict,
+    ...(analysis.verdict ? { verdict: analysis.verdict } : {}),
+    ...(analysis.error_code ? {
+      error_code: analysis.error_code,
+      error_message: analysis.error_message,
+    } : {}),
   });
-  return verdict;
+}
+
+function failedAnalysis(
+  videoUrl: string,
+  duration: number,
+  model: string,
+  analyzedAt: string,
+  errorCode: string,
+  requestedFrames = 0,
+  validFrames = 0,
+  frames: OcrFrame[] = [],
+): OcrAnalysis {
+  const result: OcrAnalysis = {
+    ...resultBase('failed', model, analyzedAt, requestedFrames, validFrames),
+    error_code: errorCode,
+    error_message: safeErrorMessage(errorCode),
+  };
+  appendAnalysisDiagnostics(videoUrl, duration, result, frames);
+  return result;
+}
+
+// Multi-frame OCR analysis. Missing configuration, extraction failures, and
+// incomplete model coverage are explicit failures; only complete coverage may
+// produce a clean verdict.
+export async function analyzeSubtitlesDetailed(
+  videoUrl: string,
+  duration = 0,
+  deps: OcrAnalysisDeps = {},
+): Promise<OcrAnalysis> {
+  const env = deps.env ?? process.env;
+  const analyzedAt = (deps.now ?? (() => new Date()))().toISOString();
+  const model = env.THOTH_SUBTITLE_OCR_MODEL?.trim() || DEFAULT_OCR_MODEL;
+  const apiKey = deps.env
+    ? env.THOTH_NOVITA_API_KEY?.trim() || ''
+    : novitaKey();
+
+  if (!videoUrl) {
+    return failedAnalysis(videoUrl, duration, model, analyzedAt, 'missing_video_path');
+  }
+  if (!apiKey) {
+    return failedAnalysis(videoUrl, duration, model, analyzedAt, 'missing_api_key');
+  }
+
+  const resolvedDuration = duration > 0
+    ? duration
+    : (deps.probeDuration ?? ((video) => probeDuration(video, env)))(videoUrl);
+  if (!Number.isFinite(resolvedDuration) || resolvedDuration <= 0) {
+    return failedAnalysis(videoUrl, duration, model, analyzedAt, 'duration_probe_failed');
+  }
+
+  const configuredMax = Number.parseInt(env.THOTH_SUBTITLE_OCR_MAX_FRAMES || '12', 10);
+  const maxFrames = Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 12;
+  const times = buildSampleTimes(resolvedDuration, maxFrames);
+  const extractFrame = deps.frameDataUrl ?? ((video, t) => frameDataUrl(video, t, env));
+  const analyzeFrame = deps.ocrFrame ?? ((image) => ocrFrame(image, apiKey, model, env));
+  const retryCount = Number.isFinite(deps.retryCount) && deps.retryCount! >= 0
+    ? Math.floor(deps.retryCount!)
+    : 2;
+  const frames: OcrFrame[] = [];
+
+  for (const t of times) {
+    const image = extractFrame(videoUrl, t);
+    if (!image) {
+      frames.push({ t, boxes: [], error: 'frame_extract' });
+      continue;
+    }
+    let frameResult: { boxes: OcrBox[]; error?: string } = { boxes: [], error: 'ocr_failed' };
+    for (let attempt = 0; attempt <= retryCount; attempt++) {
+      try {
+        frameResult = await analyzeFrame(image);
+      } catch (error) {
+        frameResult = {
+          boxes: [],
+          error: error instanceof Error ? error.name : 'unknown_error',
+        };
+      }
+      if (!frameResult.error) break;
+    }
+    frames.push({ t, ...frameResult });
+  }
+
+  const validFrames = frames.filter((frame) => !frame.error).length;
+  if (validFrames !== times.length) {
+    return failedAnalysis(
+      videoUrl,
+      resolvedDuration,
+      model,
+      analyzedAt,
+      'incomplete_frame_coverage',
+      times.length,
+      validFrames,
+      frames,
+    );
+  }
+
+  const verdict = classifyOcrFrames(frames, resolvedDuration);
+  const result: OcrAnalysis = {
+    ...resultBase('analyzed', model, analyzedAt, times.length, validFrames),
+    verdict,
+  };
+  appendAnalysisDiagnostics(videoUrl, resolvedDuration, result, frames);
+  return result;
+}
+
+export class OcrAnalysisError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(`OCR analysis failed (${code}): ${message}`);
+    this.name = 'OcrAnalysisError';
+    this.code = code;
+  }
+}
+
+export async function analyzeSubtitles(
+  videoUrl: string,
+  duration = 0,
+  deps: OcrAnalysisDeps = {},
+): Promise<ClipVerdict> {
+  const analysis = await analyzeSubtitlesDetailed(videoUrl, duration, deps);
+  if (analysis.ocr_status !== 'analyzed' || !analysis.verdict) {
+    throw new OcrAnalysisError(
+      analysis.error_code || 'unknown_failure',
+      analysis.error_message || safeErrorMessage('unknown_failure'),
+    );
+  }
+  return analysis.verdict;
 }
 
 export async function hasReactionSubtitle(videoUrl: string): Promise<boolean> {

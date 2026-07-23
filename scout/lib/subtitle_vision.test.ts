@@ -1,12 +1,15 @@
 import assert from 'node:assert';
+import type { OcrBox } from './subtitle_vision.ts';
 import {
-  buildSampleTimes,
+  analyzeSubtitles,
+  analyzeSubtitlesDetailed,
   buildClassifiedDiagnostics,
+  buildSampleTimes,
+  classifyClip,
   classifyOcrFrames,
   classifyVisionText,
-  classifyClip,
-  hashVideoId,
   fetchJsonWithTimeout,
+  hashVideoId,
   mainDirectiveFields,
   normalizeRegion,
   parseDeepSeekOcr,
@@ -14,7 +17,71 @@ import {
   parseOcrResponseContent,
   parseVisionFrame,
 } from './subtitle_vision.ts';
-import type { OcrBox } from './subtitle_vision.ts';
+
+{
+  const analyzedAt = new Date('2026-07-23T00:00:00Z');
+  const missingKey = await analyzeSubtitlesDetailed('C:/video.mp4', 10, {
+    env: {},
+    now: () => analyzedAt,
+  });
+  assert.equal(missingKey.ocr_status, 'failed');
+  assert.equal(missingKey.error_code, 'missing_api_key');
+  assert.equal(missingKey.error_message, 'OCR API key is not configured');
+  assert.equal(missingKey.analyzed_at, analyzedAt.toISOString());
+  assert.equal(missingKey.verdict, undefined);
+
+  const noDuration = await analyzeSubtitlesDetailed('C:/video.mp4', 0, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    probeDuration: () => 0,
+  });
+  assert.equal(noDuration.ocr_status, 'failed');
+  assert.equal(noDuration.error_code, 'duration_probe_failed');
+  assert.equal(noDuration.verdict, undefined);
+
+  const clean = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: (_video, t) => `frame:${t}`,
+    ocrFrame: async () => ({ boxes: [] }),
+  });
+  assert.equal(clean.ocr_status, 'analyzed');
+  assert.equal(clean.verdict?.outcome, 'clean');
+  assert.equal(clean.valid_frames, clean.requested_frames);
+
+  const partial = await analyzeSubtitlesDetailed('C:/video.mp4', 4, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: (_video, t) => `frame:${t}`,
+    ocrFrame: async (image) => image === 'frame:3'
+      ? { boxes: [], error: 'TimeoutError' }
+      : { boxes: [] },
+    retryCount: 1,
+  });
+  assert.equal(partial.ocr_status, 'failed');
+  assert.equal(partial.error_code, 'incomplete_frame_coverage');
+  assert.equal(partial.valid_frames, partial.requested_frames - 1);
+  assert.equal(partial.verdict, undefined);
+
+  let thrownAttempts = 0;
+  const thrown = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: () => 'frame',
+    ocrFrame: async () => {
+      thrownAttempts++;
+      throw new Error('Bearer private-test-token');
+    },
+    retryCount: 1,
+  });
+  assert.equal(thrown.ocr_status, 'failed');
+  assert.equal(thrown.error_code, 'incomplete_frame_coverage');
+  assert.equal(thrownAttempts, 2);
+  assert.ok(!JSON.stringify(thrown).includes('private-test-token'));
+
+  await assert.rejects(
+    () => analyzeSubtitles('', 0, { env: { THOTH_NOVITA_API_KEY: 'test' } }),
+    (error: any) => error?.name === 'OcrAnalysisError' &&
+      error?.code === 'missing_video_path' &&
+      !JSON.stringify(error).includes('test'),
+  );
+}
 
 assert.match(hashVideoId('https://example.test/private?a=secret'), /^[a-f0-9]{16}$/);
 assert.equal(parseDuration('26.935011\n'), 26.935011);
