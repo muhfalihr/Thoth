@@ -325,6 +325,32 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   assert.ok(hybrid.subtitle_blur.every((r) => r.y > .70));
 }
 
+// Intro headline geometry must never leak into subtitle diagnostics, while a
+// later moving/growing subtitle track uses extrema from every constituent frame.
+{
+  const frames = [
+    f(.5, b('INTRO HEADLINE', .08, .40, .92, .52)),
+    f(2, b('INTRO HEADLINE', .06, .39, .94, .53)),
+    f(4, b('spoken one', .24, .74, .70, .80)),
+    f(6, b('spoken two', .12, .72, .88, .84)),
+  ];
+  const result = classifyOcrFrames(frames, 10);
+  const diagnostics = buildClassifiedDiagnostics(frames, result);
+
+  assert.equal(result.trim_start, 3);
+  assert.ok(result.subtitle_blur.every((region) => region.y > .68));
+  assert.ok(diagnostics.every((frame) =>
+    frame.subtitle_boxes.every((box) => box.text !== 'INTRO HEADLINE')));
+
+  const merged = result.subtitle_blur.find((region) =>
+    region.start! <= 4 && region.end! >= 6);
+  assert.ok(merged, 'moving/growing subtitle frames should share one temporal window');
+  assert.ok(merged.x <= .12);
+  assert.ok(merged.x + merged.w >= .88);
+  assert.ok(merged.y <= .72);
+  assert.ok(merged.y + merged.h >= .84);
+}
+
 // An unreadable sample is not evidence that a tracked headline disappeared.
 {
   const partialFailure = classifyOcrFrames([
@@ -426,7 +452,8 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   assert.equal(cover.mute_audio, false);
 }
 
-// Moving captions remain one positional band but preserve per-window geometry.
+// Moving captions in one positional band share a window whose geometry follows
+// the full track rather than the first frame.
 {
   const subtitle = classifyOcrFrames([
     f(1),
@@ -436,8 +463,19 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   ], 10);
   assert.equal(subtitle.outcome, 'subtitle');
   assert.equal(subtitle.trim_start, 0);
-  assert.ok(subtitle.subtitle_blur.length >= 2);
-  assert.ok(subtitle.subtitle_blur.some((r) => r.x < .15));
+  assert.equal(subtitle.subtitle_blur.length, 1);
+  assert.ok(subtitle.subtitle_blur[0].x < .10);
+  assert.ok(subtitle.subtitle_blur[0].x + subtitle.subtitle_blur[0].w > .85);
+}
+
+// Temporally adjacent text in disjoint horizontal tracks stays separate.
+{
+  const separateTracks = classifyOcrFrames([
+    f(1),
+    f(3, b('LEFT CAPTION', .05, .72, .35, .80)),
+    f(5, b('RIGHT CAPTION', .65, .72, .95, .80)),
+  ], 8);
+  assert.equal(separateTracks.subtitle_blur.length, 2);
 }
 
 // Two OCR lines in one frame become a single padded subtitle envelope.

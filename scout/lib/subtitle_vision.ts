@@ -334,7 +334,12 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
   const merged: Window[] = [];
   for (const window of windows) {
     const previous = merged[merged.length - 1];
-    if (previous && window.start <= previous.end + 1e-6 && boxIou(previous.region, window.region) >= .6) {
+    const sameTrack = previous && (
+      boxIou(previous.region, window.region) >= .6 ||
+      verticalOverlap(previous.region, window.region) >= .5 &&
+        horizontalOverlap(previous.region, window.region) >= .5
+    );
+    if (previous && window.start <= previous.end + 1e-6 && sameTrack) {
       previous.end = Math.max(previous.end, window.end);
       previous.region = unionEnvelope(previous.region, window.region);
     } else {
