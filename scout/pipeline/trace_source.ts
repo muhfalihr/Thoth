@@ -27,7 +27,10 @@ import { tiktokDirectUrl, downloadTiktok } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator } from '../lib/aggregators.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
-import { attachVideoOcr } from '../lib/ocr_content.ts';
+import {
+  attachVideoOcr,
+  shouldAttachVideoOcr,
+} from '../lib/ocr_content.ts';
 import { analyzeSubtitles } from '../lib/subtitle_vision.ts';
 
 const args = process.argv.slice(2);
@@ -1430,7 +1433,7 @@ async function setMainTo(set, orig, username) {
   // Subtitle-vision fallback on the FINALIZED main (post any CDN-URL resolution above): a cover/headline
   // intro gets trimmed; continuous burned-in subtitles (no better source existed → ranking penalty above
   // couldn't avoid it) get muted + blur-censored at render instead of silently shipping the reaction upload.
-  if (set.main.is_video && set.main.url) {
+  if (shouldAttachVideoOcr(set.main) && set.main.url) {
     // Resolve to a direct stream first so the check works on YT/Twitter/IG/FB mains too (not just a
     // TikTok CDN url already resolved upstream); fall back to set.main.url for already-direct sources.
     await attachVideoOcr(set.main);

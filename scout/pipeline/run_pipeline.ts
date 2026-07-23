@@ -19,6 +19,7 @@ import { connect, run, sleep } from '../lib/cdp.ts';
 import { tiktokOembed, youtubeOembed } from '../lib/verify.ts';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
+import { runPipelineStep } from './run_pipeline_step.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n, d) => {
@@ -95,17 +96,20 @@ async function fetchCaption(url, platform) {
   return '';
 }
 
-// Run a sub-step; tolerate non-zero exit (steps degrade gracefully + we validate at the end).
-function step(label, script, scriptArgs) {
+// Required safety steps abort the command; optional enrichment may degrade gracefully.
+function step(label, script, scriptArgs, required = false) {
   ui.stage(label);
-  try {
-    execFileSync(process.execPath, [here(script), ...scriptArgs], {
-      stdio: 'inherit',
-      timeout: 600000,
-    });
-  } catch (e) {
-    console.log(ui.amber(`  ${ui.WARN} ${label} exit≠0 — lanjut`));
-  }
+  return runPipelineStep(
+    { label, required },
+    {
+      execute: () =>
+        execFileSync(process.execPath, [here(script), ...scriptArgs], {
+          stdio: 'inherit',
+          timeout: 600000,
+        }),
+      warn: (message) => console.log(ui.amber(`  ${ui.WARN} ${message}`)),
+    },
+  );
 }
 
 run(async () => {
@@ -137,7 +141,7 @@ run(async () => {
   // can mine the comments too (names/brands often surface there). extract_figures runs AFTER build_footage
   // so it can also read footage descriptions — named subjects (e.g. "Sara Wijayanto", "MVP Pictures")
   // often surface there even when the topic/main caption is just a teaser.
-  step('trace_source (sumber/main)', 'trace_source.ts', [file]);
+  step('trace_source (sumber/main)', 'trace_source.ts', [file], true);
   if (!NO_COMMENTS)
     step('collect_comments (multi-sumber)', 'collect_comments.ts', [
       file,
@@ -154,7 +158,7 @@ run(async () => {
   step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file]);
 
   // 6) Validate + summary.
-  step('validate', 'validate_content_set.ts', [file]);
+  step('validate', 'validate_content_set.ts', [file], true);
 
   try {
     const s = JSON.parse(fs.readFileSync(file, 'utf8'));

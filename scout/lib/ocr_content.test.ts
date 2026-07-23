@@ -6,7 +6,20 @@ import {
   OCR_SCHEMA_VERSION,
   type OcrAnalysis,
 } from './ocr_contract.ts';
-import { attachVideoOcr } from './ocr_content.ts';
+import {
+  attachVideoOcr,
+  shouldAttachVideoOcr,
+} from './ocr_content.ts';
+
+assert.equal(shouldAttachVideoOcr({ url: 'https://example.test/legacy.mp4' }), true);
+assert.equal(
+  shouldAttachVideoOcr({ url: 'https://example.test/video.mp4', is_video: true }),
+  true,
+);
+assert.equal(
+  shouldAttachVideoOcr({ url: 'https://example.test/still', is_video: false }),
+  false,
+);
 
 const analyzed: OcrAnalysis = {
   schema_version: OCR_SCHEMA_VERSION,

@@ -20,11 +20,15 @@ type AttachVideoOcrDeps = {
   project?: (analysis: OcrAnalysis) => PersistedOcrFields;
 };
 
+export function shouldAttachVideoOcr(record: VideoRecord): boolean {
+  return record.is_video !== false;
+}
+
 export async function attachVideoOcr<T extends VideoRecord>(
   record: T,
   deps: AttachVideoOcrDeps = {},
 ): Promise<T & Partial<PersistedOcrFields>> {
-  if (record.is_video === false) return record;
+  if (!shouldAttachVideoOcr(record)) return record;
 
   try {
     const analysis = await runRequiredOcr(async () => {
