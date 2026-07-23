@@ -75,6 +75,65 @@ import {
   assert.equal(thrownAttempts, 2);
   assert.ok(!JSON.stringify(thrown).includes('private-test-token'));
 
+  let sanitizedDiagnostic: unknown;
+  const secretError = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: () => 'frame',
+    ocrFrame: async () => ({
+      boxes: [],
+      error: 'Authorization: Bearer private-test-token',
+    }),
+    retryCount: 0,
+    appendDiagnostics: (record) => {
+      sanitizedDiagnostic = record;
+    },
+  });
+  assert.equal(secretError.ocr_status, 'failed');
+  const serializedDiagnostic = JSON.stringify(sanitizedDiagnostic);
+  assert.match(serializedDiagnostic, /"error":"ocr_request_failed"/);
+  assert.doesNotMatch(serializedDiagnostic, /Authorization|Bearer|private-test-token/i);
+
+  let extractionDiagnostic: unknown;
+  const extractionError = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: () => {
+      throw new Error('Authorization: Bearer private-extraction-token');
+    },
+    ocrFrame: async () => ({ boxes: [] }),
+    retryCount: 0,
+    appendDiagnostics: (record) => {
+      extractionDiagnostic = record;
+    },
+  });
+  assert.equal(extractionError.ocr_status, 'failed');
+  const serializedExtractionDiagnostic = JSON.stringify(extractionDiagnostic);
+  assert.match(serializedExtractionDiagnostic, /"error":"frame_extract"/);
+  assert.doesNotMatch(
+    serializedExtractionDiagnostic,
+    /Authorization|Bearer|private-extraction-token/i,
+  );
+
+  let retryAttempts = 0;
+  let retryDiagnostic: any;
+  const retried = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: () => 'frame',
+    ocrFrame: async () => {
+      retryAttempts++;
+      return retryAttempts === 1
+        ? { boxes: [], error: 'TimeoutError' }
+        : { boxes: [] };
+    },
+    retryCount: 2,
+    appendDiagnostics: (record) => {
+      retryDiagnostic = record;
+    },
+  });
+  assert.equal(retried.ocr_status, 'analyzed');
+  assert.equal(retryAttempts, 2);
+  assert.equal(retryDiagnostic.configured_retry_count, 2);
+  assert.equal(retryDiagnostic.actual_retry_count, 1);
+
   await assert.rejects(
     () => analyzeSubtitles('', 0, { env: { THOTH_NOVITA_API_KEY: 'test' } }),
     (error: any) => error?.name === 'OcrAnalysisError' &&

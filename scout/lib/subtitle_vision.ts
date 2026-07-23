@@ -32,6 +32,7 @@ export type OcrAnalysisDeps = {
   frameDataUrl?: (video: string, t: number) => string | null;
   ocrFrame?: (image: string) => Promise<{ boxes: OcrBox[]; error?: string }>;
   retryCount?: number;
+  appendDiagnostics?: (record: unknown) => void;
 };
 
 export function mainDirectiveFields(verdict: ClipVerdict): Pick<ClipVerdict, 'trim_start' | 'mute_audio' | 'subtitle_blur'> {
@@ -580,11 +581,13 @@ function appendAnalysisDiagnostics(
   duration: number,
   analysis: OcrAnalysis,
   frames: OcrFrame[] = [],
+  writeDiagnostics: (record: unknown) => void = appendDiagnostics,
+  retryCounts = { configured: 0, actual: 0 },
 ): void {
   const classified = analysis.verdict
     ? buildClassifiedDiagnostics(frames, analysis.verdict)
     : frames.map((frame) => ({ t: frame.t, headline_boxes: [], subtitle_boxes: [] }));
-  appendDiagnostics({
+  writeDiagnostics({
     schema_version: analysis.schema_version,
     ocr_status: analysis.ocr_status,
     provider: analysis.provider,
@@ -595,6 +598,8 @@ function appendAnalysisDiagnostics(
     duration,
     requested_frames: analysis.requested_frames,
     valid_frames: analysis.valid_frames,
+    configured_retry_count: retryCounts.configured,
+    actual_retry_count: retryCounts.actual,
     samples: frames.map(({ t, boxes, error }, index) => ({
       t,
       boxes,
@@ -619,14 +624,34 @@ function failedAnalysis(
   requestedFrames = 0,
   validFrames = 0,
   frames: OcrFrame[] = [],
+  writeDiagnostics: (record: unknown) => void = appendDiagnostics,
+  retryCounts = { configured: 0, actual: 0 },
 ): OcrAnalysis {
   const result: OcrAnalysis = {
     ...resultBase('failed', model, analyzedAt, requestedFrames, validFrames),
     error_code: errorCode,
     error_message: safeErrorMessage(errorCode),
   };
-  appendAnalysisDiagnostics(videoUrl, duration, result, frames);
+  appendAnalysisDiagnostics(videoUrl, duration, result, frames, writeDiagnostics, retryCounts);
   return result;
+}
+
+function safeFrameErrorCode(error: unknown): string {
+  const raw = error instanceof Error
+    ? error.name
+    : typeof error === 'string'
+      ? error
+      : '';
+  if (/^http_\d{3}$/i.test(raw)) return 'http_error';
+  switch (raw.toLowerCase()) {
+    case 'malformed_content': return 'malformed_content';
+    case 'timeouterror':
+    case 'timeout': return 'timeout';
+    case 'aborterror':
+    case 'request_aborted': return 'request_aborted';
+    case 'frame_extract': return 'frame_extract';
+    default: return 'ocr_request_failed';
+  }
 }
 
 // Multi-frame OCR analysis. Missing configuration, extraction failures, and
@@ -638,24 +663,61 @@ export async function analyzeSubtitlesDetailed(
   deps: OcrAnalysisDeps = {},
 ): Promise<OcrAnalysis> {
   const env = deps.env ?? process.env;
+  const writeDiagnostics = deps.appendDiagnostics ?? appendDiagnostics;
   const analyzedAt = (deps.now ?? (() => new Date()))().toISOString();
   const model = env.THOTH_SUBTITLE_OCR_MODEL?.trim() || DEFAULT_OCR_MODEL;
   const apiKey = deps.env
     ? env.THOTH_NOVITA_API_KEY?.trim() || ''
     : novitaKey();
+  const retryCount = Number.isFinite(deps.retryCount) && deps.retryCount! >= 0
+    ? Math.floor(deps.retryCount!)
+    : 2;
 
   if (!videoUrl) {
-    return failedAnalysis(videoUrl, duration, model, analyzedAt, 'missing_video_path');
+    return failedAnalysis(
+      videoUrl,
+      duration,
+      model,
+      analyzedAt,
+      'missing_video_path',
+      0,
+      0,
+      [],
+      writeDiagnostics,
+      { configured: retryCount, actual: 0 },
+    );
   }
   if (!apiKey) {
-    return failedAnalysis(videoUrl, duration, model, analyzedAt, 'missing_api_key');
+    return failedAnalysis(
+      videoUrl,
+      duration,
+      model,
+      analyzedAt,
+      'missing_api_key',
+      0,
+      0,
+      [],
+      writeDiagnostics,
+      { configured: retryCount, actual: 0 },
+    );
   }
 
   const resolvedDuration = duration > 0
     ? duration
     : (deps.probeDuration ?? ((video) => probeDuration(video, env)))(videoUrl);
   if (!Number.isFinite(resolvedDuration) || resolvedDuration <= 0) {
-    return failedAnalysis(videoUrl, duration, model, analyzedAt, 'duration_probe_failed');
+    return failedAnalysis(
+      videoUrl,
+      duration,
+      model,
+      analyzedAt,
+      'duration_probe_failed',
+      0,
+      0,
+      [],
+      writeDiagnostics,
+      { configured: retryCount, actual: 0 },
+    );
   }
 
   const configuredMax = Number.parseInt(env.THOTH_SUBTITLE_OCR_MAX_FRAMES || '12', 10);
@@ -663,25 +725,32 @@ export async function analyzeSubtitlesDetailed(
   const times = buildSampleTimes(resolvedDuration, maxFrames);
   const extractFrame = deps.frameDataUrl ?? ((video, t) => frameDataUrl(video, t, env));
   const analyzeFrame = deps.ocrFrame ?? ((image) => ocrFrame(image, apiKey, model, env));
-  const retryCount = Number.isFinite(deps.retryCount) && deps.retryCount! >= 0
-    ? Math.floor(deps.retryCount!)
-    : 2;
   const frames: OcrFrame[] = [];
+  let actualRetryCount = 0;
 
   for (const t of times) {
-    const image = extractFrame(videoUrl, t);
+    let image: string | null;
+    try {
+      image = extractFrame(videoUrl, t);
+    } catch {
+      image = null;
+    }
     if (!image) {
       frames.push({ t, boxes: [], error: 'frame_extract' });
       continue;
     }
     let frameResult: { boxes: OcrBox[]; error?: string } = { boxes: [], error: 'ocr_failed' };
     for (let attempt = 0; attempt <= retryCount; attempt++) {
+      if (attempt > 0) actualRetryCount++;
       try {
-        frameResult = await analyzeFrame(image);
+        const response = await analyzeFrame(image);
+        frameResult = response.error
+          ? { boxes: [], error: safeFrameErrorCode(response.error) }
+          : response;
       } catch (error) {
         frameResult = {
           boxes: [],
-          error: error instanceof Error ? error.name : 'unknown_error',
+          error: safeFrameErrorCode(error),
         };
       }
       if (!frameResult.error) break;
@@ -700,6 +769,8 @@ export async function analyzeSubtitlesDetailed(
       times.length,
       validFrames,
       frames,
+      writeDiagnostics,
+      { configured: retryCount, actual: actualRetryCount },
     );
   }
 
@@ -708,7 +779,14 @@ export async function analyzeSubtitlesDetailed(
     ...resultBase('analyzed', model, analyzedAt, times.length, validFrames),
     verdict,
   };
-  appendAnalysisDiagnostics(videoUrl, resolvedDuration, result, frames);
+  appendAnalysisDiagnostics(
+    videoUrl,
+    resolvedDuration,
+    result,
+    frames,
+    writeDiagnostics,
+    { configured: retryCount, actual: actualRetryCount },
+  );
   return result;
 }
 
