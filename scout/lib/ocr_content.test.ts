@@ -1,29 +1,23 @@
 import assert from 'node:assert';
 import {
-  analysisFields,
-  DEFAULT_OCR_MODEL,
-  OcrAnalysisError,
-  OCR_ANALYZER_VERSION,
-  OCR_SCHEMA_VERSION,
-  type AnalyzedOcrAnalysis,
-  type PersistedOcrFields,
-} from './ocr_contract.ts';
-import {
   attachVideoOcr,
   carryCurrentOcrMetadata,
   clearVideoOcrMetadata,
   shouldAttachVideoOcr,
 } from './ocr_content.ts';
+import {
+  type AnalyzedOcrAnalysis,
+  analysisFields,
+  DEFAULT_OCR_MODEL,
+  OCR_ANALYZER_VERSION,
+  OCR_SCHEMA_VERSION,
+  OcrAnalysisError,
+  type PersistedOcrFields,
+} from './ocr_contract.ts';
 
 assert.equal(shouldAttachVideoOcr({ url: 'https://example.test/legacy.mp4' }), true);
-assert.equal(
-  shouldAttachVideoOcr({ url: 'https://example.test/video.mp4', is_video: true }),
-  true,
-);
-assert.equal(
-  shouldAttachVideoOcr({ url: 'https://example.test/still', is_video: false }),
-  false,
-);
+assert.equal(shouldAttachVideoOcr({ url: 'https://example.test/video.mp4', is_video: true }), true);
+assert.equal(shouldAttachVideoOcr({ url: 'https://example.test/still', is_video: false }), false);
 
 const analyzed: AnalyzedOcrAnalysis = {
   schema_version: OCR_SCHEMA_VERSION,

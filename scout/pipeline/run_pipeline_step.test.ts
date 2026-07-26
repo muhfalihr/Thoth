@@ -1,8 +1,5 @@
 import assert from 'node:assert';
-import {
-  PipelineStepError,
-  runPipelineStep,
-} from './run_pipeline_step.ts';
+import { PipelineStepError, runPipelineStep } from './run_pipeline_step.ts';
 
 {
   let warned = false;
@@ -19,9 +16,7 @@ import {
           },
         },
       ),
-    (error: unknown) =>
-      error instanceof PipelineStepError &&
-      error.step === 'trace_source',
+    (error: unknown) => error instanceof PipelineStepError && error.step === 'trace_source',
   );
   assert.equal(warned, false);
 }
@@ -42,9 +37,7 @@ assert.throws(
         },
       },
     ),
-  (error: unknown) =>
-    error instanceof PipelineStepError &&
-    error.step === 'build_footage',
+  (error: unknown) => error instanceof PipelineStepError && error.step === 'build_footage',
 );
 
 assert.throws(

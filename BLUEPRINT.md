@@ -28,7 +28,7 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
 | **Profile card + nama di atas kepala (Beat-2)** | ✅ 100% | `edit/profile_card.rs` render kartu (avatar inisial + nama + @handle + stats) & nama raksasa di atas kepala via drawbox/drawtext (tanpa input/aset); LLM isi `character_name/handle/stats` (schema); `[profile_card]` opt-in; divalidasi render+frame. Stats hanya bila disebut transcript (no fabrikasi). ✅ **Avatar foto ASLI + handle/follower faktual via scout** (`content_profile.json` → override LLM, composite foto via `ImageBadgeCue`) — entry (v) |
 | **Callout angka + panah (Beat-3)** | ✅ 100% | `edit/callout.rs` render angka di kotak accent + glyph panah ◀▶▲▼ via drawtext (tanpa aset PNG); LLM isi `callouts[]` (text/at/posisi/arah) di schema; `[callout]` opt-in; divalidasi render+frame visual |
 | **Animelorian composite mode** | ✅ 100% | Base kanvas kertas hitam kusut + footage sbg KARTU tengah + montase (cut main↔enrichment) + hook full-frame. `AnimelorianConfig` (`[animelorian]` opt-in); `build_video_filter` branch paper-canvas; `OverlayStyle::FootageCard` + arm di `build_overlay_filter` (enable-window, `shortest=1` utk bound paper loop); enrichment pool drive cutaway card. Divalidasi full-pipeline + frame visual (hook immersive, konten paper+card, montage cut bersih). ✅ **SP2 (2026-07-22) — Narration-Aligned Full-Frame Footage:** footage TIDAK lagi menimpa kartu main. Main card di-*hide* (`enable='not(between…)'` gate di `build_video_filter`, param `main_hide`) selama window footage → cut bersih ke footage di kanvas kertas, bukan overlay. Footage aspect-aware: 9:16/portrait → **cover-crop** full-frame; non-9:16 → **contain** natural + **drop-shadow** di bawah (branch di `build_footage_card_overlay` + `FootageCardCue.cover`, klasifikasi `overlay::cover_from_dims`/`footage_is_cover` via ffprobe, degrade→contain). Peletakan **topic-anchored**: window diturunkan dari timeline kalimat narasi (`narration_sentences` split by punctuation/gap>600ms) + `footage_desc` query-first, tetap embedding-match ke `placement_min_similarity` floor; fallback ke fixed-window bila tak ada word timings. `edit/overlay.rs`, `edit/ffmpeg.rs`, `edit/service.rs` |
-| **Subtitle-aware footage + fallback censor (SP3)** | ✅ 100% | Novita `deepseek/deepseek-ocr` grounding bbox + adaptive sampling menggantikan Qwen pada detector ini. Temporal tracker memisahkan headline intro, subtitle berubah, dan watermark stabil; hasil hybrid membawa `trim_start` **bersamaan** dengan `mute_audio` + envelope bbox per frame. Rust `source_timing` memproyeksikan window source→output, mengulangnya saat clean-loop, dan filter modulo membuang headline pada **setiap** siklus video/audio. Clip fallback juga clamp sesudah intro; footage download/cache memakai `trim_start` sebagai source in-point dan cache identity. Fail-open tetap berlaku. `scout/lib/subtitle_vision.ts`, `scout/pipeline/{build_footage,trace_source}.ts`, `crates/thoth-core/src/edit/{source_timing,ffmpeg,service,overlay}.rs` |
+| **Subtitle-aware footage + enforced local OCR (SP3/SP4)** | ✅ 100% | Novita `deepseek/deepseek-ocr` grounding bbox + adaptive sampling menggantikan Qwen pada detector ini. Temporal tracker memisahkan headline intro, subtitle berubah, dan watermark stabil; hasil hybrid membawa `trim_start` **bersamaan** dengan `mute_audio` + envelope bbox per frame. Pipeline Rust menjalankan OCR fail-closed segera setelah ingest dan sebelum transcribe; metadata schema/model/analyzer/fingerprint disimpan untuk resume. Missing/failed/incomplete OCR bukan `clean`, dan main/footage video yang tidak tervalidasi ditolak sebelum edit. Rust `source_timing` memproyeksikan window source→output, mengulangnya saat clean-loop, dan filter modulo membuang headline pada **setiap** siklus video/audio. `scout/lib/{ocr_contract,subtitle_vision}.ts`, `scout/pipeline/{ocr_local,build_footage,trace_source}.ts`, `crates/thoth-core/src/{pipeline/ocr.rs,edit/source_timing.rs,edit/ffmpeg.rs,edit/service.rs,edit/overlay.rs}` |
 | **Reference video style analyzer** | ✅ 100% | `TrendAnalyzeService` di trend_analyzer.rs; download video → extract frames → vision LLM → synthesize profile → save TOML |
 | **Query keyword expansion** | ✅ 100% | LLM analisis raw query → 5-8 keyword pencarian ganda sebelum multi-platform search (mis. "kata asbun ghufron al maqoli" → "ghufron viral","ghufron ceramah","MUI ghufron",..). Memperluas footage + memperkaya enrichment pool → konteks multi-sumber utk narasi rage-bait. `expand_query()` di `src/ingest/query_expand.rs`; `ContentSearchConfig.expand_keywords` (`[content_search]` opt-in, default true); dipanggil di `resolve_query_to_url()` (main.rs) sebelum `search_content()`; graceful fallback ke raw query bila LLM gagal. `src/ingest/query_expand.rs` |
 | **Trend-aware editing engine** | ❌ 0% | Full adaptive auto-learning dari TikTok Creative Center + YouTube Trending — belum diimplementasi (Priority 6) |
@@ -74,6 +74,7 @@ Membedah file media menjadi komponen yang dapat diproses.
 | **YouTube transcript download** | ✅ Implemented | Auto-download subtitle YouTube (json3/vtt), fallback ke Whisper | `src/ingest/service.rs` |
 | **Ekstraksi Audio (WAV)** | ✅ Implemented | FFmpeg → WAV 16kHz mono untuk Whisper | `src/edit/ffmpeg.rs` |
 | **Frame Extraction** | ✅ Implemented | `vision.rs` — extract JPEG frames via FFmpeg per candidate moment | `src/analyze/vision.rs` |
+| **Post-ingest local OCR gate** | ✅ Implemented | Scout `ocr-local` menganalisis exact local file dari ingest. Rust memvalidasi schema/model/analyzer/frame coverage, menyimpan directive + fingerprint secara atomik, dan abort sebelum transcribe bila status bukan `analyzed`. Resume hanya reuse bila state dan `content_context.json` sama-sama fresh; rerun menginvalidasi edit. | `scout/pipeline/ocr_local.ts`, `src/pipeline/{ocr,state}.rs`, `src/pipeline/mod.rs` |
 | **Scene Boundary Detection** | ❌ Not implemented | Saat ini sampling uniform (fps = count/duration). Harusnya menggunakan FFmpeg `select='gt(scene,0.3)'` untuk deteksi pergantian adegan yang sesungguhnya | — |
 | **Keyframe-only extraction** | ❌ Not implemented | Ambil frame di interval tetap, bukan hanya di scene cut yang signifikan | — |
 | **Audio tempo/BPM detection** | ❌ Not implemented | Tidak ada analisis ritme musik BGM untuk sinkronisasi transisi | — |
@@ -147,12 +148,19 @@ URL / File
            YT subtitles ─────────────────┐
                                          │
     ▼                                    │
-[2. TRANSCRIBE]  Whisper CUDA / Groq API │
+[2. OCR]  Scout local DeepSeek OCR        │
+         → versioned analyzed/failed      │
+         → content_context.json           │
+         → trim/mute/subtitle_blur        │
+         → source fingerprint for resume  │
+                         │                │
+    ▼                    │                │
+[3. TRANSCRIBE]  Whisper CUDA / Groq API │
                  → transcript.json       │
                    (word timestamps)     │
                          │               │
     ▼                    ▼               │
-[3. ANALYZE]  ┌── Text LLM ─────────────┘
+[4. ANALYZE]  ┌── Text LLM ─────────────┘
               │   (Groq/Gemini/vLLM/etc)
               │   + Google Trends context
               │   → ViralMoment candidates (2× max_clips)
@@ -163,7 +171,7 @@ URL / File
                   → moments.json
 
     ▼
-[4. EDIT]  Per clip:
+[5. EDIT]  Per clip:
            ├── Generate ASS subtitles (karaoke style)
            ├── Download TikTok overlay (optional, yt-dlp)
            ├── Resolve SFX from catalog (auto-discovery)
@@ -438,7 +446,8 @@ output/          — Pipeline output (job artifacts)
 ### Struktur Output Per Job
 ```
 output/.THOTH/{job_id}/
-├── state.json           — pipeline state (resumable)
+├── state.json           — pipeline state (termasuk OCR identity/fingerprint, resumable)
+├── content_context.json — OCR metadata + trim/mute/blur directives dan narration grounding
 ├── source/
 │   └── {video_id}.mp4   — downloaded video
 ├── transcribe/
@@ -452,6 +461,8 @@ output/.THOTH/{job_id}/
 ```
 
 ---
+
+*Last updated: 2026-07-26 (pipeline-enforced-local-ocr) — LOCAL OCR PIPELINE GATE ✅ IMPLEMENTED. Scout kini mengekspos `bun scout/cli.ts ocr-local <absolute-video-path>` dengan tepat satu JSON envelope dan kontrak versi `schema_version=1`, model default `deepseek/deepseek-ocr`, analyzer `deepseek-ocr-v2`; missing key/path, duration gagal, response malformed, atau frame coverage parsial menghasilkan status `failed`, tidak pernah diubah menjadi `clean`. Rust `pipeline/ocr.rs` menjalankan command tersebut terhadap exact local file hasil ingest melalui supervisor job, menolak stdout/status/identity yang tidak sesuai, menyanitasi diagnostics (authorization/cookie/private URL), memproyeksikan hasil ke `content_context.json` dengan atomic replace, dan menyimpan `OcrStageResult` + source fingerprint ke `state.json`. Urutan wajib sekarang ingest → OCR → transcribe; main OCR failure abort sebelum transcribe. Resume hanya reuse bila fingerprint/schema/model/analyzer dan persisted main context semuanya fresh; OCR rerun menghapus completed edit agar directive baru benar-benar dirender. Preflight sebelum narration/edit memvalidasi main dan semua renderable video footage; still image tetap exempt. Tracker bbox membentuk union per temporal track dari extrema **semua constituent frame** (`min x0/y0`, `max x1/y1`), baru padding/clamp, sambil mempertahankan spatial track terpisah agar subtitle simultan tidak digabung global dan headline intro tidak masuk blur. Build Windows memakai `NMake Makefiles` karena VS-bundled Ninja terbukti deadlock pada `try_compile` saat orphan `mspdbsrv` menahan output pipe. Verified: 8 Scout test scripts + typecheck lulus; focused OCR lint kembali identik dengan baseline legacy (33 error lama, tanpa error file baru), full Scout lint masih memiliki debt repository; `cargo test -p thoth-core` 209/209; `build_cuda.bat` EXIT 0 (`thoth.exe` 59,730,432 bytes; `thoth-server.exe` 8,004,096 bytes). Live synthetic headline/subtitle smoke: one JSON, analyzed, DeepSeek OCR, 12/12 frames, mute=true, lower-only blur; full disposable pipeline EXIT 0 membuktikan OCR sebelum transcribe, persisted metadata/fingerprint, fresh resume 0.0s, dan stale analyzer memicu OCR rerun + edit rerender tanpa transcribe ulang. Exact reported source tidak dapat diulang karena output UUID/file sudah hilang dan upstream YouTube mengembalikan `Video unavailable`; tidak diklaim sebagai exact-source verification. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-23-pipeline-enforced-local-ocr*.md`.* 
 
 *Last updated: 2026-07-22 (sp3-deepseek-ocr-hardening) — HEADLINE TRIM + TEMPORAL SUBTITLE BBOX ✅ IMPLEMENTED. Detector bbox live sekarang memakai Novita `deepseek/deepseek-ocr` (tanpa Qwen fallback), frame 960px, duration real dari ffprobe, dense-intro + adaptive-tail sampling, timeout per-frame+body fail-open, parser dua format grounding (`<|ref|>/<|det|>` dan format nyata Novita `text[[x0,y0,x1,y1]]`), respons non-kosong tanpa grounding valid ditandai malformed, serta diagnostics JSONL yang hanya menyimpan hash URL dan classified headline/subtitle boxes. Tracker temporal mengeluarkan aksi independen: frame error/malformed dikeluarkan (bukan dianggap clean); stable-small watermark dan left-anchored lower-third dengan label editorial terpisah yang persisten diabaikan; headline lebar/stabil pada intro menghasilkan midpoint `trim_start`; subtitle berubah maupun multi-line persisten menghasilkan padded per-frame envelope dan midpoint source windows. Hybrid tidak lagi kehilangan trim; union window tidak memberi padding berulang. Rust menambah `edit/source_timing.rs`: clip fallback di-clamp sesudah intro, blur source-time diproyeksikan ke output-time, dan narration loop memakai modulo `select/aselect` agar intro tidak kembali pada siklus kedua. Footage cache/download/trim kini source-start-aware, memakai decode-seek + re-encode frame-accurate, dan menolak fallback untrimmed. Smoke video laporan nyata: `trim_start=3.5`, outcome subtitle, mute=true, semua blur y≥0.703 (headline y≈0.52–0.59 tidak diblur). Long-GOP fixture manual menghasilkan first-frame YAVG=235 (white clean segment, tanpa black intro). Verified: Scout unit + typecheck lulus; `cargo test -p thoth-core` 176/176; `build_cuda.bat` EXIT=0; `thoth.exe` 59,615,744 bytes mtime 00:55:01 dan `thoth-server.exe` 8,004,096 bytes mtime 00:32:32. Spec/plan: `docs/superpowers/{specs,plans}/2026-07-22-deepseek-ocr-headline-subtitle-tracking*.md`.*
 

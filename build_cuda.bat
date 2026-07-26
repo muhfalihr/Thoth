@@ -60,9 +60,11 @@ if not defined CUDA_PATH (
 echo [INFO] CUDA Path: %CUDA_PATH%
 set "PATH=%PATH%;%CUDA_PATH%\bin"
 
-:: 6. Tambahkan CMake dan Ninja dari VS (jika ada) untuk build Whisper/llama.cpp
+:: 6. Tambahkan CMake dari VS untuk build Whisper/llama.cpp.
+:: VS-bundled Ninja can deadlock after cl.exe leaves mspdbsrv.exe holding its
+:: output pipe. NMake uses the same MSVC/CUDA toolchain without that deadlock.
 set "PATH=%PATH%;%VS_PATH%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;%VS_PATH%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
-set "CMAKE_GENERATOR=Ninja"
+set "CMAKE_GENERATOR=NMake Makefiles"
 
 :: 7. Jalankan Cargo Build
 echo.

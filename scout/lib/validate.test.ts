@@ -2,10 +2,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  DEFAULT_OCR_MODEL,
-  OCR_ANALYZER_VERSION,
-} from './ocr_contract.ts';
+import { DEFAULT_OCR_MODEL, OCR_ANALYZER_VERSION } from './ocr_contract.ts';
 import type { ContentSet } from './types.ts';
 import { lintContentSet } from './validate.ts';
 
@@ -23,9 +20,8 @@ const analyzed = (
   ocr_outcome: outcome,
   trim_start: outcome === 'cover' ? 3 : 0,
   mute_audio: outcome === 'subtitle',
-  subtitle_blur: outcome === 'subtitle'
-    ? [{ x: .1, y: .7, w: .8, h: .1, start: 3, end: 5 }]
-    : [],
+  subtitle_blur:
+    outcome === 'subtitle' ? [{ x: 0.1, y: 0.7, w: 0.8, h: 0.1, start: 3, end: 5 }] : [],
 });
 
 const videoSet = (): ContentSet => ({
@@ -97,7 +93,7 @@ const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
   Object.assign(cleanWithDirectives.main, analyzed(), {
     trim_start: 1,
     mute_audio: true,
-    subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 1, end: 2 }],
+    subtitle_blur: [{ x: 0.1, y: 0.7, w: 0.8, h: 0.1, start: 1, end: 2 }],
   });
   assert.match(errorText(cleanWithDirectives), /main.*inconsistent.*clean/i);
 
@@ -108,7 +104,7 @@ const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
   const coverWithSubtitleDirectives = videoSet();
   Object.assign(coverWithSubtitleDirectives.main, analyzed('cover'), {
     mute_audio: true,
-    subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 1, end: 2 }],
+    subtitle_blur: [{ x: 0.1, y: 0.7, w: 0.8, h: 0.1, start: 1, end: 2 }],
   });
   assert.match(errorText(coverWithSubtitleDirectives), /main.*inconsistent.*cover.*subtitle/i);
 }
@@ -151,15 +147,11 @@ const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
   assert.match(errorText(invalidTrim), /main.*malformed.*trim_start/i);
 
   const invalidBox = videoSet();
-  invalidBox.main.subtitle_blur = [
-    { x: .8, y: .7, w: .3, h: .1, start: 1, end: 2 },
-  ];
+  invalidBox.main.subtitle_blur = [{ x: 0.8, y: 0.7, w: 0.3, h: 0.1, start: 1, end: 2 }];
   assert.match(errorText(invalidBox), /main.*malformed.*subtitle_blur/i);
 
   const invalidWindow = videoSet();
-  invalidWindow.main.subtitle_blur = [
-    { x: .1, y: .7, w: .8, h: .1, start: 4, end: 2 },
-  ];
+  invalidWindow.main.subtitle_blur = [{ x: 0.1, y: 0.7, w: 0.8, h: 0.1, start: 4, end: 2 }];
   assert.match(errorText(invalidWindow), /main.*malformed.*subtitle_blur/i);
 }
 
@@ -190,13 +182,15 @@ const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
         is_video: false,
         image_path: mainImage,
       },
-      footage: [{
-        url: 'https://example.test/footage-still',
-        is_video: false,
-        image_path: footageImage,
-        relevance: 'match',
-        query: 'still',
-      }],
+      footage: [
+        {
+          url: 'https://example.test/footage-still',
+          is_video: false,
+          image_path: footageImage,
+          relevance: 'match',
+          query: 'still',
+        },
+      ],
       comments: [],
     };
     assert.equal(lintContentSet(set).ok, true);

@@ -6,9 +6,7 @@ export const DEFAULT_OCR_MODEL = 'deepseek/deepseek-ocr';
 
 export type OcrEnvironment = Record<string, string | undefined>;
 
-export function configuredOcrModel(
-  env: OcrEnvironment = process.env,
-): string {
+export function configuredOcrModel(env: OcrEnvironment = process.env): string {
   return env.THOTH_SUBTITLE_OCR_MODEL?.trim() || DEFAULT_OCR_MODEL;
 }
 
@@ -116,14 +114,16 @@ function validBlurRegion(region: unknown): boolean {
   }
   const hasStart = value.start != null;
   const hasEnd = value.end != null;
-  return hasStart === hasEnd &&
+  return (
+    hasStart === hasEnd &&
     (!hasStart ||
       (typeof value.start === 'number' &&
         Number.isFinite(value.start) &&
         value.start >= 0 &&
         typeof value.end === 'number' &&
         Number.isFinite(value.end) &&
-        value.end >= value.start));
+        value.end >= value.start))
+  );
 }
 
 export function currentOcrFields(

@@ -1,10 +1,10 @@
 import {
+  type AnalyzedOcrAnalysis,
   analysisFields,
   currentOcrFields,
-  OcrAnalysisError,
-  type AnalyzedOcrAnalysis,
-  type OcrEnvironment,
   type OcrAnalysis,
+  OcrAnalysisError,
+  type OcrEnvironment,
   type PersistedOcrFields,
   runRequiredOcr,
 } from './ocr_contract.ts';
@@ -53,9 +53,7 @@ const PERSISTED_OCR_KEYS = [
   'subtitle_blur',
 ] as const;
 
-export function clearVideoOcrMetadata(
-  record: Record<string, unknown>,
-): void {
+export function clearVideoOcrMetadata(record: Record<string, unknown>): void {
   for (const key of PERSISTED_OCR_KEYS) delete record[key];
 }
 
