@@ -446,6 +446,11 @@ pub struct MainContext {
     pub dossier: Dossier,
     #[serde(flatten)]
     pub ocr: OcrMetadata,
+    /// Fingerprint of the exact local source file that produced the persisted
+    /// main-video OCR result. Empty in legacy/content-set sidecars until the
+    /// enforced local OCR stage binds them to the ingested source.
+    #[serde(default)]
+    pub ocr_source_fingerprint: String,
     /// Cover/headline intro to skip on the main B-roll, in seconds (scout's
     /// cover-exception: text only in the first few seconds → trim, don't blur).
     /// `0.0` = no trim.
@@ -479,6 +484,7 @@ pub fn to_main_context(set: LoadedSet) -> MainContext {
         discourse: set.discourse,
         dossier: set.dossier,
         ocr: set.main_ocr,
+        ocr_source_fingerprint: String::new(),
         trim_start: set.main_trim_start,
         mute_audio: set.main_mute_audio,
         subtitle_blur: set.main_subtitle_blur,

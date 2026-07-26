@@ -60,10 +60,12 @@ pub(crate) fn ocr_is_fresh(
         && stage.analyzer_version == OCR_ANALYZER_VERSION
         && stage.model == expected_model
         && stage.source_fingerprint == source_fingerprint
+        && context.ocr_source_fingerprint == source_fingerprint
         && validate_main_ocr_for_model(context, expected_model).is_ok()
 }
 
-pub(crate) fn invalidate_after_ocr_rerun(state: &mut PipelineState) {
+pub(crate) fn invalidate_for_ocr_rerun(state: &mut PipelineState) {
+    state.stages.ocr = None;
     state.stages.edit = None;
 }
 
@@ -103,6 +105,7 @@ mod ocr_state_tests {
 
     fn analyzed_context() -> MainContext {
         MainContext {
+            ocr_source_fingerprint: "md5:current".into(),
             ocr: OcrMetadata {
                 ocr_schema_version: OCR_SCHEMA_VERSION,
                 ocr_status: Some(OcrStatus::Analyzed),
@@ -162,6 +165,21 @@ mod ocr_state_tests {
             Some(&completed_stage()),
             "md5:current",
             Some(&analyzed_context()),
+            &configured_ocr_model(),
+        ));
+    }
+
+    #[test]
+    fn context_from_previous_sequential_job_is_not_reusable() {
+        let mut persisted = serde_json::to_value(analyzed_context()).unwrap();
+        persisted["ocr_source_fingerprint"] =
+            serde_json::Value::String("md5:previous-job".into());
+        let persisted: MainContext = serde_json::from_value(persisted).unwrap();
+
+        assert!(!ocr_is_fresh(
+            Some(&completed_stage()),
+            "md5:current",
+            Some(&persisted),
             &configured_ocr_model(),
         ));
     }
@@ -271,8 +289,32 @@ mod ocr_state_tests {
             completed_at: Utc::now(),
         });
 
-        invalidate_after_ocr_rerun(&mut state);
+        invalidate_for_ocr_rerun(&mut state);
 
         assert!(state.stages.edit.is_none());
+    }
+
+    #[test]
+    fn failed_ocr_rerun_leaves_persisted_state_without_stale_completion() {
+        let dir =
+            std::env::temp_dir().join(format!("thoth-ocr-rerun-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("state.json");
+        let mut state = PipelineState::new("job".into(), "https://example.test/video".into());
+        state.stages.ocr = Some(completed_stage());
+        state.stages.edit = Some(EditResult {
+            output_clips: Vec::new(),
+            completed_at: Utc::now(),
+        });
+        state.save(&state_path).unwrap();
+
+        invalidate_for_ocr_rerun(&mut state);
+        state.save(&state_path).unwrap();
+        // The attempted OCR subprocess fails here, before any new completion is stored.
+
+        let persisted = PipelineState::load(&state_path).unwrap();
+        assert!(persisted.stages.ocr.is_none());
+        assert!(persisted.stages.edit.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

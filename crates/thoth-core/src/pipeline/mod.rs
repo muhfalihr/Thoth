@@ -18,7 +18,8 @@ use crate::edit::layout::OutputLayout;
 use crate::edit::{AudioOptions, EditService};
 use crate::execution::JobExecutionContext;
 use crate::ingest::content_search::{
-    OCR_ANALYZER_VERSION, OCR_SCHEMA_VERSION, configured_ocr_model, validate_main_ocr,
+    MainContext, OCR_ANALYZER_VERSION, OCR_SCHEMA_VERSION, configured_ocr_model,
+    validate_main_ocr,
 };
 use crate::ingest::IngestService;
 use crate::news::EnrichService;
@@ -27,7 +28,7 @@ use crate::util::fs::ensure_dir;
 
 use job::JobContext;
 use state::{
-    OcrStageResult, PipelineState, invalidate_after_ocr_rerun, ocr_is_fresh,
+    OcrStageResult, PipelineState, invalidate_for_ocr_rerun, ocr_is_fresh,
 };
 
 /// Pick nested (`JobContext::new`, CLI default) vs flat (`JobContext::new_flat`,
@@ -55,26 +56,60 @@ where
     Ok(result)
 }
 
-fn persist_ocr_analysis(base_dir: &Path, analysis: &ocr::OcrAnalysis) -> Result<()> {
+async fn run_main_ocr_if_video<F, Fut>(main_is_video: bool, stage: F) -> Result<bool>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    if !main_is_video {
+        return Ok(false);
+    }
+    stage().await?;
+    Ok(true)
+}
+
+fn persist_ocr_analysis(
+    base_dir: &Path,
+    analysis: &ocr::OcrAnalysis,
+    source_fingerprint: &str,
+) -> Result<()> {
     let mut context = ocr::load_main_context_for_ocr(base_dir)?;
-    ocr::apply_analysis(&mut context, analysis)?;
+    if !context.ocr_source_fingerprint.is_empty()
+        && context.ocr_source_fingerprint != source_fingerprint
+    {
+        context = MainContext::default();
+    }
+    ocr::apply_analysis_for_source(&mut context, analysis, source_fingerprint)?;
     ocr::save_main_context_atomic(base_dir, &context)
 }
 
-fn preflight_edit_ocr(base_dir: &Path) -> Result<()> {
+fn preflight_edit_ocr(base_dir: &Path, expected_source_fingerprint: &str) -> Result<()> {
     let context = ocr::load_main_context_for_ocr(base_dir)?;
     validate_main_ocr(&context)?;
+    if context.ocr_source_fingerprint != expected_source_fingerprint {
+        anyhow::bail!("main OCR source binding is stale");
+    }
     crate::edit::enrichment::preflight_ocr(base_dir)
 }
 
 pub struct PipelineRunner<'a> {
     config: &'a AppConfig,
     execution: &'a JobExecutionContext,
+    main_is_video: bool,
 }
 
 impl<'a> PipelineRunner<'a> {
     pub fn new(config: &'a AppConfig, execution: &'a JobExecutionContext) -> Self {
-        Self { config, execution }
+        Self {
+            config,
+            execution,
+            main_is_video: true,
+        }
+    }
+
+    pub fn with_main_is_video(mut self, main_is_video: bool) -> Self {
+        self.main_is_video = main_is_video;
+        self
     }
 
     pub async fn run(
@@ -138,6 +173,7 @@ impl<'a> PipelineRunner<'a> {
 
         // ── Stage 2: OCR ────────────────────────────────────────────────
         self.execution.check_cancelled()?;
+        let ran_ocr_gate = run_main_ocr_if_video(self.main_is_video, || async {
         let source_fingerprint =
             ocr::source_fingerprint(&video_path).context("local OCR stage failed")?;
         let expected_model = configured_ocr_model();
@@ -150,13 +186,17 @@ impl<'a> PipelineRunner<'a> {
         ) {
             info!("Stage 2/6: OCR — skipped (current analysis already complete)");
         } else {
+            invalidate_for_ocr_rerun(&mut state);
+            self.execution.check_cancelled()?;
+            state.save(&job.state_path())?;
+            self.execution.check_cancelled()?;
             stage_header(2, 6, "OCR  (local Scout + DeepSeek)");
             let analysis = run_cooperative_stage(self.execution, || async {
                 ocr::run_local_ocr(self.execution, &video_path).await
             })
             .await
             .context("local OCR stage failed")?;
-            persist_ocr_analysis(&job.base_dir, &analysis)
+            persist_ocr_analysis(&job.base_dir, &analysis, &source_fingerprint)
                 .context("local OCR stage failed")?;
             state.stages.ocr = Some(OcrStageResult {
                 status: analysis.ocr_status,
@@ -166,10 +206,15 @@ impl<'a> PipelineRunner<'a> {
                 source_fingerprint,
                 completed_at: chrono::Utc::now(),
             });
-            invalidate_after_ocr_rerun(&mut state);
             self.execution.check_cancelled()?;
             state.save(&job.state_path())?;
             self.execution.check_cancelled()?;
+        }
+        Ok(())
+        })
+        .await?;
+        if !ran_ocr_gate {
+            info!("Stage 2/6: OCR — skipped (still-image main is exempt)");
         }
         self.execution.check_cancelled()?;
 
@@ -255,8 +300,15 @@ impl<'a> PipelineRunner<'a> {
             info!("Stage 5/6: Enrich — skipped (already complete)");
         }
         self.execution.check_cancelled()?;
-        preflight_edit_ocr(&job.base_dir)
-            .context("OCR preflight before narration/edit failed")?;
+        if self.main_is_video {
+            let current_source_fingerprint =
+                ocr::source_fingerprint(&video_path).context("main OCR preflight failed")?;
+            preflight_edit_ocr(&job.base_dir, &current_source_fingerprint)
+                .context("OCR preflight before narration/edit failed")?;
+        } else {
+            crate::edit::enrichment::preflight_ocr(&job.base_dir)
+                .context("footage OCR preflight before narration/edit failed")?;
+        }
 
         // ── Stage 5.5: Narration  (narrator-driven spine) ────────────────
         // Generate ONE continuous narrator voiceover (+ word timings) that the
@@ -868,6 +920,10 @@ mod job_id_wiring_tests {
 #[cfg(test)]
 mod ocr_pipeline_tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use crate::edit::enrichment::ENRICHMENT_FILE;
     use crate::ingest::content_search::{
         MAIN_CONTEXT_FILE, MainContext, OCR_ANALYZER_VERSION, OCR_SCHEMA_VERSION, OcrMetadata,
@@ -877,6 +933,7 @@ mod ocr_pipeline_tests {
 
     fn analyzed_context() -> MainContext {
         MainContext {
+            ocr_source_fingerprint: "md5:current".into(),
             ocr: OcrMetadata {
                 ocr_schema_version: OCR_SCHEMA_VERSION,
                 ocr_status: Some(OcrStatus::Analyzed),
@@ -912,22 +969,60 @@ mod ocr_pipeline_tests {
         }
     }
 
+    #[tokio::test]
+    async fn still_image_main_does_not_invoke_local_ocr() {
+        let invoked = Arc::new(AtomicBool::new(false));
+        let invoked_by_stage = Arc::clone(&invoked);
+
+        let ran = run_main_ocr_if_video(false, move || async move {
+            invoked_by_stage.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert!(!ran);
+        assert!(!invoked.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn direct_url_ocr_creates_default_context_without_inventing_grounding_fields() {
         let dir = temp_dir("direct-url");
 
-        persist_ocr_analysis(&dir, &analyzed_result()).unwrap();
+        persist_ocr_analysis(&dir, &analyzed_result(), "md5:direct-url").unwrap();
 
         let saved: MainContext =
             serde_json::from_slice(&std::fs::read(dir.join(MAIN_CONTEXT_FILE)).unwrap()).unwrap();
         assert_eq!(saved.ocr.ocr_status, Some(OcrStatus::Analyzed));
         assert_eq!(saved.ocr.ocr_model, configured_ocr_model());
+        assert_eq!(saved.ocr_source_fingerprint, "md5:direct-url");
         assert!(saved.title.is_empty());
         assert!(saved.description.is_empty());
         assert!(saved.figures.is_empty());
         assert!(saved.references.is_empty());
         assert!(saved.discourse.themes.is_empty());
         assert!(saved.dossier.topic.is_empty());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sequential_job_ocr_does_not_reuse_previous_job_grounding() {
+        let dir = temp_dir("sequential-job");
+        let mut previous = analyzed_context();
+        previous.ocr_source_fingerprint = "md5:previous-source".into();
+        previous.title = "Previous job title".into();
+        crate::pipeline::ocr::save_main_context_atomic(&dir, &previous).unwrap();
+
+        persist_ocr_analysis(&dir, &analyzed_result(), "md5:current-source").unwrap();
+
+        let saved: MainContext =
+            serde_json::from_slice(&std::fs::read(dir.join(MAIN_CONTEXT_FILE)).unwrap()).unwrap();
+        assert_eq!(saved.ocr_source_fingerprint, "md5:current-source");
+        assert!(
+            saved.title.is_empty(),
+            "grounding from a different source must not cross job boundaries"
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -942,7 +1037,7 @@ mod ocr_pipeline_tests {
         )
         .unwrap();
 
-        let error = preflight_edit_ocr(&dir).unwrap_err().to_string();
+        let error = preflight_edit_ocr(&dir, "md5:current").unwrap_err().to_string();
         assert!(error.contains("footage[0]"));
         assert!(!error.contains("token=secret"));
 
@@ -953,8 +1048,23 @@ mod ocr_pipeline_tests {
     fn edit_preflight_requires_current_main_context() {
         let dir = temp_dir("missing-main");
 
-        let error = preflight_edit_ocr(&dir).unwrap_err().to_string();
+        let error = preflight_edit_ocr(&dir, "md5:current").unwrap_err().to_string();
         assert!(error.contains("main OCR"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn edit_preflight_rejects_main_context_bound_to_previous_source() {
+        let dir = temp_dir("stale-source-binding");
+        let mut context = analyzed_context();
+        context.ocr_source_fingerprint = "md5:previous-source".into();
+        crate::pipeline::ocr::save_main_context_atomic(&dir, &context).unwrap();
+
+        let error = preflight_edit_ocr(&dir, "md5:current-source")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("source binding"));
 
         std::fs::remove_dir_all(dir).unwrap();
     }

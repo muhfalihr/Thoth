@@ -232,6 +232,16 @@ pub fn apply_analysis(context: &mut MainContext, analysis: &OcrAnalysis) -> Resu
     Ok(())
 }
 
+pub fn apply_analysis_for_source(
+    context: &mut MainContext,
+    analysis: &OcrAnalysis,
+    source_fingerprint: &str,
+) -> Result<()> {
+    apply_analysis(context, analysis)?;
+    context.ocr_source_fingerprint = source_fingerprint.to_string();
+    Ok(())
+}
+
 pub fn load_main_context_for_ocr(base_dir: &Path) -> Result<MainContext> {
     let path = base_dir.join(MAIN_CONTEXT_FILE);
     match fs::read(&path) {

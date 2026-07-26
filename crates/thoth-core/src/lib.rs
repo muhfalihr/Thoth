@@ -796,8 +796,8 @@ pub async fn run_once(
             // Content discovery is handled upstream by scout. Thoth accepts
             // either a direct --url (single-video default) or an scout content
             // set via --content (main video + footage pool). It does not search.
-            let resolved_url: String = if let Some(ref u) = args.url {
-                u.clone()
+            let (resolved_url, main_is_video): (String, bool) = if let Some(ref u) = args.url {
+                (u.clone(), true)
             } else if let Some(ref content_path) = args.content {
                 let set = ingest::content_search::load_content_set(content_path)?;
 
@@ -954,7 +954,7 @@ pub async fn run_once(
                 // branch → silent transcript → analyze whole-clip → narration grounding → edit). Guard
                 // on image_path presence (scout only crops non-video) so a video main never misfires.
                 let main_img = set.main_image_path.trim().to_string();
-                if !set.main_is_video && !main_img.is_empty() && std::path::Path::new(&main_img).exists() {
+                let resolved = if !set.main_is_video && !main_img.is_empty() && std::path::Path::new(&main_img).exists() {
                     let (sw, sh) = match args.layout {
                         cli::OutputLayout::Horizontal => (1920u32, 1080u32),
                         cli::OutputLayout::Square => (1080u32, 1080u32),
@@ -978,7 +978,8 @@ pub async fn run_once(
                     }
                 } else {
                     set.main_url
-                }
+                };
+                (resolved, set.main_is_video)
             } else {
                 anyhow::bail!(
                     "no input supplied — provide a single video with --url <URL>, \
@@ -986,7 +987,8 @@ pub async fn run_once(
                 );
             };
 
-            let runner = PipelineRunner::new(&config, execution);
+            let runner =
+                PipelineRunner::new(&config, execution).with_main_is_video(main_is_video);
             let _clips = runner
                 .run(
                     &resolved_url,
