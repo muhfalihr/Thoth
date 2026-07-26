@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { downloadTiktok as defaultDownloadTikTok } from '../scrapers/tiktok_video.ts';
 import {
   type AnalyzedOcrAnalysis,
   analysisFields,
@@ -22,7 +26,13 @@ type AttachVideoOcrDeps = {
   analyze?: (source: string) => Promise<OcrAnalysis>;
   project?: (analysis: AnalyzedOcrAnalysis) => PersistedOcrFields;
   env?: OcrEnvironment;
+  ocrTempRoot?: string;
+  downloadTikTok?: (source: string, output: string) => Promise<string>;
 };
+
+function isTikTokVideoPage(source: string): boolean {
+  return /^https?:\/\/(?:www\.)?tiktok\.com\/@[^/]+\/video\/\d+/i.test(source);
+}
 
 export function shouldAttachVideoOcr(record: VideoRecord): boolean {
   return record.is_video !== false;
@@ -78,10 +88,26 @@ export async function attachVideoOcr<T extends VideoRecord>(
     return record as T & PersistedOcrFields;
   }
 
+  let tempDir = '';
   try {
     const analysis = await runRequiredOcr(async () => {
       const source = record.source_local || record.url || '';
-      const resolved = (deps.resolve ?? ((value) => directStreamUrl(value) || value))(source);
+      let resolved = (deps.resolve ?? ((value) => directStreamUrl(value) || value))(source);
+      if (!record.source_local && isTikTokVideoPage(source)) {
+        // TikTok's yt-dlp `-g` CDN URL can require extractor challenge cookies
+        // that ffprobe/ffmpeg do not inherit. Use a local file so duration
+        // probing and frame extraction share a stable input.
+        tempDir = fs.mkdtempSync(path.join(deps.ocrTempRoot ?? os.tmpdir(), 'thoth-tiktok-ocr-'));
+        const output = path.join(tempDir, 'source.mp4');
+        const local = await (deps.downloadTikTok ?? defaultDownloadTikTok)(source, output);
+        if (!local || !fs.existsSync(local)) {
+          throw new OcrAnalysisError(
+            'media_access_failed',
+            'OCR media could not be localized safely',
+          );
+        }
+        resolved = local;
+      }
       return (deps.analyze ?? ((value) => analyzeSubtitlesDetailed(value)))(resolved);
     });
     Object.assign(record, (deps.project ?? analysisFields)(analysis));
@@ -89,5 +115,11 @@ export async function attachVideoOcr<T extends VideoRecord>(
   } catch (error) {
     if (error instanceof OcrAnalysisError) throw error;
     throw new OcrAnalysisError('analysis_exception', 'OCR analysis raised an exception');
+  } finally {
+    if (tempDir) {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch {}
+    }
   }
 }

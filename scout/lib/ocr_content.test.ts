@@ -1,4 +1,7 @@
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   attachVideoOcr,
   carryCurrentOcrMetadata,
@@ -65,6 +68,70 @@ const analyzed: AnalyzedOcrAnalysis = {
   assert.equal(record.ocr_status, 'analyzed');
   assert.equal(record.ocr_outcome, 'cover');
   assert.equal(record.trim_start, 3);
+}
+
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-tiktok-ocr-test-'));
+  const pageUrl = 'https://www.tiktok.com/@creator/video/7656400559729151239';
+  let downloadedPath = '';
+  let analyzedSource = '';
+  try {
+    await attachVideoOcr(
+      { url: pageUrl, is_video: true as const },
+      {
+        resolve: (source) => source,
+        ocrTempRoot: tempRoot,
+        downloadTikTok: async (_source: string, output: string) => {
+          downloadedPath = output;
+          fs.writeFileSync(output, Buffer.alloc(10_001));
+          return output;
+        },
+        analyze: async (source: string) => {
+          analyzedSource = source;
+          return analyzed;
+        },
+      },
+    );
+
+    assert.notEqual(analyzedSource, pageUrl);
+    assert.equal(analyzedSource, downloadedPath);
+    assert.equal(fs.existsSync(downloadedPath), false);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-tiktok-ocr-fail-'));
+  let analyzeCalls = 0;
+  try {
+    await assert.rejects(
+      () =>
+        attachVideoOcr(
+          {
+            url: 'https://www.tiktok.com/@creator/video/7656400559729151239',
+            is_video: true as const,
+          },
+          {
+            resolve: (source) => source,
+            ocrTempRoot: tempRoot,
+            downloadTikTok: async () => '',
+            analyze: async () => {
+              analyzeCalls++;
+              return analyzed;
+            },
+          },
+        ),
+      (error: unknown) =>
+        error instanceof OcrAnalysisError &&
+        error.code === 'media_access_failed' &&
+        !error.message.includes('7656400559729151239'),
+    );
+    assert.equal(analyzeCalls, 0);
+    assert.deepEqual(fs.readdirSync(tempRoot), []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 {
