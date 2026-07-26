@@ -327,7 +327,13 @@ fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
 
 fn sanitize_diagnostic(value: &str) -> String {
     const MAX_DIAGNOSTIC_CHARS: usize = 4_096;
-    let mut sanitized = value.chars().take(MAX_DIAGNOSTIC_CHARS).collect::<String>();
+    let bounded = value.chars().take(MAX_DIAGNOSTIC_CHARS).collect::<String>();
+    let without_urls = redact_urls(&bounded);
+    let mut sanitized = without_urls
+        .lines()
+        .map(redact_header_value)
+        .collect::<Vec<_>>()
+        .join("\n");
     for marker in [
         "Bearer",
         "THOTH_NOVITA_API_KEY",
@@ -343,6 +349,83 @@ fn sanitize_diagnostic(value: &str) -> String {
     } else {
         sanitized.to_string()
     }
+}
+
+fn redact_urls(value: &str) -> String {
+    let mut result = value.to_string();
+    let mut search_from = 0;
+    loop {
+        let lower = result.to_ascii_lowercase();
+        let remaining = &lower[search_from..];
+        let http = remaining.find("http://");
+        let https = remaining.find("https://");
+        let Some(relative_start) = [http, https].into_iter().flatten().min() else {
+            break;
+        };
+        let url_start = search_from + relative_start;
+        let mut url_end = url_start;
+        while let Some(character) = result[url_end..].chars().next() {
+            if character.is_whitespace()
+                || matches!(
+                    character,
+                    '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+            {
+                break;
+            }
+            url_end += character.len_utf8();
+        }
+        result.replace_range(url_start..url_end, "[REDACTED_URL]");
+        search_from = url_start + "[REDACTED_URL]".len();
+    }
+    result
+}
+
+fn redact_header_value(line: &str) -> String {
+    let mut search_from = 0;
+    while let Some(relative_colon) = line[search_from..].find(':') {
+        let colon = search_from + relative_colon;
+        let bytes = line.as_bytes();
+        let mut token_end = colon;
+        while token_end > 0 && bytes[token_end - 1].is_ascii_whitespace() {
+            token_end -= 1;
+        }
+        let mut token_start = token_end;
+        while token_start > 0 && is_header_name_byte(bytes[token_start - 1]) {
+            token_start -= 1;
+        }
+        if token_start == token_end {
+            search_from = colon + 1;
+            continue;
+        }
+
+        let boundary_is_safe = token_start == 0 || bytes[token_start - 1].is_ascii_whitespace();
+        let prefix_is_only_whitespace = line[..token_start].trim().is_empty();
+        let token = line[token_start..token_end].to_ascii_lowercase();
+        let token_is_sensitive = token.contains('-')
+            || [
+                "authorization",
+                "cookie",
+                "token",
+                "key",
+                "secret",
+                "credential",
+                "session",
+            ]
+            .iter()
+            .any(|marker| token.contains(marker));
+        if boundary_is_safe && (prefix_is_only_whitespace || token_is_sensitive) {
+            let mut redacted = line[..colon + 1].to_string();
+            redacted.push_str(" [REDACTED_HEADER_VALUE]");
+            return redacted;
+        }
+        search_from = colon + 1;
+    }
+    line.to_string()
+}
+
+fn is_header_name_byte(value: u8) -> bool {
+    value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_')
 }
 
 fn redact_after_marker(value: &str, marker: &str) -> String {
@@ -532,6 +615,54 @@ mod tests {
         assert!(!error.contains("private-token-123"));
         assert!(!error.contains("also-secret"));
         assert!(!error.to_ascii_lowercase().contains("bearer private"));
+    }
+
+    #[test]
+    fn nonzero_exit_redacts_headers_cookies_and_private_urls() {
+        let error = parse_ocr_output(
+            false,
+            Some(17),
+            b"",
+            b"Authorization: Basic basic-secret\nSet-Cookie: session=cookie-secret; HttpOnly\nX-Private-Diagnostic: arbitrary-header-secret\nupstream HTTP 401 at https://private.example.test/path?token=query-secret\nretry exhausted",
+            DEFAULT_OCR_MODEL,
+        )
+        .unwrap_err();
+        let error_chain = format!("{error:#}");
+
+        for secret in [
+            "basic-secret",
+            "cookie-secret",
+            "arbitrary-header-secret",
+            "query-secret",
+            "private.example.test",
+        ] {
+            assert!(!error_chain.contains(secret), "leaked {secret}");
+        }
+        assert!(!error_chain.contains("https://"));
+        assert!(error_chain.contains("17"));
+        assert!(error_chain.contains("401"));
+        assert!(error_chain.contains("retry exhausted"));
+    }
+
+    #[test]
+    fn failed_envelope_redacts_headers_and_urls_but_keeps_safe_failure_code() {
+        let stdout = format!(
+            r#"{{"schema_version":1,"ocr_status":"failed","provider":"novita","model":"{DEFAULT_OCR_MODEL}","analyzer_version":"{OCR_ANALYZER_VERSION}","requested_frames":4,"valid_frames":3,"analyzed_at":"2026-07-23T00:00:00Z","error_code":"provider_http_401","error_message":"Authorization: Basic envelope-basic-secret\nSet-Cookie: session=envelope-cookie-secret\nX-Private-Diagnostic: envelope-header-secret\nhttps://private.example.test/path?api_key=envelope-query-secret"}}"#
+        );
+
+        let error = parse_success(&stdout).unwrap_err();
+        let error_chain = format!("{error:#}");
+        for secret in [
+            "envelope-basic-secret",
+            "envelope-cookie-secret",
+            "envelope-header-secret",
+            "envelope-query-secret",
+            "private.example.test",
+        ] {
+            assert!(!error_chain.contains(secret), "leaked {secret}");
+        }
+        assert!(!error_chain.contains("https://"));
+        assert!(error_chain.contains("provider_http_401"));
     }
 
     #[test]
