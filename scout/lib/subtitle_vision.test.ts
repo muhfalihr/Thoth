@@ -172,10 +172,12 @@ assert.equal(
   assert.match(serializedDiagnostic, /"error":"ocr_request_failed"/);
   assert.doesNotMatch(serializedDiagnostic, /Authorization|Bearer|private-test-token/i);
 
-  let extractionDiagnostic: unknown;
+  const permanentCalls: number[] = [];
+  let extractionDiagnostic: any;
   const extractionError = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
     env: { THOTH_NOVITA_API_KEY: 'test' },
-    frameDataUrl: () => {
+    frameDataUrl: (_video, t) => {
+      permanentCalls.push(t);
       throw new Error('Authorization: Bearer private-extraction-token');
     },
     ocrFrame: async () => ({ boxes: [] }),
@@ -185,12 +187,58 @@ assert.equal(
     },
   });
   assert.equal(extractionError.ocr_status, 'failed');
+  assert.deepEqual(permanentCalls, [.5, .5, .25, .25, 0, 0]);
   const serializedExtractionDiagnostic = JSON.stringify(extractionDiagnostic);
   assert.match(serializedExtractionDiagnostic, /"error":"frame_extract"/);
   assert.doesNotMatch(
     serializedExtractionDiagnostic,
     /Authorization|Bearer|private-extraction-token/i,
   );
+
+  const orderedCalls: number[] = [];
+  const orderedFailure = await analyzeSubtitlesDetailed('C:/video.mp4', 4, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: (_video, t) => {
+      orderedCalls.push(t);
+      return t <= 2 ? `frame:${t}` : null;
+    },
+    ocrFrame: async () => ({ boxes: [] }),
+    retryCount: 0,
+  });
+  assert.equal(orderedFailure.ocr_status, 'failed');
+  assert.deepEqual(orderedCalls.slice(-6), [3, 3, 2.75, 2.75, 2.5, 2.5]);
+
+  const extractionCalls: number[] = [];
+  let recoveredDiagnostic: any;
+  const recovered = await analyzeSubtitlesDetailed('C:/video.mp4', 8, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: (_video, t) => {
+      extractionCalls.push(t);
+      return t === 7.92 ? null : `frame:${t}`;
+    },
+    ocrFrame: async () => ({ boxes: [] }),
+    appendDiagnostics: (record) => {
+      recoveredDiagnostic = record;
+    },
+  });
+  assert.equal(recovered.ocr_status, 'analyzed');
+  assert.deepEqual(extractionCalls.slice(-3), [7.92, 7.92, 7.67]);
+  assert.equal(recoveredDiagnostic.samples.at(-1).t, 7.67);
+  assert.equal(recoveredDiagnostic.samples.at(-1).requested_t, 7.92);
+  assert.equal(recoveredDiagnostic.requested_frames, recoveredDiagnostic.valid_frames);
+  assert.equal(recoveredDiagnostic.actual_retry_count, 0);
+
+  let exactDiagnostic: any;
+  const exact = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: (_video, t) => `frame:${t}`,
+    ocrFrame: async () => ({ boxes: [] }),
+    appendDiagnostics: (record) => {
+      exactDiagnostic = record;
+    },
+  });
+  assert.equal(exact.ocr_status, 'analyzed');
+  assert.equal('requested_t' in exactDiagnostic.samples[0], false);
 
   let retryAttempts = 0;
   let retryDiagnostic: any;

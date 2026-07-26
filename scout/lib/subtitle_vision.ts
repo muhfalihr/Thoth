@@ -26,7 +26,12 @@ export type OcrBox = {
   x1: number;
   y1: number;
 };
-export type OcrFrame = { t: number; boxes: OcrBox[]; error?: string };
+export type OcrFrame = {
+  t: number;
+  requested_t?: number;
+  boxes: OcrBox[];
+  error?: string;
+};
 export type OcrAnalysisDeps = {
   env?: Record<string, string | undefined>;
   now?: () => Date;
@@ -659,8 +664,9 @@ function appendAnalysisDiagnostics(
     valid_frames: analysis.valid_frames,
     configured_retry_count: retryCounts.configured,
     actual_retry_count: retryCounts.actual,
-    samples: frames.map(({ t, boxes, error }, index) => ({
+    samples: frames.map(({ t, requested_t, boxes, error }, index) => ({
       t,
+      ...(requested_t !== undefined ? { requested_t } : {}),
       boxes,
       headline_boxes: classified[index].headline_boxes,
       subtitle_boxes: classified[index].subtitle_boxes,
@@ -711,6 +717,16 @@ function safeFrameErrorCode(error: unknown): string {
     case 'frame_extract': return 'frame_extract';
     default: return 'ocr_request_failed';
   }
+}
+
+const FRAME_RECOVERY_OFFSETS = [0, .25, .5, 1] as const;
+const FRAME_EXTRACTION_ATTEMPTS = 2;
+
+function frameRecoveryTimes(requested: number, previous: number | undefined): number[] {
+  const candidates = FRAME_RECOVERY_OFFSETS.map((offset) =>
+    Number(Math.max(0, requested - offset).toFixed(6)));
+  return [...new Set(candidates)].filter((candidate) =>
+    previous === undefined || candidate > previous);
 }
 
 // Multi-frame OCR analysis. Missing configuration, extraction failures, and
@@ -787,15 +803,27 @@ export async function analyzeSubtitlesDetailed(
   const frames: OcrFrame[] = [];
   let actualRetryCount = 0;
 
-  for (const t of times) {
-    let image: string | null;
-    try {
-      image = extractFrame(videoUrl, t);
-    } catch {
-      image = null;
+  for (const requestedT of times) {
+    let image: string | null = null;
+    let actualT = requestedT;
+    const previousT = frames.at(-1)?.t;
+
+    for (const candidateT of frameRecoveryTimes(requestedT, previousT)) {
+      for (let attempt = 0; attempt < FRAME_EXTRACTION_ATTEMPTS; attempt++) {
+        try {
+          image = extractFrame(videoUrl, candidateT);
+        } catch {
+          image = null;
+        }
+        if (image) {
+          actualT = candidateT;
+          break;
+        }
+      }
+      if (image) break;
     }
     if (!image) {
-      frames.push({ t, boxes: [], error: 'frame_extract' });
+      frames.push({ t: requestedT, boxes: [], error: 'frame_extract' });
       continue;
     }
     let frameResult: { boxes: OcrBox[]; error?: string } = { boxes: [], error: 'ocr_failed' };
@@ -814,7 +842,11 @@ export async function analyzeSubtitlesDetailed(
       }
       if (!frameResult.error) break;
     }
-    frames.push({ t, ...frameResult });
+    frames.push({
+      t: actualT,
+      ...(actualT !== requestedT ? { requested_t: requestedT } : {}),
+      ...frameResult,
+    });
   }
 
   const validFrames = frames.filter((frame) => !frame.error).length;
