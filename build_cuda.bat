@@ -66,6 +66,34 @@ set "PATH=%PATH%;%CUDA_PATH%\bin"
 set "PATH=%PATH%;%VS_PATH%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;%VS_PATH%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
 set "CMAKE_GENERATOR=NMake Makefiles"
 
+:: CMake keeps the original generator in a warm cache, so changing the
+:: environment alone does not migrate a prior Ninja whisper-rs-sys build.
+:: Resolve Cargo's active target directory (including config/env overrides) and
+:: invalidate only affected native build directories. Keep target/release and
+:: every non-Whisper or non-Ninja cache intact.
+set "CARGO_TARGET_ROOT="
+for /f "usebackq delims=" %%i in (`cargo metadata --format-version 1 --no-deps 2^>nul ^| powershell.exe -NoProfile -Command "$input | ConvertFrom-Json | Select-Object -ExpandProperty target_directory"`) do (
+    set "CARGO_TARGET_ROOT=%%i"
+)
+if not defined CARGO_TARGET_ROOT (
+    echo [ERROR] Cargo target directory tidak dapat ditentukan.
+    exit /b 1
+)
+for /d %%D in ("%CARGO_TARGET_ROOT%\release\build\whisper-rs-sys-*") do (
+    set "WHISPER_CMAKE_BUILD=%%~fD\out\build"
+    if exist "!WHISPER_CMAKE_BUILD!\CMakeCache.txt" (
+        findstr.exe /x /c:"CMAKE_GENERATOR:INTERNAL=Ninja" "!WHISPER_CMAKE_BUILD!\CMakeCache.txt" >nul
+        if not errorlevel 1 (
+            echo [INFO] Menghapus cache CMake Ninja lama: !WHISPER_CMAKE_BUILD!
+            rmdir /s /q "!WHISPER_CMAKE_BUILD!"
+            if exist "!WHISPER_CMAKE_BUILD!" (
+                echo [ERROR] Cache CMake Ninja lama gagal dihapus: !WHISPER_CMAKE_BUILD!
+                exit /b 1
+            )
+        )
+    )
+)
+
 :: 7. Jalankan Cargo Build
 echo.
 echo [INFO] Memulai proses build Cargo dengan fitur CUDA...
