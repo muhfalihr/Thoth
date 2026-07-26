@@ -40,6 +40,37 @@ use execution::JobExecutionContext;
 use pipeline::PipelineRunner;
 use pipeline::job::JobContext;
 
+fn clear_direct_url_enrichment(output_dir: &std::path::Path) -> Result<()> {
+    let sidecar = output_dir.join(edit::enrichment::ENRICHMENT_FILE);
+    match std::fs::remove_file(&sidecar) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("could not clear stale enrichment sidecar {}", sidecar.display())),
+    }
+}
+
+#[cfg(test)]
+mod direct_url_sidecar_tests {
+    use super::*;
+
+    #[test]
+    fn direct_url_clears_previous_content_enrichment() {
+        let dir = std::env::temp_dir().join(format!(
+            "thoth-direct-url-sidecar-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sidecar = dir.join(edit::enrichment::ENRICHMENT_FILE);
+        std::fs::write(&sidecar, b"[]").unwrap();
+
+        clear_direct_url_enrichment(&dir).unwrap();
+
+        assert!(!sidecar.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 /// Convert CLI enum → internal ClipStyle enum.
 fn clip_style_from_arg(a: &ClipStyleArg) -> ClipStyle {
     match a {
@@ -797,6 +828,7 @@ pub async fn run_once(
             // either a direct --url (single-video default) or an scout content
             // set via --content (main video + footage pool). It does not search.
             let (resolved_url, main_is_video): (String, bool) = if let Some(ref u) = args.url {
+                clear_direct_url_enrichment(&args.output_dir)?;
                 (u.clone(), true)
             } else if let Some(ref content_path) = args.content {
                 let set = ingest::content_search::load_content_set(content_path)?;
