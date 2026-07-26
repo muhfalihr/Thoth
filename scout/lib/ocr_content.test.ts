@@ -75,11 +75,15 @@ const analyzed: AnalyzedOcrAnalysis = {
   const pageUrl = 'https://www.tiktok.com/@creator/video/7656400559729151239';
   let downloadedPath = '';
   let analyzedSource = '';
+  let resolveCalls = 0;
   try {
     await attachVideoOcr(
       { url: pageUrl, is_video: true as const },
       {
-        resolve: (source) => source,
+        resolve: (source) => {
+          resolveCalls++;
+          return source;
+        },
         ocrTempRoot: tempRoot,
         downloadTikTok: async (_source: string, output: string) => {
           downloadedPath = output;
@@ -95,6 +99,7 @@ const analyzed: AnalyzedOcrAnalysis = {
 
     assert.notEqual(analyzedSource, pageUrl);
     assert.equal(analyzedSource, downloadedPath);
+    assert.equal(resolveCalls, 0);
     assert.equal(fs.existsSync(downloadedPath), false);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -129,6 +134,70 @@ const analyzed: AnalyzedOcrAnalysis = {
     );
     assert.equal(analyzeCalls, 0);
     assert.deepEqual(fs.readdirSync(tempRoot), []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-tiktok-ocr-throw-'));
+  let analyzeCalls = 0;
+  try {
+    await assert.rejects(
+      () =>
+        attachVideoOcr(
+          {
+            url: 'https://www.tiktok.com/@creator/video/7656400559729151239',
+            is_video: true as const,
+          },
+          {
+            ocrTempRoot: tempRoot,
+            downloadTikTok: async () => {
+              throw new Error('downloader failed with private-token');
+            },
+            analyze: async () => {
+              analyzeCalls++;
+              return analyzed;
+            },
+          },
+        ),
+      (error: unknown) =>
+        error instanceof OcrAnalysisError &&
+        error.code === 'media_access_failed' &&
+        !error.message.includes('private-token'),
+    );
+    assert.equal(analyzeCalls, 0);
+    assert.deepEqual(fs.readdirSync(tempRoot), []);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-tiktok-ocr-root-'));
+  const unusableRoot = path.join(tempRoot, 'not-a-directory');
+  fs.writeFileSync(unusableRoot, 'blocked');
+  let downloadCalls = 0;
+  try {
+    await assert.rejects(
+      () =>
+        attachVideoOcr(
+          {
+            url: 'https://www.tiktok.com/@creator/video/7656400559729151239',
+            is_video: true as const,
+          },
+          {
+            ocrTempRoot: unusableRoot,
+            downloadTikTok: async () => {
+              downloadCalls++;
+              return '';
+            },
+            analyze: async () => analyzed,
+          },
+        ),
+      (error: unknown) => error instanceof OcrAnalysisError && error.code === 'media_access_failed',
+    );
+    assert.equal(downloadCalls, 0);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

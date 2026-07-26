@@ -92,21 +92,32 @@ export async function attachVideoOcr<T extends VideoRecord>(
   try {
     const analysis = await runRequiredOcr(async () => {
       const source = record.source_local || record.url || '';
-      let resolved = (deps.resolve ?? ((value) => directStreamUrl(value) || value))(source);
+      let resolved = '';
       if (!record.source_local && isTikTokVideoPage(source)) {
         // TikTok's yt-dlp `-g` CDN URL can require extractor challenge cookies
         // that ffprobe/ffmpeg do not inherit. Use a local file so duration
         // probing and frame extraction share a stable input.
-        tempDir = fs.mkdtempSync(path.join(deps.ocrTempRoot ?? os.tmpdir(), 'thoth-tiktok-ocr-'));
-        const output = path.join(tempDir, 'source.mp4');
-        const local = await (deps.downloadTikTok ?? defaultDownloadTikTok)(source, output);
-        if (!local || !fs.existsSync(local)) {
+        try {
+          tempDir = fs.mkdtempSync(path.join(deps.ocrTempRoot ?? os.tmpdir(), 'thoth-tiktok-ocr-'));
+          const output = path.join(tempDir, 'source.mp4');
+          const local = await (deps.downloadTikTok ?? defaultDownloadTikTok)(source, output);
+          if (!local || !fs.existsSync(local)) {
+            throw new OcrAnalysisError(
+              'media_access_failed',
+              'OCR media could not be localized safely',
+            );
+          }
+          resolved = local;
+        } catch (error) {
+          if (error instanceof OcrAnalysisError && error.code === 'media_access_failed')
+            throw error;
           throw new OcrAnalysisError(
             'media_access_failed',
             'OCR media could not be localized safely',
           );
         }
-        resolved = local;
+      } else {
+        resolved = (deps.resolve ?? ((value) => directStreamUrl(value) || value))(source);
       }
       return (deps.analyze ?? ((value) => analyzeSubtitlesDetailed(value)))(resolved);
     });
