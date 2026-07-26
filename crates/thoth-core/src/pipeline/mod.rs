@@ -17,13 +17,18 @@ use crate::config::AppConfig;
 use crate::edit::layout::OutputLayout;
 use crate::edit::{AudioOptions, EditService};
 use crate::execution::JobExecutionContext;
+use crate::ingest::content_search::{
+    OCR_ANALYZER_VERSION, OCR_SCHEMA_VERSION, configured_ocr_model, validate_main_ocr,
+};
 use crate::ingest::IngestService;
 use crate::news::EnrichService;
 use crate::transcribe::TranscribeService;
 use crate::util::fs::ensure_dir;
 
 use job::JobContext;
-use state::PipelineState;
+use state::{
+    OcrStageResult, PipelineState, invalidate_after_ocr_rerun, ocr_is_fresh,
+};
 
 /// Pick nested (`JobContext::new`, CLI default) vs flat (`JobContext::new_flat`,
 /// server-injected id) job root construction. Pulled out of `run()` so this
@@ -48,6 +53,18 @@ where
     let result = stage().await?;
     execution.check_cancelled()?;
     Ok(result)
+}
+
+fn persist_ocr_analysis(base_dir: &Path, analysis: &ocr::OcrAnalysis) -> Result<()> {
+    let mut context = ocr::load_main_context_for_ocr(base_dir)?;
+    ocr::apply_analysis(&mut context, analysis)?;
+    ocr::save_main_context_atomic(base_dir, &context)
+}
+
+fn preflight_edit_ocr(base_dir: &Path) -> Result<()> {
+    let context = ocr::load_main_context_for_ocr(base_dir)?;
+    validate_main_ocr(&context)?;
+    crate::edit::enrichment::preflight_ocr(base_dir)
 }
 
 pub struct PipelineRunner<'a> {
@@ -98,7 +115,7 @@ impl<'a> PipelineRunner<'a> {
         // ── Stage 1: Ingest ──────────────────────────────────────────────
         self.execution.check_cancelled()?;
         if state.stages.ingest.is_none() {
-            stage_header(1, 5, "Ingest  (yt-dlp download)");
+            stage_header(1, 6, "Ingest  (yt-dlp download)");
             let svc = IngestService::new(self.config, &job, self.execution);
             let result = run_cooperative_stage(self.execution, || async {
                 svc.run(url, false).await.context("ingest stage failed")
@@ -108,7 +125,7 @@ impl<'a> PipelineRunner<'a> {
             state.save(&job.state_path())?;
             self.execution.check_cancelled()?;
         } else {
-            info!("Stage 1/4: Ingest — skipped (already complete)");
+            info!("Stage 1/6: Ingest — skipped (already complete)");
         }
         self.execution.check_cancelled()?;
 
@@ -119,10 +136,47 @@ impl<'a> PipelineRunner<'a> {
         let video_channel = ingest.channel.clone();
         let video_duration = ingest.duration_secs;
 
-        // ── Stage 2: Transcribe ──────────────────────────────────────────
+        // ── Stage 2: OCR ────────────────────────────────────────────────
+        self.execution.check_cancelled()?;
+        let source_fingerprint =
+            ocr::source_fingerprint(&video_path).context("local OCR stage failed")?;
+        let expected_model = configured_ocr_model();
+        let persisted_context = ocr::load_main_context_for_ocr(&job.base_dir).ok();
+        if ocr_is_fresh(
+            state.stages.ocr.as_ref(),
+            &source_fingerprint,
+            persisted_context.as_ref(),
+            &expected_model,
+        ) {
+            info!("Stage 2/6: OCR — skipped (current analysis already complete)");
+        } else {
+            stage_header(2, 6, "OCR  (local Scout + DeepSeek)");
+            let analysis = run_cooperative_stage(self.execution, || async {
+                ocr::run_local_ocr(self.execution, &video_path).await
+            })
+            .await
+            .context("local OCR stage failed")?;
+            persist_ocr_analysis(&job.base_dir, &analysis)
+                .context("local OCR stage failed")?;
+            state.stages.ocr = Some(OcrStageResult {
+                status: analysis.ocr_status,
+                schema_version: OCR_SCHEMA_VERSION,
+                analyzer_version: OCR_ANALYZER_VERSION.into(),
+                model: expected_model,
+                source_fingerprint,
+                completed_at: chrono::Utc::now(),
+            });
+            invalidate_after_ocr_rerun(&mut state);
+            self.execution.check_cancelled()?;
+            state.save(&job.state_path())?;
+            self.execution.check_cancelled()?;
+        }
+        self.execution.check_cancelled()?;
+
+        // ── Stage 3: Transcribe ──────────────────────────────────────────
         self.execution.check_cancelled()?;
         if state.stages.transcribe.is_none() {
-            stage_header(2, 5, "Transcribe  (Groq Whisper API)");
+            stage_header(3, 6, "Transcribe  (Groq Whisper API)");
             info!("  Video   : \"{}\"  ({:.0}s)", video_title, video_duration);
             let svc = TranscribeService::new(self.config, &job, self.execution);
             let result = run_cooperative_stage(self.execution, || async {
@@ -133,14 +187,14 @@ impl<'a> PipelineRunner<'a> {
             state.save(&job.state_path())?;
             self.execution.check_cancelled()?;
         } else {
-            info!("Stage 2/4: Transcribe — skipped (already complete)");
+            info!("Stage 3/6: Transcribe — skipped (already complete)");
         }
         self.execution.check_cancelled()?;
 
-        // ── Stage 3: Analyze ─────────────────────────────────────────────
+        // ── Stage 4: Analyze ─────────────────────────────────────────────
         self.execution.check_cancelled()?;
         if state.stages.analyze.is_none() {
-            stage_header(3, 5, &format!("Analyze  ({} LLM)", provider));
+            stage_header(4, 6, &format!("Analyze  ({} LLM)", provider));
             let svc = AnalyzeService::new(self.config, &job, self.execution);
             let result = run_cooperative_stage(self.execution, || async {
                 svc.run(
@@ -160,14 +214,14 @@ impl<'a> PipelineRunner<'a> {
             state.save(&job.state_path())?;
             self.execution.check_cancelled()?;
         } else {
-            info!("Stage 3/5: Analyze — skipped (already complete)");
+            info!("Stage 4/6: Analyze — skipped (already complete)");
         }
         self.execution.check_cancelled()?;
 
-        // ── Stage 4: Enrich  (news + reaction) ───────────────────────────
+        // ── Stage 5: Enrich  (news + reaction) ───────────────────────────
         self.execution.check_cancelled()?;
         if state.stages.enrich.is_none() && self.config.news.enabled {
-            stage_header(4, 5, "Enrich  (news search)");
+            stage_header(5, 6, "Enrich  (news search)");
             let svc = EnrichService::new(self.config, &job, self.execution);
             match run_cooperative_stage(self.execution, || async {
                 svc.run(
@@ -192,22 +246,24 @@ impl<'a> PipelineRunner<'a> {
                     if e.downcast_ref::<crate::execution::Cancelled>().is_some() {
                         return Err(e);
                     }
-                    warn!("Stage 4/5: Enrich failed — continuing without news: {e}");
+                    warn!("Stage 5/6: Enrich failed — continuing without news: {e}");
                 }
             }
         } else if state.stages.enrich.is_none() {
-            info!("Stage 4/5: Enrich — skipped (news disabled)");
+            info!("Stage 5/6: Enrich — skipped (news disabled)");
         } else {
-            info!("Stage 4/5: Enrich — skipped (already complete)");
+            info!("Stage 5/6: Enrich — skipped (already complete)");
         }
         self.execution.check_cancelled()?;
+        preflight_edit_ocr(&job.base_dir)
+            .context("OCR preflight before narration/edit failed")?;
 
-        // ── Stage 4.5: Narration  (narrator-driven spine) ────────────────
+        // ── Stage 5.5: Narration  (narrator-driven spine) ────────────────
         // Generate ONE continuous narrator voiceover (+ word timings) that the
         // edit builds the video around. Best-effort: never fails the pipeline.
         if self.config.narration.enabled && !job.narration_mp3().exists() {
             self.execution.check_cancelled()?;
-            stage_header(4, 5, "Narration  (narrator voiceover)");
+            stage_header(5, 6, "Narration  (narrator voiceover)");
             match self.generate_narration(&job, provider).await {
                 Ok(()) => {}
                 Err(e) => warn!("Narration failed — continuing without narrator: {e}"),
@@ -215,10 +271,10 @@ impl<'a> PipelineRunner<'a> {
             self.execution.check_cancelled()?;
         }
 
-        // ── Stage 5: Edit ────────────────────────────────────────────────
+        // ── Stage 6: Edit ────────────────────────────────────────────────
         self.execution.check_cancelled()?;
         if state.stages.edit.is_none() {
-            stage_header(5, 5, &format!("Edit  (FFmpeg {layout} clips)"));
+            stage_header(6, 6, &format!("Edit  (FFmpeg {layout} clips)"));
             let svc = EditService::new(self.config, &job, self.execution);
             let out_layout = OutputLayout::from(layout);
 
@@ -241,7 +297,7 @@ impl<'a> PipelineRunner<'a> {
             state.save(&job.state_path())?;
             self.execution.check_cancelled()?;
         } else {
-            info!("Stage 5/5: Edit — skipped (already complete)");
+            info!("Stage 6/6: Edit — skipped (already complete)");
         }
         self.execution.check_cancelled()?;
 
@@ -806,5 +862,107 @@ mod job_id_wiring_tests {
 
         assert!(error.downcast_ref::<Cancelled>().is_some());
         assert_eq!(*entered.lock().unwrap(), vec!["first"]);
+    }
+}
+
+#[cfg(test)]
+mod ocr_pipeline_tests {
+    use super::*;
+    use crate::edit::enrichment::ENRICHMENT_FILE;
+    use crate::ingest::content_search::{
+        MAIN_CONTEXT_FILE, MainContext, OCR_ANALYZER_VERSION, OCR_SCHEMA_VERSION, OcrMetadata,
+        OcrStatus, configured_ocr_model,
+    };
+    use crate::pipeline::ocr::{OcrAnalysis, OcrVerdict};
+
+    fn analyzed_context() -> MainContext {
+        MainContext {
+            ocr: OcrMetadata {
+                ocr_schema_version: OCR_SCHEMA_VERSION,
+                ocr_status: Some(OcrStatus::Analyzed),
+                ocr_model: configured_ocr_model(),
+                ocr_analyzer_version: OCR_ANALYZER_VERSION.into(),
+                ocr_analyzed_at: "2026-07-23T00:00:00Z".into(),
+                ocr_requested_frames: 4,
+                ocr_valid_frames: 4,
+                ocr_outcome: "clean".into(),
+            },
+            ..MainContext::default()
+        }
+    }
+
+    fn analyzed_result() -> OcrAnalysis {
+        OcrAnalysis {
+            schema_version: OCR_SCHEMA_VERSION,
+            ocr_status: OcrStatus::Analyzed,
+            provider: "novita".into(),
+            model: configured_ocr_model(),
+            analyzer_version: OCR_ANALYZER_VERSION.into(),
+            requested_frames: 4,
+            valid_frames: 4,
+            analyzed_at: "2026-07-23T00:00:00Z".into(),
+            verdict: Some(OcrVerdict {
+                outcome: "clean".into(),
+                trim_start: 0.0,
+                mute_audio: false,
+                subtitle_blur: Vec::new(),
+            }),
+            error_code: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn direct_url_ocr_creates_default_context_without_inventing_grounding_fields() {
+        let dir = temp_dir("direct-url");
+
+        persist_ocr_analysis(&dir, &analyzed_result()).unwrap();
+
+        let saved: MainContext =
+            serde_json::from_slice(&std::fs::read(dir.join(MAIN_CONTEXT_FILE)).unwrap()).unwrap();
+        assert_eq!(saved.ocr.ocr_status, Some(OcrStatus::Analyzed));
+        assert_eq!(saved.ocr.ocr_model, configured_ocr_model());
+        assert!(saved.title.is_empty());
+        assert!(saved.description.is_empty());
+        assert!(saved.figures.is_empty());
+        assert!(saved.references.is_empty());
+        assert!(saved.discourse.themes.is_empty());
+        assert!(saved.dossier.topic.is_empty());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn edit_preflight_rejects_unsafe_enrichment_video() {
+        let dir = temp_dir("unsafe-enrichment");
+        crate::pipeline::ocr::save_main_context_atomic(&dir, &analyzed_context()).unwrap();
+        std::fs::write(
+            dir.join(ENRICHMENT_FILE),
+            br#"[{"platform":"youtube","url":"https://private.example/video?token=secret","is_video":true}]"#,
+        )
+        .unwrap();
+
+        let error = preflight_edit_ocr(&dir).unwrap_err().to_string();
+        assert!(error.contains("footage[0]"));
+        assert!(!error.contains("token=secret"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn edit_preflight_requires_current_main_context() {
+        let dir = temp_dir("missing-main");
+
+        let error = preflight_edit_ocr(&dir).unwrap_err().to_string();
+        assert!(error.contains("main OCR"));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("thoth-pipeline-ocr-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }
