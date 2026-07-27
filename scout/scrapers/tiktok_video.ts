@@ -27,16 +27,14 @@ type TikTokVideoDeps = {
   cdpResolver?: (pageUrl: string) => Promise<TikTokMediaDescriptor | null>;
 };
 
-export async function fetchWithDeadline(
-  fetchImpl: typeof fetch,
-  input: RequestInfo | URL,
-  init: RequestInit,
+export async function withDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
-): Promise<Response> {
+): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetchImpl(input, { ...init, signal: controller.signal });
+    return await operation(controller.signal);
   } finally {
     clearTimeout(timer);
   }
@@ -48,16 +46,21 @@ async function viaTikwm(
   deps: TikTokVideoDeps,
 ): Promise<TikTokMediaDescriptor | null> {
   try {
-    const r = await fetchWithDeadline(
-      deps.fetch ?? fetch,
-      'https://www.tikwm.com/api/?url=' + encodeURIComponent(pageUrl) + '&hd=1',
-      {
-        headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+    const fetchImpl = deps.fetch ?? fetch;
+    const j = await withDeadline(
+      async (signal) => {
+        const r = await fetchImpl(
+          'https://www.tikwm.com/api/?url=' + encodeURIComponent(pageUrl) + '&hd=1',
+          {
+            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+            signal,
+          },
+        );
+        if (!r.ok) return null;
+        return await r.json();
       },
       deps.timeoutMs ?? DEFAULT_MEDIA_TIMEOUT_MS,
     );
-    if (!r.ok) return null;
-    const j = await r.json();
     if (!j || j.code !== 0 || !j.data) return null;
     let p = j.data.hdplay || j.data.play || j.data.wmplay;
     if (!p) return null;
@@ -134,14 +137,20 @@ export async function downloadTiktok(
   const d = await tiktokDirectUrl(pageUrl, deps);
   if (!d) return '';
   try {
-    const r = await fetchWithDeadline(
-      deps.fetch ?? fetch,
-      d.url,
-      { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.tikwm.com/' } },
+    const fetchImpl = deps.fetch ?? fetch;
+    const body = await withDeadline(
+      async (signal) => {
+        const r = await fetchImpl(d.url, {
+          headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.tikwm.com/' },
+          signal,
+        });
+        if (!r.ok) return null;
+        return await r.arrayBuffer();
+      },
       deps.timeoutMs ?? DEFAULT_MEDIA_TIMEOUT_MS,
     );
-    if (!r.ok) return '';
-    const buf = Buffer.from(await r.arrayBuffer());
+    if (!body) return '';
+    const buf = Buffer.from(body);
     if (buf.length < 10000) return ''; // too small → likely an error page, not a video
     fs.writeFileSync(out, buf);
     return out;
