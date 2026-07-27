@@ -187,6 +187,7 @@ assert.equal(
     },
   });
   assert.equal(extractionError.ocr_status, 'failed');
+  assert.equal(extractionError.error_code, 'incomplete_frame_coverage');
   assert.deepEqual(permanentCalls, [.5, .5, .25, .25, 0, 0]);
   const serializedExtractionDiagnostic = JSON.stringify(extractionDiagnostic);
   assert.match(serializedExtractionDiagnostic, /"error":"frame_extract"/);
@@ -211,18 +212,33 @@ assert.equal(
   const extractionCalls: number[] = [];
   let recoveredDiagnostic: any;
   const recovered = await analyzeSubtitlesDetailed('C:/video.mp4', 8, {
-    env: { THOTH_NOVITA_API_KEY: 'test' },
+    env: {
+      THOTH_NOVITA_API_KEY: 'test',
+      THOTH_SUBTITLE_OCR_MAX_FRAMES: '7',
+    },
     frameDataUrl: (_video, t) => {
       extractionCalls.push(t);
       return t === 7.92 ? null : `frame:${t}`;
     },
-    ocrFrame: async () => ({ boxes: [] }),
+    ocrFrame: async (image) => image === 'frame:7.67'
+      ? { boxes: [] }
+      : {
+        boxes: [{
+          text: 'MATCH DAY',
+          x0: .1,
+          y0: .3,
+          x1: .9,
+          y1: .43,
+        }],
+      },
     appendDiagnostics: (record) => {
       recoveredDiagnostic = record;
     },
   });
   assert.equal(recovered.ocr_status, 'analyzed');
   assert.deepEqual(extractionCalls.slice(-3), [7.92, 7.92, 7.67]);
+  assert.equal(recovered.verdict?.outcome, 'cover');
+  assert.equal(recovered.verdict?.trim_start, 6.335);
   assert.equal(recoveredDiagnostic.samples.at(-1).t, 7.67);
   assert.equal(recoveredDiagnostic.samples.at(-1).requested_t, 7.92);
   assert.equal(recoveredDiagnostic.requested_frames, recoveredDiagnostic.valid_frames);
