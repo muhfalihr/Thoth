@@ -28,9 +28,8 @@ import { rankBySimilarity, embed, cosine } from '../lib/embed.ts';
 import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
-import { attachVideoOcr } from '../lib/ocr_content.ts';
+import { attachFootageOcrCandidate } from '../lib/footage_candidate_ocr.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
-import { OcrAnalysisError } from '../lib/subtitle_vision.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
@@ -159,14 +158,17 @@ function searchObject(query) {
 
 // Push one footage entry per cropped slide of an IG/FB post: PHOTO → image-card (is_video:false);
 // VIDEO slide → igSlideDirectUrl CDN .mp4 (is_video:true) so Thoth downloads real video, not a frozen
-// frame. Distinct url (#slideN / CDN) keeps dedup happy. Returns count pushed. Caller crops + gates first.
-async function pushSlides(set, postUrl, slides, plat, query, description) {
+// frame. Distinct url (#slideN / CDN) keeps dedup happy. Caller crops + gates first.
+type PushSlidesResult = { added: number; mediaDropped: number };
+
+async function pushSlides(set, postUrl, slides, plat, query, description): Promise<PushSlidesResult> {
   let added = 0;
+  let mediaDropped = 0;
   for (const s of slides) {
     if (s.kind === 'video') {
       const cdn = igSlideDirectUrl(postUrl, s.index);
       if (!cdn) continue;
-      const entry = await attachVideoOcr({
+      const analyzed = await attachFootageOcrCandidate({
         url: cdn,
         platform: plat,
         query,
@@ -175,8 +177,12 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         source_url: postUrl,
         description,
       });
-      if (entry.ocr_outcome === 'subtitle') continue;
-      set.footage.push(entry);
+      if (analyzed.status === 'unavailable') {
+        mediaDropped++;
+        continue;
+      }
+      if (analyzed.entry.ocr_outcome === 'subtitle') continue;
+      set.footage.push(analyzed.entry);
     } else {
       if (!s.image_path) continue; // photo slide with no cropped image → skip (no broken card)
       set.footage.push({
@@ -191,7 +197,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
     }
     added++;
   }
-  return added;
+  return { added, mediaDropped };
 }
 
 (async () => {
@@ -225,7 +231,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         } catch (e) {}
       }
       slides = slides.filter((s) => s.kind === 'video' || s.image_path); // photo tanpa gambar → buang
-      const n = await pushSlides(
+      const slideResult = await pushSlides(
         set,
         main.url,
         slides,
@@ -235,7 +241,10 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
       );
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
       console.log(
-        `Selesai: +${n} footage dari ${slides.length} slide carousel main → footage total ${set.footage.length}. (skip cari eksternal)`,
+        `Selesai: +${slideResult.added} footage dari ${slides.length} slide carousel main → footage total ${set.footage.length}. (skip cari eksternal)` +
+          (slideResult.mediaDropped
+            ? ` (${slideResult.mediaDropped} drop media tak dapat diakses)`
+            : ''),
       );
       return;
     }
@@ -301,6 +310,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
   } else if (profileUser) {
     process.stdout.write(`• profil @${profileUser} … `);
     let added = 0;
+    let mediaDropped = 0;
     try {
       // includePosts:true → also scan feed posts (/p/), since creators often publish the topic as a
       // carousel/slide feed post (photo+video), not a Reel. max bumped: the grid mixes photos+reels.
@@ -364,7 +374,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
             } catch (e2) {}
           }
           slides = slides.filter((s) => s.kind === 'video' || s.image_path); // drop photo slides w/o an image
-          const n = await pushSlides(
+          const slideResult = await pushSlides(
             set,
             r.url,
             slides,
@@ -372,6 +382,8 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
             'profil @' + profileUser,
             desc,
           );
+          mediaDropped += slideResult.mediaDropped;
+          const n = slideResult.added;
           if (n) {
             added++;
             addedP++;
@@ -384,7 +396,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
               }
           }
         } else {
-          const entry = await attachVideoOcr({
+          const analyzed = await attachFootageOcrCandidate({
             url: r.url,
             platform: 'instagram',
             query: 'profil @' + profileUser,
@@ -392,17 +404,24 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
             relevance: 'match',
             description: r.caption || '',
           });
-          if (entry.ocr_outcome === 'subtitle') continue;
-          set.footage.push(entry);
+          if (analyzed.status === 'unavailable') {
+            mediaDropped++;
+            continue;
+          }
+          if (analyzed.entry.ocr_outcome === 'subtitle') continue;
+          set.footage.push(analyzed.entry);
           added++;
           addedV++;
         }
       }
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
     } catch (e) {
-      if (e instanceof OcrAnalysisError) throw e;
+      throw e;
     }
-    console.log(`+${added} reel relevan`);
+    console.log(
+      `+${added} reel relevan` +
+        (mediaDropped ? ` (${mediaDropped} drop media tak dapat diakses)` : ''),
+    );
   }
 
   for (const { obj, query } of tasks) {
@@ -426,7 +445,8 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
       let pv = 0,
         pp = 0,
         dropped = 0,
-        dropReact = 0;
+        dropReact = 0,
+        mediaDropped = 0;
 
       const addVideo = async (e) => {
         have.add(e.url);
@@ -459,17 +479,17 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         let furl = e.url,
           src_url;
         if (e.platform === 'tiktok') {
-          try {
-            const d = await tiktokDirectUrl(e.url);
-            if (d && d.url) {
-              furl = d.url;
-              src_url = e.url;
-            }
-          } catch (err) {}
+          const d = await tiktokDirectUrl(e.url);
+          if (!d?.url) {
+            mediaDropped++;
+            return false;
+          }
+          furl = d.url;
+          src_url = e.url;
         }
         // OCR is a required safety gate: subtitle footage is rejected, cover footage
         // is trimmed, and analysis failure aborts content-set construction.
-        const entry = await attachVideoOcr({
+        const analyzed = await attachFootageOcrCandidate({
           url: furl,
           platform: e.platform,
           query: obj,
@@ -478,11 +498,15 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
           description,
           ...(src_url ? { source_url: src_url } : {}),
         });
-        if (entry.ocr_outcome === 'subtitle') {
+        if (analyzed.status === 'unavailable') {
+          mediaDropped++;
+          return false;
+        }
+        if (analyzed.entry.ocr_outcome === 'subtitle') {
           dropReact++;
           return false;
         }
-        set.footage.push(entry);
+        set.footage.push(analyzed.entry);
         pv++;
         addedV++;
         return true;
@@ -542,7 +566,9 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
           return true;
         }
         // One footage entry per slide (URL CDN ephemeral → run thoth soon).
-        const added = await pushSlides(set, e.url, slides, plat, obj, description);
+        const slideResult = await pushSlides(set, e.url, slides, plat, obj, description);
+        mediaDropped += slideResult.mediaDropped;
+        const added = slideResult.added;
         if (!added) {
           rmAll();
           return false;
@@ -574,16 +600,12 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         `+${pv}v/${pp}p` +
           (dropped ? ` (${dropped} drop tak-relevan)` : '') +
           (dropReact ? ` (${dropReact} drop reaction)` : '') +
+          (mediaDropped ? ` (${mediaDropped} drop media tak dapat diakses)` : '') +
           (aggSkip ? ` (${aggSkip} drop akun-kurator)` : ''),
       );
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8'); // persist after EACH object (crash-resilient)
     } catch (e) {
-      if (e instanceof OcrAnalysisError) throw e;
-      console.log(
-        ui.amber(
-          `(${ui.WARN} "${obj}" gagal: ${String((e && e.message) || e).slice(0, 70)} — skip)`,
-        ),
-      );
+      throw e;
     }
   }
 
