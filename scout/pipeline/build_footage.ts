@@ -28,7 +28,12 @@ import { rankBySimilarity, embed, cosine } from '../lib/embed.ts';
 import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
-import { attachFootageOcrCandidate } from '../lib/footage_candidate_ocr.ts';
+import {
+  formatMediaDropSummary,
+  selectCarouselFootageVideoCandidate,
+  selectFootageVideoCandidate,
+  selectTikTokFootageVideoCandidate,
+} from '../lib/footage_candidate_selection.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
 import { ui } from '../lib/ui.ts';
 
@@ -166,23 +171,21 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
   let mediaDropped = 0;
   for (const s of slides) {
     if (s.kind === 'video') {
-      const cdn = igSlideDirectUrl(postUrl, s.index);
-      if (!cdn) continue;
-      const analyzed = await attachFootageOcrCandidate({
-        url: cdn,
-        platform: plat,
-        query,
-        is_video: true,
-        relevance: 'match',
-        source_url: postUrl,
-        description,
-      });
-      if (analyzed.status === 'unavailable') {
-        mediaDropped++;
-        continue;
-      }
-      if (analyzed.entry.ocr_outcome === 'subtitle') continue;
-      set.footage.push(analyzed.entry);
+      const analyzed = await selectCarouselFootageVideoCandidate(
+        {
+          url: postUrl,
+          platform: plat,
+          query,
+          is_video: true,
+          relevance: 'match',
+          description,
+        },
+        () => igSlideDirectUrl(postUrl, s.index),
+      );
+      mediaDropped += analyzed.mediaDropped;
+      if (analyzed.result.status === 'unavailable') continue;
+      if (analyzed.result.entry.ocr_outcome === 'subtitle') continue;
+      set.footage.push(analyzed.result.entry);
     } else {
       if (!s.image_path) continue; // photo slide with no cropped image → skip (no broken card)
       set.footage.push({
@@ -242,9 +245,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
       console.log(
         `Selesai: +${slideResult.added} footage dari ${slides.length} slide carousel main → footage total ${set.footage.length}. (skip cari eksternal)` +
-          (slideResult.mediaDropped
-            ? ` (${slideResult.mediaDropped} drop media tak dapat diakses)`
-            : ''),
+          formatMediaDropSummary(slideResult.mediaDropped),
       );
       return;
     }
@@ -396,7 +397,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
               }
           }
         } else {
-          const analyzed = await attachFootageOcrCandidate({
+          const analyzed = await selectFootageVideoCandidate({
             url: r.url,
             platform: 'instagram',
             query: 'profil @' + profileUser,
@@ -404,12 +405,10 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
             relevance: 'match',
             description: r.caption || '',
           });
-          if (analyzed.status === 'unavailable') {
-            mediaDropped++;
-            continue;
-          }
-          if (analyzed.entry.ocr_outcome === 'subtitle') continue;
-          set.footage.push(analyzed.entry);
+          mediaDropped += analyzed.mediaDropped;
+          if (analyzed.result.status === 'unavailable') continue;
+          if (analyzed.result.entry.ocr_outcome === 'subtitle') continue;
+          set.footage.push(analyzed.result.entry);
           added++;
           addedV++;
         }
@@ -419,8 +418,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
       throw e;
     }
     console.log(
-      `+${added} reel relevan` +
-        (mediaDropped ? ` (${mediaDropped} drop media tak dapat diakses)` : ''),
+      `+${added} reel relevan` + formatMediaDropSummary(mediaDropped),
     );
   }
 
@@ -473,40 +471,29 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
         // (topic_to_urls --keywords), dan story-gate cosine di akhir yang menyaring off-topic. Re-gate
         // pakai caption oEmbed rapuh: oEmbed flaky/rate-limit → caption salah/tak ada kata objek →
         // video VALID ke-drop (gejala: "+0v" padahal kandidat bagus). Percaya search-gate + story-gate.
-        // TikTok: yt-dlp (Thoth) tak bisa download PAGE TikTok (extractor rusak/403) → resolve ke URL
-        // CDN mp4 langsung (tikwm→CDP) yg yt-dlp generic BISA download. Simpan page asli di source_url.
-        // Gagal resolve → biar page url (Thoth drop diam, non-fatal). URL CDN ephemeral → jalankan thoth segera.
-        let furl = e.url,
-          src_url;
-        if (e.platform === 'tiktok') {
-          const d = await tiktokDirectUrl(e.url);
-          if (!d?.url) {
-            mediaDropped++;
-            return false;
-          }
-          furl = d.url;
-          src_url = e.url;
-        }
+        // TikTok page URLs resolve to CDN media before OCR. A failed resolution is unavailable,
+        // consumes no quota, and is never retried by attachVideoOcr.
         // OCR is a required safety gate: subtitle footage is rejected, cover footage
         // is trimmed, and analysis failure aborts content-set construction.
-        const analyzed = await attachFootageOcrCandidate({
-          url: furl,
+        const candidate = {
+          url: e.url,
           platform: e.platform,
           query: obj,
           is_video: true,
           relevance: 'match',
           description,
-          ...(src_url ? { source_url: src_url } : {}),
-        });
-        if (analyzed.status === 'unavailable') {
-          mediaDropped++;
-          return false;
-        }
-        if (analyzed.entry.ocr_outcome === 'subtitle') {
+        };
+        const analyzed =
+          e.platform === 'tiktok'
+            ? await selectTikTokFootageVideoCandidate(candidate, tiktokDirectUrl)
+            : await selectFootageVideoCandidate(candidate);
+        mediaDropped += analyzed.mediaDropped;
+        if (analyzed.result.status === 'unavailable') return false;
+        if (analyzed.result.entry.ocr_outcome === 'subtitle') {
           dropReact++;
           return false;
         }
-        set.footage.push(analyzed.entry);
+        set.footage.push(analyzed.result.entry);
         pv++;
         addedV++;
         return true;
@@ -600,7 +587,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
         `+${pv}v/${pp}p` +
           (dropped ? ` (${dropped} drop tak-relevan)` : '') +
           (dropReact ? ` (${dropReact} drop reaction)` : '') +
-          (mediaDropped ? ` (${mediaDropped} drop media tak dapat diakses)` : '') +
+          formatMediaDropSummary(mediaDropped) +
           (aggSkip ? ` (${aggSkip} drop akun-kurator)` : ''),
       );
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8'); // persist after EACH object (crash-resilient)
