@@ -12,14 +12,49 @@
 
 import fs from 'node:fs';
 
-// --- tikwm.com: GET /api/?url=<tiktok> → { data:{ play, hdplay, wmplay, title, duration } } ---
-async function viaTikwm(pageUrl) {
+const DEFAULT_MEDIA_TIMEOUT_MS = 15_000;
+
+type TikTokMediaDescriptor = {
+  url: string;
+  title: string;
+  duration: number;
+  via: string;
+};
+
+type TikTokVideoDeps = {
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+  cdpResolver?: (pageUrl: string) => Promise<TikTokMediaDescriptor | null>;
+};
+
+export async function fetchWithDeadline(
+  fetchImpl: typeof fetch,
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const r = await fetch(
+    return await fetchImpl(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// --- tikwm.com: GET /api/?url=<tiktok> → { data:{ play, hdplay, wmplay, title, duration } } ---
+async function viaTikwm(
+  pageUrl: string,
+  deps: TikTokVideoDeps,
+): Promise<TikTokMediaDescriptor | null> {
+  try {
+    const r = await fetchWithDeadline(
+      deps.fetch ?? fetch,
       'https://www.tikwm.com/api/?url=' + encodeURIComponent(pageUrl) + '&hd=1',
       {
         headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
       },
+      deps.timeoutMs ?? DEFAULT_MEDIA_TIMEOUT_MS,
     );
     if (!r.ok) return null;
     const j = await r.json();
@@ -40,7 +75,11 @@ async function viaTikwm(pageUrl) {
 
 // --- CDP fallback: open the page in the relay browser, read <video>.currentSrc. Only usable when the
 // player exposes a direct http(s) source (not a blob:/MSE stream). Best-effort. ---
-async function viaCdp(pageUrl) {
+async function viaCdp(
+  pageUrl: string,
+  deps: TikTokVideoDeps,
+): Promise<TikTokMediaDescriptor | null> {
+  if (deps.cdpResolver) return deps.cdpResolver(pageUrl);
   let connect, sleep;
   try {
     ({ connect, sleep } = await import('../lib/cdp.ts'));
@@ -79,18 +118,28 @@ async function viaCdp(pageUrl) {
 }
 
 // Resolve a TikTok page URL → direct CDN mp4 descriptor (tikwm first, CDP fallback). null on failure.
-async function tiktokDirectUrl(pageUrl) {
-  return (await viaTikwm(pageUrl)) || (await viaCdp(pageUrl)) || null;
+export async function tiktokDirectUrl(
+  pageUrl: string,
+  deps: TikTokVideoDeps = {},
+): Promise<TikTokMediaDescriptor | null> {
+  return (await viaTikwm(pageUrl, deps)) || (await viaCdp(pageUrl, deps)) || null;
 }
 
 // Download a TikTok video to `out` (resolves direct URL first). Returns the local path or ''.
-async function downloadTiktok(pageUrl, out) {
-  const d = await tiktokDirectUrl(pageUrl);
+export async function downloadTiktok(
+  pageUrl: string,
+  out: string,
+  deps: TikTokVideoDeps = {},
+): Promise<string> {
+  const d = await tiktokDirectUrl(pageUrl, deps);
   if (!d) return '';
   try {
-    const r = await fetch(d.url, {
-      headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.tikwm.com/' },
-    });
+    const r = await fetchWithDeadline(
+      deps.fetch ?? fetch,
+      d.url,
+      { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.tikwm.com/' } },
+      deps.timeoutMs ?? DEFAULT_MEDIA_TIMEOUT_MS,
+    );
     if (!r.ok) return '';
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length < 10000) return ''; // too small → likely an error page, not a video
@@ -100,5 +149,3 @@ async function downloadTiktok(pageUrl, out) {
     return '';
   }
 }
-
-export { tiktokDirectUrl, downloadTiktok };
