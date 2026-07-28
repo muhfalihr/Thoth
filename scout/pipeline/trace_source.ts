@@ -33,6 +33,11 @@ import {
   clearVideoOcrMetadata,
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
+import {
+  readVisionSignals,
+  selectTraceVisionInput,
+  visionInputDataUrl,
+} from './trace_source_vision.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n) => {
@@ -207,17 +212,8 @@ async function coverOf(main) {
 // VISION: read the on-screen HEADLINE/HOOK text (+ any visible credit/watermark) from the cover, as
 // plain text — the LLM (resolveSource) then decides if it names a source or yields keywords.
 async function visionHeadline(imgUrl, key, model) {
-  if (!imgUrl || !key) return '';
-  let ct = 'image/jpeg',
-    b64;
-  try {
-    const ir = await fetch(imgUrl);
-    if (!ir.ok) return '';
-    ct = ir.headers.get('content-type') || ct;
-    b64 = Buffer.from(await ir.arrayBuffer()).toString('base64');
-  } catch (_) {
-    return '';
-  }
+  const dataUrl = await visionInputDataUrl(imgUrl);
+  if (!dataUrl || !key) return '';
   const prompt = `Baca SEMUA teks yang terlihat di cover video ini: HEADLINE/HOOK besar (judul/pancingan)
 DAN kredit/watermark akun kecil bila ada (mis. "@akun", "cr: ...", logo channel). Kembalikan HANYA
 teksnya apa adanya (gabung jadi 1-2 baris), atau "" kalau tak ada teks.`;
@@ -234,7 +230,7 @@ teksnya apa adanya (gabung jadi 1-2 baris), atau "" kalau tak ada teks.`;
             role: 'user',
             content: [
               { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: `data:${ct};base64,${b64}` } },
+              { type: 'image_url', image_url: { url: dataUrl } },
             ],
           },
         ],
@@ -257,17 +253,8 @@ teksnya apa adanya (gabung jadi 1-2 baris), atau "" kalau tak ada teks.`;
 // sentence. Used to disambiguate a creator's many near-identical clips by what's actually happening
 // (captions on high-volume creators are generic hashtags). '' on failure / no key.
 async function visionCover(imgUrl, key, model) {
-  if (!imgUrl || !key) return '';
-  let ct = 'image/jpeg',
-    b64;
-  try {
-    const ir = await fetch(imgUrl);
-    if (!ir.ok) return '';
-    ct = ir.headers.get('content-type') || ct;
-    b64 = Buffer.from(await ir.arrayBuffer()).toString('base64');
-  } catch (_) {
-    return '';
-  }
+  const dataUrl = await visionInputDataUrl(imgUrl);
+  if (!dataUrl || !key) return '';
   const prompt = `Lihat cover video ini. WAJIB & PALING PENTING: baca SEMUA teks overlay/judul di cover
 APA ADANYA (itu sinyal topik paling menentukan untuk membedakan klip mirip). Lalu deskripsikan singkat
 AKSI/kegiatan spesifik yang terjadi (apa yang sedang dilakukan), objek, dan lokasi — bukan cuma siapa
@@ -285,7 +272,7 @@ orangnya. Format: "<teks overlay>. <aksi/scene singkat>". Bahasa Indonesia, tanp
             role: 'user',
             content: [
               { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: `data:${ct};base64,${b64}` } },
+              { type: 'image_url', image_url: { url: dataUrl } },
             ],
           },
         ],
@@ -1011,9 +998,16 @@ async function setMainTo(set, orig, username) {
     console.log(`[force] username=@${username}`);
   } else {
     caption = await captionOf(main);
-    const cover = await coverOf(main);
-    headline = cover ? await visionHeadline(cover, novitaKey(), MODEL) : '';
-    scene = cover ? await visionCover(cover, novitaKey(), MODEL) : '';
+    const fallbackCover = await coverOf(main);
+    const selectedCover = await selectTraceVisionInput(main, fallbackCover, {
+      log: (line) => console.log(line),
+    });
+    const signals = await readVisionSignals(selectedCover.input, {
+      headline: (input) => visionHeadline(input, novitaKey(), MODEL),
+      scene: (input) => visionCover(input, novitaKey(), MODEL),
+    });
+    headline = signals.headline;
+    scene = signals.scene;
     console.log(`[1] caption: ${(caption || '(kosong)').slice(0, 60)}`);
     console.log(`[2] headline(vision): ${(headline || '(kosong)').slice(0, 70)}`);
     console.log(`[2b] scene(vision): ${(scene || '(kosong)').slice(0, 70)}`);
