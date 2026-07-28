@@ -82,6 +82,19 @@ const RECT_EXPR = `(() => {
 
 type RectProbe = { kind: 'photo' | 'video'; x: number; y: number; w: number; h: number; ready: boolean };
 
+// Retry the candidate SEARCH itself, not just readiness of an already-found
+// element: live acceptance showed the real slide-1 media can still be
+// unmounted / zero-sized well past a single post-navigate settle wait (an
+// `og:image`-replacement carousel image is fetched after the surrounding
+// post chrome, sometimes 10s+ later). A single early evaluate() finds no
+// candidate at all and reports slide1_dom_missing even though the element
+// shows up seconds later. Same retry SHAPE as the proven `crop_post.ts`
+// (`tries=12`, `sleep(1000)`) — re-running the full (still viewport-
+// filtered) query each attempt so a later render, or one that replaces the
+// element via SPA re-render, still gets tagged.
+const SELECT_TRIES = 12;
+const SELECT_RETRY_SLEEP_MS = 1000;
+
 // Poll the tagged element's readiness a few times so a slow-loading photo
 // gets a chance to finish painting before we give up (video never needs
 // this — its pixels come from the resolved CDN stream, not the DOM element).
@@ -92,7 +105,13 @@ async function inspectFirstSlide(postUrl: string): Promise<FirstSlideProbe | nul
   let client: CdpClient | null = null;
   try {
     client = await connect({ match: 'instagram.com', navigate: postUrl, requireMatch: true });
-    const tag = await client.evaluate(MEDIA_SELECT_EXPR);
+
+    let tag = '';
+    for (let attempt = 0; attempt < SELECT_TRIES; attempt++) {
+      tag = await client.evaluate(MEDIA_SELECT_EXPR);
+      if (tag) break;
+      await sleep(SELECT_RETRY_SLEEP_MS);
+    }
     if (!tag) return null;
 
     let parsed: RectProbe | null = null;
