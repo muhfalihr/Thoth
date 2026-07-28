@@ -208,32 +208,13 @@ function directStreamUrl(pageUrl) {
 
 // Enumerate an IG/X/FB carousel's slides via yt-dlp (RELIABLE — no DOM, unlike cropPost whose
 // biggest-media+ancestor heuristic fails on many carousel layouts). Returns [{index, kind}], 1-based,
-// kind='video' when the slide carries a duration (video), else 'photo'. [] on failure / single media.
+// kind='video' when ext='mp4' (video), else 'photo'. [] on failure / single media.
 // Lets footage pick up all-video carousels (e.g. a 6-clip post) even when the DOM crop can't.
 function igCarouselSlides(postUrl, maxSlides = 5) {
-  const YTDLP = process.env.YTDLP || 'yt-dlp';
-  const args = [
-    '--no-warnings',
-    '--skip-download',
-    '--flat-playlist',
-    '-J',
-    '--playlist-items',
-    '1-' + maxSlides,
-    ...ytdlpCookieArgs(),
-    postUrl,
-  ];
-  try {
-    const out = execFileSync(YTDLP, args, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: PROBE_TIMEOUT,
-      maxBuffer: PROBE_MAXBUF,
-    });
-    const d = JSON.parse(out.toString('utf8'));
-    const entries = Array.isArray(d.entries) && d.entries.length ? d.entries : [d];
-    return entries.map((e, i) => ({ index: i + 1, kind: e && e.duration ? 'video' : 'photo' }));
-  } catch (_) {
-    return [];
-  }
+  const shape = postShape(postUrl, maxSlides);
+  if (!shape.ok) return [];
+  if (shape.shape !== 'carousel') return [];
+  return shape.slides.map((s) => ({ index: s.index, kind: s.kind }));
 }
 
 // Classify ANY post URL's SHAPE via ONE yt-dlp -J probe — platform-agnostic (works wherever
@@ -273,13 +254,13 @@ function parseShape(jsonText: string): any {
   if (Array.isArray(d.entries) && d.entries.length > 1) {
     const slides = d.entries.map((e, i) => ({
       index: i + 1,
-      kind: e && e.duration ? 'video' : 'photo',
+      kind: (e && e.ext === 'mp4') || (e && e.duration) ? 'video' : 'photo',
       duration: (e && e.duration) || 0,
     }));
     return { ok: true, shape: 'carousel', slides, caption, time };
   }
   const one = (Array.isArray(d.entries) && d.entries[0]) || d;
-  const kind = one && one.duration ? 'video' : 'photo';
+  const kind = (one && one.ext === 'mp4') || (one && one.duration) ? 'video' : 'photo';
   return {
     ok: true,
     shape: kind,
@@ -366,6 +347,8 @@ export {
   ytdlpCookieArgs,
   postShape,
   warmPostShapes,
+  shapeArgs,
+  parseShape,
 };
 
 // --- CLI ------------------------------------------------------------------------
