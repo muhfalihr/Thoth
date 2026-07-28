@@ -39,6 +39,7 @@ export type OcrAnalysisDeps = {
   frameDataUrl?: (video: string, t: number) => string | null;
   ocrFrame?: (image: string) => Promise<{ boxes: OcrBox[]; error?: string }>;
   retryCount?: number;
+  sleep?: (ms: number) => Promise<void>;
   appendDiagnostics?: (record: unknown) => void;
 };
 
@@ -590,6 +591,12 @@ async function ocrFrame(
   }
 }
 
+// ffprobe is resolved relative to this file, so a checkout without the untracked
+// binaries (a git worktree) has none. That ENOENT used to be swallowed into 0 and
+// reported as `duration_probe_failed` — a tooling misconfiguration wearing a media
+// failure's error code. Signal it apart with this sentinel.
+export const FFPROBE_MISSING = -1;
+
 function probeDuration(videoUrl: string, env: Record<string, string | undefined>): number {
   const ffmpeg = env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
   const ffprobe = env.THOTH_FFPROBE || path.join(path.dirname(ffmpeg), 'ffprobe.exe');
@@ -598,7 +605,8 @@ function probeDuration(videoUrl: string, env: Record<string, string | undefined>
       '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', videoUrl,
     ], { encoding: 'utf8', stdio: 'pipe', timeout: 30000 });
     return parseDuration(raw);
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return FFPROBE_MISSING;
     return 0;
   }
 }
@@ -616,6 +624,7 @@ function safeErrorMessage(errorCode: string): string {
     case 'missing_video_path': return 'Video path is required';
     case 'missing_api_key': return 'OCR API key is not configured';
     case 'duration_probe_failed': return 'Video duration could not be determined';
+    case 'ffprobe_missing': return 'ffprobe executable was not found';
     case 'incomplete_frame_coverage': return 'OCR did not analyze every scheduled frame';
     default: return 'OCR analysis failed';
   }
@@ -722,6 +731,15 @@ function safeFrameErrorCode(error: unknown): string {
 const FRAME_RECOVERY_OFFSETS = [0, .25, .5, 1] as const;
 const FRAME_EXTRACTION_ATTEMPTS = 2;
 
+// Novita allows 30 OCR requests/minute; 12 frames per video means a third video inside the same
+// minute is rate-limited mid-way. Retrying instantly just re-spends the exhausted window, so wait
+// long enough for the sliding window to free slots (one frees every ~2s at that limit).
+const OCR_RETRY_BACKOFF_MS = [3000, 9000] as const;
+
+function retryBackoffMs(attempt: number): number {
+  return OCR_RETRY_BACKOFF_MS[Math.min(attempt, OCR_RETRY_BACKOFF_MS.length - 1)];
+}
+
 function frameRecoveryTimes(requested: number, previous: number | undefined): number[] {
   const candidates = FRAME_RECOVERY_OFFSETS.map((offset) =>
     Number(Math.max(0, requested - offset).toFixed(6)));
@@ -786,7 +804,7 @@ export async function analyzeSubtitlesDetailed(
       duration,
       model,
       analyzedAt,
-      'duration_probe_failed',
+      resolvedDuration === FFPROBE_MISSING ? 'ffprobe_missing' : 'duration_probe_failed',
       0,
       0,
       [],
@@ -800,6 +818,7 @@ export async function analyzeSubtitlesDetailed(
   const times = buildSampleTimes(resolvedDuration, maxFrames);
   const extractFrame = deps.frameDataUrl ?? ((video, t) => frameDataUrl(video, t, env));
   const analyzeFrame = deps.ocrFrame ?? ((image) => ocrFrame(image, apiKey, model, env));
+  const wait = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const frames: OcrFrame[] = [];
   let actualRetryCount = 0;
 
@@ -828,7 +847,10 @@ export async function analyzeSubtitlesDetailed(
     }
     let frameResult: { boxes: OcrBox[]; error?: string } = { boxes: [], error: 'ocr_failed' };
     for (let attempt = 0; attempt <= retryCount; attempt++) {
-      if (attempt > 0) actualRetryCount++;
+      if (attempt > 0) {
+        actualRetryCount++;
+        await wait(retryBackoffMs(attempt - 1));
+      }
       try {
         const response = await analyzeFrame(image);
         frameResult = response.error

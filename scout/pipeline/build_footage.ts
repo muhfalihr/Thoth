@@ -28,9 +28,13 @@ import { rankBySimilarity, embed, cosine } from '../lib/embed.ts';
 import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
-import { attachVideoOcr } from '../lib/ocr_content.ts';
+import {
+  formatMediaDropSummary,
+  selectCarouselFootageVideoCandidate,
+  selectFootageVideoCandidate,
+  selectTikTokFootageVideoCandidate,
+} from '../lib/footage_candidate_selection.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
-import { OcrAnalysisError } from '../lib/subtitle_vision.ts';
 import { ui } from '../lib/ui.ts';
 
 const args = process.argv.slice(2);
@@ -159,24 +163,29 @@ function searchObject(query) {
 
 // Push one footage entry per cropped slide of an IG/FB post: PHOTO → image-card (is_video:false);
 // VIDEO slide → igSlideDirectUrl CDN .mp4 (is_video:true) so Thoth downloads real video, not a frozen
-// frame. Distinct url (#slideN / CDN) keeps dedup happy. Returns count pushed. Caller crops + gates first.
-async function pushSlides(set, postUrl, slides, plat, query, description) {
+// frame. Distinct url (#slideN / CDN) keeps dedup happy. Caller crops + gates first.
+type PushSlidesResult = { added: number; mediaDropped: number };
+
+async function pushSlides(set, postUrl, slides, plat, query, description): Promise<PushSlidesResult> {
   let added = 0;
+  let mediaDropped = 0;
   for (const s of slides) {
     if (s.kind === 'video') {
-      const cdn = igSlideDirectUrl(postUrl, s.index);
-      if (!cdn) continue;
-      const entry = await attachVideoOcr({
-        url: cdn,
-        platform: plat,
-        query,
-        is_video: true,
-        relevance: 'match',
-        source_url: postUrl,
-        description,
-      });
-      if (entry.ocr_outcome === 'subtitle') continue;
-      set.footage.push(entry);
+      const analyzed = await selectCarouselFootageVideoCandidate(
+        {
+          url: postUrl,
+          platform: plat,
+          query,
+          is_video: true,
+          relevance: 'match',
+          description,
+        },
+        () => igSlideDirectUrl(postUrl, s.index),
+      );
+      mediaDropped += analyzed.mediaDropped;
+      if (analyzed.result.status === 'unavailable') continue;
+      if (analyzed.result.entry.ocr_outcome === 'subtitle') continue;
+      set.footage.push(analyzed.result.entry);
     } else {
       if (!s.image_path) continue; // photo slide with no cropped image → skip (no broken card)
       set.footage.push({
@@ -191,7 +200,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
     }
     added++;
   }
-  return added;
+  return { added, mediaDropped };
 }
 
 (async () => {
@@ -225,7 +234,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         } catch (e) {}
       }
       slides = slides.filter((s) => s.kind === 'video' || s.image_path); // photo tanpa gambar → buang
-      const n = await pushSlides(
+      const slideResult = await pushSlides(
         set,
         main.url,
         slides,
@@ -235,7 +244,8 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
       );
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
       console.log(
-        `Selesai: +${n} footage dari ${slides.length} slide carousel main → footage total ${set.footage.length}. (skip cari eksternal)`,
+        `Selesai: +${slideResult.added} footage dari ${slides.length} slide carousel main → footage total ${set.footage.length}. (skip cari eksternal)` +
+          formatMediaDropSummary(slideResult.mediaDropped),
       );
       return;
     }
@@ -301,6 +311,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
   } else if (profileUser) {
     process.stdout.write(`• profil @${profileUser} … `);
     let added = 0;
+    let mediaDropped = 0;
     try {
       // includePosts:true → also scan feed posts (/p/), since creators often publish the topic as a
       // carousel/slide feed post (photo+video), not a Reel. max bumped: the grid mixes photos+reels.
@@ -364,7 +375,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
             } catch (e2) {}
           }
           slides = slides.filter((s) => s.kind === 'video' || s.image_path); // drop photo slides w/o an image
-          const n = await pushSlides(
+          const slideResult = await pushSlides(
             set,
             r.url,
             slides,
@@ -372,6 +383,8 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
             'profil @' + profileUser,
             desc,
           );
+          mediaDropped += slideResult.mediaDropped;
+          const n = slideResult.added;
           if (n) {
             added++;
             addedP++;
@@ -384,7 +397,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
               }
           }
         } else {
-          const entry = await attachVideoOcr({
+          const analyzed = await selectFootageVideoCandidate({
             url: r.url,
             platform: 'instagram',
             query: 'profil @' + profileUser,
@@ -392,17 +405,21 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
             relevance: 'match',
             description: r.caption || '',
           });
-          if (entry.ocr_outcome === 'subtitle') continue;
-          set.footage.push(entry);
+          mediaDropped += analyzed.mediaDropped;
+          if (analyzed.result.status === 'unavailable') continue;
+          if (analyzed.result.entry.ocr_outcome === 'subtitle') continue;
+          set.footage.push(analyzed.result.entry);
           added++;
           addedV++;
         }
       }
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
     } catch (e) {
-      if (e instanceof OcrAnalysisError) throw e;
+      throw e;
     }
-    console.log(`+${added} reel relevan`);
+    console.log(
+      `+${added} reel relevan` + formatMediaDropSummary(mediaDropped),
+    );
   }
 
   for (const { obj, query } of tasks) {
@@ -426,7 +443,8 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
       let pv = 0,
         pp = 0,
         dropped = 0,
-        dropReact = 0;
+        dropReact = 0,
+        mediaDropped = 0;
 
       const addVideo = async (e) => {
         have.add(e.url);
@@ -453,36 +471,29 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         // (topic_to_urls --keywords), dan story-gate cosine di akhir yang menyaring off-topic. Re-gate
         // pakai caption oEmbed rapuh: oEmbed flaky/rate-limit → caption salah/tak ada kata objek →
         // video VALID ke-drop (gejala: "+0v" padahal kandidat bagus). Percaya search-gate + story-gate.
-        // TikTok: yt-dlp (Thoth) tak bisa download PAGE TikTok (extractor rusak/403) → resolve ke URL
-        // CDN mp4 langsung (tikwm→CDP) yg yt-dlp generic BISA download. Simpan page asli di source_url.
-        // Gagal resolve → biar page url (Thoth drop diam, non-fatal). URL CDN ephemeral → jalankan thoth segera.
-        let furl = e.url,
-          src_url;
-        if (e.platform === 'tiktok') {
-          try {
-            const d = await tiktokDirectUrl(e.url);
-            if (d && d.url) {
-              furl = d.url;
-              src_url = e.url;
-            }
-          } catch (err) {}
-        }
+        // TikTok page URLs resolve to CDN media before OCR. A failed resolution is unavailable,
+        // consumes no quota, and is never retried by attachVideoOcr.
         // OCR is a required safety gate: subtitle footage is rejected, cover footage
         // is trimmed, and analysis failure aborts content-set construction.
-        const entry = await attachVideoOcr({
-          url: furl,
+        const candidate = {
+          url: e.url,
           platform: e.platform,
           query: obj,
           is_video: true,
           relevance: 'match',
           description,
-          ...(src_url ? { source_url: src_url } : {}),
-        });
-        if (entry.ocr_outcome === 'subtitle') {
+        };
+        const analyzed =
+          e.platform === 'tiktok'
+            ? await selectTikTokFootageVideoCandidate(candidate, tiktokDirectUrl)
+            : await selectFootageVideoCandidate(candidate);
+        mediaDropped += analyzed.mediaDropped;
+        if (analyzed.result.status === 'unavailable') return false;
+        if (analyzed.result.entry.ocr_outcome === 'subtitle') {
           dropReact++;
           return false;
         }
-        set.footage.push(entry);
+        set.footage.push(analyzed.result.entry);
         pv++;
         addedV++;
         return true;
@@ -542,7 +553,9 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
           return true;
         }
         // One footage entry per slide (URL CDN ephemeral → run thoth soon).
-        const added = await pushSlides(set, e.url, slides, plat, obj, description);
+        const slideResult = await pushSlides(set, e.url, slides, plat, obj, description);
+        mediaDropped += slideResult.mediaDropped;
+        const added = slideResult.added;
         if (!added) {
           rmAll();
           return false;
@@ -574,16 +587,12 @@ async function pushSlides(set, postUrl, slides, plat, query, description) {
         `+${pv}v/${pp}p` +
           (dropped ? ` (${dropped} drop tak-relevan)` : '') +
           (dropReact ? ` (${dropReact} drop reaction)` : '') +
+          formatMediaDropSummary(mediaDropped) +
           (aggSkip ? ` (${aggSkip} drop akun-kurator)` : ''),
       );
       fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8'); // persist after EACH object (crash-resilient)
     } catch (e) {
-      if (e instanceof OcrAnalysisError) throw e;
-      console.log(
-        ui.amber(
-          `(${ui.WARN} "${obj}" gagal: ${String((e && e.message) || e).slice(0, 70)} — skip)`,
-        ),
-      );
+      throw e;
     }
   }
 

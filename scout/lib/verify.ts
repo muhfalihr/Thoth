@@ -164,19 +164,30 @@ function igSlideDirectUrl(postUrl, n) {
 // URL. Returns '' on failure (photo-only post, unresolvable, timeout, or an already-direct CDN URL
 // yt-dlp doesn't recognize) so callers can fail-open to the original URL. Same ephemeral-CDN caveat
 // as tiktokDirectUrl/igSlideDirectUrl: the signed URL expires, use it promptly.
-function directStreamUrl(pageUrl) {
-  const YTDLP = process.env.YTDLP || 'yt-dlp';
-  const args = [
+// Args extracted (like shapeArgs) so the flag set is assertable without spawning yt-dlp.
+// `--playlist-items 1` alone resolved ONLY slide 1: a photo-first IG/FB carousel then errored
+// ("No video formats found"), fell open to the page URL, and ffprobe read an HTML page as
+// 0-duration media → a bogus `duration_probe_failed`. Scan the first slides instead and let
+// --ignore-no-formats-error skip past photos to the first real video, the same flag postShape
+// already relies on. Bounded to 5 so a playlist URL can't fan out.
+function directStreamArgs(pageUrl, maxSlides = 5) {
+  return [
     '--no-warnings',
     '--skip-download',
+    '--ignore-no-formats-error',
     '--playlist-items',
-    '1',
+    '1-' + maxSlides,
     '-f',
     'best[ext=mp4]/best',
     '-g',
     ...ytdlpCookieArgs(),
     pageUrl,
   ];
+}
+
+function directStreamUrl(pageUrl) {
+  const YTDLP = process.env.YTDLP || 'yt-dlp';
+  const args = directStreamArgs(pageUrl);
   try {
     const out = execFileSync(YTDLP, args, {
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -348,6 +359,7 @@ export {
   matchesTopic,
   verifyTikTok,
   probeVideo,
+  directStreamArgs,
   directStreamUrl,
   igSlideDirectUrl,
   igCarouselSlides,
