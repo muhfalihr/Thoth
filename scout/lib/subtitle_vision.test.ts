@@ -113,6 +113,16 @@ assert.equal(
   assert.equal(noDuration.error_code, 'duration_probe_failed');
   assert.equal(noDuration.verdict, undefined);
 
+  // Real probeDuration against an absent binary: a checkout without the untracked
+  // ffmpeg/ffprobe (a git worktree) must not read as unprobeable media.
+  const missingTool = await analyzeSubtitlesDetailed('C:/video.mp4', 0, {
+    env: { THOTH_NOVITA_API_KEY: 'test', THOTH_FFMPEG: 'C:/thoth-absent/ffmpeg.exe' },
+  });
+  assert.equal(missingTool.ocr_status, 'failed');
+  assert.equal(missingTool.error_code, 'ffprobe_missing');
+  assert.equal(missingTool.error_message, 'ffprobe executable was not found');
+  assert.equal(missingTool.verdict, undefined);
+
   const clean = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
     env: {
       THOTH_NOVITA_API_KEY: 'test',
@@ -138,6 +148,40 @@ assert.equal(
   assert.equal(partial.error_code, 'incomplete_frame_coverage');
   assert.equal(partial.valid_frames, partial.requested_frames - 1);
   assert.equal(partial.verdict, undefined);
+
+  // Novita caps OCR at 30 requests/minute. At 12 frames per video a third video inside the same
+  // minute gets a 429 on frame 7, and retries that fire back-to-back all land in the same exhausted
+  // window — 12 wasted attempts, zero recoveries, then a fatal incomplete_frame_coverage. Waiting
+  // between attempts lets the sliding window free a slot.
+  const backoffs: number[] = [];
+  let limited = 6;
+  const throttled = await analyzeSubtitlesDetailed('C:/video.mp4', 4, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: (_video, t) => `frame:${t}`,
+    ocrFrame: async () => (backoffs.length === 0 && limited-- > 0
+      ? { boxes: [], error: 'http_429' }
+      : { boxes: [] }),
+    sleep: async (ms) => {
+      backoffs.push(ms);
+    },
+    retryCount: 2,
+  });
+  assert.equal(throttled.ocr_status, 'analyzed');
+  assert.equal(throttled.valid_frames, throttled.requested_frames);
+  assert.ok(backoffs.length > 0, 'a rate-limited frame must wait before retrying');
+  assert.ok(backoffs.every((ms) => ms > 0), 'backoff must be a real delay');
+
+  // A frame that succeeds first try must never pay the delay.
+  const unthrottled: number[] = [];
+  await analyzeSubtitlesDetailed('C:/video.mp4', 4, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    frameDataUrl: (_video, t) => `frame:${t}`,
+    ocrFrame: async () => ({ boxes: [] }),
+    sleep: async (ms) => {
+      unthrottled.push(ms);
+    },
+  });
+  assert.equal(unthrottled.length, 0);
 
   let thrownAttempts = 0;
   const thrown = await analyzeSubtitlesDetailed('C:/video.mp4', 1, {
