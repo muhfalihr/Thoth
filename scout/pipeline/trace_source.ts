@@ -20,7 +20,7 @@ import { connect, sleep } from '../lib/cdp.ts';
 import { tiktokOembed, youtubeOembed, matchesTopic, probeVideo, directStreamUrl } from '../lib/verify.ts';
 import { resolveSource, composeSearchQuery, tightenQuery } from './resolve_source.ts';
 import { threadsVideoSrc, downloadThreads } from '../scrapers/threads_video.ts';
-import { igProfileReels } from '../scrapers/ig_profile.ts';
+import { igProfileReels, igPostOg } from '../scrapers/ig_profile.ts';
 import { tiktokProfileVideos, cropTiktokProfile } from '../scrapers/tiktok_profile.ts';
 import { rankBySimilarity } from '../lib/embed.ts';
 import { tiktokDirectUrl, downloadTiktok } from '../scrapers/tiktok_video.ts';
@@ -86,6 +86,9 @@ async function captionOf(main) {
   }
   if (main.platform === 'threads') {
     return (await threadsOg(main.url)).text;
+  }
+  if (main.platform === 'instagram') {
+    return (await igPostOg(main.url)).text;
   }
   return '';
 }
@@ -159,32 +162,7 @@ async function twitterText(url) {
   }
 }
 // Cover image of an IG reel = its og:image (the generated cover frame, which carries the on-screen
-// HEADLINE overlay). oEmbed doesn't cover IG, so read it from the page over CDP (logged-in tab).
-async function igCoverImage(url) {
-  let c;
-  try {
-    c = await connect({ match: 'instagram.com', requireMatch: true });
-  } catch (e) {
-    return '';
-  }
-  try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(url, 6000);
-    await sleep(2500);
-    const og = await c.evaluate(
-      `(document.querySelector('meta[property="og:image"]')||{}).content || ''`,
-    );
-    return og || '';
-  } catch (e) {
-    return '';
-  } finally {
-    try {
-      c.close();
-    } catch (e) {}
-  }
-}
+// HEADLINE overlay) — same CDP read as the caption, so igPostOg serves both in one page visit.
 // X/Twitter cover = the video poster frame (or photo) via yt-dlp's %(thumbnail)s. Tab-independent —
 // the logged-in SPA does NOT inject og:image client-side (only server-rendered HTML has it), so a CDP
 // og read returns empty; yt-dlp reads the real amplify_video_thumb URL. '' for text-only tweets.
@@ -215,7 +193,7 @@ async function coverOf(main) {
     return (m && m.thumbnail) || '';
   }
   if (main.platform === 'instagram') {
-    return await igCoverImage(main.url);
+    return (await igPostOg(main.url)).image;
   }
   if (main.platform === 'twitter') {
     return await xCoverImage(main.url);

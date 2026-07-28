@@ -8,6 +8,51 @@
 
 import { connect, sleep } from '../lib/cdp.ts';
 
+// og:description = '<n> likes, <n> comments - <user> on <date>: "CAPTION' — often truncated, so the
+// closing quote may be missing. Everything after `: "` is the caption.
+function igCaptionFromOg(og: string) {
+  const s = og || '';
+  const i = s.indexOf(': "');
+  return (i >= 0 ? s.slice(i + 3).replace(/"\s*$/, '') : s).trim();
+}
+
+// One IG post page carries BOTH the caption (og:description) and the cover frame (og:image), and
+// only a logged-in tab renders them — oEmbed doesn't cover IG. One CDP read serves every caller;
+// cached per-url so caption + cover don't navigate the same post twice.
+// ponytail: 1-entry cache, callers handle one post at a time.
+let _igOg = { url: '', text: '', image: '' };
+async function igPostOg(url: string) {
+  if (_igOg.url === url) return _igOg;
+  const res = { url, text: '', image: '' };
+  let c;
+  try {
+    c = await connect({ match: 'instagram.com', requireMatch: true });
+  } catch (e) {
+    return res; // CDP browser down / no instagram tab — not cached, a later call may find one
+  }
+  try {
+    try {
+      await c.cmd('Page.bringToFront');
+    } catch (e) {}
+    await c.navigate(url, 6000);
+    await sleep(3000);
+    const meta = await c.evaluate(`(() => {
+      const g = (p) => (document.querySelector('meta[property="' + p + '"]')||{}).content || '';
+      return JSON.stringify({ og: g('og:description'), image: g('og:image') });
+    })()`);
+    const mj = JSON.parse(meta || '{}');
+    res.text = igCaptionFromOg(mj.og);
+    res.image = mj.image || '';
+  } catch (e) {
+  } finally {
+    try {
+      c.close();
+    } catch (e) {}
+  }
+  _igOg = res;
+  return res;
+}
+
 function parseViews(s) {
   s = (s || '').trim().replace(/,/g, '');
   const m = s.match(/([\d.]+)\s*([KMB]?)/i);
@@ -129,9 +174,7 @@ async function igProfileReels(
           try {
             mj = JSON.parse(meta || '{}');
           } catch (e) {}
-          const og = mj.og || '';
-          const i = og.indexOf(': "'); // '<user> on <date>: "CAPTION'
-          it.caption = (i >= 0 ? og.slice(i + 3).replace(/"\s*$/, '') : og).trim().slice(0, 300);
+          it.caption = igCaptionFromOg(mj.og).slice(0, 300);
           if (it.type === 'p') it.isVideo = !!mj.isVideo; // reels are always video; /p/ must be verified
         } catch (e) {
           it.caption = '';
@@ -144,4 +187,4 @@ async function igProfileReels(
   }
 }
 
-export { igProfileReels, parseViews };
+export { igProfileReels, parseViews, igPostOg, igCaptionFromOg };

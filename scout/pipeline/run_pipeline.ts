@@ -15,8 +15,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { connect, run, sleep } from '../lib/cdp.ts';
+import { run } from '../lib/cdp.ts';
 import { tiktokOembed, youtubeOembed } from '../lib/verify.ts';
+import { igPostOg } from '../scrapers/ig_profile.ts';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import { runPipelineStep } from './run_pipeline_step.ts';
@@ -73,24 +74,7 @@ async function fetchCaption(url, platform) {
       return (m && m.title) || '';
     }
     if (platform === 'instagram') {
-      const c = await connect({ match: 'instagram.com', requireMatch: true });
-      try {
-        try {
-          await c.cmd('Page.bringToFront');
-        } catch (e) {}
-        await c.navigate(url, 6000);
-        await sleep(3000);
-        // og:description = "<n> likes, <n> comments - <user> on <date>: \"CAPTION\"".
-        const og =
-          (await c.evaluate(
-            `(document.querySelector('meta[property="og:description"]')||{}).content || ''`,
-          )) || '';
-        // og = '<user> on <date>: "CAPTION'  (may be truncated, no closing quote). Take after `: "`.
-        const i = og.indexOf(': "');
-        return (i >= 0 ? og.slice(i + 3).replace(/"\s*$/, '') : og).trim();
-      } finally {
-        c.close();
-      }
+      return (await igPostOg(url)).text;
     }
   } catch (e) {}
   return '';
