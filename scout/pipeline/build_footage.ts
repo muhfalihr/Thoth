@@ -370,9 +370,10 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
                     s.kind === 'photo' ? { ...s, image_path: imgByIdx.get(s.index) } : s,
                   );
                 else
-                  slides =
+                  slides = dropCoverSlide(
                     cr.slides ||
-                    (cr.image_path ? [{ kind: 'photo', index: 1, image_path: cr.image_path }] : []); // enum failed → use crop
+                      (cr.image_path ? [{ kind: 'photo', index: 1, image_path: cr.image_path }] : []),
+                  ); // enum failed → use crop
               }
             } catch (e2) {}
           }
