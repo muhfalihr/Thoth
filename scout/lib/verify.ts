@@ -206,15 +206,12 @@ function directStreamUrl(pageUrl) {
   }
 }
 
-// Enumerate an IG/X/FB carousel's slides via yt-dlp (RELIABLE — no DOM, unlike cropPost whose
-// biggest-media+ancestor heuristic fails on many carousel layouts). Returns [{index, kind}], 1-based,
-// kind='video' when ext='mp4' (video), else 'photo'. [] on failure / single media.
-// Lets footage pick up all-video carousels (e.g. a 6-clip post) even when the DOM crop can't.
+// Enumerate a carousel's slides — thin wrapper over postShape (ONE prober, ONE flag set, cached
+// per-run). Returns [{index, kind, duration}], 1-based; [] only when the probe itself failed.
+// A single-media post yields its one slide, which callers use to harvest a plain /p/ video post.
 function igCarouselSlides(postUrl, maxSlides = 5) {
-  const shape = postShape(postUrl, maxSlides);
-  if (!shape.ok) return [];
-  if (shape.shape !== 'carousel') return [];
-  return shape.slides.map((s) => ({ index: s.index, kind: s.kind }));
+  const s = postShape(postUrl); // default maxSlides=10 → cache entry is never short for a caller
+  return s.ok ? s.slides.slice(0, maxSlides) : [];
 }
 
 // Classify ANY post URL's SHAPE via ONE yt-dlp -J probe — platform-agnostic (works wherever

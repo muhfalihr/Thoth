@@ -13,24 +13,42 @@ import { directStreamArgs, shapeArgs, parseShape } from './verify.ts';
   assert.equal(args.at(-1), 'https://www.instagram.com/p/DbQoG9IjzGX');
 }
 
-// Carousel slide classification: yt-dlp never populates duration for IG carousel entries,
-// so ext='mp4' is the reliable video signal. All slides with ext='mp4' → kind:'video'.
+// The reported photo-first IG carousel. yt-dlp reports NO duration for ANY Instagram carousel
+// entry (verified with and without --flat-playlist), so `kind` must come from `ext` — keying it
+// off `duration` marked all five slides 'photo' and the multi-video carousel branch never fired.
 {
-  const mockCarouselJson = JSON.stringify({
+  const args = shapeArgs('https://www.instagram.com/p/DbQoG9IjzGX');
+  assert.ok(
+    args.includes('--ignore-no-formats-error'),
+    'a leading photo slide must not abort the probe',
+  );
+
+  const fixture = JSON.stringify({
+    title: 'Post by dagelan',
     entries: [
-      { index: 1, ext: 'jpg', title: 'slide 1 photo' }, // no ext, no duration → photo
-      { index: 2, ext: 'mp4', title: 'slide 2 video', duration: null }, // ext='mp4', no duration → video
-      { index: 3, ext: 'mp4', title: 'slide 3 video', duration: null }, // ext='mp4' → video
+      { duration: null },
+      { ext: 'mp4', duration: null },
+      { ext: 'mp4', duration: null },
+      { ext: 'mp4', duration: null },
+      { ext: 'mp4', duration: null },
     ],
-    description: 'test carousel',
   });
-  const result = parseShape(mockCarouselJson);
-  assert.equal(result.shape, 'carousel', 'should detect carousel from multiple entries');
-  assert.equal(result.slides.length, 3, 'should enumerate all 3 slides');
-  assert.equal(result.slides[0].index, 1, 'slide indices must be 1-based');
-  assert.equal(result.slides[0].kind, 'photo', 'slide 1 jpg → photo');
-  assert.equal(result.slides[1].kind, 'video', 'slide 2 with ext=mp4 → video (not duration)');
-  assert.equal(result.slides[2].kind, 'video', 'slide 3 with ext=mp4 → video');
+  const shape = parseShape(fixture);
+  assert.equal(shape.ok, true);
+  assert.equal(shape.shape, 'carousel');
+  assert.deepEqual(
+    shape.slides.map((s) => s.kind),
+    ['photo', 'video', 'video', 'video', 'video'],
+    'slide 1 is the photo cover; slides 2-5 are mp4 videos',
+  );
+}
+
+// A single-media post keeps its one slide (index 1) — callers rely on this to harvest a plain
+// /p/ video post, so the wrapper must not collapse it to an empty list.
+{
+  const one = parseShape(JSON.stringify({ ext: 'mp4', duration: 12.5 }));
+  assert.equal(one.shape, 'video');
+  assert.deepEqual(one.slides, [{ index: 1, kind: 'video', duration: 12.5 }]);
 }
 
 console.log('ok verify');
