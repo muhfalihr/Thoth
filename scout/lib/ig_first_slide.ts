@@ -42,8 +42,14 @@ export type IgFirstSlideDeps = {
   diagnostic: (reason: IgFirstSlideDiagnostic) => void;
 };
 
-// Locate the largest visible img/video (>120px both dims), scroll it to
-// center, tag it so the follow-up read targets the exact same element.
+// Locate the largest visible img/video (>120px both dims) that also sits
+// inside a post card (an ancestor containing a <time> element — the same
+// scoping signal crop_post.ts's instagram.find uses), scroll it to center,
+// tag it so the follow-up read targets the exact same element. Falls through
+// to smaller candidates before giving up, and returns '' (never accepts an
+// unscoped element) if nothing qualifies, so the caller's retry loop gets
+// another pass instead of confidently grabbing an unrelated large asset
+// (e.g. a login-wall/content-gate teaser image).
 const MEDIA_SELECT_EXPR = `(() => {
   const candidates = [...document.querySelectorAll('img,video')]
     .map((el) => ({ el, rect: el.getBoundingClientRect() }))
@@ -56,7 +62,15 @@ const MEDIA_SELECT_EXPR = `(() => {
       rect.left < innerWidth
     )
     .sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height);
-  const media = candidates[0]?.el;
+  const hasTimeAncestor = (el) => {
+    let w = el;
+    for (let k = 0; k < 16 && w && w.parentElement; k++) {
+      w = w.parentElement;
+      if (w.querySelector('time')) return true;
+    }
+    return false;
+  };
+  const media = candidates.find((c) => hasTimeAncestor(c.el))?.el;
   if (!media) return '';
   media.scrollIntoView({ block: 'center', inline: 'center' });
   media.setAttribute('data-ig-first-slide', '1');
@@ -82,40 +96,31 @@ const RECT_EXPR = `(() => {
 
 type RectProbe = { kind: 'photo' | 'video'; x: number; y: number; w: number; h: number; ready: boolean };
 
-// Retry the candidate SEARCH itself, not just readiness of an already-found
-// element: live acceptance showed the real slide-1 media can still be
-// unmounted / zero-sized well past a single post-navigate settle wait (an
-// `og:image`-replacement carousel image is fetched after the surrounding
-// post chrome, sometimes 10s+ later). A single early evaluate() finds no
-// candidate at all and reports slide1_dom_missing even though the element
-// shows up seconds later. Same retry SHAPE as the proven `crop_post.ts`
-// (`tries=12`, `sleep(1000)`) — re-running the full (still viewport-
-// filtered) query each attempt so a later render, or one that replaces the
-// element via SPA re-render, still gets tagged.
+// Retry the candidate SEARCH itself on every attempt, not just readiness of
+// an already-found element: live acceptance showed the real slide-1 media
+// can still be unmounted / zero-sized well past a single post-navigate
+// settle wait (an `og:image`-replacement carousel image is fetched after
+// the surrounding post chrome, sometimes 10s+ later). Instagram is an
+// aggressive SPA — it can replace the DOM subtree between our tag and our
+// next read, which wipes the `data-ig-first-slide` attribute along with the
+// old node, so a "tag once, then poll readiness" design ends up polling for
+// an element that no longer exists. `crop_post.ts` hit exactly this and
+// fixed it by re-running its `find` before every retry (see its comment at
+// crop_post.ts around the `place()` retry loop); this mirrors that: each
+// iteration below re-runs MEDIA_SELECT_EXPR (re-tagging, so a replaced node
+// is re-acquired) and then RECT_EXPR, succeeding only once the rect is
+// present AND ready (or is a video, which doesn't need paint-readiness).
 const SELECT_TRIES = 12;
 const SELECT_RETRY_SLEEP_MS = 1000;
-
-// Poll the tagged element's readiness a few times so a slow-loading photo
-// gets a chance to finish painting before we give up (video never needs
-// this — its pixels come from the resolved CDN stream, not the DOM element).
-const READY_POLL_ATTEMPTS = 8;
-const READY_POLL_INTERVAL_MS = 160;
 
 async function inspectFirstSlide(postUrl: string): Promise<FirstSlideProbe | null> {
   let client: CdpClient | null = null;
   try {
     client = await connect({ match: 'instagram.com', navigate: postUrl, requireMatch: true });
 
-    let tag = '';
-    for (let attempt = 0; attempt < SELECT_TRIES; attempt++) {
-      tag = await client.evaluate(MEDIA_SELECT_EXPR);
-      if (tag) break;
-      await sleep(SELECT_RETRY_SLEEP_MS);
-    }
-    if (!tag) return null;
-
     let parsed: RectProbe | null = null;
-    for (let attempt = 0; attempt < READY_POLL_ATTEMPTS; attempt++) {
+    for (let attempt = 0; attempt < SELECT_TRIES; attempt++) {
+      await client.evaluate(MEDIA_SELECT_EXPR);
       const rectJson = await client.evaluate(RECT_EXPR);
       parsed = null;
       if (rectJson) {
@@ -126,7 +131,7 @@ async function inspectFirstSlide(postUrl: string): Promise<FirstSlideProbe | nul
         }
       }
       if (parsed && (parsed.kind === 'video' || parsed.ready)) break;
-      await sleep(READY_POLL_INTERVAL_MS);
+      await sleep(SELECT_RETRY_SLEEP_MS);
     }
     if (!parsed) return null;
     if (parsed.kind === 'video') return { kind: 'video' };
