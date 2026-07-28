@@ -214,6 +214,13 @@ function igCarouselSlides(postUrl, maxSlides = 5) {
   return s.ok ? s.slides.slice(0, maxSlides) : [];
 }
 
+// Slide #1 of a carousel is conventionally a cover, and when the carousel is the main post the
+// video ingest has already taken it → never footage. Fewer than two slides means single media:
+// there is no cover, and dropping index 1 would leave the post with no content at all.
+function dropCoverSlide(slides) {
+  return slides.length > 1 ? slides.filter((s) => s.index !== 1) : slides;
+}
+
 // Classify ANY post URL's SHAPE via ONE yt-dlp -J probe — platform-agnostic (works wherever
 // yt-dlp has an extractor: IG, TikTok, X, FB, YT). Returns
 //   { ok, shape: 'video'|'photo'|'carousel', slides: [{index, kind, duration}], caption, time }
@@ -341,6 +348,7 @@ export {
   directStreamUrl,
   igSlideDirectUrl,
   igCarouselSlides,
+  dropCoverSlide,
   ytdlpCookieArgs,
   postShape,
   warmPostShapes,

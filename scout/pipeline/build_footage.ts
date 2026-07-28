@@ -20,6 +20,7 @@ import { cropPost, inferPlatform } from '../scrapers/crop_post.ts';
 import {
   igCarouselSlides,
   igSlideDirectUrl,
+  dropCoverSlide,
   tiktokOembed,
   youtubeOembed,
 } from '../lib/verify.ts';
@@ -219,7 +220,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
       console.log(ui.rule());
       console.log('  Build Footage dari SLIDE CAROUSEL main (opsi A: slide-only)');
       console.log(ui.rule());
-      let slides = allSlides.filter((s) => s.index !== 1); // slide #1 = main → buang
+      let slides = dropCoverSlide(allSlides); // slide #1 = cover/main → buang
       if (slides.some((s) => s.kind === 'photo') && !NO_CROP) {
         try {
           const cr = await cropPost({ url: main.url, maxSlides: 10 }); // crop HANYA buat panen gambar photo-slide
@@ -352,7 +353,8 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           // e.g. an all-video 6-clip post). Video slides → CDN mp4 (igSlideDirectUrl in pushSlides).
           // Crop the post ONLY to harvest images for PHOTO slides; never block on it for videos.
           let desc = r.caption || '';
-          let slides = igCarouselSlides(r.url, 5).slice(0, 3); // cap so one post can't flood footage
+          // cover dulu, BARU cap — biar cap-nya berisi slide 2..4, bukan cover + 2 slide
+          let slides = dropCoverSlide(igCarouselSlides(r.url, 5)).slice(0, 3); // cap so one post can't flood footage
           const needPhotos = slides.some((s) => s.kind === 'photo') || !slides.length;
           if (needPhotos && !NO_CROP) {
             try {
@@ -509,9 +511,10 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           try {
             const r = await cropPost({ url: e.url, maxSlides: isIG ? 5 : 1 });
             if (r.ok) {
-              slides =
+              slides = dropCoverSlide(
                 r.slides ||
-                (r.image_path ? [{ kind: 'photo', index: 1, image_path: r.image_path }] : []);
+                  (r.image_path ? [{ kind: 'photo', index: 1, image_path: r.image_path }] : []),
+              );
               description = (r.text || '').trim();
             }
           } catch (err) {}

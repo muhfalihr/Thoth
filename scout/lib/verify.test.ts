@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { directStreamArgs, shapeArgs, parseShape } from './verify.ts';
+import { directStreamArgs, shapeArgs, parseShape, dropCoverSlide } from './verify.ts';
 
 // A photo-first IG/FB carousel (slide 1 photo, slide 2+ video) must still resolve to a video
 // stream. Pinning slide 1 made yt-dlp error, directStreamUrl fell open to the page URL, and
@@ -49,6 +49,18 @@ import { directStreamArgs, shapeArgs, parseShape } from './verify.ts';
   const one = parseShape(JSON.stringify({ ext: 'mp4', duration: 12.5 }));
   assert.equal(one.shape, 'video');
   assert.deepEqual(one.slides, [{ index: 1, kind: 'video', duration: 12.5 }]);
+}
+
+// Slide #1 of a carousel is conventionally a cover — and when the carousel is the MAIN post, the
+// video ingest already consumed it (--no-playlist takes the first item). Never footage.
+{
+  assert.deepEqual(
+    dropCoverSlide([{ index: 1 }, { index: 2 }, { index: 3 }]).map((s) => s.index),
+    [2, 3],
+  );
+  // A single-media post has no cover to drop — stripping index 1 would leave it with nothing.
+  assert.deepEqual(dropCoverSlide([{ index: 1 }]).map((s) => s.index), [1]);
+  assert.deepEqual(dropCoverSlide([]), []);
 }
 
 console.log('ok verify');
