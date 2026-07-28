@@ -258,6 +258,9 @@ function parseShape(jsonText: string): any {
   if (Array.isArray(d.entries) && d.entries.length > 1) {
     const slides = d.entries.map((e, i) => ({
       index: i + 1,
+      // `ext === 'mp4'` is a whitelist of one: Instagram serves mp4 for every slide, so this
+      // holds today. A webm/mov slide with no duration would silently classify as 'photo' and
+      // get dropped — no error, no log.
       kind: (e && e.ext === 'mp4') || (e && e.duration) ? 'video' : 'photo',
       duration: (e && e.duration) || 0,
     }));

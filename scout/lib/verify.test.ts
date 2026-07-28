@@ -45,8 +45,18 @@ import { directStreamArgs, shapeArgs, parseShape, dropCoverSlide } from './verif
 
 // A single-media post keeps its one slide (index 1) — callers rely on this to harvest a plain
 // /p/ video post, so the wrapper must not collapse it to an empty list.
+// Pins the `ext` half of the `duration || ext === 'mp4'` predicate: no duration reported (as
+// Instagram never reports one), classification must still come from the extension alone.
 {
-  const one = parseShape(JSON.stringify({ ext: 'mp4', duration: 12.5 }));
+  const one = parseShape(JSON.stringify({ ext: 'mp4' }));
+  assert.equal(one.shape, 'video');
+  assert.deepEqual(one.slides, [{ index: 1, kind: 'video', duration: 0 }]);
+}
+
+// Pins the `duration` half: no ext reported, must still classify as video — the fallback that
+// keeps TikTok/X/FB/YT single-media posts (which always populate duration) working.
+{
+  const one = parseShape(JSON.stringify({ duration: 12.5 }));
   assert.equal(one.shape, 'video');
   assert.deepEqual(one.slides, [{ index: 1, kind: 'video', duration: 12.5 }]);
 }

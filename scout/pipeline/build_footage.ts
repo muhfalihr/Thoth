@@ -373,7 +373,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
                   slides = dropCoverSlide(
                     cr.slides ||
                       (cr.image_path ? [{ kind: 'photo', index: 1, image_path: cr.image_path }] : []),
-                  ); // enum failed → use crop
+                  ).slice(0, 3); // enum failed → use crop
               }
             } catch (e2) {}
           }
@@ -512,10 +512,9 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           try {
             const r = await cropPost({ url: e.url, maxSlides: isIG ? 5 : 1 });
             if (r.ok) {
-              slides = dropCoverSlide(
+              slides =
                 r.slides ||
-                  (r.image_path ? [{ kind: 'photo', index: 1, image_path: r.image_path }] : []),
-              );
+                (r.image_path ? [{ kind: 'photo', index: 1, image_path: r.image_path }] : []);
               description = (r.text || '').trim();
             }
           } catch (err) {}
