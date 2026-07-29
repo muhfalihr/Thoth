@@ -57,6 +57,27 @@ try {
     assert.equal(runs, 1);
   }
 
+  for (const usernamePrefixedInstagram of [
+    'https://www.instagram.com/imajinari.merchandise/reel/DbUrhHZpQgk/',
+    'https://www.instagram.com/someuser/p/ABC123/',
+  ]) {
+    let runs = 0;
+    const resolved = await resolveOcrMedia(usernamePrefixedInstagram, {
+      runResolver: async () => {
+        runs++;
+        return {
+          exitCode: 0,
+          stdout: 'https://cdn.example.test/video.mp4\n',
+          stderr: '',
+          timedOut: false,
+        };
+      },
+    });
+    assert.equal(resolved.status, 'resolved');
+    assert.equal(resolved.status === 'resolved' && resolved.source, 'platform-resolver');
+    assert.equal(runs, 1);
+  }
+
   for (const specializedPage of [
     'https://www.tiktok.com/@user/video/123',
     'https://www.threads.net/@user/post/ABC',

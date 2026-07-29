@@ -59,7 +59,7 @@ export type ResolveOcrMediaDeps = {
 };
 
 const PLATFORM_PAGE_PATTERNS = [
-  /^https?:\/\/(?:www\.)?instagram\.com\/(?:p|reel|reels|tv)\//i,
+  /^https?:\/\/(?:www\.)?instagram\.com\/(?:[^/]+\/)?(?:p|reel|reels|tv)\//i,
   /^https?:\/\/(?:www\.)?(?:youtube\.com\/watch|youtu\.be\/)/i,
   /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\//i,
   /^https?:\/\/(?:www\.|web\.)?facebook\.com\/.+/i,
