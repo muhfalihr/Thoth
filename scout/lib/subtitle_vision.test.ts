@@ -1,11 +1,11 @@
 import assert from 'node:assert';
 import {
+  type AnalyzedOcrAnalysis,
   analysisFields,
   configuredOcrModel,
-  type AnalyzedOcrAnalysis,
-  OcrAnalysisError,
   OCR_SCHEMA_VERSION,
   type OcrAnalysis,
+  OcrAnalysisError,
   runRequiredOcr,
 } from './ocr_contract.ts';
 import type { OcrBox } from './subtitle_vision.ts';
@@ -79,13 +79,13 @@ assert.equal(
   assert.throws(
     () => analysisFields(failed as AnalyzedOcrAnalysis),
     (error: unknown) =>
-      error instanceof OcrAnalysisError &&
-      error.code === 'incomplete_frame_coverage',
+      error instanceof OcrAnalysisError && error.code === 'incomplete_frame_coverage',
   );
   await assert.rejects(
-    () => runRequiredOcr(async () => {
-      throw new Error('ordinary failure with Bearer secret-token');
-    }),
+    () =>
+      runRequiredOcr(async () => {
+        throw new Error('ordinary failure with Bearer secret-token');
+      }),
     (error: unknown) =>
       error instanceof OcrAnalysisError &&
       error.code === 'analysis_exception' &&
@@ -105,13 +105,39 @@ assert.equal(
   assert.equal(missingKey.analyzed_at, analyzedAt.toISOString());
   assert.equal(missingKey.verdict, undefined);
 
+  let durationDiagnostic: any;
   const noDuration = await analyzeSubtitlesDetailed('C:/video.mp4', 0, {
     env: { THOTH_NOVITA_API_KEY: 'test' },
-    probeDuration: () => 0,
+    probeDuration: () => ({
+      status: 'failed',
+      code: 'duration_probe_failed',
+      reason: 'process_exit',
+      safe_exit_code: 1,
+    }),
+    appendDiagnostics: (record) => {
+      durationDiagnostic = record;
+    },
   });
   assert.equal(noDuration.ocr_status, 'failed');
   assert.equal(noDuration.error_code, 'duration_probe_failed');
   assert.equal(noDuration.verdict, undefined);
+  assert.equal(durationDiagnostic.probe_reason, 'process_exit');
+  assert.equal(durationDiagnostic.probe_exit_code, 1);
+
+  let invalidDiagnostic: any;
+  const invalidOutput = await analyzeSubtitlesDetailed('C:/video.mp4', 0, {
+    env: { THOTH_NOVITA_API_KEY: 'test' },
+    probeDuration: () => ({
+      status: 'failed',
+      code: 'duration_probe_failed',
+      reason: 'invalid_output',
+    }),
+    appendDiagnostics: (record) => {
+      invalidDiagnostic = record;
+    },
+  });
+  assert.equal(invalidOutput.error_code, 'duration_probe_failed');
+  assert.equal(invalidDiagnostic.probe_reason, 'invalid_output');
 
   // Real probeDuration against an absent binary: a checkout without the untracked
   // ffmpeg/ffprobe (a git worktree) must not read as unprobeable media.
@@ -139,9 +165,8 @@ assert.equal(
   const partial = await analyzeSubtitlesDetailed('C:/video.mp4', 4, {
     env: { THOTH_NOVITA_API_KEY: 'test' },
     frameDataUrl: (_video, t) => `frame:${t}`,
-    ocrFrame: async (image) => image === 'frame:3'
-      ? { boxes: [], error: 'TimeoutError' }
-      : { boxes: [] },
+    ocrFrame: async (image) =>
+      image === 'frame:3' ? { boxes: [], error: 'TimeoutError' } : { boxes: [] },
     retryCount: 1,
   });
   assert.equal(partial.ocr_status, 'failed');
@@ -158,9 +183,8 @@ assert.equal(
   const throttled = await analyzeSubtitlesDetailed('C:/video.mp4', 4, {
     env: { THOTH_NOVITA_API_KEY: 'test' },
     frameDataUrl: (_video, t) => `frame:${t}`,
-    ocrFrame: async () => (backoffs.length === 0 && limited-- > 0
-      ? { boxes: [], error: 'http_429' }
-      : { boxes: [] }),
+    ocrFrame: async () =>
+      backoffs.length === 0 && limited-- > 0 ? { boxes: [], error: 'http_429' } : { boxes: [] },
     sleep: async (ms) => {
       backoffs.push(ms);
     },
@@ -169,7 +193,10 @@ assert.equal(
   assert.equal(throttled.ocr_status, 'analyzed');
   assert.equal(throttled.valid_frames, throttled.requested_frames);
   assert.ok(backoffs.length > 0, 'a rate-limited frame must wait before retrying');
-  assert.ok(backoffs.every((ms) => ms > 0), 'backoff must be a real delay');
+  assert.ok(
+    backoffs.every((ms) => ms > 0),
+    'backoff must be a real delay',
+  );
 
   // A frame that succeeds first try must never pay the delay.
   const unthrottled: number[] = [];
@@ -232,7 +259,7 @@ assert.equal(
   });
   assert.equal(extractionError.ocr_status, 'failed');
   assert.equal(extractionError.error_code, 'incomplete_frame_coverage');
-  assert.deepEqual(permanentCalls, [.5, .5, .25, .25, 0, 0]);
+  assert.deepEqual(permanentCalls, [0.5, 0.5, 0.25, 0.25, 0, 0]);
   const serializedExtractionDiagnostic = JSON.stringify(extractionDiagnostic);
   assert.match(serializedExtractionDiagnostic, /"error":"frame_extract"/);
   assert.doesNotMatch(
@@ -264,17 +291,20 @@ assert.equal(
       extractionCalls.push(t);
       return t === 7.92 ? null : `frame:${t}`;
     },
-    ocrFrame: async (image) => image === 'frame:7.67'
-      ? { boxes: [] }
-      : {
-        boxes: [{
-          text: 'MATCH DAY',
-          x0: .1,
-          y0: .3,
-          x1: .9,
-          y1: .43,
-        }],
-      },
+    ocrFrame: async (image) =>
+      image === 'frame:7.67'
+        ? { boxes: [] }
+        : {
+            boxes: [
+              {
+                text: 'MATCH DAY',
+                x0: 0.1,
+                y0: 0.3,
+                x1: 0.9,
+                y1: 0.43,
+              },
+            ],
+          },
     appendDiagnostics: (record) => {
       recoveredDiagnostic = record;
     },
@@ -307,9 +337,7 @@ assert.equal(
     frameDataUrl: () => 'frame',
     ocrFrame: async () => {
       retryAttempts++;
-      return retryAttempts === 1
-        ? { boxes: [], error: 'TimeoutError' }
-        : { boxes: [] };
+      return retryAttempts === 1 ? { boxes: [], error: 'TimeoutError' } : { boxes: [] };
     },
     retryCount: 2,
     appendDiagnostics: (record) => {
@@ -323,7 +351,8 @@ assert.equal(
 
   await assert.rejects(
     () => analyzeSubtitles('', 0, { env: { THOTH_NOVITA_API_KEY: 'test' } }),
-    (error: any) => error?.name === 'OcrAnalysisError' &&
+    (error: any) =>
+      error?.name === 'OcrAnalysisError' &&
       error?.code === 'missing_video_path' &&
       !JSON.stringify(error).includes('test'),
   );
@@ -333,74 +362,82 @@ assert.match(hashVideoId('https://example.test/private?a=secret'), /^[a-f0-9]{16
 assert.equal(parseDuration('26.935011\n'), 26.935011);
 assert.equal(parseDuration('N/A'), 0);
 await assert.rejects(
-  () => fetchJsonWithTimeout(
-    'https://never.test',
-    {},
-    5,
-    (() => new Promise(() => {})) as typeof fetch,
-  ),
+  () =>
+    fetchJsonWithTimeout(
+      'https://never.test',
+      {},
+      5,
+      (() => new Promise(() => {})) as typeof fetch,
+    ),
   (error: any) => error?.name === 'TimeoutError',
 );
 await assert.rejects(
-  () => fetchJsonWithTimeout(
-    'https://stalled-body.test',
-    {},
-    5,
-    (async () => ({
+  () =>
+    fetchJsonWithTimeout('https://stalled-body.test', {}, 5, (async () => ({
       ok: true,
       status: 200,
       json: () => new Promise(() => {}),
-    })) as unknown as typeof fetch,
-  ),
+    })) as unknown as typeof fetch),
   (error: any) => error?.name === 'TimeoutError',
 );
 assert.deepEqual(parseOcrResponseContent(null), { boxes: [], error: 'malformed_content' });
 assert.deepEqual(parseOcrResponseContent(''), { boxes: [] });
-assert.deepEqual(
-  parseOcrResponseContent('service unavailable'),
-  { boxes: [], error: 'malformed_content' },
-);
-assert.deepEqual(mainDirectiveFields({
-  outcome: 'subtitle',
-  trim_start: 4,
-  mute_audio: true,
-  subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 5, end: 8 }],
-}), {
-  trim_start: 4,
-  mute_audio: true,
-  subtitle_blur: [{ x: .1, y: .7, w: .8, h: .1, start: 5, end: 8 }],
+assert.deepEqual(parseOcrResponseContent('service unavailable'), {
+  boxes: [],
+  error: 'malformed_content',
 });
-assert.deepEqual(mainDirectiveFields({
-  outcome: 'clean', trim_start: 0, mute_audio: false, subtitle_blur: [],
-}), { trim_start: 0, mute_audio: false, subtitle_blur: [] });
+assert.deepEqual(
+  mainDirectiveFields({
+    outcome: 'subtitle',
+    trim_start: 4,
+    mute_audio: true,
+    subtitle_blur: [{ x: 0.1, y: 0.7, w: 0.8, h: 0.1, start: 5, end: 8 }],
+  }),
+  {
+    trim_start: 4,
+    mute_audio: true,
+    subtitle_blur: [{ x: 0.1, y: 0.7, w: 0.8, h: 0.1, start: 5, end: 8 }],
+  },
+);
+assert.deepEqual(
+  mainDirectiveFields({
+    outcome: 'clean',
+    trim_start: 0,
+    mute_audio: false,
+    subtitle_blur: [],
+  }),
+  { trim_start: 0, mute_audio: false, subtitle_blur: [] },
+);
 
 // DeepSeek-OCR grounding output uses a 0..1000 coordinate grid.
 {
   const boxes = parseDeepSeekOcr(
     '<|ref|>CUCURELLA BUNGKUS TROFI<|/ref|><|det|>[[53,460,821,540]]<|/det|>\n' +
-    '<|ref|>PIALA DUNIA PAKE KRESEK<|/ref|><|det|>[[70,545,790,617]]<|/det|>',
+      '<|ref|>PIALA DUNIA PAKE KRESEK<|/ref|><|det|>[[70,545,790,617]]<|/det|>',
   );
   assert.deepEqual(boxes[0], {
     text: 'CUCURELLA BUNGKUS TROFI',
-    x0: .053, y0: .46, x1: .821, y1: .54,
+    x0: 0.053,
+    y0: 0.46,
+    x1: 0.821,
+    y1: 0.54,
   });
   assert.equal(boxes.length, 2);
-  assert.deepEqual(
-    parseDeepSeekOcr('<|ref|>valid<|/ref|><|det|>[[900,700,100,300]]<|/det|>'),
-    [{ text: 'valid', x0: .1, y0: .3, x1: .9, y1: .7 }],
-  );
+  assert.deepEqual(parseDeepSeekOcr('<|ref|>valid<|/ref|><|det|>[[900,700,100,300]]<|/det|>'), [
+    { text: 'valid', x0: 0.1, y0: 0.3, x1: 0.9, y1: 0.7 },
+  ]);
   // Novita's OpenAI-compatible adapter may strip the ref/det control tokens
   // while retaining the same text + grounding-grid payload.
   assert.deepEqual(
     parseDeepSeekOcr('CURELLA BUNGKUS TROFI[[90, 521, 803, 546]]\n24[[449, 650, 524, 690]]'),
     [
-      { text: 'CURELLA BUNGKUS TROFI', x0: .09, y0: .521, x1: .803, y1: .546 },
-      { text: '24', x0: .449, y0: .65, x1: .524, y1: .69 },
+      { text: 'CURELLA BUNGKUS TROFI', x0: 0.09, y0: 0.521, x1: 0.803, y1: 0.546 },
+      { text: '24', x0: 0.449, y0: 0.65, x1: 0.524, y1: 0.69 },
     ],
   );
-  assert.deepEqual(buildSampleTimes(.3, 12), [0]);
+  assert.deepEqual(buildSampleTimes(0.3, 12), [0]);
   const samples = buildSampleTimes(26.935, 12);
-  assert.deepEqual(samples.slice(0, 6), [.5, 1, 2, 3, 4, 5]);
+  assert.deepEqual(samples.slice(0, 6), [0.5, 1, 2, 3, 4, 5]);
   assert.ok(samples.length <= 12 && samples.at(-1)! > 20);
 }
 
@@ -408,7 +445,7 @@ assert.deepEqual(mainDirectiveFields({
 // so Rust doesn't clamp w→1.0 and blur the whole frame (the reported bug).
 {
   const r = normalizeRegion(53, 460, 821, 617); // observed real output
-  assert.ok(Math.abs(r.x0 - 0.053) < 1e-9 && Math.abs(r.y0 - 0.460) < 1e-9);
+  assert.ok(Math.abs(r.x0 - 0.053) < 1e-9 && Math.abs(r.y0 - 0.46) < 1e-9);
   assert.ok(Math.abs(r.x1 - 0.821) < 1e-9 && Math.abs(r.y1 - 0.617) < 1e-9);
   // width/height are a band, NOT full-frame
   assert.ok(r.x1 - r.x0 < 0.8 && r.y1 - r.y0 < 0.2);
@@ -435,32 +472,49 @@ const R = (y0: number) => ({ x0: 0.1, y0, x1: 0.9, y1: y0 + 0.08 });
 
 // CLEAN: no text anywhere
 assert.equal(
-  classifyClip([{ t: 1, present: false, region: null }, { t: 5, present: false, region: null }], 20).outcome,
-  'clean');
+  classifyClip(
+    [
+      { t: 1, present: false, region: null },
+      { t: 5, present: false, region: null },
+    ],
+    20,
+  ).outcome,
+  'clean',
+);
 
 // COVER: text only in first <=5s, clean after -> trim to midpoint(lastText, nextClean)
 {
-  const v = classifyClip([
-    { t: 1, present: true, region: R(0.05) }, { t: 3, present: true, region: R(0.05) },
-    { t: 5, present: false, region: null }, { t: 8, present: false, region: null },
-  ], 20);
+  const v = classifyClip(
+    [
+      { t: 1, present: true, region: R(0.05) },
+      { t: 3, present: true, region: R(0.05) },
+      { t: 5, present: false, region: null },
+      { t: 8, present: false, region: null },
+    ],
+    20,
+  );
   assert.equal(v.outcome, 'cover');
-  assert.equal(v.trim_start, 4);           // midpoint(3, 5)
+  assert.equal(v.trim_start, 4); // midpoint(3, 5)
   assert.equal(v.mute_audio, false);
   assert.deepEqual(v.subtitle_blur, []);
 }
 
 // SUBTITLE: text after COVER_MAX -> mute + blur windows around detecting frames
 {
-  const v = classifyClip([
-    { t: 1, present: false, region: null }, { t: 5, present: false, region: null },
-    { t: 8, present: true, region: R(0.72) }, { t: 12, present: true, region: R(0.72) },
-  ], 20);
+  const v = classifyClip(
+    [
+      { t: 1, present: false, region: null },
+      { t: 5, present: false, region: null },
+      { t: 8, present: true, region: R(0.72) },
+      { t: 12, present: true, region: R(0.72) },
+    ],
+    20,
+  );
   assert.equal(v.outcome, 'subtitle');
   assert.equal(v.mute_audio, true);
-  assert.equal(v.subtitle_blur.length, 1);                 // t=8 and t=12 windows merge (Δ=4 → [6,10]∪[10,14])
+  assert.equal(v.subtitle_blur.length, 1); // t=8 and t=12 windows merge (Δ=4 → [6,10]∪[10,14])
   assert.ok(Math.abs(v.subtitle_blur[0].x - 0.1) < 1e-9);
-  assert.ok(Math.abs(v.subtitle_blur[0].w - 0.8) < 1e-9);  // x1-x0
+  assert.ok(Math.abs(v.subtitle_blur[0].w - 0.8) < 1e-9); // x1-x0
 }
 
 // SUBTITLE everywhere -> single whole-clip region via {start:0,end:0} sentinel.
@@ -468,10 +522,15 @@ assert.equal(
 // 30-50s; a bounded [0,20] window would leave the tail un-blurred and leak
 // captions. end:0 tells Rust to ungate the blur for the entire render clip.
 {
-  const v = classifyClip([
-    { t: 1, present: true, region: R(0.7) }, { t: 5, present: true, region: R(0.7) },
-    { t: 8, present: true, region: R(0.7) }, { t: 12, present: true, region: R(0.7) },
-  ], 20);
+  const v = classifyClip(
+    [
+      { t: 1, present: true, region: R(0.7) },
+      { t: 5, present: true, region: R(0.7) },
+      { t: 8, present: true, region: R(0.7) },
+      { t: 12, present: true, region: R(0.7) },
+    ],
+    20,
+  );
   assert.equal(v.outcome, 'subtitle');
   assert.equal(v.subtitle_blur.length, 1);
   assert.equal(v.subtitle_blur[0].start, 0);
@@ -480,160 +539,190 @@ assert.equal(
 
 // SUBTITLE, all frames present but no region boxes → mute, no crash, empty blur
 {
-  const v = classifyClip([
-    { t: 1, present: true, region: null }, { t: 5, present: true, region: null },
-    { t: 8, present: true, region: null }, { t: 12, present: true, region: null },
-  ], 20);
+  const v = classifyClip(
+    [
+      { t: 1, present: true, region: null },
+      { t: 5, present: true, region: null },
+      { t: 8, present: true, region: null },
+      { t: 12, present: true, region: null },
+    ],
+    20,
+  );
   assert.equal(v.outcome, 'subtitle');
   assert.equal(v.mute_audio, true);
   assert.deepEqual(v.subtitle_blur, []);
 }
 console.log('ok classifyClip');
 
-const b = (text: string, x0: number, y0: number, x1: number, y1: number): OcrBox =>
-  ({ text, x0, y0, x1, y1 });
+const b = (text: string, x0: number, y0: number, x1: number, y1: number): OcrBox => ({
+  text,
+  x0,
+  y0,
+  x1,
+  y1,
+});
 const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
 
 // A headline and later captions are independent actions: trim the former and
 // retain output-relative blur windows for the latter.
 {
-  const hybrid = classifyOcrFrames([
-    f(.5, b('CUCURELLA BUNGKUS TROFI', .05, .46, .82, .54)),
-    f(1, b('CUCURELLA BUNGKUS TROFI', .05, .46, .82, .54)),
-    f(3, b('CUCURELLA BUNGKUS TROFI', .05, .46, .82, .54)),
-    f(5, b('BAWA PULANG', .25, .78, .75, .85)),
-    f(8, b('KOK PIALA SEMEWAH', .18, .76, .82, .86)),
-    f(12, b('REPLIKA RESMI YANG', .20, .75, .80, .86)),
-  ], 26.935);
+  const hybrid = classifyOcrFrames(
+    [
+      f(0.5, b('CUCURELLA BUNGKUS TROFI', 0.05, 0.46, 0.82, 0.54)),
+      f(1, b('CUCURELLA BUNGKUS TROFI', 0.05, 0.46, 0.82, 0.54)),
+      f(3, b('CUCURELLA BUNGKUS TROFI', 0.05, 0.46, 0.82, 0.54)),
+      f(5, b('BAWA PULANG', 0.25, 0.78, 0.75, 0.85)),
+      f(8, b('KOK PIALA SEMEWAH', 0.18, 0.76, 0.82, 0.86)),
+      f(12, b('REPLIKA RESMI YANG', 0.2, 0.75, 0.8, 0.86)),
+    ],
+    26.935,
+  );
   assert.equal(hybrid.outcome, 'subtitle');
   assert.equal(hybrid.trim_start, 4);
   assert.equal(hybrid.mute_audio, true);
   assert.ok(hybrid.subtitle_blur.length >= 1);
-  assert.ok(hybrid.subtitle_blur.every((r) => r.y > .70));
+  assert.ok(hybrid.subtitle_blur.every((r) => r.y > 0.7));
 }
 
 // Intro headline geometry must never leak into subtitle diagnostics, while a
 // later moving/growing subtitle track uses extrema from every constituent frame.
 {
   const frames = [
-    f(.5, b('INTRO HEADLINE', .08, .40, .92, .52)),
-    f(2, b('INTRO HEADLINE', .06, .39, .94, .53)),
-    f(4, b('spoken one', .24, .74, .70, .80)),
-    f(6, b('spoken two', .12, .72, .88, .84)),
+    f(0.5, b('INTRO HEADLINE', 0.08, 0.4, 0.92, 0.52)),
+    f(2, b('INTRO HEADLINE', 0.06, 0.39, 0.94, 0.53)),
+    f(4, b('spoken one', 0.24, 0.74, 0.7, 0.8)),
+    f(6, b('spoken two', 0.12, 0.72, 0.88, 0.84)),
   ];
   const result = classifyOcrFrames(frames, 10);
   const diagnostics = buildClassifiedDiagnostics(frames, result);
 
   assert.equal(result.trim_start, 3);
-  assert.ok(result.subtitle_blur.every((region) => region.y > .68));
-  assert.ok(diagnostics.every((frame) =>
-    frame.subtitle_boxes.every((box) => box.text !== 'INTRO HEADLINE')));
+  assert.ok(result.subtitle_blur.every((region) => region.y > 0.68));
+  assert.ok(
+    diagnostics.every((frame) =>
+      frame.subtitle_boxes.every((box) => box.text !== 'INTRO HEADLINE'),
+    ),
+  );
 
-  const merged = result.subtitle_blur.find((region) =>
-    region.start! <= 4 && region.end! >= 6);
+  const merged = result.subtitle_blur.find((region) => region.start! <= 4 && region.end! >= 6);
   assert.ok(merged, 'moving/growing subtitle frames should share one temporal window');
-  assert.ok(merged.x <= .12);
-  assert.ok(merged.x + merged.w >= .88);
-  assert.ok(merged.y <= .72);
-  assert.ok(merged.y + merged.h >= .84);
+  assert.ok(merged.x <= 0.12);
+  assert.ok(merged.x + merged.w >= 0.88);
+  assert.ok(merged.y <= 0.72);
+  assert.ok(merged.y + merged.h >= 0.84);
 }
 
 // An unreadable sample is not evidence that a tracked headline disappeared.
 {
-  const partialFailure = classifyOcrFrames([
-    f(1, b('MATCH DAY', .1, .3, .9, .4)),
-    f(2, b('MATCH DAY', .1, .3, .9, .4)),
-    { t: 3, boxes: [], error: 'TimeoutError' },
-    f(4, b('MATCH DAY', .1, .3, .9, .4)),
-    f(5),
-  ], 8);
+  const partialFailure = classifyOcrFrames(
+    [
+      f(1, b('MATCH DAY', 0.1, 0.3, 0.9, 0.4)),
+      f(2, b('MATCH DAY', 0.1, 0.3, 0.9, 0.4)),
+      { t: 3, boxes: [], error: 'TimeoutError' },
+      f(4, b('MATCH DAY', 0.1, 0.3, 0.9, 0.4)),
+      f(5),
+    ],
+    8,
+  );
   assert.equal(partialFailure.trim_start, 4.5);
 }
 
 // Regression from the reported source: DeepSeek emits each headline line as a
 // thin box (~1.8% frame area), so width + temporal stability must carry it.
 {
-  const realGeometry = classifyOcrFrames([
-    f(1,
-      b('CURELLA BUNGKUS TROFI', .09, .521, .803, .546),
-      b('PIALA DUNIA PAKE KRESEK', .09, .568, .777, .595)),
-    f(2,
-      b('CUCURELLA BUNGKUS TROFI', .114, .521, .924, .546),
-      b('PIALA DUNIA PAKE KRESEK', .114, .568, .894, .593)),
-    f(3,
-      b('CUCURELLA BUNGKUS TROFI', .117, .521, .919, .546),
-      b('PIALA DUNIA PAKE KRESEK', .117, .567, .891, .592)),
-    f(4, b('DIA NGGAK TAHU', .174, .758, .83, .799)),
-    f(5, b('BAWA PULANG', .215, .755, .787, .799)),
-    f(8, b('KOK PIALA SEMEWAH', .277, .733, .70, .824)),
-  ], 10);
+  const realGeometry = classifyOcrFrames(
+    [
+      f(
+        1,
+        b('CURELLA BUNGKUS TROFI', 0.09, 0.521, 0.803, 0.546),
+        b('PIALA DUNIA PAKE KRESEK', 0.09, 0.568, 0.777, 0.595),
+      ),
+      f(
+        2,
+        b('CUCURELLA BUNGKUS TROFI', 0.114, 0.521, 0.924, 0.546),
+        b('PIALA DUNIA PAKE KRESEK', 0.114, 0.568, 0.894, 0.593),
+      ),
+      f(
+        3,
+        b('CUCURELLA BUNGKUS TROFI', 0.117, 0.521, 0.919, 0.546),
+        b('PIALA DUNIA PAKE KRESEK', 0.117, 0.567, 0.891, 0.592),
+      ),
+      f(4, b('DIA NGGAK TAHU', 0.174, 0.758, 0.83, 0.799)),
+      f(5, b('BAWA PULANG', 0.215, 0.755, 0.787, 0.799)),
+      f(8, b('KOK PIALA SEMEWAH', 0.277, 0.733, 0.7, 0.824)),
+    ],
+    10,
+  );
   assert.equal(realGeometry.trim_start, 3.5);
-  assert.ok(realGeometry.subtitle_blur.every((region) => region.y > .70));
+  assert.ok(realGeometry.subtitle_blur.every((region) => region.y > 0.7));
 }
 
 // Changing, left-anchored text in a stable lower-third slot is a chyron, not
 // spoken caption text, and must not cause footage rejection.
 {
-  const lowerThird = classifyOcrFrames([
-    f(1,
-      b('LIVE NEWS', .02, .84, .14, .89),
-      b('BREAKING NEWS', .18, .84, .70, .89)),
-    f(3,
-      b('LIVE NEWS', .02, .84, .14, .89),
-      b('MARKETS RALLY', .182, .84, .66, .89)),
-    f(5,
-      b('LIVE NEWS', .02, .84, .14, .89),
-      b('MORE AT TEN', .181, .84, .62, .89)),
-  ], 8);
+  const lowerThird = classifyOcrFrames(
+    [
+      f(1, b('LIVE NEWS', 0.02, 0.84, 0.14, 0.89), b('BREAKING NEWS', 0.18, 0.84, 0.7, 0.89)),
+      f(3, b('LIVE NEWS', 0.02, 0.84, 0.14, 0.89), b('MARKETS RALLY', 0.182, 0.84, 0.66, 0.89)),
+      f(5, b('LIVE NEWS', 0.02, 0.84, 0.14, 0.89), b('MORE AT TEN', 0.181, 0.84, 0.62, 0.89)),
+    ],
+    8,
+  );
   assert.equal(lowerThird.outcome, 'clean');
 }
 
 // Alignment alone is insufficient: ordinary auto-captions can be left-aligned.
 {
-  const leftCaptions = classifyOcrFrames([
-    f(1, b('I SAW IT LIVE', .05, .72, .55, .79)),
-    f(3, b('THIS TO HAPPEN', .052, .72, .52, .79)),
-    f(5, b('WATCH UNTIL END', .051, .72, .58, .79)),
-  ], 8);
+  const leftCaptions = classifyOcrFrames(
+    [
+      f(1, b('I SAW IT LIVE', 0.05, 0.72, 0.55, 0.79)),
+      f(3, b('THIS TO HAPPEN', 0.052, 0.72, 0.52, 0.79)),
+      f(5, b('WATCH UNTIL END', 0.051, 0.72, 0.58, 0.79)),
+    ],
+    8,
+  );
   assert.equal(leftCaptions.outcome, 'subtitle');
 }
 
 // Persistent two-line captions are still subtitles even when OCR text does not
 // change between samples.
 {
-  const stableTwoLine = classifyOcrFrames([
-    f(1,
-      b('THIS LINE STAYS', .18, .70, .82, .75),
-      b('SO DOES THIS', .25, .76, .75, .81)),
-    f(3,
-      b('THIS LINE STAYS', .18, .70, .82, .75),
-      b('SO DOES THIS', .25, .76, .75, .81)),
-    f(5,
-      b('THIS LINE STAYS', .18, .70, .82, .75),
-      b('SO DOES THIS', .25, .76, .75, .81)),
-  ], 8);
+  const stableTwoLine = classifyOcrFrames(
+    [
+      f(1, b('THIS LINE STAYS', 0.18, 0.7, 0.82, 0.75), b('SO DOES THIS', 0.25, 0.76, 0.75, 0.81)),
+      f(3, b('THIS LINE STAYS', 0.18, 0.7, 0.82, 0.75), b('SO DOES THIS', 0.25, 0.76, 0.75, 0.81)),
+      f(5, b('THIS LINE STAYS', 0.18, 0.7, 0.82, 0.75), b('SO DOES THIS', 0.25, 0.76, 0.75, 0.81)),
+    ],
+    8,
+  );
   assert.equal(stableTwoLine.outcome, 'subtitle');
-  assert.ok(stableTwoLine.subtitle_blur.every((region) => region.h > .12));
+  assert.ok(stableTwoLine.subtitle_blur.every((region) => region.h > 0.12));
 }
 
 // A small, stable corner watermark is neither headline nor subtitle.
 {
-  const watermark = classifyOcrFrames([
-    f(1, b('@channel', .86, .03, .98, .06)),
-    f(3, b('@channel', .86, .03, .98, .06)),
-    f(8, b('@channel', .86, .03, .98, .06)),
-  ], 10);
+  const watermark = classifyOcrFrames(
+    [
+      f(1, b('@channel', 0.86, 0.03, 0.98, 0.06)),
+      f(3, b('@channel', 0.86, 0.03, 0.98, 0.06)),
+      f(8, b('@channel', 0.86, 0.03, 0.98, 0.06)),
+    ],
+    10,
+  );
   assert.equal(watermark.outcome, 'clean');
 }
 
 // Cover-only headline clears before body footage.
 {
-  const cover = classifyOcrFrames([
-    f(.5, b('MATCH DAY', .10, .30, .90, .43)),
-    f(2, b('MATCH DAY', .11, .30, .91, .43)),
-    f(4),
-    f(8),
-  ], 12);
+  const cover = classifyOcrFrames(
+    [
+      f(0.5, b('MATCH DAY', 0.1, 0.3, 0.9, 0.43)),
+      f(2, b('MATCH DAY', 0.11, 0.3, 0.91, 0.43)),
+      f(4),
+      f(8),
+    ],
+    12,
+  );
   assert.equal(cover.outcome, 'cover');
   assert.equal(cover.trim_start, 3);
   assert.equal(cover.mute_audio, false);
@@ -642,86 +731,98 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
 // Moving captions in one positional band share a window whose geometry follows
 // the full track rather than the first frame.
 {
-  const subtitle = classifyOcrFrames([
-    f(1),
-    f(3, b('SATU', .16, .73, .70, .80)),
-    f(5, b('DUA', .25, .75, .85, .84)),
-    f(8, b('TIGA', .10, .72, .74, .81)),
-  ], 10);
+  const subtitle = classifyOcrFrames(
+    [
+      f(1),
+      f(3, b('SATU', 0.16, 0.73, 0.7, 0.8)),
+      f(5, b('DUA', 0.25, 0.75, 0.85, 0.84)),
+      f(8, b('TIGA', 0.1, 0.72, 0.74, 0.81)),
+    ],
+    10,
+  );
   assert.equal(subtitle.outcome, 'subtitle');
   assert.equal(subtitle.trim_start, 0);
   assert.equal(subtitle.subtitle_blur.length, 1);
-  assert.ok(subtitle.subtitle_blur[0].x < .10);
-  assert.ok(subtitle.subtitle_blur[0].x + subtitle.subtitle_blur[0].w > .85);
+  assert.ok(subtitle.subtitle_blur[0].x < 0.1);
+  assert.ok(subtitle.subtitle_blur[0].x + subtitle.subtitle_blur[0].w > 0.85);
 }
 
 // Temporally adjacent text in disjoint horizontal tracks stays separate.
 {
-  const separateTracks = classifyOcrFrames([
-    f(1),
-    f(3, b('LEFT CAPTION', .05, .72, .35, .80)),
-    f(5, b('RIGHT CAPTION', .65, .72, .95, .80)),
-  ], 8);
+  const separateTracks = classifyOcrFrames(
+    [
+      f(1),
+      f(3, b('LEFT CAPTION', 0.05, 0.72, 0.35, 0.8)),
+      f(5, b('RIGHT CAPTION', 0.65, 0.72, 0.95, 0.8)),
+    ],
+    8,
+  );
   assert.equal(separateTracks.subtitle_blur.length, 2);
 }
 
 // Simultaneous captions in disjoint horizontal tracks must not be enveloped
 // into one nearly full-width blur region.
 {
-  const simultaneousTracks = classifyOcrFrames([
-    f(1),
-    f(3,
-      b('LEFT ONE', .05, .72, .35, .80),
-      b('RIGHT ONE', .65, .72, .95, .80)),
-    f(5,
-      b('LEFT TWO', .06, .72, .36, .80),
-      b('RIGHT TWO', .64, .72, .94, .80)),
-  ], 8);
+  const simultaneousTracks = classifyOcrFrames(
+    [
+      f(1),
+      f(3, b('LEFT ONE', 0.05, 0.72, 0.35, 0.8), b('RIGHT ONE', 0.65, 0.72, 0.95, 0.8)),
+      f(5, b('LEFT TWO', 0.06, 0.72, 0.36, 0.8), b('RIGHT TWO', 0.64, 0.72, 0.94, 0.8)),
+    ],
+    8,
+  );
   assert.equal(simultaneousTracks.subtitle_blur.length, 2);
-  assert.ok(simultaneousTracks.subtitle_blur.every((region) => region.w < .40));
-  assert.ok(simultaneousTracks.subtitle_blur.some((region) =>
-    region.x <= .05 && region.x + region.w <= .40));
-  assert.ok(simultaneousTracks.subtitle_blur.some((region) =>
-    region.x >= .60 && region.x + region.w >= .95));
+  assert.ok(simultaneousTracks.subtitle_blur.every((region) => region.w < 0.4));
+  assert.ok(
+    simultaneousTracks.subtitle_blur.some(
+      (region) => region.x <= 0.05 && region.x + region.w <= 0.4,
+    ),
+  );
+  assert.ok(
+    simultaneousTracks.subtitle_blur.some(
+      (region) => region.x >= 0.6 && region.x + region.w >= 0.95,
+    ),
+  );
 }
 
 // A broad track that splits into two simultaneous captions may be consumed by
 // only one of them; otherwise in-place union makes the second reuse it too.
 {
-  const splitTransition = classifyOcrFrames([
-    f(1),
-    f(3, b('BROAD CAPTION', .20, .72, .80, .80)),
-    f(5,
-      b('LEFT SPLIT', .10, .72, .40, .80),
-      b('RIGHT SPLIT', .60, .72, .90, .80)),
-  ], 8);
+  const splitTransition = classifyOcrFrames(
+    [
+      f(1),
+      f(3, b('BROAD CAPTION', 0.2, 0.72, 0.8, 0.8)),
+      f(5, b('LEFT SPLIT', 0.1, 0.72, 0.4, 0.8), b('RIGHT SPLIT', 0.6, 0.72, 0.9, 0.8)),
+    ],
+    8,
+  );
   assert.equal(splitTransition.subtitle_blur.length, 2);
-  assert.ok(!splitTransition.subtitle_blur.some((region) =>
-    region.x <= .10 && region.x + region.w >= .90));
+  assert.ok(
+    !splitTransition.subtitle_blur.some((region) => region.x <= 0.1 && region.x + region.w >= 0.9),
+  );
 }
 
 // Two OCR lines in one frame become a single padded subtitle envelope.
 {
-  const twoLine = classifyOcrFrames([
-    f(1),
-    f(3,
-      b('BARIS SATU', .16, .70, .82, .76),
-      b('BARIS DUA', .22, .77, .76, .84)),
-    f(5,
-      b('KALIMAT BARU', .14, .71, .80, .77),
-      b('LANJUTANNYA', .20, .78, .78, .85)),
-  ], 8);
+  const twoLine = classifyOcrFrames(
+    [
+      f(1),
+      f(3, b('BARIS SATU', 0.16, 0.7, 0.82, 0.76), b('BARIS DUA', 0.22, 0.77, 0.76, 0.84)),
+      f(5, b('KALIMAT BARU', 0.14, 0.71, 0.8, 0.77), b('LANJUTANNYA', 0.2, 0.78, 0.78, 0.85)),
+    ],
+    8,
+  );
   assert.equal(twoLine.subtitle_blur.length, 1);
-  assert.ok(twoLine.subtitle_blur.every((r) => r.h > .14));
+  assert.ok(twoLine.subtitle_blur.every((r) => r.h > 0.14));
 }
 
 {
   const frames = [
-    f(1, b('HEADLINE', .1, .3, .9, .4)),
-    f(2, b('HEADLINE', .1, .3, .9, .4)),
+    f(1, b('HEADLINE', 0.1, 0.3, 0.9, 0.4)),
+    f(2, b('HEADLINE', 0.1, 0.3, 0.9, 0.4)),
     f(3),
-    f(5, b('CAPTION A', .2, .72, .8, .8)),
-    f(7, b('CAPTION B', .2, .72, .8, .8)),
+    f(5, b('CAPTION A', 0.2, 0.72, 0.8, 0.8)),
+    f(7, b('CAPTION B', 0.2, 0.72, 0.8, 0.8)),
   ];
   const verdict = classifyOcrFrames(frames, 9);
   const diagnostics = buildClassifiedDiagnostics(frames, verdict);
@@ -729,18 +830,20 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
   assert.ok(diagnostics.find((frame) => frame.t === 5)!.subtitle_boxes.length > 0);
 }
 
-
 // Repeated merging must not re-pad an already padded region on every sample.
 {
-  const repeated = classifyOcrFrames([
-    f(1, b('ONE', .2, .72, .8, .8)),
-    f(2, b('TWO', .2, .72, .8, .8)),
-    f(3, b('THREE', .2, .72, .8, .8)),
-    f(4, b('FOUR', .2, .72, .8, .8)),
-    f(5, b('FIVE', .2, .72, .8, .8)),
-  ], 6);
+  const repeated = classifyOcrFrames(
+    [
+      f(1, b('ONE', 0.2, 0.72, 0.8, 0.8)),
+      f(2, b('TWO', 0.2, 0.72, 0.8, 0.8)),
+      f(3, b('THREE', 0.2, 0.72, 0.8, 0.8)),
+      f(4, b('FOUR', 0.2, 0.72, 0.8, 0.8)),
+      f(5, b('FIVE', 0.2, 0.72, 0.8, 0.8)),
+    ],
+    6,
+  );
   assert.equal(repeated.subtitle_blur.length, 1);
-  assert.ok(Math.abs(repeated.subtitle_blur[0].x - .18) < 1e-9);
-  assert.ok(Math.abs(repeated.subtitle_blur[0].w - .64) < 1e-9);
+  assert.ok(Math.abs(repeated.subtitle_blur[0].x - 0.18) < 1e-9);
+  assert.ok(Math.abs(repeated.subtitle_blur[0].w - 0.64) < 1e-9);
 }
 console.log('ok classifyOcrFrames');
