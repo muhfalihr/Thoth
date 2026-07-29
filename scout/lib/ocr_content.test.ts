@@ -58,7 +58,13 @@ const analyzed: AnalyzedOcrAnalysis = {
     is_video: true,
   };
   await attachVideoOcr(record, {
-    resolve: () => 'C:/local/video.mp4',
+    resolve: async () => ({
+      status: 'resolved' as const,
+      media: 'C:/local/video.mp4',
+      source: 'local' as const,
+      attempts: 0,
+      elapsed_ms: 0,
+    }),
     analyze: async (source) => {
       assert.equal(source, 'C:/local/video.mp4');
       return analyzed;
@@ -71,6 +77,58 @@ const analyzed: AnalyzedOcrAnalysis = {
 }
 
 {
+  let analyzeCalls = 0;
+  await assert.rejects(
+    () =>
+      attachVideoOcr(
+        {
+          url: 'https://www.instagram.com/reel/FAILED/',
+          is_video: true as const,
+        },
+        {
+          resolve: async () => ({
+            status: 'unavailable' as const,
+            code: 'stream_resolution_failed' as const,
+            reason: 'timeout' as const,
+            attempts: 3,
+            elapsed_ms: 30_000,
+          }),
+          analyze: async () => {
+            analyzeCalls++;
+            return analyzed;
+          },
+        },
+      ),
+    (error: unknown) =>
+      error instanceof OcrAnalysisError &&
+      error.code === 'stream_resolution_failed' &&
+      !error.message.includes('instagram.com'),
+  );
+  assert.equal(analyzeCalls, 0);
+}
+
+{
+  let resolvedSource = '';
+  await attachVideoOcr(
+    { url: 'https://www.youtube.com/watch?v=123', is_video: true as const },
+    {
+      resolve: async () => ({
+        status: 'resolved' as const,
+        media: 'https://cdn.example.test/video.mp4',
+        source: 'platform-resolver' as const,
+        attempts: 2,
+        elapsed_ms: 4_500,
+      }),
+      analyze: async (source) => {
+        resolvedSource = source;
+        return analyzed;
+      },
+    },
+  );
+  assert.equal(resolvedSource, 'https://cdn.example.test/video.mp4');
+}
+
+{
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-tiktok-ocr-test-'));
   const pageUrl = 'https://www.tiktok.com/@creator/video/7656400559729151239';
   let downloadedPath = '';
@@ -80,9 +138,9 @@ const analyzed: AnalyzedOcrAnalysis = {
     await attachVideoOcr(
       { url: pageUrl, is_video: true as const },
       {
-        resolve: (source) => {
+        resolve: async () => {
           resolveCalls++;
-          return source;
+          throw new Error('TikTok must use the localizer');
         },
         ocrTempRoot: tempRoot,
         downloadTikTok: async (_source: string, output: string) => {
@@ -118,7 +176,9 @@ const analyzed: AnalyzedOcrAnalysis = {
             is_video: true as const,
           },
           {
-            resolve: (source) => source,
+            resolve: async () => {
+              throw new Error('TikTok must use the localizer');
+            },
             ocrTempRoot: tempRoot,
             downloadTikTok: async () => '',
             analyze: async () => {

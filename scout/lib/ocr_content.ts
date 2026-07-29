@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { downloadTiktok as defaultDownloadTikTok } from '../scrapers/tiktok_video.ts';
+import { type MediaResolutionResult, resolveOcrMedia } from './media_resolution.ts';
 import {
   type AnalyzedOcrAnalysis,
   analysisFields,
@@ -13,7 +14,6 @@ import {
   runRequiredOcr,
 } from './ocr_contract.ts';
 import { analyzeSubtitlesDetailed } from './subtitle_vision.ts';
-import { directStreamUrl } from './verify.ts';
 
 type VideoRecord = Record<string, unknown> & {
   url?: string;
@@ -22,7 +22,7 @@ type VideoRecord = Record<string, unknown> & {
 };
 
 type AttachVideoOcrDeps = {
-  resolve?: (source: string) => string;
+  resolve?: (source: string) => MediaResolutionResult | Promise<MediaResolutionResult>;
   analyze?: (source: string) => Promise<OcrAnalysis>;
   project?: (analysis: AnalyzedOcrAnalysis) => PersistedOcrFields;
   env?: OcrEnvironment;
@@ -117,7 +117,16 @@ export async function attachVideoOcr<T extends VideoRecord>(
           );
         }
       } else {
-        resolved = (deps.resolve ?? ((value) => directStreamUrl(value) || value))(source);
+        const resolution = await (
+          deps.resolve ?? ((value: string) => resolveOcrMedia(value, { env: deps.env }))
+        )(source);
+        if (resolution.status === 'unavailable') {
+          throw new OcrAnalysisError(
+            'stream_resolution_failed',
+            'OCR media stream could not be resolved safely',
+          );
+        }
+        resolved = resolution.media;
       }
       return (deps.analyze ?? ((value) => analyzeSubtitlesDetailed(value)))(resolved);
     });
