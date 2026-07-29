@@ -80,8 +80,15 @@ async function fetchCaption(url, platform) {
   return '';
 }
 
+const STEP_TIMEOUT_MS = 600_000;
+// build_footage searches once per dossier query (each search alone is capped at
+// 200 s) and then OCRs every surviving candidate, so its real cost is measured in
+// tens of minutes — 61 min on a live acceptance run. The default budget silently
+// SIGTERM'd it mid-query, which reads exactly like a crash.
+const FOOTAGE_TIMEOUT_MS = 5_400_000;
+
 // Required safety steps abort the command; optional enrichment may degrade gracefully.
-function step(label, script, scriptArgs, options: { required: boolean }) {
+function step(label, script, scriptArgs, options: { required: boolean; timeoutMs?: number }) {
   ui.stage(label);
   return runPipelineStep(
     { label, required: options.required },
@@ -89,7 +96,7 @@ function step(label, script, scriptArgs, options: { required: boolean }) {
       execute: () =>
         execFileSync(process.execPath, [here(script), ...scriptArgs], {
           stdio: 'inherit',
-          timeout: 600000,
+          timeout: options.timeoutMs ?? STEP_TIMEOUT_MS,
         }),
       warn: (message) => console.log(ui.amber(`  ${ui.WARN} ${message}`)),
     },
@@ -144,7 +151,7 @@ run(async () => {
     'build_footage (dossier→footage)',
     'build_footage.ts',
     [file, '--per', PER, '--max', MAX],
-    { required: true },
+    { required: true, timeoutMs: FOOTAGE_TIMEOUT_MS },
   );
   step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file], {
     required: false,

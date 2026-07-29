@@ -61,6 +61,30 @@ assert.throws(
     !error.cause.message.includes('secret-token'),
 );
 
+// A stage killed for exceeding its time budget carries no exit status and prints
+// nothing of its own, so without this the operator sees the same bare
+// "Required pipeline step failed" as a genuine crash — the failure that cost a
+// live acceptance run two 15-minute debugging cycles.
+assert.throws(
+  () =>
+    runPipelineStep(
+      { label: 'build_footage', required: true },
+      {
+        execute: () => {
+          const cause = new Error('spawn ETIMEDOUT https://cdn.test/x?sig=secret-token');
+          Object.assign(cause, { code: 'ETIMEDOUT', status: null, signal: 'SIGTERM' });
+          throw cause;
+        },
+        warn: () => {},
+      },
+    ),
+  (error: unknown) =>
+    error instanceof PipelineStepError &&
+    error.exitStatus === null &&
+    /time budget/.test(error.message) &&
+    !error.message.includes('secret-token'),
+);
+
 {
   let warning = '';
   const ok = runPipelineStep(
