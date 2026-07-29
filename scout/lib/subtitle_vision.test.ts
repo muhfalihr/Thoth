@@ -25,7 +25,51 @@ import {
   parseDuration,
   parseOcrResponseContent,
   parseVisionFrame,
+  probeDuration,
 } from './subtitle_vision.ts';
+
+// Bun 1.3.x kills the first sync spawn after a long idle gap with a spurious
+// ETIMEDOUT within milliseconds, so a probe that never ran read as unprobeable
+// media and failed the whole run. A kill landing well inside the budget is not
+// a timeout: retry once.
+{
+  const timeouts: NodeJS.ErrnoException = Object.assign(new Error('spawnSync ETIMEDOUT'), {
+    code: 'ETIMEDOUT',
+  });
+  let calls = 0;
+  const spurious = probeDuration('C:/video.mp4', {}, () => {
+    calls += 1;
+    if (calls === 1) throw timeouts;
+    return '25.167574\n';
+  });
+  assert.deepEqual(spurious, { status: 'ok', duration: 25.167574 });
+  assert.equal(calls, 2);
+
+  // A retry that times out again is a real failure, and is not retried forever.
+  let persistent = 0;
+  const stillFailing = probeDuration('C:/video.mp4', {}, () => {
+    persistent += 1;
+    throw timeouts;
+  });
+  assert.equal(persistent, 2);
+  assert.equal(stillFailing.status, 'failed');
+  assert.equal(stillFailing.status === 'failed' && stillFailing.reason, 'timeout');
+
+  // A kill that lands after the budget genuinely elapsed is a real timeout, so
+  // it must not spend a second probe.
+  let realTimeout = 0;
+  const genuine = probeDuration(
+    'C:/video.mp4',
+    {},
+    () => {
+      realTimeout += 1;
+      throw timeouts;
+    },
+    0,
+  );
+  assert.equal(realTimeout, 1);
+  assert.equal(genuine.status === 'failed' && genuine.reason, 'timeout');
+}
 
 assert.equal(configuredOcrModel({}), 'deepseek/deepseek-ocr');
 assert.equal(

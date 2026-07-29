@@ -793,26 +793,35 @@ async function ocrFrame(
 // binaries (a git worktree) has none. That ENOENT used to be swallowed into 0 and
 // reported as `duration_probe_failed` — a tooling misconfiguration wearing a media
 // failure's error code. `DurationProbeResult` signals it apart with `ffprobe_missing`.
-function probeDuration(
+export const PROBE_TIMEOUT_MS = 30_000;
+
+export type ProbeRunner = (ffprobe: string, videoUrl: string, timeoutMs: number) => string;
+
+const runFfprobe: ProbeRunner = (ffprobe, videoUrl, timeoutMs) =>
+  execFileSync(
+    ffprobe,
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      videoUrl,
+    ],
+    { encoding: 'utf8', stdio: 'pipe', timeout: timeoutMs },
+  );
+
+export function probeDuration(
   videoUrl: string,
   env: Record<string, string | undefined>,
+  run: ProbeRunner = runFfprobe,
+  timeoutMs: number = PROBE_TIMEOUT_MS,
 ): DurationProbeResult {
   const ffmpeg = env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
   const ffprobe = env.THOTH_FFPROBE || path.join(path.dirname(ffmpeg), 'ffprobe.exe');
-  try {
-    const raw = execFileSync(
-      ffprobe,
-      [
-        '-v',
-        'error',
-        '-show_entries',
-        'format=duration',
-        '-of',
-        'default=noprint_wrappers=1:nokey=1',
-        videoUrl,
-      ],
-      { encoding: 'utf8', stdio: 'pipe', timeout: 30_000 },
-    );
+
+  const succeed = (raw: string): DurationProbeResult => {
     const duration = parseDuration(raw);
     return duration > 0
       ? { status: 'ok', duration }
@@ -821,7 +830,8 @@ function probeDuration(
           code: 'duration_probe_failed',
           reason: 'invalid_output',
         };
-  } catch (error) {
+  };
+  const fail = (error: unknown): DurationProbeResult => {
     const processError = error as NodeJS.ErrnoException & {
       status?: number;
       killed?: boolean;
@@ -839,6 +849,26 @@ function probeDuration(
       reason: processError.code === 'ETIMEDOUT' || processError.killed ? 'timeout' : 'process_exit',
       ...(typeof processError.status === 'number' ? { safe_exit_code: processError.status } : {}),
     };
+  };
+
+  const started = Date.now();
+  try {
+    return succeed(run(ffprobe, videoUrl, timeoutMs));
+  } catch (error) {
+    // Bun 1.3.x derives spawnSync's deadline from a stale reference timestamp
+    // (the previous sync spawn, else process start), so the first probe after a
+    // long gap is killed with ETIMEDOUT within milliseconds — deterministically
+    // failing every pipeline run, which reaches OCR minutes in. A kill that
+    // lands well inside the budget never waited for it, so it is not a timeout.
+    // The failed call resets Bun's reference, so one retry is enough.
+    const spurious =
+      (error as NodeJS.ErrnoException).code === 'ETIMEDOUT' && Date.now() - started < timeoutMs;
+    if (!spurious) return fail(error);
+    try {
+      return succeed(run(ffprobe, videoUrl, timeoutMs));
+    } catch (retryError) {
+      return fail(retryError);
+    }
   }
 }
 
