@@ -1,5 +1,6 @@
 import {
   type CandidateOcrResult,
+  type ToleratedCandidateFailure,
   attachFootageOcrCandidate,
 } from './footage_candidate_ocr.ts';
 import type { PersistedOcrFields } from './ocr_contract.ts';
@@ -29,7 +30,9 @@ export function selectFootageVideoCandidate<T extends VideoRecord, A extends T &
   record: T,
   attach: (record: T) => Promise<A>,
 ): Promise<{
-  result: { status: 'accepted'; entry: A } | { status: 'unavailable'; code: 'media_access_failed' };
+  result:
+    | { status: 'accepted'; entry: A }
+    | { status: 'unavailable'; code: ToleratedCandidateFailure };
   mediaDropped: number;
 }>;
 export function selectFootageVideoCandidate<T extends VideoRecord>(

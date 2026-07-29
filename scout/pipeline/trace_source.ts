@@ -801,7 +801,7 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
     const ocrInput = { ...c, url: c.videoSrc || c.url, is_video: true };
     const result = await attachFootageOcrCandidate(ocrInput);
     if (result.status === 'unavailable') {
-      console.log(`    ↪ fallback: drop kandidat ${c.platform} alasan=media_access_failed`);
+      console.log(`    ↪ fallback: drop kandidat ${c.platform} alasan=${result.code}`);
       continue;
     }
     carryCurrentOcrMetadata(c, result.entry);

@@ -8,17 +8,22 @@ const record = {
   is_video: true as const,
 };
 
-for (const code of ['media_access_failed', 'stream_resolution_failed'] as const) {
+// An optional candidate is dropped, never fatal — and it reports the reason it
+// was actually dropped for. `incomplete_frame_coverage` joined this list after
+// live acceptance: one transient malformed OCR frame (11/12, retries exhausted)
+// on one optional candidate was aborting the whole required build_footage stage.
+for (const code of [
+  'media_access_failed',
+  'stream_resolution_failed',
+  'incomplete_frame_coverage',
+] as const) {
   const unavailable = await attachFootageOcrCandidate(record, async () => {
     throw new OcrAnalysisError(code, 'safe');
   });
-  assert.deepEqual(unavailable, {
-    status: 'unavailable',
-    code: 'media_access_failed',
-  });
+  assert.deepEqual(unavailable, { status: 'unavailable', code });
 }
 
-for (const code of ['missing_api_key', 'incomplete_frame_coverage'] as const) {
+for (const code of ['missing_api_key'] as const) {
   await assert.rejects(
     () =>
       attachFootageOcrCandidate(record, async () => {

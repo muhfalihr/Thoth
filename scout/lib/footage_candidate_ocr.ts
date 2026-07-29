@@ -9,14 +9,28 @@ type VideoRecord = Record<string, unknown> & {
   is_video?: boolean;
 };
 
+// Failures an OPTIONAL candidate may absorb. Dropping one candidate is always
+// preferable to aborting the required stage that asked for it; the reason is
+// carried through rather than flattened, so a dropped candidate is never
+// reported as a media failure it did not have.
+export const TOLERATED_CANDIDATE_FAILURES = [
+  'media_access_failed',
+  'stream_resolution_failed',
+  'incomplete_frame_coverage',
+] as const;
+
+export type ToleratedCandidateFailure = (typeof TOLERATED_CANDIDATE_FAILURES)[number];
+
 export type CandidateOcrResult<T> =
   | { status: 'accepted'; entry: T & PersistedOcrFields }
-  | { status: 'unavailable'; code: 'media_access_failed' };
+  | { status: 'unavailable'; code: ToleratedCandidateFailure };
 
 export function attachFootageOcrCandidate<T extends VideoRecord, A extends T & PersistedOcrFields>(
   record: T,
   attach: (record: T) => Promise<A>,
-): Promise<{ status: 'accepted'; entry: A } | { status: 'unavailable'; code: 'media_access_failed' }>;
+): Promise<
+  { status: 'accepted'; entry: A } | { status: 'unavailable'; code: ToleratedCandidateFailure }
+>;
 export function attachFootageOcrCandidate<T extends VideoRecord>(
   record: T,
   attach?: (record: T) => Promise<T & PersistedOcrFields>,
@@ -31,9 +45,9 @@ export async function attachFootageOcrCandidate<T extends VideoRecord>(
   } catch (error) {
     if (
       error instanceof OcrAnalysisError &&
-      ['media_access_failed', 'stream_resolution_failed'].includes(error.code)
+      (TOLERATED_CANDIDATE_FAILURES as readonly string[]).includes(error.code)
     ) {
-      return { status: 'unavailable', code: 'media_access_failed' };
+      return { status: 'unavailable', code: error.code as ToleratedCandidateFailure };
     }
     throw error;
   }
