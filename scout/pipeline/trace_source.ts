@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { connect, sleep } from '../lib/cdp.ts';
-import { tiktokOembed, youtubeOembed, matchesTopic, probeVideo, directStreamUrl } from '../lib/verify.ts';
+import { tiktokOembed, youtubeOembed, matchesTopic, probeVideo } from '../lib/verify.ts';
 import { resolveSource, composeSearchQuery, tightenQuery } from './resolve_source.ts';
 import { threadsVideoSrc, downloadThreads } from '../scrapers/threads_video.ts';
 import { igProfileReels, igPostOg } from '../scrapers/ig_profile.ts';
@@ -33,6 +33,7 @@ import {
   clearVideoOcrMetadata,
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
+import { attachFootageOcrCandidate } from '../lib/footage_candidate_ocr.ts';
 import {
   readVisionSignals,
   selectTraceVisionInput,
@@ -795,10 +796,21 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
   // to a direct CDN stream first (yt-dlp -g), falling back to the raw URL for already-direct sources.
   // Without this the vision check fail-opens to 'clean' for every non-TikTok-CDN candidate and the
   // penalty silently never fires (the whole point is to rank subtitle reactions down before selection).
+  const analyzedCandidates = [];
   for (const c of onTopicU) {
-    const src = c.videoSrc || directStreamUrl(c.url) || c.url;
-    await attachVideoOcr(c, { resolve: () => src });
+    const ocrInput = { ...c, url: c.videoSrc || c.url, is_video: true };
+    const result = await attachFootageOcrCandidate(ocrInput);
+    if (result.status === 'unavailable') {
+      console.log(`    ↪ fallback: drop kandidat ${c.platform} alasan=media_access_failed`);
+      continue;
+    }
+    carryCurrentOcrMetadata(c, result.entry);
     c.sv = { outcome: c.ocr_outcome };
+    analyzedCandidates.push(c);
+  }
+  if (!analyzedCandidates.length) {
+    console.log('    ↪ fallback: semua kandidat on-topik tidak dapat dianalisis.');
+    return null;
   }
   const SUBTITLE_PENALTY = 1e6; // dwarfs any positive similarity score
   const scoreOf = (c) => (c.sim || 0) - (c.sv && c.sv.outcome === 'subtitle' ? SUBTITLE_PENALTY : 0);
@@ -829,7 +841,7 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
     [1, 'non-agregator'],
     [2, 'agregator-berita (last-resort)'],
   ] as [number, string][]) {
-    pick = bestOf(onTopicU.filter((c) => tierOf(c) === tier));
+    pick = bestOf(analyzedCandidates.filter((c) => tierOf(c) === tier));
     if (pick) {
       why = label;
       break;
@@ -839,7 +851,7 @@ async function findStoryVideo(keywords, storyText, opts: any = {}) {
     PREFER_FOOTAGE &&
     pick &&
     pick.kind !== 'footage' &&
-    onTopicU.some((c) => c.kind === 'commentary');
+    analyzedCandidates.some((c) => c.kind === 'commentary');
   console.log(
     `    ↪ fallback pilih video insiden [@${urlHandle(pick.url) || '?'} · ${why}${pick.kind ? ' · ' + pick.kind : ''}] (${pick.platform}, sim=${(pick.sim || 0).toFixed(3)}): ${pick.url}`,
   );

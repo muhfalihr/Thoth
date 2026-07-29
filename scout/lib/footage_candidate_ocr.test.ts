@@ -8,13 +8,15 @@ const record = {
   is_video: true as const,
 };
 
-const unavailable = await attachFootageOcrCandidate(record, async () => {
-  throw new OcrAnalysisError('media_access_failed', 'safe');
-});
-assert.deepEqual(unavailable, {
-  status: 'unavailable',
-  code: 'media_access_failed',
-});
+for (const code of ['media_access_failed', 'stream_resolution_failed'] as const) {
+  const unavailable = await attachFootageOcrCandidate(record, async () => {
+    throw new OcrAnalysisError(code, 'safe');
+  });
+  assert.deepEqual(unavailable, {
+    status: 'unavailable',
+    code: 'media_access_failed',
+  });
+}
 
 for (const code of ['missing_api_key', 'incomplete_frame_coverage'] as const) {
   await assert.rejects(

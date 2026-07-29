@@ -29,7 +29,10 @@ export async function attachFootageOcrCandidate<T extends VideoRecord>(
   try {
     return { status: 'accepted', entry: await attach(record) };
   } catch (error) {
-    if (error instanceof OcrAnalysisError && error.code === 'media_access_failed') {
+    if (
+      error instanceof OcrAnalysisError &&
+      ['media_access_failed', 'stream_resolution_failed'].includes(error.code)
+    ) {
       return { status: 'unavailable', code: 'media_access_failed' };
     }
     throw error;
