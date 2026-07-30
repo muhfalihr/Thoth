@@ -11,10 +11,11 @@
 //   CLI:     bun verify.ts <tiktok_url> [keyword1 keyword2 ...]
 //            → prints caption + author + whether all/any keywords are present.
 
+import { execFile as _execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { execFileSync, execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pool } from './async_pool.ts';
+
 const execFileP = promisify(_execFile);
 
 // Bounded timeout for every yt-dlp metadata probe. A healthy `-J`/`--dump-single-json` probe
@@ -24,6 +25,7 @@ const PROBE_TIMEOUT = 20000;
 // yt-dlp -J on a fat carousel can print a large JSON blob → lift the child stdout cap (default
 // 1 MB) so a big-but-valid response isn't truncated into a parse error.
 const PROBE_MAXBUF = 1 << 24; // 16 MB
+
 import { ui } from './ui.ts';
 
 // Fetch TikTok caption/author via public oEmbed. Returns {title,author,thumbnail} or null.
@@ -249,6 +251,17 @@ function shapeArgs(postUrl, maxSlides = 10) {
 }
 function parseShape(jsonText: string): any {
   const d = JSON.parse(jsonText);
+  // The owning handle + canonical page URL travel with the shape probe so the main-candidate gate
+  // can decide "is this a curated aggregator?" without a second yt-dlp roundtrip.
+  const uploader = String(
+    d.uploader || d.channel || (Array.isArray(d.entries) && d.entries[0]?.uploader) || '',
+  );
+  const webpageUrl = String(
+    d.webpage_url ||
+      d.original_url ||
+      (Array.isArray(d.entries) && d.entries[0]?.webpage_url) ||
+      '',
+  );
   const caption = String((d && (d.description || d.title)) || '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -264,7 +277,7 @@ function parseShape(jsonText: string): any {
       kind: (e && e.ext === 'mp4') || (e && e.duration) ? 'video' : 'photo',
       duration: (e && e.duration) || 0,
     }));
-    return { ok: true, shape: 'carousel', slides, caption, time };
+    return { ok: true, shape: 'carousel', slides, caption, time, uploader, webpageUrl };
   }
   const one = (Array.isArray(d.entries) && d.entries[0]) || d;
   const kind = (one && one.ext === 'mp4') || (one && one.duration) ? 'video' : 'photo';
@@ -274,6 +287,8 @@ function parseShape(jsonText: string): any {
     slides: [{ index: 1, kind, duration: (one && one.duration) || 0 }],
     caption,
     time,
+    uploader,
+    webpageUrl,
   };
 }
 function postShape(postUrl, maxSlides = 10) {
@@ -342,21 +357,21 @@ async function verifyTikTok(url, keywords = []) {
 }
 
 export {
-  tiktokOembed,
-  youtubeOembed,
-  matchesTopic,
-  verifyTikTok,
-  probeVideo,
   directStreamArgs,
   directStreamUrl,
-  igSlideDirectUrl,
-  igCarouselSlides,
   dropCoverSlide,
-  ytdlpCookieArgs,
-  postShape,
-  warmPostShapes,
-  shapeArgs,
+  igCarouselSlides,
+  igSlideDirectUrl,
+  matchesTopic,
   parseShape,
+  postShape,
+  probeVideo,
+  shapeArgs,
+  tiktokOembed,
+  verifyTikTok,
+  warmPostShapes,
+  youtubeOembed,
+  ytdlpCookieArgs,
 };
 
 // --- CLI ------------------------------------------------------------------------

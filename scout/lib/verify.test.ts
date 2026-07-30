@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { directStreamArgs, shapeArgs, parseShape, dropCoverSlide } from './verify.ts';
+import { directStreamArgs, dropCoverSlide, parseShape, shapeArgs } from './verify.ts';
 
 // A photo-first IG/FB carousel (slide 1 photo, slide 2+ video) must still resolve to a video
 // stream. Pinning slide 1 made yt-dlp error, directStreamUrl fell open to the page URL, and
@@ -25,6 +25,8 @@ import { directStreamArgs, shapeArgs, parseShape, dropCoverSlide } from './verif
 
   const fixture = JSON.stringify({
     title: 'Post by dagelan',
+    uploader: 'dagelan',
+    webpage_url: 'https://www.instagram.com/dagelan/p/DbQoG9IjzGX/',
     entries: [
       { duration: null },
       { ext: 'mp4', duration: null },
@@ -41,6 +43,10 @@ import { directStreamArgs, shapeArgs, parseShape, dropCoverSlide } from './verif
     ['photo', 'video', 'video', 'video', 'video'],
     'slide 1 is the photo cover; slides 2-5 are mp4 videos',
   );
+  // The owning handle rides along so the main gate can reject curated aggregators without a
+  // second probe. Carousels report it at the top level; single posts fall back to entries[0].
+  assert.equal(shape.uploader, 'dagelan');
+  assert.match(shape.webpageUrl, /dagelan/);
 }
 
 // A single-media post keeps its one slide (index 1) — callers rely on this to harvest a plain
@@ -69,7 +75,10 @@ import { directStreamArgs, shapeArgs, parseShape, dropCoverSlide } from './verif
     [2, 3],
   );
   // A single-media post has no cover to drop — stripping index 1 would leave it with nothing.
-  assert.deepEqual(dropCoverSlide([{ index: 1 }]).map((s) => s.index), [1]);
+  assert.deepEqual(
+    dropCoverSlide([{ index: 1 }]).map((s) => s.index),
+    [1],
+  );
   assert.deepEqual(dropCoverSlide([]), []);
 }
 

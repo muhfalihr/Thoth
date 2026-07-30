@@ -661,7 +661,7 @@ export function classifyClip(frames: FrameDet[], duration: number): ClipVerdict 
 }
 
 // Ambil 1 frame di detik t → data URL base64 JPEG. Gagal → null.
-function frameDataUrl(
+export function extractFrameDataUrl(
   videoUrl: string,
   t: number,
   env: Record<string, string | undefined>,
@@ -1107,7 +1107,7 @@ export async function analyzeSubtitlesDetailed(
   const configuredMax = Number.parseInt(env.THOTH_SUBTITLE_OCR_MAX_FRAMES || '12', 10);
   const maxFrames = Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 12;
   const times = buildSampleTimes(resolvedDuration, maxFrames);
-  const extractFrame = deps.frameDataUrl ?? ((video, t) => frameDataUrl(video, t, env));
+  const extractFrame = deps.frameDataUrl ?? ((video, t) => extractFrameDataUrl(video, t, env));
   const analyzeFrame = deps.ocrFrame ?? ((image) => ocrFrame(image, apiKey, model, env));
   const wait = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const frames: OcrFrame[] = [];
