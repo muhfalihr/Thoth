@@ -2230,7 +2230,7 @@ rtk git commit -m "feat(scout): diagnose fail-closed main selection"
 - [ ] **Step 1: Run the reported pipeline**
 
 ```powershell
-rtk proxy bun scout/cli.ts run-pipeline "https://www.instagram.com/p/DbQoG9IjzGX"
+rtk proxy powershell -NoProfile -Command '$env:TEMP=(Resolve-Path ''scout/output'').Path; $env:TMP=$env:TEMP; $env:YTDLP_COOKIES_FILE=(Resolve-Path ''data/cookies.txt'').Path; & bun ''scout/pipeline/run_pipeline.ts'' ''https://www.instagram.com/p/DbQoG9IjzGX'''
 ```
 
 Expected:
