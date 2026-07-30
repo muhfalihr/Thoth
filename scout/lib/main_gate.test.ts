@@ -58,6 +58,7 @@ const accepted = (
   });
   assert.equal(decision.status, 'retain');
   assert.equal(decision.confidence, 'high');
+  assert.equal(decision.candidate.ocr_status, 'analyzed');
   assert.equal(searches, 0);
 }
 
@@ -109,6 +110,52 @@ const accepted = (
   });
   assert.equal(decision.status, 'replace');
   assert.equal(decision.status === 'replace' && decision.candidate.url, second.url);
+}
+
+{
+  const evaluated: string[] = [];
+  const candidates = [
+    {
+      url: 'https://www.instagram.com/creator/reel/OFF/',
+      platform: 'instagram',
+      uploader: 'creator',
+    },
+    {
+      url: 'https://www.instagram.com/creator/reel/GOOD/',
+      platform: 'instagram',
+      uploader: 'creator',
+    },
+    {
+      url: 'https://www.youtube.com/watch?v=GENERIC',
+      platform: 'youtube',
+    },
+  ];
+  const decision = await chooseInputOrReplacement(input, story, {
+    evaluate: async (value, _story, origin) => {
+      evaluated.push(`${origin}:${value.url}`);
+      if (origin === 'input') {
+        return { status: 'rejected', reason: 'curated_aggregator' };
+      }
+      if (value.url.endsWith('/OFF/')) {
+        return { status: 'rejected', reason: 'off_topic', similarity: 0.2 };
+      }
+      return accepted(value, value.url.endsWith('/GOOD/') ? 0.68 : 0.6);
+    },
+    search: async () => candidates,
+    rankAccepted: (results) =>
+      rankAcceptedMainCandidates(results, {
+        credited: 'creator',
+        repostHandle: 'curator',
+        preferFootage: true,
+      }),
+  });
+  assert.equal(decision.status, 'replace');
+  assert.equal(
+    decision.status === 'replace' && decision.candidate.url,
+    'https://www.instagram.com/creator/reel/GOOD/',
+  );
+  assert.equal(decision.candidate.ocr_status, 'analyzed');
+  assert.equal(evaluated.length, 4);
 }
 
 await assert.rejects(

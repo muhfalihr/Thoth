@@ -16,10 +16,15 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isCuratedAggregator } from '../lib/aggregators.ts';
 import { connect, sleep } from '../lib/cdp.ts';
-import { rankBySimilarity } from '../lib/embed.ts';
-import type { MainCandidate } from '../lib/main_candidate.ts';
+import {
+  evaluateMainSuitability,
+  type MainCandidate,
+  type MainCandidateOrigin,
+  type MainStoryEvidence,
+} from '../lib/main_candidate.ts';
+import { createMainCandidateRuntimeDeps } from '../lib/main_candidate_runtime.ts';
+import { chooseInputOrReplacement, rankAcceptedMainCandidates } from '../lib/main_gate.ts';
 import { admitSearchCandidates } from '../lib/main_search_candidates.ts';
 import {
   attachVideoOcr,
@@ -32,9 +37,9 @@ import { matchesTopic, probeVideo, tiktokOembed, youtubeOembed } from '../lib/ve
 import { igPostOg, igProfileReels } from '../scrapers/ig_profile.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
 import { downloadThreads, threadsVideoSrc } from '../scrapers/threads_video.ts';
-import { cropTiktokProfile, tiktokProfileVideos } from '../scrapers/tiktok_profile.ts';
+import { tiktokProfileVideos } from '../scrapers/tiktok_profile.ts';
 import { downloadTiktok, tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
-import { composeSearchQuery, resolveSource, tightenQuery } from './resolve_source.ts';
+import { resolveSource, tightenQuery } from './resolve_source.ts';
 import {
   readVisionSignals,
   selectTraceVisionInput,
@@ -295,6 +300,72 @@ orangnya. Format: "<teks overlay>. <aksi/scene singkat>". Bahasa Indonesia, tanp
   }
 }
 
+async function visionCoverKind(imgUrl, key, model) {
+  if (!imgUrl || !key) return { desc: '', kind: '' };
+  let ct = 'image/jpeg';
+  let b64 = '';
+  const dataMatch = String(imgUrl).match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/i);
+  if (dataMatch) {
+    ct = dataMatch[1];
+    b64 = dataMatch[2];
+  } else {
+    try {
+      const response = await fetch(imgUrl);
+      if (!response.ok) return { desc: '', kind: '' };
+      ct = response.headers.get('content-type') || ct;
+      b64 = Buffer.from(await response.arrayBuffer()).toString('base64');
+    } catch {
+      return { desc: '', kind: '' };
+    }
+  }
+  const prompt = `Lihat cover video ini. Kerjakan DUA hal, balas HANYA JSON valid (tanpa markdown):
+1) "desc": baca SEMUA teks overlay/judul APA ADANYA, lalu deskripsikan singkat aksi/scene + lokasi.
+2) "kind": klasifikasikan ISI VISUAL cover —
+   "footage" = REKAMAN ASLI kejadian: CCTV, rekaman saksi/HP, b-roll berita atas lokasi/orang/peristiwa
+     yang sebenarnya (orang BERADA DI DALAM kejadian).
+   "commentary" = orang BICARA KE kamera (talking-head/selfie/reaction), pembawa berita di meja studio,
+     podcast, kartu teks/meme, slideshow, split-screen reaksi.
+Contoh: {"desc":"...", "kind":"footage"}`;
+  try {
+    const response = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model,
+        max_tokens: 220,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: `data:${ct};base64,${b64}` } },
+            ],
+          },
+        ],
+      }),
+    });
+    if (!response.ok) return { desc: '', kind: '' };
+    const data = await response.json();
+    const raw = String(data.choices?.[0]?.message?.content || '').trim();
+    try {
+      const parsed = JSON.parse(raw.replace(/^```(?:json)?|```$/g, '').trim());
+      const kind = String(parsed.kind || '').toLowerCase();
+      return {
+        desc: String(parsed.desc || '').slice(0, 200),
+        kind: kind === 'footage' || kind === 'commentary' ? kind : '',
+      };
+    } catch {
+      return {
+        desc: raw.slice(0, 200),
+        kind: /commentary|talking|reaksi|reaction|studio|podcast/i.test(raw) ? 'commentary' : '',
+      };
+    }
+  } catch {
+    return { desc: '', kind: '' };
+  }
+}
+
 // Normalise a handle/name for fuzzy compare (drop @, spaces, separators): hipmi_tv = hipmitv = "HIPMI TV".
 const normHandle = (s) =>
   (s || '')
@@ -365,122 +436,43 @@ async function findOriginalThreads(username, keywords = []) {
 // The creator's own reel is the authentic source (vs a curator repost with baked overlay). Reels grid
 // has no captions, so take the newest reel (creators like this post on-topic consistently). IG reels
 // are downloadable by Thoth via firefox cookies. Guarded: needs an instagram.com tab attached.
-// Source-reel pick is VIEWS-dominated: a creator gets credited for the SPECIFIC clip that went viral,
-// so the reposted video is essentially always their most-viewed reel. (Its caption is often generic
-// motivational text — semantically indistinguishable from off-topic reels — so caption similarity is a
-// weak signal for *identity*, only useful as a sanity guard.) OFF_FLOOR = clearly-unrelated; ON_FLOOR =
-// confidently on-topic. Used by build_footage too for the profile-footage relevance floor.
-const OFF_FLOOR = 0.25,
-  ON_FLOOR = 0.33;
-
-async function findOriginalInstagram(username, keywords = [], topicText = '') {
+async function findOriginalInstagramCandidates(username): Promise<MainCandidate[]> {
   // includePosts:true → also scan feed posts (/p/), since creators often publish the source as a feed
   // VIDEO post, not a Reel; keep only verified-video posts (a /p/ can be a photo/carousel).
   const all = await igProfileReels(username, { max: 10, captions: true, includePosts: true });
-  const reels = all.filter((r) => r.isVideo !== false);
-  if (!reels.length) return null;
-  const topic = (topicText || keywords.join(', ')).trim();
-  // Annotate with semantic sim (0 when no embeddings), then default to the highest-views reel.
-  const ranked = topic
-    ? await rankBySimilarity(topic, reels, (r) => r.caption || '')
-    : reels.map((r) => ({ ...r, sim: 0 }));
-  const byViews = ranked.slice().sort((a, b) => b.views - a.views);
-  let pick = byViews[0],
-    how = 'views terbanyak (viral = direpost)';
-  // GUARD: only override views if the top-views reel is clearly off-topic AND a confidently on-topic
-  // reel exists — then take the highest-views among the on-topic set (handles a creator whose biggest
-  // hit is unrelated to this story).
-  const haveSim = ranked.some((r) => r.sim > 0);
-  if (haveSim && pick.sim < OFF_FLOOR) {
-    const onTopic = byViews.filter((r) => r.sim >= ON_FLOOR);
-    if (onTopic.length) {
-      pick = onTopic[0];
-      how = `top-views off-topik → konten on-topik (sim≥${ON_FLOOR}), views terbanyak`;
-    }
-  }
-  console.log(
-    `    [ig] pilih reel (${how}) ~${(pick.views || 0).toLocaleString()} views sim=${(pick.sim || 0).toFixed(3)}: ${pick.url}`,
-  );
-  return { url: pick.url, platform: 'instagram', caption: pick.caption || '' };
+  return all
+    .filter((item) => item.isVideo !== false)
+    .map((item) => ({
+      url: item.url,
+      platform: 'instagram',
+      caption: item.caption || '',
+      thumbnail: 'thumbnail' in item ? String(item.thumbnail || '') : '',
+      uploader: username,
+      isVideo: true,
+    }));
 }
 
 // Find the ORIGINAL on TikTok by PROFILE (not search): open tiktok.com/@user, list the video grid, and
-// pick the one whose caption best matches THIS story. TikTok search rarely surfaces a specific account's
-// own post (so findOriginal/handleMatch keeps failing), but the profile grid lists it directly. A
-// `tt/<user>` creator often posts MANY similar clips, so we rank by MEANING (caption↔story) and take the
-// best on-topic one (≥ON_FLOOR); fall back to top-views only when embeddings are unavailable. Returns
-// {url,platform:'tiktok',caption}|null. Needs a logged-in tiktok.com tab attached.
-async function findOriginalTiktok(username, topicText = '', keywords = []) {
-  let vids = [];
+// return every profile video so the shared gate can evaluate and rank them against the story.
+async function findOriginalTiktokCandidates(username): Promise<MainCandidate[]> {
+  let videos = [];
   try {
-    vids = await tiktokProfileVideos(username, { max: 30, captions: true });
+    videos = await tiktokProfileVideos(username, { max: 30, captions: true });
   } catch (e) {
-    return null;
+    return [];
   }
-  if (!vids.length) {
+  if (!videos.length) {
     console.log(`    [tiktok] profil @${username}: 0 video terbaca (login/tab?).`);
-    return null;
+    return [];
   }
-  const topic = (topicText || keywords.join(', ')).trim();
-  const capRanked = topic
-    ? await rankBySimilarity(topic, vids, (v) => v.caption || '')
-    : vids.map((v) => ({ ...v, sim: 0 }));
-  const key = novitaKey();
-
-  // No vision available → IG-style: top-views, override to highest-views-on-topic only if the top is
-  // clearly off-topic. (Caption sim is weak for these flooder creators, hence low confidence.)
-  if (!key) {
-    const byViews = capRanked.slice().sort((a, b) => b.views - a.views);
-    let pick = byViews[0];
-    if (capRanked.some((r) => r.sim > 0) && pick.sim < OFF_FLOOR) {
-      const on = byViews.filter((r) => r.sim >= ON_FLOOR);
-      if (on.length) pick = on[0];
-    }
-    if (!pick) return null;
-    console.log(
-      `    [tiktok] (no-vision) pilih ~${(pick.views || 0).toLocaleString()} views sim=${(pick.sim || 0).toFixed(3)}: ${pick.url}`,
-    );
-    return { url: pick.url, platform: 'tiktok', caption: pick.caption || '', lowConfidence: true };
-  }
-
-  // Captions are generic firefighter hashtags → unreliable for the SPECIFIC incident. Rank by the COVER
-  // SCENE (vision). Bound vision cost to a pool: top-by-views (reposted-viral clip is high-views) ∪
-  // top-by-caption-sim, then rank cover↔story. Best-effort: a flooder creator has many near-identical
-  // covers, so flag low-confidence when the top picks are visually clustered.
-  // Wider pool = better recall so the RIGHT clip (lower-views / generic-caption) isn't excluded before
-  // vision ranking even gets to see it.
-  const byViews = vids
-    .slice()
-    .sort((a, b) => b.views - a.views)
-    .slice(0, 16);
-  const byCap = capRanked.slice(0, 8);
-  const pool = [...new Map([...byViews, ...byCap].map((v) => [v.url, v])).values()];
-  console.log(
-    `    [tiktok] profil @${username}: ${vids.length} video → vision-cover ${pool.length} kandidat…`,
-  );
-  for (const v of pool) {
-    v.cover = await visionCover(v.thumbnail, key, MODEL);
-  }
-  // Rank by cover SCENE+overlay (vision) AND caption together — the cover's overlay text + the caption
-  // carry the specific ACTIVITY that separates near-identical clips of the same subject/place.
-  const ranked = await rankBySimilarity(topic, pool, (v) =>
-    [v.cover, v.caption].filter(Boolean).join('. '),
-  );
-  if (!ranked.some((r) => r.sim > 0)) return null;
-  const top = ranked[0],
-    second = ranked[1] || { sim: 0 };
-  if ((top.sim || 0) < ON_FLOOR) {
-    console.log(
-      `    [tiktok] cover terbaik sim=${(top.sim || 0).toFixed(3)}<${ON_FLOOR} → tak cukup yakin, batal.`,
-    );
-    return null;
-  }
-  const lowConfidence = top.sim - (second.sim || 0) < 0.05 || top.sim < 0.5;
-  console.log(
-    `    [tiktok] pilih video profil (vision-cover sim=${(top.sim || 0).toFixed(3)}${lowConfidence ? ui.amber(` ${ui.WARN} LOW-CONFIDENCE: banyak klip mirip`) : ''}) ~${(top.views || 0).toLocaleString()} views: ${top.url}`,
-  );
-  console.log(`              cover: "${(top.cover || '').slice(0, 80)}"`);
-  return { url: top.url, platform: 'tiktok', caption: top.caption || '', lowConfidence };
+  return videos.map((video) => ({
+    url: video.url,
+    platform: 'tiktok',
+    caption: video.caption || '',
+    thumbnail: video.thumbnail || '',
+    uploader: username,
+    isVideo: true,
+  }));
 }
 
 // Detect a camera-emoji credit ("[📸 @user]", "📷 @user", "🎥 cr: @user") → the original is on
@@ -536,35 +528,37 @@ function searchAll(q: string, gateKw?: string) {
   }
 }
 
-// Find the original on the SOURCE's handle (TikTok/X), video first. Returns {url,platform}|null.
-function findOriginal(username, topic) {
-  const uq = username.replace(/[._]+/g, ' ').trim();
-  const all = searchAll((topic ? uq + ' ' + topic : uq).trim());
-  const u = cleanUser(username);
-  const onHandle = all.filter((e) => handleMatch(e.url, u));
-  const pick =
-    onHandle.find((e) => e.platform === 'tiktok') ||
-    onHandle.find((e) => e.platform === 'youtube') ||
-    onHandle.find((e) => e.platform === 'twitter') ||
-    onHandle[0] ||
-    null;
-  return pick ? { url: pick.url, platform: pick.platform } : null;
+// Preserve every matching handle result so suitability/ranking happens only in the shared gate.
+function findOriginalHandleCandidates(username, topic): MainCandidate[] {
+  const queryUser = username.replace(/[._]+/g, ' ').trim();
+  const all = searchAll((topic ? `${queryUser} ${topic}` : queryUser).trim());
+  const normalized = cleanUser(username);
+  return all
+    .filter((entry) => handleMatch(entry.url, normalized))
+    .map((entry) => ({
+      url: entry.url,
+      platform: entry.platform,
+      uploader: username,
+    }));
 }
 
-// Find original on YouTube by CHANNEL NAME (watch URLs lack the handle).
-async function findOriginalYouTube(username, topic) {
-  const q = (username.replace(/[._]+/g, ' ') + ' ' + (topic || '')).trim();
+// Find all originals on YouTube by CHANNEL NAME (watch URLs lack the handle).
+async function findOriginalYouTubeCandidates(username, topic): Promise<MainCandidate[]> {
+  const query = `${username.replace(/[._]+/g, ' ')} ${topic || ''}`.trim();
   let c: Awaited<ReturnType<typeof connect>>;
   try {
     c = await connect({ match: 'youtube.com', requireMatch: true });
   } catch (e) {
-    return null;
+    return [];
   }
   try {
     try {
       await c.cmd('Page.bringToFront');
     } catch (e) {}
-    await c.navigate('https://www.youtube.com/results?search_query=' + encodeURIComponent(q), 6000);
+    await c.navigate(
+      `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+      6000,
+    );
     await sleep(2000);
     const raw = await c.evaluate(
       `(() => { const out=[]; document.querySelectorAll('ytd-video-renderer').forEach(v=>{ const a=v.querySelector('a#video-title'); const ch=v.querySelector('ytd-channel-name #text, .ytd-channel-name'); const cn=((ch&&ch.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean)[0])||''; if(a && a.href.includes('watch')) out.push({u:a.href.split('&')[0], ch:cn}); }); return JSON.stringify(out.slice(0,12)); })()`,
@@ -573,19 +567,18 @@ async function findOriginalYouTube(username, topic) {
     try {
       items = JSON.parse(raw || '[]');
     } catch (e) {}
-    const want = normHandle(username);
-    const hit = items.find((it) => normHandle(it.ch) === want);
-    return hit ? { url: hit.u, platform: 'youtube' } : null;
+    const wanted = normHandle(username);
+    return items
+      .filter((item) => normHandle(item.ch) === wanted)
+      .map((item) => ({
+        url: item.u,
+        platform: 'youtube',
+        uploader: username,
+        isVideo: true,
+      }));
   } finally {
     c.close();
   }
-}
-
-// Find any VIDEO (tiktok/youtube) matching free-text keywords. Returns {url,platform}|null.
-function findVideoByKeywords(q) {
-  const all = searchAll(q);
-  const v = all.find((e) => VIDEO.has(e.platform));
-  return v ? { url: v.url, platform: v.platform } : null;
 }
 
 // Handle in a post URL (the @username for TikTok/X/Threads, the path-user for IG). '' if none.
@@ -630,10 +623,49 @@ async function findStoryCandidates(keywords, storyText, opts: any = {}): Promise
   });
 }
 
-// TODO(Task 5): remove this compatibility wrapper when main_gate owns replacement selection.
-async function findStoryVideo(keywords, storyText, opts: any = {}): Promise<MainCandidate | null> {
-  const candidates = await findStoryCandidates(keywords, storyText, opts);
-  return candidates[0] || null;
+async function discoverReplacementCandidates({
+  username,
+  platHint,
+  searchTopic,
+  keywords,
+  storyText,
+  query,
+}): Promise<MainCandidate[]> {
+  const credited: MainCandidate[] = [];
+  if (username && platHint === 'instagram') {
+    credited.push(...(await findOriginalInstagramCandidates(username)));
+  } else if (username && platHint === 'tiktok') {
+    credited.push(...(await findOriginalTiktokCandidates(username)));
+    credited.push(...findOriginalHandleCandidates(username, searchTopic));
+  } else if (username && platHint === 'youtube') {
+    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
+  } else if (username && platHint === 'threads') {
+    const post = await findOriginalThreads(username, keywords.length ? keywords : KEYWORDS);
+    if (post) {
+      const videoSrc = await threadsVideoSrc(post.url);
+      if (videoSrc) {
+        credited.push({
+          url: post.url,
+          platform: 'threads',
+          videoSrc,
+          uploader: username,
+          isVideo: true,
+        });
+      }
+    }
+  } else if (username) {
+    credited.push(...findOriginalHandleCandidates(username, searchTopic));
+    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
+  }
+
+  const generic = await findStoryCandidates(keywords.length ? keywords : KEYWORDS, storyText, {
+    credited: username,
+    query,
+  });
+  const seen = new Set<string>();
+  return [...credited, ...generic].filter(
+    (candidate) => candidate.url && !seen.has(candidate.url) && Boolean(seen.add(candidate.url)),
+  );
 }
 async function setMainTo(set, orig, username) {
   clearVideoOcrMetadata(set.main);
@@ -833,248 +865,81 @@ async function setMainTo(set, orig, username) {
     .join('. ')
     .trim();
 
-  if (username && platHint === 'threads') {
-    // Threads PAGE tak bisa yt-dlp, TAPI <video>.src (fbcdn) bisa. Cari post sumber → ekstrak URL
-    // video CDN-nya → jadikan main (yt-dlp bisa download URL mp4 langsung itu).
-    const kw = keywords.length ? keywords : KEYWORDS;
-    console.log(`[4] sumber Threads @${username} → cari post (match keyword) + ekstrak video CDN…`);
-    const t = await findOriginalThreads(username, kw);
-    const vurl = t ? await threadsVideoSrc(t.url) : '';
-    if (vurl) {
-      set.main.url = vurl; // fbcdn direct mp4 (yt-dlp downloadable)
-      set.main.platform = 'threads';
-      set.main.is_video = true;
-      set.main.source_traced = username;
-      set.main.source_url = t.url; // post Threads asli (kredit; URL fbcdn ephemeral)
-      delete set.main.rewrap;
-      delete set.main.rewrap_source;
-      delete set.main.rewrap_platform;
-      let local = '';
-      if (!NO_DL) {
-        const code = (t.url.split('/post/')[1] || 'thr').replace(/[/?#].*$/, '');
-        const out = outPath(`threads_${code}.mp4`);
-        if (downloadThreads(vurl, out)) {
-          local = out;
-          set.main.source_local = out;
-        }
-      }
-      console.log(
-        `    ${ui.gold(ui.OK)} GANTI main → video CDN Threads (dari ${t.url})${local ? '\n       💾 mp4 lokal: ' + local + ' (cadangan kalau fbcdn expire)' : ''}\n       ${ui.amber(ui.WARN)} URL fbcdn ephemeral → jalankan thoth SEGERA.`,
-      );
-    } else {
-      set.main.rewrap = true;
-      set.main.rewrap_source = username;
-      set.main.rewrap_platform = 'threads';
-      if (t) set.main.rewrap_url = t.url;
-      console.log(
-        ui.amber(
-          `    ${ui.WARN} post Threads @${username} tanpa video / tak ketemu → dicatat (image-card)${t ? ': ' + t.url : ''}.`,
-        ),
-      );
-    }
-  } else if (username && platHint === 'instagram') {
-    // Original is on Instagram → grab the creator's own reel (downloadable via cookies) instead of
-    // the curator's repost. is_video:true (IG reel is a video).
-    console.log(
-      `[4] sumber Instagram @${username} → cari reel SPESIFIK (match konten) dari profil…`,
-    );
-    const orig = await findOriginalInstagram(
-      username,
-      keywords.length ? keywords : KEYWORDS,
-      storyCtx,
-    );
-    if (orig && orig.url !== main.url) {
-      const oldUrl = main.url;
-      set.main.url = orig.url;
-      set.main.platform = 'instagram';
-      set.main.is_video = true;
-      set.main.source_traced = username;
-      // Keep the curated repost description/title (news-style topic framing that grounds narration) —
-      // the creator's raw caption is casual hashtag-spam and worse for narration. Only fall back to the
-      // caption when there's no existing description at all.
-      if (orig.caption && !(set.main.description || '').trim()) {
-        set.main.description = orig.caption;
-        set.main.title = (set.main.title || '').trim() || orig.caption.slice(0, 120);
-      }
-      set.main.profile = { name: username, handle: username, followers: '', avatar_url: '' };
-      delete set.main.rewrap;
-      delete set.main.rewrap_source;
-      delete set.main.rewrap_platform;
-      console.log(
-        ui.gold(`    ${ui.OK} GANTI main → instagram ${orig.url}\n       (dari repost: ${oldUrl})`),
-      );
-    } else if (orig && orig.url === main.url) {
-      set.main.source_traced = username;
-      if (orig.caption && !(set.main.description || '').trim()) {
-        set.main.description = orig.caption;
-      }
-      delete set.main.rewrap;
-      delete set.main.rewrap_source;
-      delete set.main.rewrap_platform;
-      console.log('    ℹ️ main sudah = reel asli @' + username + '.');
-    } else {
-      set.main.rewrap = true;
-      set.main.rewrap_source = username;
-      set.main.rewrap_platform = 'instagram';
-      console.log(
-        ui.amber(`    ${ui.WARN} reel asli @${username} tak ketemu → flag (pakai repost).`),
-      );
-    }
-  } else if (username) {
-    console.log(
-      `[4] cari ASLI "@${username}"${platHint ? ' (' + platHint + ')' : ''} + "${searchTopic}"…`,
-    );
-    const storyText = storyCtx;
-    let orig = null;
-    if (platHint === 'youtube') orig = await findOriginalYouTube(username, searchTopic);
-    else if (platHint === 'tiktok') {
-      // DIRECT creator profile FIRST — TikTok search rarely surfaces a specific account's own post, but
-      // its profile grid lists it. This recovers the TRUE original (not a reposter of the same clip).
-      orig = await findOriginalTiktok(username, storyText, keywords);
-      if (!orig) orig = findOriginal(username, searchTopic); // search by-handle as secondary
-    } else if (platHint && platHint !== 'youtube') orig = findOriginal(username, searchTopic);
-    else
-      orig =
-        (await findOriginalYouTube(username, searchTopic)) || findOriginal(username, searchTopic);
+  const storyEvidence: MainStoryEvidence = {
+    caption: caption || '',
+    headline: headline || '',
+    scene: scene || '',
+    title: main.title || '',
+    description: main.description || '',
+    keywords: keywords || [],
+    storyText: storyCtx,
+  };
+  const runtimeDeps = createMainCandidateRuntimeDeps({
+    describeEvidence: async (candidate) => {
+      if (!candidate.thumbnail) return '';
+      const result = await visionCoverKind(candidate.thumbnail, novitaKey(), MODEL);
+      return result.desc || '';
+    },
+    classifyImage: async (image) => {
+      const result = await visionCoverKind(image, novitaKey(), MODEL);
+      return result.kind === 'footage' || result.kind === 'commentary' ? result.kind : 'unknown';
+    },
+  });
+  const evaluate = (
+    candidate: MainCandidate,
+    evidence: MainStoryEvidence,
+    origin: MainCandidateOrigin,
+  ) => evaluateMainSuitability(candidate, evidence, origin, runtimeDeps);
+  const inputCandidate: MainCandidate = {
+    ...main,
+    url: main.url,
+    platform: main.platform || '',
+    caption,
+    isVideo: main.is_video !== false,
+  };
 
-    // FALLBACK: the credited creator's OWN post wasn't found (profile + by-handle search both empty).
-    // Rather than keep the repost as main (baked headline/watermark — the very thing trace_source exists
-    // to avoid), grab the SAME-INCIDENT video on a video platform by story keywords, gated by relevance.
-    if (!orig) {
-      console.log(
-        `    ↪ post @${username} tak ketemu by-profile/handle → fallback cari video insiden by keyword (prioritas sumber non-agregator)…`,
-      );
-      orig = await findStoryVideo(keywords.length ? keywords : KEYWORDS, storyText, {
+  const decision = await chooseInputOrReplacement(inputCandidate, storyEvidence, {
+    evaluate,
+    search: () =>
+      discoverReplacementCandidates({
+        username,
+        platHint,
+        searchTopic,
+        keywords,
+        storyText: storyCtx,
+        query: '',
+      }),
+    rankAccepted: (results) =>
+      rankAcceptedMainCandidates(results, {
         credited: username,
         repostHandle: urlHandle(main.url),
-      });
-    }
+        preferFootage: process.env.THOTH_SOURCE_PREFER_FOOTAGE !== '0',
+      }),
+  });
 
-    if (orig && orig.url !== main.url) {
-      const oldUrl = main.url;
-      await setMainTo(set, orig, username);
-      if (orig.lowConfidence) {
-        set.main.source_low_confidence = true;
-        console.log(
-          ui.amber(
-            `       ${ui.WARN} source_low_confidence=true (creator banyak klip mirip — verifikasi manual bila perlu).`,
-          ),
-        );
-      }
-      console.log(
-        ui.gold(`    ${ui.OK} GANTI main → ${orig.platform} ${orig.url}\n       (dari: ${oldUrl})`),
-      );
-      // Crop the creator's TikTok profile-card header → Thoth pastes it as the real
-      // on-screen profile card (replacing the synthetic one).
-      if (platHint === 'tiktok' && set.main.profile) {
-        try {
-          const png = outPath(`profile_${username}.png`);
-          const cropped = await cropTiktokProfile(username, png);
-          if (cropped) {
-            set.main.profile.image_path = cropped;
-            console.log(`    🪪 crop kartu profil → ${cropped}`);
-          }
-        } catch (e) {}
-      }
-    } else if (orig && orig.url === main.url) {
-      console.log('    ℹ️ sumber = main itu sendiri. Dibiarkan.');
+  if (keywords.length) set.main.source_keywords = keywords;
+  if (decision.status === 'retain') {
+    carryCurrentOcrMetadata(set.main, decision.candidate);
+    if (decision.confidence === 'low') {
+      set.main.source_low_confidence = true;
     } else {
-      set.main.rewrap = true;
-      set.main.rewrap_source = username;
-      if (platHint) set.main.rewrap_platform = platHint;
-      console.log(
-        ui.amber(
-          `    ${ui.WARN} asli "@${username}"${platHint ? ' (' + platHint + ')' : ''} tak ketemu (by-handle + fallback) → flag main.rewrap=true + hint (pakai yang ada).`,
-        ),
-      );
+      delete set.main.source_low_confidence;
     }
-  } else if (keywords.length) {
-    set.main.source_keywords = keywords;
-    if (!VIDEO.has(main.platform) || main.is_video === false) {
-      // Vision-grounded query (headline+scene) beats joining the first proper-noun keywords — for a
-      // foreign story the victim's name alone surfaces junk; the incident terms surface the coverage.
-      const q = await composeSearchQuery({
-        description: main.description || main.title || '',
-        caption,
-        headline,
-        scene,
-      });
-      if (q) console.log(`    🔎 query(LLM caption+vision): "${q}"`);
-      console.log(
-        `[4] main bukan video TikTok/YT → cari video sumber by keyword (prioritas non-agregator): "${q || keywords.join(' ')}"…`,
-      );
-      const orig = await findStoryVideo(keywords, storyCtx, {
-        credited: '',
-        repostHandle: urlHandle(main.url),
-        query: q,
-      });
-      if (orig) {
-        await setMainTo(set, orig, '');
-        set.main.source_via = 'keywords';
-        console.log(ui.gold(`    ${ui.OK} GANTI main → ${orig.platform} ${orig.url}`));
-      } else
-        console.log(
-          ui.amber(
-            `    ${ui.WARN} video non-agregator tak ketemu dari keywords → keywords disimpan, main dibiarkan.`,
-          ),
-        );
-    } else {
-      console.log(
-        `    ℹ️ tak ada sumber eksplisit; keywords disimpan (main video dibiarkan): ${keywords.join(', ')}`,
-      );
-    }
+    console.log(`[main-gate] input ${decision.suitability} confidence=${decision.confidence}`);
   } else {
-    console.log(ui.gold(`    ${ui.OK} tak ada sinyal sumber/keyword — main dibiarkan.`));
-  }
-
-  // ── ENFORCE: a reel/post from a CURATED topic-discovery account (ig_accounts.json) must NEVER remain
-  // the main — those accounts are aggregators; the discovered reel only signals WHAT to cover, not the
-  // source video. If main (or its source_url) still resolves to a curated handle, force a non-aggregator
-  // replacement. Catches the no-credit path and any credit that pointed back at a curator.
-  {
-    const mh = urlHandle(set.main.url),
-      sh = urlHandle(set.main.source_url || '');
-    const curated = isCuratedAggregator(mh) ? mh : isCuratedAggregator(sh) ? sh : '';
-    if (curated) {
-      console.log(
-        `[5] main masih dari akun kurator @${curated} (ig_accounts) → WAJIB ganti ke sumber non-agregator…`,
-      );
-      const kws = keywords.length ? keywords : KEYWORDS;
-      // Build the search query from caption + VISION (headline/scene) via LLM — for curator reels the
-      // caption is often vague/motivational, so vision (what's actually on screen) yields a far more
-      // specific query than caption/keywords alone. Falls back to keywords inside findStoryVideo.
-      const q = await composeSearchQuery({
-        description: set.main.description || set.main.title || '',
-        caption,
-        headline,
-        scene,
-      });
-      if (q) console.log(`    🔎 query(LLM caption+vision): "${q}"`);
-      const repl = await findStoryVideo(
-        kws,
-        storyCtx || `${set.main.title || ''}. ${set.main.description || ''}`.trim(),
-        { credited: username, repostHandle: curated, query: q },
-      );
-      if (repl) {
-        const oldUrl = set.main.url;
-        await setMainTo(set, repl, username || set.main.source_traced || '');
-        console.log(
-          ui.gold(
-            `    ${ui.OK} GANTI main (enforce non-kurator) → ${repl.platform} ${repl.url}\n       (dari kurator: ${oldUrl})`,
-          ),
-        );
-      } else {
-        set.main.rewrap = true;
-        set.main.aggregator_unresolved = true;
-        console.log(
-          ui.amber(
-            `    ${ui.WARN} TAK ADA sumber non-agregator ditemukan. main.aggregator_unresolved=true — reel kurator TIDAK boleh dipublish sebagai main; topik ini perlu sumber lain / di-skip.`,
-          ),
-        );
-      }
+    const oldUrl = set.main.url;
+    await setMainTo(set, decision.candidate, username);
+    if (decision.confidence === 'low') {
+      set.main.source_low_confidence = true;
+    } else {
+      delete set.main.source_low_confidence;
     }
+    console.log(
+      ui.gold(
+        `    ${ui.OK} GANTI main → ${decision.candidate.platform} ${decision.candidate.url}\n       (dari: ${oldUrl})`,
+      ),
+    );
   }
-
   // ── ENSURE main is DOWNLOADABLE: a TikTok PAGE url (tiktok.com/@/video/) can't be fetched by
   // yt-dlp (HTTP 403) → resolve to a direct CDN mp4 (tikwm→CDP), same as setMainTo does on a re-trace.
   // Runs even when main was NOT re-traced (main is its own original) — otherwise Thoth ingest 403s.
