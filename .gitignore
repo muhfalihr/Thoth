@@ -86,6 +86,7 @@ api_key.txt
 /.codex/
 /.superpowers/
 /skills/.agents/
+/docs/superpowers/
 /opencode.json
 
 # ── Unused root tooling artifacts (Scout owns its own config/package state) ──────
