@@ -40,10 +40,36 @@ export type MainGateDeps = {
   ) => Promise<MainSuitability>;
   search: () => Promise<MainCandidate[]>;
   rankAccepted?: (candidates: AcceptedSuitability[]) => AcceptedSuitability | null;
+  appendDiagnostic?: (record: Record<string, unknown>) => void;
 };
 
 const AGGREGATOR_MARKERS =
   /(news|berita|media|infotainment|seleb|gosip|viral|update|terkini|trending|repost|kabar|warta|portal|redaksi|jurnal|koran|radar|grid|tempo|detik|kompas|tribun|cnnindo|cnbc|official)$/i;
+
+function appendEvaluationDiagnostic(
+  deps: MainGateDeps,
+  candidate: MainCandidate,
+  origin: MainCandidateOrigin,
+  result: MainSuitability,
+): void {
+  deps.appendDiagnostic?.({
+    candidate_url: candidate.url,
+    origin,
+    platform: candidate.platform,
+    status: result.status,
+    reason:
+      result.status === 'rejected' || result.status === 'indeterminate' ? result.reason : undefined,
+    similarity:
+      result.status === 'accepted' || result.status === 'rejected' ? result.similarity : undefined,
+    visual_kind:
+      result.status === 'accepted' || result.status === 'indeterminate' ? result.kind : undefined,
+    ocr_outcome:
+      result.status === 'accepted' || result.status === 'indeterminate'
+        ? result.candidate.ocr_outcome
+        : undefined,
+    replacement_started: origin === 'search',
+  });
+}
 
 export function rankAcceptedMainCandidates(
   candidates: AcceptedSuitability[],
@@ -84,6 +110,7 @@ export async function chooseInputOrReplacement(
   deps: MainGateDeps,
 ): Promise<MainGateDecision> {
   const inputResult = await deps.evaluate(input, story, 'input');
+  appendEvaluationDiagnostic(deps, input, 'input', inputResult);
   if (inputResult.status === 'accepted') {
     return {
       status: 'retain',
@@ -105,6 +132,7 @@ export async function chooseInputOrReplacement(
   const acceptedResults: AcceptedSuitability[] = [];
   for (const candidate of discovered) {
     const result = await deps.evaluate(candidate, story, 'search');
+    appendEvaluationDiagnostic(deps, candidate, 'search', result);
     if (result.status === 'accepted') acceptedResults.push(result);
   }
   const selected = (deps.rankAccepted ?? ((results) => results[0] || null))(acceptedResults);

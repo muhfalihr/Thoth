@@ -23,6 +23,7 @@ import {
   type MainCandidateOrigin,
   type MainStoryEvidence,
 } from '../lib/main_candidate.ts';
+import { appendMainCandidateDiagnostic } from '../lib/main_candidate_diagnostics.ts';
 import { createMainCandidateRuntimeDeps } from '../lib/main_candidate_runtime.ts';
 import { chooseInputOrReplacement, rankAcceptedMainCandidates } from '../lib/main_gate.ts';
 import { admitSearchCandidates } from '../lib/main_search_candidates.ts';
@@ -900,6 +901,7 @@ async function setMainTo(set, orig, username) {
 
   const decision = await chooseInputOrReplacement(inputCandidate, storyEvidence, {
     evaluate,
+    appendDiagnostic: appendMainCandidateDiagnostic,
     search: () =>
       discoverReplacementCandidates({
         username,

@@ -158,25 +158,28 @@ const accepted = (
   assert.equal(evaluated.length, 4);
 }
 
-await assert.rejects(
-  () =>
-    chooseInputOrReplacement(input, story, {
-      evaluate: async (_candidate, _story, origin) =>
-        origin === 'input'
-          ? { status: 'rejected', reason: 'curated_aggregator' }
-          : {
-              status: 'indeterminate',
-              reason: 'similarity_unavailable',
-              confidence: 'low',
-              kind: 'footage',
-              candidate: accepted(input, 0.5).candidate,
-            },
-      search: async () => [{ url: 'https://example.test/unranked', platform: 'youtube' }],
-    }),
-  (error: unknown) =>
-    error instanceof MainCandidateNotFoundError &&
-    error.code === 'main_candidate_not_found' &&
-    !error.message.includes('example.test'),
-);
+{
+  const diagnostics: Record<string, unknown>[] = [];
+  await assert.rejects(
+    () =>
+      chooseInputOrReplacement(input, story, {
+        evaluate: async (_candidate, _story, origin) =>
+          origin === 'input'
+            ? { status: 'rejected', reason: 'off_topic', similarity: 0.1 }
+            : { status: 'rejected', reason: 'media_unavailable' },
+        search: async () => [{ url: 'https://example.test/unavailable', platform: 'youtube' }],
+        appendDiagnostic: (record) => diagnostics.push(record),
+      }),
+    (error: unknown) =>
+      error instanceof MainCandidateNotFoundError &&
+      error.code === 'main_candidate_not_found' &&
+      !error.message.includes('example.test'),
+  );
+  assert.equal(diagnostics.length, 2);
+  assert.deepEqual(
+    diagnostics.map((record) => record.status),
+    ['rejected', 'rejected'],
+  );
+}
 
 console.log('ok main_gate');
