@@ -261,22 +261,27 @@ function isHandleBearingPageUrl(value: unknown): boolean {
   }
 }
 
+function publicOwnerHandle(value: unknown): string {
+  const handle = String(value || '')
+    .trim()
+    .replace(/^@/, '');
+  return handle && !/^\d+$/.test(handle) ? handle : '';
+}
+
 function parseShape(jsonText: string): any {
   const d = JSON.parse(jsonText);
   const entry = Array.isArray(d.entries) && d.entries[0];
   // The owning handle + canonical page URL travel with the shape probe so the main-candidate gate
   // can decide "is this a curated aggregator?" without a second yt-dlp roundtrip.
-  const uploader = String(
-    d.uploader_id ||
-      d.uploader ||
-      d.channel_id ||
-      d.channel ||
-      entry?.uploader_id ||
-      entry?.uploader ||
-      entry?.channel_id ||
-      entry?.channel ||
-      '',
-  ).replace(/^@/, '');
+  const uploader =
+    publicOwnerHandle(d.uploader) ||
+    publicOwnerHandle(d.channel) ||
+    publicOwnerHandle(d.uploader_id) ||
+    publicOwnerHandle(d.channel_id) ||
+    publicOwnerHandle(entry?.uploader) ||
+    publicOwnerHandle(entry?.channel) ||
+    publicOwnerHandle(entry?.uploader_id) ||
+    publicOwnerHandle(entry?.channel_id);
   const rootWebpageUrl = String(d.webpage_url || '');
   const entryWebpageUrl = String(entry?.webpage_url || '');
   const webpageUrl = isHandleBearingPageUrl(rootWebpageUrl)

@@ -74,6 +74,27 @@ import { directStreamArgs, dropCoverSlide, parseShape, shapeArgs } from './verif
   );
 }
 
+// yt-dlp can expose an internal numeric account id beside the public channel handle. The numeric
+// id cannot participate in curated-account matching and must not mask the public owner.
+{
+  const shape = parseShape(
+    JSON.stringify({
+      uploader_id: '367005646',
+      channel: 'dagelan',
+      webpage_url: 'https://www.instagram.com/p/NUMERIC_OWNER_ID/',
+      entries: [
+        {
+          uploader_id: '367005646',
+          channel: 'dagelan',
+          webpage_url: 'https://www.instagram.com/dagelan/p/NUMERIC_OWNER_ID/',
+          ext: 'mp4',
+        },
+      ],
+    }),
+  );
+  assert.equal(shape.uploader, 'dagelan', 'a numeric internal id must not mask the public handle');
+}
+
 {
   const shape = parseShape(
     JSON.stringify({
