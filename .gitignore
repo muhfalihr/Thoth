@@ -79,3 +79,15 @@ api_key.txt
 .supabase_url
 *.supabase_url
 .worktrees/
+
+# ── Local AI-agent configuration/state (never commit) ───────────────────────────
+/.agents/
+/.claude/
+/.codex/
+/.superpowers/
+/skills/.agents/
+/opencode.json
+
+# ── Unused root tooling artifacts (Scout owns its own config/package state) ──────
+/biome.json
+/bun.lock
