@@ -33,7 +33,13 @@ export function sanitizeMainCandidateDiagnostic(
 
 export function appendMainCandidateDiagnostic(record: Record<string, unknown>): void {
   const safe = sanitizeMainCandidateDiagnostic(record);
-  fs.appendFileSync(outPath('main_candidate_debug.jsonl'), `${JSON.stringify(safe)}\n`, 'utf8');
+  const path = outPath('main_candidate_debug.jsonl');
+  const line = `${JSON.stringify(safe)}\n`;
+  try {
+    fs.appendFileSync(path, line, 'utf8');
+  } catch {
+    // Diagnostics are optional and must not interrupt the main candidate pipeline.
+  }
 }
 
 export function formatMainGateSummary(value: {

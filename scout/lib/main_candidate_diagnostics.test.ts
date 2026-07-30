@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
+  appendMainCandidateDiagnostic,
   formatMainGateSummary,
   sanitizeMainCandidateDiagnostic,
 } from './main_candidate_diagnostics.ts';
@@ -16,6 +18,31 @@ const sanitized = sanitizeMainCandidateDiagnostic({
 const serialized = JSON.stringify(sanitized);
 assert.doesNotMatch(serialized, /cdn\.example|sessionid|private-session|embedding|private-token/i);
 assert.match(serialized, /media_unavailable/);
+
+const originalAppendFileSync = fs.appendFileSync;
+fs.appendFileSync = (() => {
+  throw new Error('simulated diagnostic append failure');
+}) as typeof fs.appendFileSync;
+try {
+  assert.doesNotThrow(() =>
+    appendMainCandidateDiagnostic({
+      candidate_url: 'https://cdn.example.test/video.mp4?sessionid=private-session',
+      embedding: [0.1, 0.2, 0.3],
+      status: 'rejected',
+      reason: 'media_unavailable',
+    }),
+  );
+} finally {
+  fs.appendFileSync = originalAppendFileSync;
+}
+
+assert.deepEqual(sanitized, {
+  status: 'rejected',
+  reason: 'media_unavailable',
+  similarity: 0.31,
+  floor: 0.33,
+  candidate_id: '5013a8cebd0dcc12',
+});
 
 assert.equal(
   formatMainGateSummary({
