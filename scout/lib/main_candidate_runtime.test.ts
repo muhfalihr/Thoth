@@ -3,6 +3,7 @@ import {
   classifyMainCandidateVisual,
   createMainCandidateRuntimeDeps,
   probeMainCandidateVideo,
+  resolveMainCandidateMedia,
   scoreMainCandidateSimilarity,
 } from './main_candidate_runtime.ts';
 import { parseShape } from './verify.ts';
@@ -249,5 +250,79 @@ const representativeKind = await classifyMainCandidateVisual(
 );
 assert.equal(representativeKind, 'footage');
 assert.equal(extractedAt, 0.5);
+
+// A TikTok *page* URL is 'unsupported' to resolveOcrMedia, so the gate used to see media=null and
+// grade the candidate on its COVER image — and a cover is a title card, which the visual rubric
+// calls 'commentary'. Every TikTok replacement was therefore auto-rejected. Resolve the page to a
+// signed CDN mp4 so a real frame gets classified instead.
+const tiktokMedia = await resolveMainCandidateMedia(
+  { url: 'https://www.tiktok.com/@creator/video/1', platform: 'tiktok' },
+  {},
+  { directStream: (pageUrl) => `https://cdn.tiktok.test/${encodeURIComponent(pageUrl)}.mp4` },
+);
+assert.equal(tiktokMedia?.status, 'resolved');
+assert.match(String(tiktokMedia?.status === 'resolved' ? tiktokMedia.media : ''), /cdn\.tiktok\.test/);
+
+// An already-direct CDN videoSrc needs no yt-dlp roundtrip.
+const tiktokDirectSrc = await resolveMainCandidateMedia(
+  {
+    url: 'https://www.tiktok.com/@creator/video/2',
+    platform: 'tiktok',
+    videoSrc: 'https://cdn.tiktok.test/already-direct.mp4',
+  },
+  {},
+  {
+    directStream: () => {
+      throw new Error('must not re-resolve an already-direct CDN url');
+    },
+  },
+);
+assert.equal(tiktokDirectSrc?.status, 'resolved');
+
+// Fail-open: an unresolvable TikTok keeps the old null → thumbnail fallback rather than becoming a
+// hard media_unavailable rejection.
+const tiktokUnresolvable = await resolveMainCandidateMedia(
+  { url: 'https://www.tiktok.com/@creator/video/3', platform: 'tiktok' },
+  {},
+  { directStream: () => '' },
+);
+assert.equal(tiktokUnresolvable, null);
+
+// `-g -f best[ext=mp4]/best` prints one url per slide and the caller keeps the FIRST — on a
+// photo-first carousel that is the cover JPEG, because the `/best` half of the selector matches an
+// image (--ignore-no-formats-error only skips a slide with NO format at all). The gate then graded
+// the cover — a title card — which the visual rubric calls 'commentary', rejecting every IG
+// carousel. Resolve a slide yt-dlp itself reports as video, the way build_footage does.
+{
+  const asked: number[] = [];
+  const media = await resolveMainCandidateMedia(
+    { url: 'https://www.instagram.com/p/PHOTO_FIRST/', platform: 'instagram' },
+    {},
+    {
+      slides: () => [
+        { index: 1, kind: 'photo' },
+        { index: 2, kind: 'video' },
+      ],
+      slideStream: (_postUrl, index) => {
+        asked.push(index);
+        return `https://cdn.ig.test/slide${index}.mp4`;
+      },
+    },
+  );
+  assert.deepEqual(asked, [2], 'the photo cover must never be resolved as the main video');
+  assert.equal(media?.status, 'resolved');
+  assert.match(String(media?.status === 'resolved' ? media.media : ''), /slide2\.mp4/);
+}
+
+// Fail-open: an un-enumerable carousel falls back to whole-post resolution (previous behavior)
+// rather than becoming a hard media_unavailable rejection.
+{
+  const media = await resolveMainCandidateMedia(
+    { url: 'https://cdn.direct.test/main.mp4', platform: 'instagram' },
+    {},
+    { slides: () => [], slideStream: () => '' },
+  );
+  assert.equal(media?.status, 'resolved', 'no video slide must fall back, not reject');
+}
 
 console.log('ok main_candidate_runtime');

@@ -12,9 +12,13 @@
 //            → prints caption + author + whether all/any keywords are present.
 
 import { execFile as _execFile, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { pool } from './async_pool.ts';
+import { outPath, WORKSPACE } from './paths.ts';
+import { sanitizeResolverDetail } from './redact.ts';
 
 const execFileP = promisify(_execFile);
 
@@ -72,8 +76,13 @@ async function youtubeOembed(url) {
 // Cookie args for yt-dlp: prefer a cookies.txt FILE (env YTDLP_COOKIES_FILE — what Thoth's ingest uses,
 // reliably carries IG HttpOnly `sessionid`) over live browser extraction (env YTDLP_COOKIES_BROWSER,
 // which fails DPAPI on chromium here). Empty when neither is set.
+// YTDLP_COOKIES_FILE used to be exported by run_full.ps1 ONLY, so running a pipeline step directly
+// (`bun scout/pipeline/run_pipeline.ts <url>`) sent yt-dlp at Instagram with no cookies at all →
+// "empty media response" → every IG candidate died as media_unavailable. Fall back to the repo's
+// data/cookies.txt so the cookie no longer depends on which entrypoint launched the run.
+const DEFAULT_COOKIES_FILE = path.join(WORKSPACE, '..', 'data', 'cookies.txt');
 function ytdlpCookieArgs() {
-  const file = (process.env.YTDLP_COOKIES_FILE || '').trim();
+  const file = (process.env.YTDLP_COOKIES_FILE || '').trim() || DEFAULT_COOKIES_FILE;
   if (file && fs.existsSync(file)) return ['--cookies', file];
   const browser = (process.env.YTDLP_COOKIES_BROWSER || '').trim();
   return browser ? ['--cookies-from-browser', browser] : [];
@@ -318,18 +327,46 @@ function parseShape(jsonText: string): any {
     webpageUrl,
   };
 }
+// A failed shape probe surfaces to the main gate as `probe.available === false` → a
+// `media_unavailable` rejection carrying NO reason, because this used to discard stderr
+// (`stdio[2]: 'ignore'` + bare `catch (_) {}`). That made whole runs unexplainable. Capture the
+// scrubbed stderr onto the cached record and append it to post_shape_debug.jsonl.
+function recordShapeFailure(postUrl, detail: string, exitCode?: number): string {
+  const safeDetail = sanitizeResolverDetail(detail);
+  try {
+    fs.appendFileSync(
+      outPath('post_shape_debug.jsonl'),
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        source_id: createHash('sha256').update(String(postUrl)).digest('hex').slice(0, 16),
+        ok: false,
+        ...(exitCode !== undefined ? { safe_exit_code: exitCode } : {}),
+        ...(safeDetail ? { safe_detail: safeDetail } : {}),
+      })}\n`,
+      'utf8',
+    );
+  } catch {}
+  return safeDetail;
+}
+
 function postShape(postUrl, maxSlides = 10) {
   if (shapeCache.has(postUrl)) return shapeCache.get(postUrl);
   const YTDLP = process.env.YTDLP || 'yt-dlp';
   let res: any = { ok: false, shape: '', slides: [], caption: '' };
   try {
     const out = execFileSync(YTDLP, shapeArgs(postUrl, maxSlides), {
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: PROBE_TIMEOUT,
       maxBuffer: PROBE_MAXBUF,
     });
     res = parseShape(out.toString('utf8'));
-  } catch (_) {}
+  } catch (err: any) {
+    res.error = recordShapeFailure(
+      postUrl,
+      String(err?.stderr || '') || String(err?.message || ''),
+      typeof err?.status === 'number' ? err.status : undefined,
+    );
+  }
   shapeCache.set(postUrl, res);
   return res;
 }
@@ -350,7 +387,15 @@ async function warmPostShapes(urls: string[], concurrency = 5): Promise<void> {
         maxBuffer: PROBE_MAXBUF,
       });
       res = parseShape(stdout.toString());
-    } catch (_) {}
+    } catch (err: any) {
+      // Same blind spot as the sync path — this is the one that actually runs during a pipeline,
+      // so a silent failure here is what makes a whole run unexplainable.
+      res.error = recordShapeFailure(
+        u,
+        String(err?.stderr || '') || String(err?.message || ''),
+        typeof err?.code === 'number' ? err.code : undefined,
+      );
+    }
     shapeCache.set(u, res);
   });
 }

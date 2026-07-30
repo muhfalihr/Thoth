@@ -252,6 +252,41 @@ try {
     /json-client|json-password|json-auth|colon-client|cli-password|cli-client/i,
   );
 
+  // A known platform host serving an UNRECOGNIZED path is still an HTML page, never media. The
+  // resolver used to key off a handful of path shapes (/p/, /reel/, watch?v=, /status/) and treat
+  // everything else as "already a direct media url", so these went to ffprobe verbatim. ffprobe read
+  // HTML and exited 1 → `duration_probe_failed`, a code build_footage does not tolerate, so one such
+  // candidate killed the whole required stage.
+  for (const unrecognizedPath of [
+    'https://www.instagram.com/imajinari.id/',
+    'https://www.instagram.com/stories/imajinari.id/3512/',
+    'https://www.youtube.com/shorts/ABC123',
+  ]) {
+    let runs = 0;
+    const resolved = await resolveOcrMedia(unrecognizedPath, {
+      log: () => {},
+      runResolver: async () => {
+        runs++;
+        return {
+          exitCode: 0,
+          stdout: 'https://cdn.example.test/video.mp4\n',
+          stderr: '',
+          timedOut: false,
+        };
+      },
+    });
+    assert.equal(runs, 1, `${unrecognizedPath} must go through yt-dlp, not straight to ffmpeg`);
+    assert.equal(resolved.status === 'resolved' && resolved.source, 'platform-resolver');
+  }
+
+  // TikTok/Threads keep dedicated resolvers, so ANY url on those hosts must be rejected here —
+  // including the shapes the old /video/ and /post/ path patterns missed.
+  for (const specializedHost of ['https://www.tiktok.com/@user/photo/123', 'https://vt.tiktok.com/ZSABC/']) {
+    const result = await resolveOcrMedia(specializedHost, { log: () => {} });
+    assert.equal(result.status, 'unavailable', `${specializedHost} must not be treated as media`);
+    assert.equal(result.status === 'unavailable' && result.reason, 'unsupported');
+  }
+
   console.log('ok media_resolution');
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });

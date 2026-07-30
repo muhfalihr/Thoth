@@ -12,10 +12,14 @@ const record = {
 // was actually dropped for. `incomplete_frame_coverage` joined this list after
 // live acceptance: one transient malformed OCR frame (11/12, retries exhausted)
 // on one optional candidate was aborting the whole required build_footage stage.
+// `duration_probe_failed` joined it the same way: one candidate whose url ffprobe could not open
+// (exit 1 on an HTML page) aborted build_footage outright. Whatever makes ONE candidate unreadable,
+// the stage must keep going with the rest.
 for (const code of [
   'media_access_failed',
   'stream_resolution_failed',
   'incomplete_frame_coverage',
+  'duration_probe_failed',
 ] as const) {
   const unavailable = await attachFootageOcrCandidate(record, async () => {
     throw new OcrAnalysisError(code, 'safe');

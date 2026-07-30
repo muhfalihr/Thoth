@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { outPath } from './paths.ts';
+import { sanitizeResolverDetail } from './redact.ts';
 import { directStreamArgs } from './verify.ts';
 
 export const MEDIA_RESOLUTION_DEADLINE_MS = 30_000;
@@ -58,20 +59,34 @@ export type ResolveOcrMediaDeps = {
   log?: (line: string) => void;
 };
 
-const PLATFORM_PAGE_PATTERNS = [
-  /^https?:\/\/(?:www\.)?instagram\.com\/(?:[^/]+\/)?(?:p|reel|reels|tv)\//i,
-  /^https?:\/\/(?:www\.)?(?:youtube\.com\/watch|youtu\.be\/)/i,
-  /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/status\//i,
-  /^https?:\/\/(?:www\.|web\.)?facebook\.com\/.+/i,
+// Routing is by HOST, not by url path. Keying off a handful of path shapes (/p/, /reel/, watch?v=,
+// /status/) meant every OTHER path on the same host fell through to the "not a known page url, so it
+// must already be direct media" branch below — instagram profile and /stories/ urls, youtube.com/
+// shorts, tiktok /photo/ and vt.tiktok.com short links were handed to ffprobe verbatim. ffprobe read
+// HTML, exited 1, and that surfaced as `duration_probe_failed`, which build_footage does not
+// tolerate, so a single such candidate killed a required stage. An unrecognized path on a platform
+// host is still a web page: resolve it, never pass it through.
+const PLATFORM_HOSTS = [
+  'instagram.com',
+  'youtube.com',
+  'youtu.be',
+  'x.com',
+  'twitter.com',
+  'facebook.com',
 ] as const;
 
-const SPECIALIZED_PAGE_PATTERNS = [
-  /^https?:\/\/(?:www\.)?tiktok\.com\/@[^/]+\/video\//i,
-  /^https?:\/\/(?:www\.)?threads\.(?:net|com)\/@[^/]+\/post\//i,
-] as const;
+// TikTok/Threads keep dedicated resolvers, so the whole host is rejected here rather than the two
+// path shapes that used to be — callers must not double-resolve them.
+const SPECIALIZED_HOSTS = ['tiktok.com', 'threads.net', 'threads.com'] as const;
 
-function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
-  return patterns.some((pattern) => pattern.test(value));
+function hostMatches(value: string, hosts: readonly string[]): boolean {
+  let host: string;
+  try {
+    host = new URL(value).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return hosts.some((known) => host === known || host.endsWith(`.${known}`));
 }
 
 function defaultRunResolver(
@@ -104,30 +119,7 @@ function defaultRunResolver(
   });
 }
 
-export function sanitizeResolverDetail(value: string): string {
-  return String(value || '')
-    .replace(/https?:\/\/\S+/gi, '[url]')
-    .replace(/\b(?:set-cookie|cookie)\s*:\s*[^\r\n]*/gi, 'Cookie: [redacted]')
-    .replace(/authorization\s*:\s*\S+(?:\s+\S+)?/gi, 'Authorization: [redacted]')
-    .replace(/bearer\s+\S+/gi, 'Bearer [redacted]')
-    .replace(/--cookies(?:-from-browser)?\s+\S+/gi, '--cookies [redacted]')
-    .replace(
-      /--(?:session(?:id)?|csrftoken|cookie|token|authorization|password|passwd|credential|secret|(?:client|private)[_-]?(?:secret|key)|(?:api|access|refresh|auth)[_-]?(?:key|token))\s+(?:"[^"]*"|'[^']*'|\S+)/gi,
-      '--secret [redacted]',
-    )
-    .replace(
-      /(["']?)(session(?:id)?|csrftoken|cookie|token|authorization|password|passwd|credential|secret|(?:client|private)[_-]?(?:secret|key)|(?:api|access|refresh|auth)[_-]?(?:key|token))\1\s*([=:])\s*(?:(["'])[^"'\r\n]*\4|[^\s,;&}]+)/gi,
-      '$1$2$1$3$4[redacted]$4',
-    )
-    .replace(/(["'])[A-Za-z]:[\\/][^\r\n]*?\1/g, '$1[path]$1')
-    .replace(/[A-Za-z]:[\\/](?:[^\r\n]*?[\\/])?Temp[\\/][^\r\n]*/gi, '[path]')
-    .replace(/[A-Za-z]:[\\/][^\s"'`,;)]+/g, '[path]')
-    .replace(/(["'])(?:\/tmp|\/var\/tmp|\/private\/tmp)\/[^\r\n]*?\1/g, '$1[path]$1')
-    .replace(/(^|[\s"'=(:])(?:\/tmp|\/var\/tmp|\/private\/tmp)\/[^\r\n]*/g, '$1[path]')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 240);
-}
+export { sanitizeResolverDetail };
 
 function appendMediaResolutionDiagnostic(input: string, record: Record<string, unknown>): void {
   const sourceId = createHash('sha256').update(input).digest('hex').slice(0, 16);
@@ -161,8 +153,8 @@ function directStreamFromOutput(stdout: string, input: string): string {
         if (
           !/^https?:\/\//i.test(line) ||
           line === input ||
-          matchesAny(line, PLATFORM_PAGE_PATTERNS) ||
-          matchesAny(line, SPECIALIZED_PAGE_PATTERNS)
+          hostMatches(line, PLATFORM_HOSTS) ||
+          hostMatches(line, SPECIALIZED_HOSTS)
         ) {
           return false;
         }
@@ -199,7 +191,7 @@ export async function resolveOcrMedia(
   if (value && fs.existsSync(value)) {
     return { status: 'resolved', media: value, source: 'local', attempts: 0, elapsed_ms: 0 };
   }
-  if (!/^https?:\/\//i.test(value) || matchesAny(value, SPECIALIZED_PAGE_PATTERNS)) {
+  if (!/^https?:\/\//i.test(value) || hostMatches(value, SPECIALIZED_HOSTS)) {
     return {
       status: 'unavailable',
       code: 'stream_resolution_failed',
@@ -208,7 +200,7 @@ export async function resolveOcrMedia(
       elapsed_ms: Math.max(0, now() - started),
     };
   }
-  if (!matchesAny(value, PLATFORM_PAGE_PATTERNS)) {
+  if (!hostMatches(value, PLATFORM_HOSTS)) {
     return { status: 'resolved', media: value, source: 'direct', attempts: 0, elapsed_ms: 0 };
   }
 

@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
-import { directStreamArgs, dropCoverSlide, parseShape, shapeArgs } from './verify.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { WORKSPACE } from './paths.ts';
+import {
+  directStreamArgs,
+  dropCoverSlide,
+  parseShape,
+  shapeArgs,
+  ytdlpCookieArgs,
+} from './verify.ts';
 
 // A photo-first IG/FB carousel (slide 1 photo, slide 2+ video) must still resolve to a video
 // stream. Pinning slide 1 made yt-dlp error, directStreamUrl fell open to the page URL, and
@@ -167,6 +176,36 @@ import { directStreamArgs, dropCoverSlide, parseShape, shapeArgs } from './verif
     [1],
   );
   assert.deepEqual(dropCoverSlide([]), []);
+}
+
+// YTDLP_COOKIES_FILE was exported by run_full.ps1 ONLY, so `bun scout/pipeline/run_pipeline.ts <url>`
+// hit Instagram cookie-less and every IG candidate died as media_unavailable. With the env unset the
+// repo's data/cookies.txt must still be picked up.
+{
+  const previous = process.env.YTDLP_COOKIES_FILE;
+  const previousBrowser = process.env.YTDLP_COOKIES_BROWSER;
+  delete process.env.YTDLP_COOKIES_FILE;
+  delete process.env.YTDLP_COOKIES_BROWSER;
+  try {
+    const defaultCookies = path.join(WORKSPACE, '..', 'data', 'cookies.txt');
+    const args = ytdlpCookieArgs();
+    if (fs.existsSync(defaultCookies)) {
+      assert.deepEqual(
+        args,
+        ['--cookies', defaultCookies],
+        'an unset YTDLP_COOKIES_FILE must fall back to the repo cookie jar',
+      );
+    } else {
+      assert.deepEqual(args, [], 'no env and no default jar means no cookie flags');
+    }
+    // An explicit env path still wins over the default.
+    process.env.YTDLP_COOKIES_FILE = 'C:/definitely/missing/cookies.txt';
+    assert.deepEqual(ytdlpCookieArgs(), [], 'a missing explicit path must not emit --cookies');
+  } finally {
+    if (previous === undefined) delete process.env.YTDLP_COOKIES_FILE;
+    else process.env.YTDLP_COOKIES_FILE = previous;
+    if (previousBrowser !== undefined) process.env.YTDLP_COOKIES_BROWSER = previousBrowser;
+  }
 }
 
 console.log('ok verify');

@@ -6,10 +6,19 @@ import type {
   MainCandidateEvaluatorDeps,
   MainVisualKind,
 } from './main_candidate.ts';
-import { resolveOcrMedia } from './media_resolution.ts';
+import { type MediaResolutionResult, resolveOcrMedia } from './media_resolution.ts';
 import { attachVideoOcr } from './ocr_content.ts';
 import { extractFrameDataUrl } from './subtitle_vision.ts';
-import { postShape, probeVideo } from './verify.ts';
+import {
+  directStreamUrl,
+  igCarouselSlides,
+  igSlideDirectUrl,
+  postShape,
+  probeVideo,
+} from './verify.ts';
+
+// Platforms whose posts can be multi-slide carousels, i.e. where "the post" is not "the video".
+const CAROUSEL_PLATFORMS = new Set(['instagram', 'facebook']);
 
 type ProbeRuntimeDeps = {
   postShape?: (url: string) => {
@@ -89,9 +98,45 @@ export async function scoreMainCandidateSimilarity(
 export async function resolveMainCandidateMedia(
   candidate: MainCandidate,
   env: Record<string, string | undefined> = process.env,
-) {
-  if (candidate.platform === 'tiktok') return null;
-  return resolveOcrMedia(String(candidate.videoSrc || candidate.url), { env });
+  deps: {
+    directStream?: (pageUrl: string) => string;
+    slides?: (postUrl: string) => Array<{ index: number; kind: string }>;
+    slideStream?: (postUrl: string, index: number) => string;
+  } = {},
+): Promise<MediaResolutionResult | null> {
+  const input = String(candidate.videoSrc || candidate.url);
+
+  // Whole-post resolution (`-g -f best[ext=mp4]/best` over slides 1-5) prints one url per slide and
+  // the caller keeps the FIRST. On a photo-first carousel that is the cover JPEG: the `/best` half
+  // of the selector matches an image, and --ignore-no-formats-error only skips a slide with NO
+  // format at all. The gate then graded the cover — a title card — which the visual rubric calls
+  // 'commentary', so every IG carousel was rejected while reporting `[media] resolved`. Pick a
+  // slide yt-dlp itself reports as video, the same helpers build_footage harvests slides with.
+  // postShape is memoized per run, so enumeration costs no extra probe after probeMainCandidateVideo.
+  if (CAROUSEL_PLATFORMS.has(String(candidate.platform)) && !candidate.videoSrc) {
+    const listSlides = deps.slides ?? igCarouselSlides;
+    const resolveSlide = deps.slideStream ?? igSlideDirectUrl;
+    // No dropCoverSlide here: that rule keeps footage from duplicating the main video. The main
+    // gate wants the first VIDEO slide whatever its index — the kind filter already drops covers.
+    for (const slide of listSlides(candidate.url).filter((s) => s.kind === 'video')) {
+      const direct = resolveSlide(candidate.url, slide.index);
+      if (direct) return resolveOcrMedia(direct, { env });
+    }
+    // Fall through on failure: whole-post resolution is still better than nothing.
+  }
+
+  if (candidate.platform !== 'tiktok') return resolveOcrMedia(input, { env });
+
+  // resolveOcrMedia rejects TikTok *page* URLs as 'unsupported' (they have a dedicated path). Left
+  // at null, the gate grades TikTok on `candidate.thumbnail` — the cover — and a cover is a title
+  // card, which the visual rubric classifies as 'commentary'. That rejected every TikTok
+  // replacement outright. Resolve to a signed CDN mp4 so a real mid-video frame is classified.
+  // An already-direct videoSrc resolves on the first call and never hits yt-dlp.
+  const resolved = await resolveOcrMedia(input, { env });
+  if (resolved.status === 'resolved') return resolved;
+  const direct = (deps.directStream ?? directStreamUrl)(input);
+  // Fail open: null keeps the old thumbnail fallback rather than a hard media_unavailable reject.
+  return direct ? resolveOcrMedia(direct, { env }) : null;
 }
 
 type MainVisualRuntimeDeps = {

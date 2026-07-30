@@ -86,6 +86,12 @@ const STEP_TIMEOUT_MS = 600_000;
 // tens of minutes — 61 min on a live acceptance run. The default budget silently
 // SIGTERM'd it mid-query, which reads exactly like a crash.
 const FOOTAGE_TIMEOUT_MS = 5_400_000;
+// trace_source is in the same class since the main gate started grading a REAL frame per
+// candidate: it resolves a video slide to a signed CDN url and seeks into that remote stream,
+// where it used to classify the carousel's cover JPEG (fast, and always wrong — a title card
+// reads as 'commentary', which rejected every candidate). Measured ~1 min per candidate against
+// a live search, so the 10 min default SIGTERM'd it mid-evaluation right after its first accept.
+const TRACE_SOURCE_TIMEOUT_MS = 1_800_000;
 
 // Required safety steps abort the command; optional enrichment may degrade gracefully.
 function step(label, script, scriptArgs, options: { required: boolean; timeoutMs?: number }) {
@@ -132,7 +138,10 @@ run(async () => {
   // can mine the comments too (names/brands often surface there). extract_figures runs AFTER build_footage
   // so it can also read footage descriptions — named subjects (e.g. "Sara Wijayanto", "MVP Pictures")
   // often surface there even when the topic/main caption is just a teaser.
-  step('trace_source (sumber/main)', 'trace_source.ts', [file], { required: true });
+  step('trace_source (sumber/main)', 'trace_source.ts', [file], {
+    required: true,
+    timeoutMs: TRACE_SOURCE_TIMEOUT_MS,
+  });
   if (!NO_COMMENTS)
     step('collect_comments (multi-sumber)', 'collect_comments.ts', [
       file,
