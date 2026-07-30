@@ -48,8 +48,8 @@ export async function probeMainCandidateVideo(
       candidate: {
         ...candidate,
         caption: candidate.caption || shape.caption || '',
-        uploader: candidate.uploader || shape.uploader || '',
-        pageUrl: candidate.pageUrl || shape.webpageUrl || candidate.url,
+        uploader: shape.uploader || candidate.uploader || '',
+        pageUrl: shape.webpageUrl || candidate.pageUrl || candidate.url,
       },
     };
   }
@@ -59,10 +59,10 @@ export async function probeMainCandidateVideo(
     isVideo: probed.isVideo,
     candidate: {
       ...candidate,
-      caption: candidate.caption || probed.caption || '',
-      thumbnail: candidate.thumbnail || probed.thumbnail || '',
-      uploader: candidate.uploader || probed.uploader || '',
-      pageUrl: candidate.pageUrl || probed.webpageUrl || '',
+      caption: probed.caption || candidate.caption || '',
+      thumbnail: probed.thumbnail || candidate.thumbnail || '',
+      uploader: probed.uploader || candidate.uploader || '',
+      pageUrl: probed.webpageUrl || candidate.pageUrl || '',
     },
   };
 }

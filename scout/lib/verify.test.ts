@@ -49,6 +49,72 @@ import { directStreamArgs, dropCoverSlide, parseShape, shapeArgs } from './verif
   assert.match(shape.webpageUrl, /dagelan/);
 }
 
+// The live IG shape returned the account identity through uploader_id/channel_id while its root
+// webpage_url was only the shortcode URL. The owner must be normalized, and a handle-bearing entry
+// URL is better evidence than the generic root URL.
+{
+  const shape = parseShape(
+    JSON.stringify({
+      uploader_id: '@root_owner',
+      webpage_url: 'https://www.instagram.com/root_owner/p/ROOT_CANONICAL/',
+      entries: [
+        {
+          channel_id: '@entry_owner',
+          webpage_url: 'https://www.instagram.com/entry_owner/p/ROOT_CANONICAL/',
+          ext: 'mp4',
+        },
+      ],
+    }),
+  );
+  assert.equal(shape.uploader, 'root_owner', 'top-level uploader_id is the canonical owner');
+  assert.equal(
+    shape.webpageUrl,
+    'https://www.instagram.com/root_owner/p/ROOT_CANONICAL/',
+    'a handle-bearing root URL must not be replaced by entry metadata',
+  );
+}
+
+{
+  const shape = parseShape(
+    JSON.stringify({
+      webpage_url: 'https://www.instagram.com/p/SHORTCODE_ONLY/',
+      entries: [
+        {
+          channel_id: '@dagelan',
+          webpage_url: 'https://www.instagram.com/dagelan/p/SHORTCODE_ONLY/',
+          ext: 'mp4',
+        },
+      ],
+    }),
+  );
+  assert.equal(shape.uploader, 'dagelan', 'entry channel_id is used when the root has no owner');
+  assert.equal(
+    shape.webpageUrl,
+    'https://www.instagram.com/dagelan/p/SHORTCODE_ONLY/',
+    'a handle-bearing entry URL must beat a generic shortcode-only root URL',
+  );
+}
+
+{
+  const shape = parseShape(
+    JSON.stringify({
+      webpage_url: 'https://www.instagram.com/reel/NO_OWNER_FIELDS/',
+      entries: [
+        {
+          webpage_url: 'https://www.instagram.com/canonical_only/reel/NO_OWNER_FIELDS/',
+          ext: 'mp4',
+        },
+      ],
+    }),
+  );
+  assert.equal(shape.uploader, '');
+  assert.equal(
+    shape.webpageUrl,
+    'https://www.instagram.com/canonical_only/reel/NO_OWNER_FIELDS/',
+    'the canonical entry URL remains a fallback when no uploader fields exist',
+  );
+}
+
 // A single-media post keeps its one slide (index 1) — callers rely on this to harvest a plain
 // /p/ video post, so the wrapper must not collapse it to an empty list.
 // Pins the `ext` half of the `duration || ext === 'mp4'` predicate: no duration reported (as

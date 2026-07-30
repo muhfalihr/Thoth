@@ -249,19 +249,41 @@ function shapeArgs(postUrl, maxSlides = 10) {
     postUrl,
   ];
 }
+
+function isHandleBearingPageUrl(value: unknown): boolean {
+  try {
+    const url = new URL(String(value || ''));
+    if (!/(^|\.)instagram\.com$/i.test(url.hostname)) return false;
+    const parts = url.pathname.split('/').filter(Boolean);
+    return parts.length >= 3 && /^(p|reel|tv)$/i.test(parts[1] || '');
+  } catch {
+    return false;
+  }
+}
+
 function parseShape(jsonText: string): any {
   const d = JSON.parse(jsonText);
+  const entry = Array.isArray(d.entries) && d.entries[0];
   // The owning handle + canonical page URL travel with the shape probe so the main-candidate gate
   // can decide "is this a curated aggregator?" without a second yt-dlp roundtrip.
   const uploader = String(
-    d.uploader || d.channel || (Array.isArray(d.entries) && d.entries[0]?.uploader) || '',
-  );
-  const webpageUrl = String(
-    d.webpage_url ||
-      d.original_url ||
-      (Array.isArray(d.entries) && d.entries[0]?.webpage_url) ||
+    d.uploader_id ||
+      d.uploader ||
+      d.channel_id ||
+      d.channel ||
+      entry?.uploader_id ||
+      entry?.uploader ||
+      entry?.channel_id ||
+      entry?.channel ||
       '',
-  );
+  ).replace(/^@/, '');
+  const rootWebpageUrl = String(d.webpage_url || '');
+  const entryWebpageUrl = String(entry?.webpage_url || '');
+  const webpageUrl = isHandleBearingPageUrl(rootWebpageUrl)
+    ? rootWebpageUrl
+    : isHandleBearingPageUrl(entryWebpageUrl)
+      ? entryWebpageUrl
+      : rootWebpageUrl || String(d.original_url || '') || entryWebpageUrl;
   const caption = String((d && (d.description || d.title)) || '')
     .replace(/\s+/g, ' ')
     .trim()
