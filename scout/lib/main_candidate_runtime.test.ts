@@ -46,6 +46,31 @@ const photoOnly = await probeMainCandidateVideo(
 );
 assert.equal(photoOnly.isVideo, false);
 
+const unavailablePost = await probeMainCandidateVideo(
+  {
+    url: 'https://www.instagram.com/p/UNAVAILABLE/',
+    platform: 'instagram',
+  },
+  {
+    postShape: () => ({
+      ok: false,
+      shape: '',
+      slides: [],
+    }),
+  },
+);
+assert.deepEqual(unavailablePost, {
+  available: false,
+  isVideo: false,
+  candidate: {
+    url: 'https://www.instagram.com/p/UNAVAILABLE/',
+    platform: 'instagram',
+    caption: '',
+    uploader: '',
+    pageUrl: 'https://www.instagram.com/p/UNAVAILABLE/',
+  },
+});
+
 const threads = await probeMainCandidateVideo(
   {
     url: 'https://www.threads.net/@creator/post/ABC',

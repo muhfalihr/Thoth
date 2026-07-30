@@ -34,15 +34,16 @@ export async function probeMainCandidateVideo(
   deps: ProbeRuntimeDeps = {},
 ): Promise<CandidateProbe> {
   if (candidate.platform === 'threads') {
-    return { isVideo: Boolean(candidate.videoSrc), candidate };
+    return { available: true, isVideo: Boolean(candidate.videoSrc), candidate };
   }
   if (candidate.platform === 'tiktok' || candidate.platform === 'youtube') {
-    return { isVideo: candidate.isVideo !== false, candidate };
+    return { available: true, isVideo: candidate.isVideo !== false, candidate };
   }
   if (candidate.platform === 'instagram' || candidate.platform === 'facebook') {
     const shape = (deps.postShape ?? postShape)(candidate.url);
     const isVideo = Boolean(shape.ok && shape.slides.some((slide) => slide.kind === 'video'));
     return {
+      available: shape.ok,
       isVideo,
       candidate: {
         ...candidate,
@@ -54,6 +55,7 @@ export async function probeMainCandidateVideo(
   }
   const probed = (deps.probeVideo ?? probeVideo)(candidate.url);
   return {
+    available: true,
     isVideo: probed.isVideo,
     candidate: {
       ...candidate,

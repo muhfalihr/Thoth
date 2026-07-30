@@ -45,6 +45,7 @@ function evaluatorDeps(
   return {
     storyFloor: 0.33,
     probeVideo: async (value) => ({
+      available: true,
       isVideo: true,
       candidate: { ...value, isVideo: true },
     }),
@@ -78,7 +79,7 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
     story,
     'input',
     evaluatorDeps({
-      probeVideo: async (value) => ({ isVideo: false, candidate: value }),
+      probeVideo: async (value) => ({ available: true, isVideo: false, candidate: value }),
       describeEvidence: async () => {
         expensiveCalls++;
         return '';
@@ -90,6 +91,32 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
     }),
   );
   assert.deepEqual(notVideo, { status: 'rejected', reason: 'not_video' });
+  assert.equal(expensiveCalls, 0);
+}
+
+{
+  let expensiveCalls = 0;
+  const unavailableProbe = await evaluateMainSuitability(
+    candidate,
+    story,
+    'input',
+    evaluatorDeps({
+      probeVideo: async (value) => ({
+        available: false,
+        isVideo: false,
+        candidate: value,
+      }),
+      describeEvidence: async () => {
+        expensiveCalls++;
+        return '';
+      },
+      resolveMedia: async () => {
+        expensiveCalls++;
+        throw new Error('must not run');
+      },
+    }),
+  );
+  assert.deepEqual(unavailableProbe, { status: 'rejected', reason: 'media_unavailable' });
   assert.equal(expensiveCalls, 0);
 }
 
@@ -244,7 +271,11 @@ await assert.rejects(
       probeVideo: async (value) => {
         seen.probed = value;
         // Deliberately un-normalized so the evaluator's own normalization is observable.
-        return { isVideo: true, candidate: { ...value, isVideo: false, is_video: false } };
+        return {
+          available: true,
+          isVideo: true,
+          candidate: { ...value, isVideo: false, is_video: false },
+        };
       },
       isCurated: (value) => {
         seen.curated = value;

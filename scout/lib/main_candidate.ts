@@ -27,6 +27,7 @@ export type MainCandidateOrigin = 'input' | 'search';
 export type MainVisualKind = 'footage' | 'commentary' | 'unknown';
 
 export type CandidateProbe = {
+  available: boolean;
   isVideo: boolean;
   candidate: MainCandidate;
 };
@@ -91,6 +92,7 @@ export async function evaluateMainSuitability(
   deps: MainCandidateEvaluatorDeps,
 ): Promise<MainSuitability> {
   const probe = await deps.probeVideo(rawCandidate);
+  if (!probe.available) return { status: 'rejected', reason: 'media_unavailable' };
   if (!probe.isVideo) return { status: 'rejected', reason: 'not_video' };
   const candidate = { ...probe.candidate, isVideo: true, is_video: true };
   if (deps.isCurated(candidate)) {
