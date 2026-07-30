@@ -5,6 +5,7 @@ import {
   probeMainCandidateVideo,
   scoreMainCandidateSimilarity,
 } from './main_candidate_runtime.ts';
+import { parseShape } from './verify.ts';
 
 const photoFirstCarousel = await probeMainCandidateVideo(
   {
@@ -62,6 +63,36 @@ assert.equal(
   true,
   'curated owner matching remains case-insensitive and tolerates a leading @',
 );
+
+const displayOwnerShape = parseShape(
+  JSON.stringify({
+    uploader: 'Post by dagelan',
+    uploader_id: '367005646',
+    channel: 'dagelan',
+    webpage_url: 'https://www.instagram.com/p/DISPLAY_OWNER/',
+    entries: [
+      {
+        uploader: 'Post by dagelan',
+        uploader_id: '367005646',
+        channel: 'dagelan',
+        webpage_url: 'https://www.instagram.com/dagelan/p/DISPLAY_OWNER/',
+        ext: 'mp4',
+      },
+    ],
+  }),
+);
+assert.equal(displayOwnerShape.uploader, 'dagelan', 'display labels are not public owner handles');
+const displayOwnerProbe = await probeMainCandidateVideo(
+  {
+    url: 'https://www.instagram.com/p/DISPLAY_OWNER/',
+    platform: 'instagram',
+  },
+  {
+    postShape: () => displayOwnerShape,
+  },
+);
+assert.equal(displayOwnerProbe.candidate.uploader, 'dagelan');
+assert.equal(runtimeDeps.isCurated(displayOwnerProbe.candidate), true);
 
 const photoOnly = await probeMainCandidateVideo(
   {
