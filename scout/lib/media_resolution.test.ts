@@ -196,6 +196,62 @@ try {
   assert.doesNotMatch(sanitized, /private-token|cookies\.txt|sessionid|https?:\/\//i);
   assert.ok(sanitized.length <= 240);
 
+  const sanitizedSecretFragments = sanitizeResolverDetail(
+    'Cookie: sessionid=cookie-secret; csrftoken=csrf-secret\n' +
+      'token=token-secret api_key=key-secret /tmp/thoth/private.mp4',
+  );
+  assert.doesNotMatch(
+    sanitizedSecretFragments,
+    /cookie-secret|csrf-secret|token-secret|key-secret|private\.mp4|\/tmp\//i,
+  );
+
+  const sanitizedKeyValueSecrets = sanitizeResolverDetail(
+    'authorization=secret client_secret=client password=pw auth_token=auth ' +
+      "output=/var/tmp/secret.mp4 path='/tmp/private.mp4'",
+  );
+  assert.doesNotMatch(
+    sanitizedKeyValueSecrets,
+    /=secret\b|=client\b|=pw\b|=auth\b|\/var\/tmp\/|\/tmp\/private\.mp4/i,
+  );
+
+  const sanitizedBoundaryPaths = sanitizeResolverDetail(
+    "quoted='/tmp/quoted.mp4' assigned=/var/tmp/assigned.mp4 " +
+      'paren=(/tmp/paren.mp4 colon:/var/tmp/colon.mp4',
+  );
+  assert.doesNotMatch(
+    sanitizedBoundaryPaths,
+    /quoted\.mp4|assigned\.mp4|paren\.mp4|colon\.mp4|\/(?:var\/)?tmp\//i,
+  );
+
+  const sanitizedSpacedTempPaths = sanitizeResolverDetail(
+    'win="C:\\Users\\runner\\AppData\\Local\\Temp\\private clip.mp4"\n' +
+      "posix='/tmp/private clip.mp4'\n" +
+      'forward="C:/Users/runner/AppData/Local/Temp/private clip.mp4"',
+  );
+  assert.doesNotMatch(
+    sanitizedSpacedTempPaths,
+    /private clip\.mp4|clip\.mp4|C:[\\/]|\/tmp\/|\/Temp\//i,
+  );
+
+  const sanitizedUnquotedSpacedTempPaths = sanitizeResolverDetail(
+    'win=C:\\Users\\runner\\AppData\\Local\\Temp\\private clip.mp4\n' +
+      'posix=/tmp/private clip.mp4\n' +
+      'forward=C:/Users/runner/AppData/Local/Temp/private clip.mp4',
+  );
+  assert.doesNotMatch(
+    sanitizedUnquotedSpacedTempPaths,
+    /private clip\.mp4|clip\.mp4|C:[\\/]|\/tmp\/|\/Temp\//i,
+  );
+
+  const sanitizedStructuredSecrets = sanitizeResolverDetail(
+    '{"client_secret":"json-client","password":"json-password","auth_token":"json-auth"} ' +
+      'client_secret: colon-client --password cli-password --client-secret cli-client',
+  );
+  assert.doesNotMatch(
+    sanitizedStructuredSecrets,
+    /json-client|json-password|json-auth|colon-client|cli-password|cli-client/i,
+  );
+
   console.log('ok media_resolution');
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });

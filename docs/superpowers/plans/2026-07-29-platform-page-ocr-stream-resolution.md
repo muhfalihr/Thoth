@@ -1027,8 +1027,15 @@ rtk git commit -m "fix(scout): preserve duration probe failure reasons"
 
 **Interfaces:**
 - Consumes: `OcrAnalysisError.code`.
-- Changes: `attachFootageOcrCandidate` maps both `media_access_failed` and `stream_resolution_failed` to `{ status: 'unavailable'; code: 'media_access_failed' }`.
+- Changes: `attachFootageOcrCandidate` maps `media_access_failed`, `stream_resolution_failed`, and `incomplete_frame_coverage` to `{ status: 'unavailable'; code }`, preserving the original safe code.
 - Produces: main-search OCR loop containing only successfully analyzed candidates.
+
+> **Implemented acceptance override (2026-07-29, commit `01d3d47`):**
+> live acceptance showed that one optional candidate with exhausted partial-frame
+> coverage aborted the required `build_footage` stage. By explicit human ruling,
+> `incomplete_frame_coverage` is also candidate-local here, and tolerated failures
+> preserve their original safe code instead of being flattened. Required main OCR
+> remains fail-closed through `runRequiredOcr`.
 
 - [ ] **Step 1: Add failing optional stream-failure coverage**
 
@@ -1036,19 +1043,22 @@ In `scout/lib/footage_candidate_ocr.test.ts`, replace the single unavailable
 case with:
 
 ```ts
-for (const code of ['media_access_failed', 'stream_resolution_failed'] as const) {
+for (const code of [
+  'media_access_failed',
+  'stream_resolution_failed',
+  'incomplete_frame_coverage',
+] as const) {
   const unavailable = await attachFootageOcrCandidate(record, async () => {
     throw new OcrAnalysisError(code, 'safe');
   });
   assert.deepEqual(unavailable, {
     status: 'unavailable',
-    code: 'media_access_failed',
+    code,
   });
 }
 ```
 
-Keep `missing_api_key`, `incomplete_frame_coverage`, and ordinary exceptions as
-fatal assertions.
+Keep `missing_api_key` and ordinary exceptions as fatal assertions.
 
 - [ ] **Step 2: Run the candidate test and confirm RED**
 
@@ -1058,7 +1068,7 @@ Run:
 rtk proxy bun scout/lib/footage_candidate_ocr.test.ts
 ```
 
-Expected: FAIL because `stream_resolution_failed` is rethrown.
+Expected: FAIL because the newly classified candidate-local failures are rethrown.
 
 - [ ] **Step 3: Expand only the candidate-local media classification**
 
@@ -1067,13 +1077,17 @@ Change the catch condition:
 ```ts
 if (
   error instanceof OcrAnalysisError &&
-  ['media_access_failed', 'stream_resolution_failed'].includes(error.code)
+  [
+    'media_access_failed',
+    'stream_resolution_failed',
+    'incomplete_frame_coverage',
+  ].includes(error.code)
 ) {
-  return { status: 'unavailable', code: 'media_access_failed' };
+  return { status: 'unavailable', code: error.code };
 }
 ```
 
-Do not add OCR provider, configuration, parsing, or coverage codes.
+Do not add OCR provider, configuration, parsing, or other analyzer codes.
 
 - [ ] **Step 4: Make `findStoryVideo` drop unavailable OCR candidates**
 
@@ -1096,7 +1110,7 @@ for (const candidate of onTopicU) {
   const result = await attachFootageOcrCandidate(ocrInput);
   if (result.status === 'unavailable') {
     console.log(
-      `    ↪ fallback: drop ${candidate.platform} candidate reason=media_access_failed`,
+      `    ↪ fallback: drop ${candidate.platform} candidate reason=${result.code}`,
     );
     continue;
   }
