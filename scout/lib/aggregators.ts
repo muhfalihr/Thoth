@@ -55,4 +55,38 @@ function urlHandle(url) {
   return h;
 }
 
-export { curatedHandles, isCuratedAggregator, urlHandle, norm as normHandle };
+// The source-resolving LLM answers in Indonesian and, when it cannot identify the poster, fills the
+// account field with a PLACEHOLDER rather than leaving it out — "@akun" ("account") is the one seen
+// in the wild. Accepted as a real handle it sends the by-handle search after an account that does
+// not exist, and makes the credited tier of rankAcceptedMainCandidates rank against a fiction.
+// A placeholder means "no account found", which is a different answer from "found this account".
+const PLACEHOLDER_HANDLES = new Set([
+  'akun',
+  'akunnya',
+  'namaakun',
+  'pengguna',
+  'penggunanya',
+  'user',
+  'username',
+  'unknown',
+  'tidakdiketahui',
+  'na',
+  'none',
+  'null',
+  'nil',
+  'anonim',
+  'anonymous',
+  'contoh',
+  'example',
+]);
+
+// Exact match only: a handle that merely CONTAINS a placeholder word ("akunpedia", "user_gaming99")
+// is a perfectly real account.
+function isPlaceholderHandle(handle) {
+  // Strip punctuation beyond what norm() removes, so "nama_akun", "n/a" and "-" collapse onto the
+  // same keys as their bare forms.
+  const key = norm(handle).replace(/[^a-z0-9]/g, '');
+  return !key || PLACEHOLDER_HANDLES.has(key);
+}
+
+export { curatedHandles, isCuratedAggregator, isPlaceholderHandle, urlHandle, norm as normHandle };

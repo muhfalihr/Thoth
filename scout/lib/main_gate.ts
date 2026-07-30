@@ -12,9 +12,11 @@ type AcceptedSuitability = Extract<MainSuitability, { status: 'accepted' }>;
 export type MainGateDecision =
   | {
       status: 'retain';
-      candidate: MainCandidate & PersistedOcrFields;
+      // Partial: the 'unverified' fallback below retains the raw input, which never went through
+      // OCR — the rejected MainSuitability variant carries no analysed candidate to hand back.
+      candidate: MainCandidate & Partial<PersistedOcrFields>;
       confidence: 'high' | 'low';
-      suitability: 'accepted' | 'indeterminate';
+      suitability: 'accepted' | 'indeterminate' | 'unverified';
     }
   | {
       status: 'replace';
@@ -40,6 +42,11 @@ export type MainGateDeps = {
   ) => Promise<MainSuitability>;
   search: () => Promise<MainCandidate[]>;
   rankAccepted?: (candidates: AcceptedSuitability[]) => AcceptedSuitability | null;
+  // Set when step 3 credited no account at all (the model omitted it, or answered with the "@akun"
+  // placeholder). The search then had no handle to aim at, so finding nothing says nothing about
+  // the input post — keep it as main rather than aborting the run. With a real credited handle this
+  // stays false: coming back empty there is a genuine failure and must still throw.
+  retainInputWhenUncredited?: boolean;
   appendDiagnostic?: (record: Record<string, unknown>) => void;
 };
 
@@ -136,7 +143,10 @@ export async function chooseInputOrReplacement(
     if (result.status === 'accepted') acceptedResults.push(result);
   }
   const selected = (deps.rankAccepted ?? ((results) => results[0] || null))(acceptedResults);
-  if (!selected) throw new MainCandidateNotFoundError();
+  if (!selected) {
+    if (!deps.retainInputWhenUncredited) throw new MainCandidateNotFoundError();
+    return { status: 'retain', candidate: input, confidence: 'low', suitability: 'unverified' };
+  }
   return {
     status: 'replace',
     candidate: selected.candidate,

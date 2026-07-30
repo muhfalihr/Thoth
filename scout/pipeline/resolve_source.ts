@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { isPlaceholderHandle } from '../lib/aggregators.ts';
 import { novitaKey } from '../lib/env.ts';
 const KEY = novitaKey();
 const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
@@ -94,9 +95,13 @@ async function resolveSource({
   // Normalise.
   let source = null;
   if (o.source && (o.source.account || o.source.platform)) {
-    const account = String(o.source.account || '')
+    // A placeholder account ("@akun") is the model saying it could NOT identify the poster. Passing
+    // it on as a handle sends the by-handle search after an account that does not exist; drop it so
+    // downstream sees the same empty account it would have seen had the model omitted the field.
+    const rawAccount = String(o.source.account || '')
       .replace(/^@/, '')
       .trim();
+    const account = isPlaceholderHandle(rawAccount) ? '' : rawAccount;
     let platform = String(o.source.platform || '')
       .toLowerCase()
       .trim();

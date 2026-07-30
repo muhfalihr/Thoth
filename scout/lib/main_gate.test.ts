@@ -182,4 +182,20 @@ const accepted = (
   );
 }
 
+// When step 3 never identified an account, there was no lead to chase and the search is shooting in
+// the dark — throwing there kills the run over a post we already have. Keep the input post as main
+// instead. This is opt-in: with a real credited handle, finding nothing is still a hard failure
+// worth surfacing, so the default above must keep throwing.
+{
+  const decision = await chooseInputOrReplacement(input, story, {
+    evaluate: async () => ({ status: 'rejected', reason: 'off_topic', similarity: 0.1 }),
+    search: async () => [],
+    retainInputWhenUncredited: true,
+  });
+  assert.equal(decision.status, 'retain');
+  assert.equal(decision.candidate.url, input.url);
+  assert.equal(decision.suitability, 'unverified');
+  assert.equal(decision.confidence, 'low');
+}
+
 console.log('ok main_gate');

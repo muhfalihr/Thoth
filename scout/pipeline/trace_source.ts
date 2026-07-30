@@ -901,6 +901,10 @@ async function setMainTo(set, orig, username) {
 
   const decision = await chooseInputOrReplacement(inputCandidate, storyEvidence, {
     evaluate,
+    // No credited account (step 3 came back empty, or with the "@akun" placeholder resolve_source
+    // now strips): the search had nothing to aim at, so an empty result is not evidence against the
+    // input post. Keep it as main instead of failing the run.
+    retainInputWhenUncredited: !username,
     appendDiagnostic: appendMainCandidateDiagnostic,
     search: () =>
       discoverReplacementCandidates({
