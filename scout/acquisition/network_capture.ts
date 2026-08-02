@@ -104,10 +104,24 @@ export function observeNetworkResponses<T>(
 
     const handleFinished = async (response: CapturedResponse) => {
       for (const matcher of matchers) {
+        // Gate re-entry BEFORE issuing any more work for this matcher: once
+        // finish() has run (deadline fired, or another matcher's in-flight
+        // call already completed the set), stop touching results/remaining
+        // and stop issuing further CDP commands — settled means
+        // Network.disable is already sent (or about to be).
+        if (settled) return;
         if (!remaining.has(matcher.id)) continue;
-        if (!matcher.matches(response)) continue;
         try {
+          // matches() is caller-supplied and may throw (e.g. a matcher that
+          // assumes `mimeType` is always defined) — keep it inside the same
+          // try/catch as the body fetch/parse so a throwing predicate is
+          // just a skipped match, never an unhandled rejection (Ruling 4).
+          if (!matcher.matches(response)) continue;
           const result = await cmd('Network.getResponseBody', { requestId: response.requestId });
+          // The deadline may have fired while the above await was in
+          // flight — don't mutate the already-resolved `results` object or
+          // shrink `remaining` after the fact.
+          if (settled) return;
           const body: string =
             result?.base64Encoded && typeof result.body === 'string'
               ? Buffer.from(result.body, 'base64').toString('utf8')
@@ -119,7 +133,8 @@ export function observeNetworkResponses<T>(
           }
         } catch {
           // per-response failure: skip this matcher for this response and
-          // keep observing (Ruling 4) — never let one bad body reject the call.
+          // keep observing (Ruling 4) — never let one bad predicate/body
+          // reject the call.
         }
       }
       maybeFinish();
