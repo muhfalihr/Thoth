@@ -42,6 +42,7 @@ Create `scout/acquisition/` as the only Scout layer allowed to acquire platform 
 
 ```ts
 interface AcquisitionService {
+  registerIntent(url: string, intent: AcquisitionIntent): void;
   discover(request: DiscoveryRequest): Promise<DiscoveryResult>;
   inspectPost(url: string): Promise<PostRecord>;
   collectComments(url: string, limits: CommentLimits): Promise<CommentRecord[]>;
@@ -51,6 +52,8 @@ interface AcquisitionService {
 ```
 
 Pipeline code chooses the intent. It does not choose CDP, `gallery-dl`, yt-dlp, or DOM selectors.
+
+The service owns a run-scoped registry keyed by canonical post URL. Pipeline stages register every known purpose before the URL's first browser visit. The coordinator then gathers the registered metadata, media, comment, and social-card artifacts during that visit. A purpose discovered after the visit must use captured artifacts or return `unavailable`; it does not trigger a second navigation. Discovered candidate URLs register the purposes implied by their platform and candidate kind before inspection.
 
 ### Modules
 
@@ -67,7 +70,7 @@ The browser coordinator remains in-process. The facade and adapter boundaries mu
 
 ## Normalized contracts
 
-The precise types may grow during planning, but every adapter must return the following semantic fields where available:
+Every adapter must return the following public semantic fields where available. Adapters may add private parser fields, but pipeline consumers may not depend on them:
 
 ```ts
 type AcquisitionSource =
@@ -153,7 +156,7 @@ For passive browser capture, the coordinator enables CDP Network monitoring befo
 
 The fallback order is capability-aware rather than a single universal chain:
 
-- Images and carousels: captured media reference, `gallery-dl`, direct HTTP, limited DOM extraction.
+- Images and carousels: `gallery-dl` using the canonical post URL, captured media reference through direct HTTP, limited DOM extraction.
 - Videos: captured CDN reference, existing platform resolver, yt-dlp.
 - Metadata: passive response, public metadata, limited DOM extraction.
 - Social cards and comments: reuse an existing page visit when possible, then take a targeted CDP crop.
@@ -192,9 +195,9 @@ The coordinator opens a platform circuit for the rest of the run when an authent
 - HTTP `401`, `403`, or `429`;
 - a login, CAPTCHA, checkpoint, or account-verification screen;
 - session invalidation;
-- repeated malformed platform responses.
+- two consecutive malformed normalized responses from that platform during the run.
 
-Once open, the circuit prevents further browser activity for that platform. Cached results and other platform adapters may continue. A required pipeline stage fails only when its existing success criteria cannot be met from remaining sources.
+Once open, the circuit prevents further browser activity for that platform. Cached results and other platform adapters may continue. A required pipeline stage fails only when its existing success criteria cannot be met from remaining sources. Status codes from ephemeral CDN downloads do not open the browser circuit; they are materialization failures and follow the media fallback policy.
 
 ## Privacy, credentials, and diagnostics
 
@@ -218,7 +221,9 @@ Use `discover()` for account feeds and trending sources. Adapters return normali
 
 ### `run_pipeline`
 
-Use `inspectPost()` once to construct the seed. Pass one acquisition service and run context through subsequent stages so budgets, cache entries, deduplication, and circuits are shared.
+Use `inspectPost()` once to construct the seed. Before the first visit, register the main post's known needs, including source inspection, comments unless disabled, and any required social card. Pass one acquisition service and run context through subsequent stages so budgets, cache entries, deduplication, and circuits are shared.
+
+The current orchestrator launches each stage as a separate Bun process. Phase 3 converts pipeline stages into exported asynchronous functions that accept an `AcquisitionRunContext`; their CLI entrypoints become thin wrappers around those functions. `run_pipeline` calls the exported functions in-process instead of using `execFileSync`. Standalone stage commands remain supported and create their own one-command run context. This change is required for run-wide navigation deduplication, budgets, and circuit state.
 
 ### `trace_source`
 
@@ -252,7 +257,7 @@ Add adapters for Instagram, X/Twitter, TikTok, YouTube, Facebook, Threads, and R
 
 ### Phase 3: Pipeline migration
 
-Migrate seed construction, discovery, source tracing, footage discovery and inspection, comments, and image enrichment. Share one run context across stages. Remove direct acquisition decisions from pipeline files.
+Convert stage scripts into importable asynchronous functions with thin CLI wrappers. Migrate seed construction, discovery, source tracing, footage discovery and inspection, comments, and image enrichment. Make `run_pipeline` call those functions with one run context. Remove direct acquisition decisions and subprocess stage orchestration from the normal pipeline path.
 
 ### Phase 4: Cleanup and acceptance
 
