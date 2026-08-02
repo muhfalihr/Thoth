@@ -25,6 +25,11 @@ export interface MaterializerDeps {
   fetchBytes(url: string, timeoutMs: number): Promise<Buffer>;
   root: string;
   now?: () => number;
+  // When absent, every MATERIALIZABLE_SOURCES entry is attempted regardless of
+  // what is actually installed (unchanged legacy behavior). When present
+  // (wired from policy.ts::detectCapabilities by the facade), the chain is
+  // narrowed to sources actually available.
+  capabilities?: ReadonlySet<AcquisitionSource>;
 }
 
 interface AttemptResult {
@@ -49,7 +54,7 @@ export class Materializer {
     // real behavior. Upgrade to threading an explicit platform through MediaAsset if
     // that assumption ever breaks.
     const platform = platformForUrl(asset.canonical_post_url) ?? 'instagram';
-    const chain = sourceOrder(platform, 'media', asset.kind, MATERIALIZABLE_SOURCES);
+    const chain = sourceOrder(platform, 'media', asset.kind, this.availableSources());
     const assetHash = createHash('sha256')
       .update(`${platform}:${asset.id}:${purpose}`)
       .digest('hex')
@@ -68,6 +73,15 @@ export class Materializer {
       attempts,
       elapsed_ms: clock() - startedAt,
     });
+  }
+
+  private availableSources(): ReadonlySet<AcquisitionSource> {
+    if (!this.deps.capabilities) return MATERIALIZABLE_SOURCES;
+    const filtered = new Set<AcquisitionSource>();
+    for (const source of MATERIALIZABLE_SOURCES) {
+      if (this.deps.capabilities.has(source)) filtered.add(source);
+    }
+    return filtered;
   }
 
   private async tryOne(
