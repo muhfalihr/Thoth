@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Materializer } from './materialize.ts';
+import { AcquisitionError } from './types.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-materialize-'));
 try {
@@ -53,6 +54,51 @@ try {
   assert.equal(direct.source, 'direct-http');
   assert.ok(fs.existsSync(direct.path));
   console.log('ok acquisition_materialize');
+
+  // Non-brief case: drive every source to failure and prove the resulting
+  // AcquisitionError carries no trace of the secret embedded in stderr/ephemeral_url.
+  const secretToken = 'SECRET_TOKEN_9f3a1c7e';
+  const allFail = new Materializer({ galleryDl: 'gallery-dl', ytdlp: 'yt-dlp' } as any, {
+    run: async () => ({
+      exitCode: 1,
+      stderr: `extractor failed at https://cdn.test/leak?token=${secretToken}`,
+      timedOut: false,
+    }),
+    fetchBytes: async () => {
+      throw new Error(`fetch rejected for token ${secretToken}`);
+    },
+    root,
+  });
+
+  let caught: unknown;
+  try {
+    await allFail.materialize(
+      {
+        id: 'GHI:1',
+        kind: 'image',
+        index: 1,
+        canonical_post_url: 'https://www.instagram.com/p/GHI/',
+        ephemeral_url: `https://cdn.test/direct.jpg?sig=${secretToken}`,
+      },
+      'footage',
+    );
+  } catch (err) {
+    caught = err;
+  }
+
+  assert.ok(caught instanceof AcquisitionError);
+  const failure = caught as AcquisitionError;
+  assert.equal(failure.message, 'media materialization failed');
+  assert.equal(failure.outcome.reason, 'materialization-failed');
+  assert.equal((failure as { cause?: unknown }).cause, undefined);
+
+  const serialized = JSON.stringify({
+    message: failure.message,
+    stack: failure.stack,
+    outcome: failure.outcome,
+  });
+  assert.ok(!serialized.includes(secretToken));
+  console.log('ok acquisition_materialize_privacy');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
