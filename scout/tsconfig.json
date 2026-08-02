@@ -21,6 +21,13 @@
     "noImplicitAny": false,
     "checkJs": false
   },
-  "include": ["cli.ts", "lib/**/*.ts", "scrapers/**/*.ts", "pipeline/**/*.ts", "enrich/**/*.ts"],
+  "include": [
+    "cli.ts",
+    "lib/**/*.ts",
+    "scrapers/**/*.ts",
+    "pipeline/**/*.ts",
+    "enrich/**/*.ts",
+    "acquisition/**/*.ts"
+  ],
   "exclude": ["node_modules", "deprecated", "output"]
 }
