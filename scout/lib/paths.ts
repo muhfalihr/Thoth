@@ -11,6 +11,9 @@ import path from 'node:path';
 const WORKSPACE = path.resolve(import.meta.dirname, '..');
 const OUTPUT_DIR = path.join(WORKSPACE, 'output');
 const CROPS_DIR = path.join(OUTPUT_DIR, 'crops');
+// v1 = on-disk cache schema version (see acquisition/cache.ts). Not eagerly created —
+// AcquisitionCache creates it lazily on first write.
+const ACQUISITION_CACHE_DIR = path.join(OUTPUT_DIR, 'acquisition-cache', 'v1');
 
 const ensureDir = (d) => {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
@@ -29,4 +32,4 @@ const cropPath = (name) => {
   return path.join(CROPS_DIR, name);
 };
 
-export { WORKSPACE, OUTPUT_DIR, CROPS_DIR, ensureDir, outPath, cropPath };
+export { WORKSPACE, OUTPUT_DIR, CROPS_DIR, ACQUISITION_CACHE_DIR, ensureDir, outPath, cropPath };
