@@ -36,6 +36,54 @@ try {
   clock += 101;
   assert.equal(cache.getPost(post.canonical_url), null);
 
+  const discoveryItem = {
+    canonical_url: 'https://www.instagram.com/p/DEF/',
+    platform: 'instagram' as const,
+    post_id: 'DEF',
+    owner_handle: 'owner2',
+    text: 'discovered',
+    media: [
+      {
+        id: 'DEF:1',
+        kind: 'image' as const,
+        index: 1,
+        canonical_post_url: 'https://www.instagram.com/p/DEF/',
+        ephemeral_url: 'https://signed-cdn.test/discovery.jpg?sig=disc-secret',
+      },
+    ],
+    outcome: {
+      status: 'resolved' as const,
+      source: 'network' as const,
+      attempts: 1,
+      elapsed_ms: 3,
+    },
+  };
+  const discovery = {
+    items: [discoveryItem],
+    outcome: {
+      status: 'resolved' as const,
+      source: 'network' as const,
+      attempts: 1,
+      elapsed_ms: 4,
+    },
+  };
+  cache.setDiscovery('query:test', discovery, 100);
+  assert.equal(cache.getDiscovery('query:test')?.items[0]?.text, 'discovered');
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(root, 'records.json'), 'utf8'),
+    /signed-cdn\.test|disc-secret/,
+  );
+
+  const negativeUrl = 'https://www.instagram.com/p/GHI/';
+  cache.setNegative(
+    negativeUrl,
+    { status: 'unavailable', reason: 'not-found', attempts: 2, elapsed_ms: 5 },
+    50,
+  );
+  assert.equal(cache.getNegative(negativeUrl)?.reason, 'not-found');
+  clock += 51;
+  assert.equal(cache.getNegative(negativeUrl), null);
+
   let calls = 0;
   const one = cache.memoize('same', async () => {
     calls++;
