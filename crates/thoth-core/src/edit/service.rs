@@ -726,6 +726,25 @@ impl<'a> EditService<'a> {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        // Whisper's duration is the last detected speech timestamp, not
+        // necessarily the end of the video. Use the container duration for all
+        // source cuts so a headline trim beyond the speech extent cannot collapse
+        // a loop to a fraction of a second.
+        let transcript_duration = transcript.duration_ms as f64 / 1000.0;
+        let probed_media_duration = super::overlay::get_video_duration(
+            self.execution,
+            video_path,
+            &ffmpeg_dir,
+        ).await?;
+        let video_duration = super::source_timing::resolve_source_duration(
+            probed_media_duration,
+            transcript_duration,
+            main_ctx.trim_start,
+        ).ok_or_else(|| EditError::FfmpegFailed(format!(
+            "cannot determine a safe headline-free source duration: transcript={transcript_duration:.3}s, trim_start={:.3}s",
+            main_ctx.trim_start,
+        )))?;
+
         // Cookies for footage downloads (TikTok/IG need login cookies, like ingest).
         let overlay_cookie = self.overlay_cookie();
 
@@ -740,10 +759,9 @@ impl<'a> EditService<'a> {
         // narration is the audio spine (event ducked), footage is B-roll on the
         // paper canvas, and subtitles come from the narration word timings.
         if self.config.narration.enabled && self.job.narration_mp3().exists() {
-            let video_dur = transcript.duration_ms as f64 / 1000.0;
             match self.render_narration_video(
                 video_path, &moments, layout, audio_opts, &enrich_pool, &image_pool,
-                &overlay_ytdlp, &ffmpeg_dir, video_dur,
+                &overlay_ytdlp, &ffmpeg_dir, probed_media_duration, transcript_duration,
                 profile_override.as_ref(), &comment_pool, source_channel,
             ).await {
                 Ok(clip) => {
@@ -763,8 +781,6 @@ impl<'a> EditService<'a> {
             let out_path = self.job.clip_path(i, &slug);
             let clip_t0  = Instant::now();
 
-            let video_duration = transcript.duration_ms as f64 / 1000.0;
-            
             // ── Step 0: Align boundaries to sentence boundaries ──────────────
             //
             // Strategy:
@@ -1780,7 +1796,8 @@ impl<'a> EditService<'a> {
         image_pool:    &[crate::ingest::content_search::ContentResult],
         overlay_ytdlp: &str,
         ffmpeg_dir:    &str,
-        video_dur:     f64,
+        probed_media_duration: Option<f64>,
+        transcript_duration: f64,
         profile_override: Option<&super::profile_card::ProfileCardData>,
         comment_pool:     &[super::comment_card::CommentData],
         source_channel:   &str,
@@ -1812,21 +1829,24 @@ impl<'a> EditService<'a> {
         // a ~10s source clip because `dur` was `.min(video_dur)`).
         let lead = self.config.narration.lead_in_secs.clamp(0.0, 3.0);
         let dur  = narr_dur + lead;
-        let clean_start = main_ctx.trim_start.clamp(0.0, (video_dur - 0.1).max(0.0));
-        let clean_duration = (video_dur - clean_start).max(0.0);
-        let loop_source = dur > clean_duration - 0.2;
-        // A loop is built from the headline-free segment. The logical encode
-        // timestamps remain 0..dur; ffmpeg's modulo-select drops the intro on every
-        // source cycle. Non-loop segments simply start no earlier than clean_start.
-        let (start, end, source_segment_start, source_segment_end) = if loop_source {
-            (0.0, dur, clean_start, video_dur)
-        } else {
-            let prefer = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0)
-                .max(clean_start);
-            let latest_start = (video_dur - dur).max(clean_start);
-            let start = prefer.min(latest_start);
-            (start, start + dur, start, start + dur)
-        };
+        let preferred_start = moments.moments.first().map(|m| m.start_sec).unwrap_or(0.0);
+        let source_timing = super::source_timing::plan_narration_source_timing(
+            probed_media_duration,
+            transcript_duration,
+            main_ctx.trim_start,
+            dur,
+            preferred_start,
+        ).ok_or_else(|| EditError::FfmpegFailed(format!(
+            "headline-free source segment is too short to loop safely: transcript={transcript_duration:.3}s, trim_start={:.3}s",
+            main_ctx.trim_start,
+        )))?;
+        let video_dur = source_timing.source_duration;
+        let clean_start = source_timing.clean_start;
+        let loop_source = source_timing.loop_source;
+        let start = source_timing.output_start;
+        let end = source_timing.output_end;
+        let source_segment_start = source_timing.source_segment_start;
+        let source_segment_end = source_timing.source_segment_end;
 
         // Hook window — the giant headline reads ALONE (no running subtitle). It
         // spans the lead-in plus the first narration beat.
@@ -1901,15 +1921,16 @@ impl<'a> EditService<'a> {
                 // auto modes) AND for the vision description that drives the AI
                 // event recreation (all modes).
                 if cover_cfg.subject {
-                    let at = (start + cover_cfg.subject_at_sec).clamp(start, (end - 0.1).max(start));
+                    let (at, sample_start, sample_end) =
+                        source_timing.cover_subject_window(cover_cfg.subject_at_sec);
                     // Dodge mirror/kaleidoscope TRANSITION frames (subject appears doubled on the cover)
                     // by picking the least-symmetric frame in a small window around the chosen moment.
                     let at = super::ffmpeg::pick_cover_frame_time(
                         &self.execution,
                         video_path,
                         at,
-                        start,
-                        end,
+                        sample_start,
+                        sample_end,
                     )
                     .await?;
                     if let Err(error @ EditError::Cancelled(_)) = super::ffmpeg::generate_thumbnail(

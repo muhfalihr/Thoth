@@ -382,6 +382,49 @@ pub(crate) async fn get_video_aspect(execution: &JobExecutionContext, path: &Pat
     }
 }
 
+/// Get the source container duration using ffprobe.
+///
+/// Transcript duration is only the detected speech extent, so callers must not
+/// use it as the media duration when choosing or looping a headline-free cut.
+pub(crate) async fn get_video_duration(
+    execution: &JobExecutionContext,
+    path: &Path,
+    ffmpeg_dir: &str,
+) -> Result<Option<f64>> {
+    let ffprobe = {
+        let dir = Path::new(ffmpeg_dir);
+        let bin = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+        if ffmpeg_dir.is_empty() {
+            "ffprobe".to_owned()
+        } else {
+            dir.join(bin).to_string_lossy().to_string()
+        }
+    };
+
+    let mut command = tokio::process::Command::new(&ffprobe);
+    command
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            &path.to_string_lossy(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let output = match execution.output_with_timeout(&mut command, Duration::from_secs(5)).await {
+        Ok(output) => output,
+        Err(error) if crate::execution::is_cancelled(&error) => return Err(error),
+        Err(_) => return Ok(None),
+    };
+
+    let duration = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|duration| duration.is_finite() && *duration > 0.0);
+    Ok(duration)
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn resolve_ffmpeg(ffmpeg_dir: &str) -> String {
