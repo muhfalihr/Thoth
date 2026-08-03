@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import { execSync } from 'node:child_process';
 import { connect, sleep, run } from '../lib/cdp.ts';
+import type { CdpClient } from '../lib/cdp.ts';
 import { cropPath } from '../lib/paths.ts';
 import { okCrop } from '../lib/crop_guard.ts';
 import { ui } from '../lib/ui.ts';
@@ -97,8 +98,12 @@ function inferPlatform(url) {
   return null;
 }
 
-// Crop one post to a PNG. Connects its own CDP session (per platform tab). Throws on relay-not-
-// attached (err.relay) so the caller can decide; returns {ok:false,reason} for soft failures.
+// Crop one post to a PNG. Connects its own CDP session (per platform tab) UNLESS a `client` is
+// supplied (acquisition kernel's Instagram adapter passes its own visit's already-connected,
+// already-navigated client + `navigate:false` — this function then reads/crops the loaded page
+// and never closes that borrowed client; `own` tracks who is responsible for closing it).
+// Throws on relay-not-attached (err.relay) so the caller can decide; returns {ok:false,reason}
+// for soft failures.
 async function cropPost({
   url,
   out,
@@ -107,6 +112,8 @@ async function cropPost({
   tries = 12,
   maxSlides = 1,
   log = (..._a: any[]) => {},
+  client: injectedClient,
+  navigate = true,
 }: {
   url: string;
   out?: string;
@@ -115,6 +122,8 @@ async function cropPost({
   tries?: number;
   maxSlides?: number;
   log?: (...a: any[]) => void;
+  client?: CdpClient;
+  navigate?: boolean;
 }) {
   const platform = inferPlatform(url);
   if (!platform)
@@ -123,7 +132,8 @@ async function cropPost({
   const id = (url.match(cfg.idRe) || [])[1] || Date.now() + '';
   const outFile = out || cropPath(`post_${platform}_${id}.png`);
 
-  const client = await connect({ match: cfg.match, requireMatch: true });
+  const own = !injectedClient;
+  const client = injectedClient ?? (await connect({ match: cfg.match, requireMatch: true }));
   try {
     try {
       await client.cmd('Page.bringToFront');
@@ -132,10 +142,12 @@ async function cropPost({
       await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true });
     } catch (e) {}
 
-    const cur = await client.evaluate('window.location.href');
-    if (!cur || (id && !cur.includes(id))) {
-      log('  navigasi ke target...');
-      await client.navigate(url, navWaitMs);
+    if (navigate) {
+      const cur = await client.evaluate('window.location.href');
+      if (!cur || (id && !cur.includes(id))) {
+        log('  navigasi ke target...');
+        await client.navigate(url, navWaitMs);
+      }
     }
 
     let tagged = 0;
@@ -323,7 +335,7 @@ async function cropPost({
       text,
     };
   } finally {
-    client.close();
+    if (own) client.close();
   }
 }
 

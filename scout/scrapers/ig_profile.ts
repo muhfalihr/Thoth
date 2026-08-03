@@ -7,6 +7,7 @@
 //   await igProfileReels('bejomuhajir', { max: 8, captions: true }) → [{url, views, caption}]
 
 import { connect, sleep } from '../lib/cdp.ts';
+import type { CdpClient } from '../lib/cdp.ts';
 
 // og:description = '<n> likes, <n> comments - <user> on <date>: "CAPTION' — often truncated, so the
 // closing quote may be missing. Everything after `: "` is the caption.
@@ -21,21 +22,35 @@ function igCaptionFromOg(og: string) {
 // cached per-url so caption + cover don't navigate the same post twice.
 // ponytail: 1-entry cache, callers handle one post at a time.
 let _igOg = { url: '', text: '', image: '' };
-async function igPostOg(url: string) {
+// `deps.client` (optional): reuse an already-connected, already-navigated CDP
+// client instead of opening/closing our own — used by the acquisition kernel's
+// Instagram adapter, which owns one navigation per post URL for the whole
+// visit and must never close a client it did not open (`own` tracks that).
+// `deps.navigate` (default true): skip the navigate+settle wait when the
+// caller's client is already sitting on `url` (acquisition adapter passes
+// navigate:false). Absent `deps` entirely, behavior is byte-for-byte the same
+// as before, including the module-level memo and the CDP-down soft return.
+async function igPostOg(url: string, deps: { client?: CdpClient; navigate?: boolean } = {}) {
   if (_igOg.url === url) return _igOg;
   const res = { url, text: '', image: '' };
-  let c;
-  try {
-    c = await connect({ match: 'instagram.com', requireMatch: true });
-  } catch (e) {
-    return res; // CDP browser down / no instagram tab — not cached, a later call may find one
+  const shouldNavigate = deps.navigate ?? true;
+  const own = !deps.client;
+  let c = deps.client;
+  if (!c) {
+    try {
+      c = await connect({ match: 'instagram.com', requireMatch: true });
+    } catch (e) {
+      return res; // CDP browser down / no instagram tab — not cached, a later call may find one
+    }
   }
   try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(url, 6000);
-    await sleep(3000);
+    if (shouldNavigate) {
+      try {
+        await c.cmd('Page.bringToFront');
+      } catch (e) {}
+      await c.navigate(url, 6000);
+      await sleep(3000);
+    }
     const meta = await c.evaluate(`(() => {
       const g = (p) => (document.querySelector('meta[property="' + p + '"]')||{}).content || '';
       return JSON.stringify({ og: g('og:description'), image: g('og:image') });
@@ -45,9 +60,11 @@ async function igPostOg(url: string) {
     res.image = mj.image || '';
   } catch (e) {
   } finally {
-    try {
-      c.close();
-    } catch (e) {}
+    if (own) {
+      try {
+        c.close();
+      } catch (e) {}
+    }
   }
   _igOg = res;
   return res;

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { connect, run as runCdpRelay } from '../lib/cdp.ts';
 import { ensureDir, OUTPUT_DIR } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
+import { instagramAdapter } from './adapters/instagram.ts';
 import { BrowserCoordinator } from './browser_coordinator.ts';
 import { AcquisitionCache } from './cache.ts';
 import type { AcquisitionConfig } from './config.ts';
@@ -100,10 +101,13 @@ export class AcquisitionService {
     this.context = context;
   }
 
-  // Production wiring. `adapters` defaults to empty: this task builds the
-  // kernel's composition root, not the platform adapters (Tasks 7-10) — once
-  // those exist, callers pass the concrete list in.
-  static async create(adapters: PlatformAdapter[] = []): Promise<AcquisitionService> {
+  // Production wiring. `adapters` defaults to every adapter this kernel ships
+  // with (Instagram so far — Tasks 8-10 extend this default list as their
+  // adapters land). `createForTest` below stays separate and synchronous —
+  // it never defaults an adapter in, callers inject exactly what they fake.
+  static async create(
+    adapters: PlatformAdapter[] = [instagramAdapter],
+  ): Promise<AcquisitionService> {
     const config = readAcquisitionConfig();
     const cache = new AcquisitionCache();
     const coordinator = new BrowserCoordinator();
