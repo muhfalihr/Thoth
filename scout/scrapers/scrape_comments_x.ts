@@ -40,34 +40,38 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) {
-  console.log('Usage: bun scrape_comments_x.ts <tweet_url> [out.json] [--max N]');
-  process.exit(1);
-}
+export { EXTRACT_JS, COUNT_JS };
 
-const id = (url.match(/status\/(\d+)/) || [, ''])[1];
-const user = (url.match(/(?:x|twitter)\.com\/([^/?#]+)/) || [, 'user'])[1];
+if (import.meta.main) {
+  const { url, out, max } = parseArgs(process.argv.slice(2));
+  if (!url) {
+    console.log('Usage: bun scrape_comments_x.ts <tweet_url> [out.json] [--max N]');
+    process.exit(1);
+  }
 
-run(() =>
-  scrapeComments({
-    url,
-    platform: 'twitter',
-    label: 'X/Twitter',
-    match: ['x.com', 'twitter.com'],
-    idToken: id,
-    ensureLoaded: (client) => pollCount(client, COUNT_JS, 8, 1000),
-    extractJs: EXTRACT_JS,
-    scrollJs: 'window.scrollBy(0, 1400)',
-    buildMain: (u) => ({
-      url: u,
+  const id = (url.match(/status\/(\d+)/) || [, ''])[1];
+  const user = (url.match(/(?:x|twitter)\.com\/([^/?#]+)/) || [, 'user'])[1];
+
+  run(() =>
+    scrapeComments({
+      url,
       platform: 'twitter',
-      title: `X @${user} #${id}`,
-      is_video: false,
-      duration_sec: 0,
-      profile: { name: user, handle: user, followers: '', avatar_url: '' },
+      label: 'X/Twitter',
+      match: ['x.com', 'twitter.com'],
+      idToken: id,
+      ensureLoaded: (client) => pollCount(client, COUNT_JS, 8, 1000),
+      extractJs: EXTRACT_JS,
+      scrollJs: 'window.scrollBy(0, 1400)',
+      buildMain: (u) => ({
+        url: u,
+        platform: 'twitter',
+        title: `X @${user} #${id}`,
+        is_video: false,
+        duration_sec: 0,
+        profile: { name: user, handle: user, followers: '', avatar_url: '' },
+      }),
+      max: max || 12,
+      out: out || 'thoth_content_set.json',
     }),
-    max: max || 12,
-    out: out || 'thoth_content_set.json',
-  }),
-);
+  );
+}

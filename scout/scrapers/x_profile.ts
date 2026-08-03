@@ -12,7 +12,7 @@
 
 import { connect, sleep } from '../lib/cdp.ts';
 
-async function xProfileTweets(handle, { max = 8, client = null } = {}) {
+async function xProfileTweets(handle, { max = 8, client = null, navigate = true } = {}) {
   const h = String(handle).trim().replace(/^@/, '');
   let c = client,
     own = false;
@@ -22,8 +22,10 @@ async function xProfileTweets(handle, { max = 8, client = null } = {}) {
   }
   const byId = new Map();
   try {
-    await c.navigate(`https://x.com/${h}`, 6000);
-    await sleep(3500);
+    if (navigate) {
+      await c.navigate(`https://x.com/${h}`, 6000);
+      await sleep(3500);
+    }
     // Timeline virtualized → beberapa langkah scroll, UNION hasil tiap snapshot (pola ig_profile).
     for (let step = 0; step < 4 && byId.size < max; step++) {
       if (step) {
