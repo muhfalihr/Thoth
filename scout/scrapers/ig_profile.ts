@@ -31,7 +31,13 @@ let _igOg = { url: '', text: '', image: '' };
 // navigate:false). Absent `deps` entirely, behavior is byte-for-byte the same
 // as before, including the module-level memo and the CDP-down soft return.
 async function igPostOg(url: string, deps: { client?: CdpClient; navigate?: boolean } = {}) {
-  if (_igOg.url === url) return _igOg;
+  // An injected client (or an explicit navigate:false) means the caller
+  // already holds a live, possibly freshly-navigated session for this url —
+  // exactly the case where the legacy self-connecting memo below must NOT
+  // shadow it. Bypass memo read+write for that path; the no-deps path is
+  // untouched (memo behavior stays byte-for-byte identical).
+  const usesInjectedSession = deps.client !== undefined || deps.navigate === false;
+  if (!usesInjectedSession && _igOg.url === url) return _igOg;
   const res = { url, text: '', image: '' };
   const shouldNavigate = deps.navigate ?? true;
   const own = !deps.client;
@@ -66,7 +72,10 @@ async function igPostOg(url: string, deps: { client?: CdpClient; navigate?: bool
       } catch (e) {}
     }
   }
-  _igOg = res;
+  // ponytail: a fresh read taken through an injected/live session should not
+  // poison the legacy self-connecting memo — only a self-verified legacy
+  // read is trustworthy to serve to a future legacy call.
+  if (!usesInjectedSession) _igOg = res;
   return res;
 }
 

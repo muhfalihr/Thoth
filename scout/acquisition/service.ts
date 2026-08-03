@@ -10,7 +10,7 @@ import path from 'node:path';
 import { connect, run as runCdpRelay } from '../lib/cdp.ts';
 import { ensureDir, OUTPUT_DIR } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
-import { instagramAdapter } from './adapters/instagram.ts';
+import { createInstagramAdapter } from './adapters/instagram.ts';
 import { BrowserCoordinator } from './browser_coordinator.ts';
 import { AcquisitionCache } from './cache.ts';
 import type { AcquisitionConfig } from './config.ts';
@@ -106,7 +106,7 @@ export class AcquisitionService {
   // adapters land). `createForTest` below stays separate and synchronous —
   // it never defaults an adapter in, callers inject exactly what they fake.
   static async create(
-    adapters: PlatformAdapter[] = [instagramAdapter],
+    adapters: PlatformAdapter[] = [createInstagramAdapter()],
   ): Promise<AcquisitionService> {
     const config = readAcquisitionConfig();
     const cache = new AcquisitionCache();

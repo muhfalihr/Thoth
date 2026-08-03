@@ -5,6 +5,7 @@
 // (Ruling 4) and never closes a client it did not open itself (Ruling 3) —
 // both scrapers it calls receive the visit's own client and are told
 // `navigate:false` so a canonical post URL gets at most one navigation.
+import fs from 'node:fs';
 import type { CdpClient } from '../../lib/cdp.ts';
 import { cropPost } from '../../scrapers/crop_post.ts';
 import { igPostOg, igProfileReels } from '../../scrapers/ig_profile.ts';
@@ -184,95 +185,100 @@ function ogFallbackToPostRecord(url: string, og: { text: string; image: string }
   };
 }
 
-// Run-scoped only (module-level, never persisted): a `social-card` capture
+// Per-adapter-instance only (never persisted): a `social-card` capture
 // produced while inspect() already held the visit for this canonical URL, so
 // a later captureSocialCard() call for the SAME url doesn't need (and
-// browser_coordinator.visitOnce() would not grant) a second navigation.
-const socialCardCache = new Map<string, LocalAsset>();
+// browser_coordinator.visitOnce() would not grant) a second navigation. Lives
+// inside createInstagramAdapter() (not module scope) so it can't leak a
+// PostRecord-shaped promise or a stale path across independently created
+// AcquisitionService instances/runs — see createInstagramAdapter below.
+function makeInspectAndSocialCard(socialCardCache: Map<string, LocalAsset>) {
+  // ponytail: best-effort — a failed card capture must not fail inspect(). If a
+  // LATER standalone captureSocialCard() call for the same URL is made without
+  // inspect() having run first, it does its own visit (see captureSocialCard
+  // below) — this only serves the common "inspect, then maybe social-card"
+  // ordering, not the reverse.
+  async function stashSocialCardIfRequested(url: string, client: CdpClient): Promise<void> {
+    try {
+      const crop = await cropPost({ url, client, navigate: false });
+      if (crop.ok && crop.image_path) {
+        socialCardCache.set(url, {
+          path: crop.image_path,
+          kind: 'social-card',
+          source: 'dom',
+          bytes: crop.bytes ?? 0,
+        });
+      }
+    } catch {
+      // best-effort only
+    }
+  }
 
-// ponytail: best-effort — a failed card capture must not fail inspect(). If a
-// LATER standalone captureSocialCard() call for the same URL is made without
-// inspect() having run first, it does its own visit (see captureSocialCard
-// below) — this only serves the common "inspect, then maybe social-card"
-// ordering, not the reverse.
-async function stashSocialCardIfRequested(url: string, client: CdpClient): Promise<void> {
-  try {
-    const crop = await cropPost({ url, client, navigate: false });
-    if (crop.ok && crop.image_path) {
-      socialCardCache.set(url, {
+  async function inspect(url: string, context: AdapterContext): Promise<PostRecord> {
+    const config = readAcquisitionConfig();
+    const startedAt = context.now();
+    const wantsSocialCard = context.intents(url).has('social-card');
+
+    const post = await context.visit('instagram', url, async (client) => {
+      const captured = await observeNetworkResponses(client, {
+        deadlineMs: config.captureDeadlineMs,
+        matchers: [shortcodeMediaMatcher(url)],
+        // The visit's own connect() already navigated to `url`; Instagram's
+        // page JS fires the GraphQL request(s) as it renders — nothing to
+        // trigger here, only observe.
+        action: async () => {},
+      });
+
+      let result = captured['instagram-post'];
+      if (!result) {
+        const og = await igPostOg(url, { client, navigate: false });
+        if (!og.text && !og.image) {
+          throw new AcquisitionError(
+            `instagram: no network or og fallback data for ${hostnameOf(url)}`,
+            { status: 'unavailable', reason: 'invalid-response', attempts: 1, elapsed_ms: 0 },
+          );
+        }
+        result = ogFallbackToPostRecord(url, og);
+      }
+
+      if (wantsSocialCard) await stashSocialCardIfRequested(url, client);
+
+      return result;
+    });
+
+    return { ...post, outcome: { ...post.outcome, elapsed_ms: context.now() - startedAt } };
+  }
+
+  async function captureSocialCard(
+    url: string,
+    _purpose: SocialCardPurpose,
+    context: AdapterContext,
+  ): Promise<LocalAsset> {
+    const stashed = socialCardCache.get(url);
+    if (stashed && fs.existsSync(stashed.path)) return stashed;
+
+    return context.visit('instagram', url, async (client) => {
+      const crop = await cropPost({ url, client, navigate: false });
+      if (!crop.ok || !crop.image_path) {
+        throw new AcquisitionError(`instagram: social-card crop failed for ${hostnameOf(url)}`, {
+          status: 'unavailable',
+          reason: 'invalid-response',
+          attempts: 1,
+          elapsed_ms: 0,
+        });
+      }
+      const asset: LocalAsset = {
         path: crop.image_path,
         kind: 'social-card',
         source: 'dom',
         bytes: crop.bytes ?? 0,
-      });
-    }
-  } catch {
-    // best-effort only
-  }
-}
-
-async function inspect(url: string, context: AdapterContext): Promise<PostRecord> {
-  const config = readAcquisitionConfig();
-  const startedAt = context.now();
-  const wantsSocialCard = context.intents(url).has('social-card');
-
-  const post = await context.visit('instagram', url, async (client) => {
-    const captured = await observeNetworkResponses(client, {
-      deadlineMs: config.captureDeadlineMs,
-      matchers: [shortcodeMediaMatcher(url)],
-      // The visit's own connect() already navigated to `url`; Instagram's
-      // page JS fires the GraphQL request(s) as it renders — nothing to
-      // trigger here, only observe.
-      action: async () => {},
+      };
+      socialCardCache.set(url, asset);
+      return asset;
     });
+  }
 
-    let result = captured['instagram-post'];
-    if (!result) {
-      const og = await igPostOg(url, { client, navigate: false });
-      if (!og.text && !og.image) {
-        throw new AcquisitionError(
-          `instagram: no network or og fallback data for ${hostnameOf(url)}`,
-          { status: 'unavailable', reason: 'invalid-response', attempts: 1, elapsed_ms: 0 },
-        );
-      }
-      result = ogFallbackToPostRecord(url, og);
-    }
-
-    if (wantsSocialCard) await stashSocialCardIfRequested(url, client);
-
-    return result;
-  });
-
-  return { ...post, outcome: { ...post.outcome, elapsed_ms: context.now() - startedAt } };
-}
-
-async function captureSocialCard(
-  url: string,
-  _purpose: SocialCardPurpose,
-  context: AdapterContext,
-): Promise<LocalAsset> {
-  const stashed = socialCardCache.get(url);
-  if (stashed) return stashed;
-
-  return context.visit('instagram', url, async (client) => {
-    const crop = await cropPost({ url, client, navigate: false });
-    if (!crop.ok || !crop.image_path) {
-      throw new AcquisitionError(`instagram: social-card crop failed for ${hostnameOf(url)}`, {
-        status: 'unavailable',
-        reason: 'invalid-response',
-        attempts: 1,
-        elapsed_ms: 0,
-      });
-    }
-    const asset: LocalAsset = {
-      path: crop.image_path,
-      kind: 'social-card',
-      source: 'dom',
-      bytes: crop.bytes ?? 0,
-    };
-    socialCardCache.set(url, asset);
-    return asset;
-  });
+  return { inspect, captureSocialCard };
 }
 
 // Comment collection is out of Task 7's scope: this adapter observes passive
@@ -314,10 +320,11 @@ async function discover(
 ): Promise<DiscoveryResult> {
   const startedAt = context.now();
   if (request.kind !== 'profile') {
-    // Query/trending discovery has no existing Scout scraper to reuse for
-    // Instagram (only profile-grid scraping exists) — fabricating a keyword
-    // search here would be new, unreviewed browser automation outside this
-    // task's scope (Ruling 11). Out of scope, honestly reported.
+    // scrapers/search_social_v2.ts DOES have an IG keyword-search path, but
+    // Task 13 owns that file and it currently does its own connect()/navigate
+    // — wiring it in here would route browser work outside context.visit(),
+    // which this task's Ruling 4 forbids. Deferred to Task 13, not because no
+    // scraper exists, but because using it today would break that rule.
     throw new AcquisitionError(
       `instagram: discovery kind "${request.kind}" is not implemented by this adapter`,
       {
@@ -350,11 +357,19 @@ async function discover(
   };
 }
 
-export const instagramAdapter: PlatformAdapter = {
-  platform: 'instagram',
-  supports: (url) => platformForUrl(url) === 'instagram',
-  discover,
-  inspect,
-  collectComments,
-  captureSocialCard,
-};
+// Factory, not a module-level singleton: each call gets its own
+// socialCardCache, so independently created AcquisitionService instances
+// (separate runs/processes sharing this module) never see each other's
+// stashed social-card entries. AcquisitionService.create() calls this once
+// per service.
+export function createInstagramAdapter(): PlatformAdapter {
+  const { inspect, captureSocialCard } = makeInspectAndSocialCard(new Map<string, LocalAsset>());
+  return {
+    platform: 'instagram',
+    supports: (url) => platformForUrl(url) === 'instagram',
+    discover,
+    inspect,
+    collectComments,
+    captureSocialCard,
+  };
+}
