@@ -54,12 +54,17 @@ function hostnameOf(url: string): string {
   try {
     return new URL(url).hostname;
   } catch {
-    return url;
+    return '(unparseable url)';
   }
 }
 
+// Deep clone: cache hits must be independent of the value held in
+// cache.runValues / cache.file.posts, otherwise a caller mutating nested
+// fields (e.g. PostRecord.media[]) in place corrupts the shared cached
+// object for later hits (same-run) or the live durable record (next persist()).
 function withCacheSource<T extends { outcome: AcquisitionOutcome }>(value: T): T {
-  return { ...value, outcome: { ...value.outcome, source: 'cache' } };
+  const cloned = structuredClone(value);
+  return { ...cloned, outcome: { ...cloned.outcome, source: 'cache' } };
 }
 
 function unsupportedPlatform(label: string): AcquisitionError {
