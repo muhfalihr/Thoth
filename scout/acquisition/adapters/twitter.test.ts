@@ -55,6 +55,26 @@ const tombstoneBody = JSON.stringify({
 });
 assert.equal(parseTwitterPost(tombstoneBody, 'https://x.com/owner/status/123'), null);
 
+// --- Strengthen: a tombstone that ALSO carries a stale cached `legacy.full_text`
+// (a real X GraphQL pattern for a since-deleted/edited tweet whose entry still
+// holds old text) must still be rejected. This shape sails past the
+// `!legacy || typeof legacy.full_text !== 'string'` structural guard, so only
+// isTombstone()'s `__typename === 'TweetTombstone'` fast-path can catch it —
+// this pins that mechanism specifically, unlike the fixture above.
+const staleLegacyTombstoneBody = JSON.stringify({
+  data: {
+    tweetResult: {
+      result: {
+        __typename: 'TweetTombstone',
+        rest_id: '123',
+        legacy: { full_text: 'stale cached text from before deletion', favorite_count: 42 },
+        tombstone: { text: { text: 'This post is unavailable.' } },
+      },
+    },
+  },
+});
+assert.equal(parseTwitterPost(staleLegacyTombstoneBody, 'https://x.com/owner/status/123'), null);
+
 // --- Strengthen: a promoted entry sharing the target id must be skipped in
 // favor of the real (non-promoted) result found later in the same tree.
 const promotedBody = JSON.stringify({

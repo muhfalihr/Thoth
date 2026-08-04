@@ -50,10 +50,6 @@ function postIdFromUrl(url: string): string {
   return (url.match(/status\/(\d+)/) ?? [])[1] ?? '';
 }
 
-function ownerHandleFromUrl(url: string): string {
-  return (url.match(/(?:x|twitter)\.com\/([A-Za-z0-9_]+)\/status\//) ?? [])[1] ?? '';
-}
-
 // A tombstone (deleted/unavailable tweet) never carries `legacy.full_text` —
 // this is a structural check, not a typename allowlist, so it also catches
 // tombstone shapes future API versions introduce without a `__typename` tag.
