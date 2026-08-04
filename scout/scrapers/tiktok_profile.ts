@@ -40,7 +40,12 @@ function parseViews(s) {
 
 async function tiktokProfileVideos(
   username: string,
-  { max = 12, captions = true, client }: { max?: number; captions?: boolean; client?: any } = {},
+  {
+    max = 12,
+    captions = true,
+    client,
+    navigate = true,
+  }: { max?: number; captions?: boolean; client?: any; navigate?: boolean } = {},
 ) {
   const u = (username || '').replace(/^@/, '');
   if (!u) return [];
@@ -54,7 +59,9 @@ async function tiktokProfileVideos(
     try {
       await c.cmd('Page.bringToFront');
     } catch (e) {}
-    await c.navigate('https://www.tiktok.com/@' + u, 9000);
+    if (navigate) {
+      await c.navigate('https://www.tiktok.com/@' + u, 9000);
+    }
     await waitProfileReady(c, 45000); // ride out the "Please wait..." interstitial + a slow tab (up to 45s)
     const evalGrid = `(() => {
       const seen = new Set(); const out = [];

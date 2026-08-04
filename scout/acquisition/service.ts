@@ -11,7 +11,9 @@ import { connect, run as runCdpRelay } from '../lib/cdp.ts';
 import { ensureDir, OUTPUT_DIR } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import { createInstagramAdapter } from './adapters/instagram.ts';
+import { createTikTokAdapter } from './adapters/tiktok.ts';
 import { createTwitterAdapter } from './adapters/twitter.ts';
+import { createYouTubeAdapter } from './adapters/youtube.ts';
 import { BrowserCoordinator } from './browser_coordinator.ts';
 import { AcquisitionCache } from './cache.ts';
 import type { AcquisitionConfig } from './config.ts';
@@ -103,12 +105,17 @@ export class AcquisitionService {
   }
 
   // Production wiring. `adapters` defaults to every adapter this kernel ships
-  // with (Instagram, X/Twitter so far — Tasks 9-10 extend this default list
-  // as their adapters land). `createForTest` below stays separate and
-  // synchronous — it never defaults an adapter in, callers inject exactly
+  // with (Instagram, X/Twitter, TikTok, YouTube so far — Task 10 extends this
+  // default list as its adapter lands). `createForTest` below stays separate
+  // and synchronous — it never defaults an adapter in, callers inject exactly
   // what they fake.
   static async create(
-    adapters: PlatformAdapter[] = [createInstagramAdapter(), createTwitterAdapter()],
+    adapters: PlatformAdapter[] = [
+      createInstagramAdapter(),
+      createTwitterAdapter(),
+      createTikTokAdapter(),
+      createYouTubeAdapter(),
+    ],
   ): Promise<AcquisitionService> {
     const config = readAcquisitionConfig();
     const cache = new AcquisitionCache();
