@@ -37,30 +37,49 @@ import {
 } from '../lib/footage_candidate_selection.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
 import { ui } from '../lib/ui.ts';
+import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
-const args = process.argv.slice(2);
-const getFlag = (n, d) => {
-  const i = args.indexOf(n);
-  return i >= 0 ? args[i + 1] : d;
-};
-const FILE = args.find(
-  (a, i) =>
-    !a.startsWith('--') && !['--objects', '--per', '--max', '--profile'].includes(args[i - 1]),
-);
-const OBJ_FLAG = getFlag('--objects', null);
-const PER = parseInt(getFlag('--per', '2'), 10);
-const MAX = getFlag('--max', '3');
-const NO_CROP = args.includes('--no-crop');
-const PROFILE_FLAG = getFlag('--profile', null); // IG username to also pull relevant footage from
-if (!FILE) {
-  console.log(
-    'Usage: bun build_footage.ts <content_set.json> [--objects "a,b"] [--per 2] [--max 3] [--no-crop]',
-  );
-  process.exit(1);
+export interface BuildFootageOptions {
+  file: string;
+  objects: string[] | null;
+  per: number;
+  max: number;
+  noCrop: boolean;
+  profile: string | null;
 }
-if (!fs.existsSync(FILE)) {
-  console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`));
-  process.exit(1);
+
+export function parseBuildFootageArgs(argv: string[]): BuildFootageOptions {
+  const getFlag = (n: string, d: string | null) => {
+    const i = argv.indexOf(n);
+    return i >= 0 ? argv[i + 1] : d;
+  };
+  const file = argv.find(
+    (a, i) =>
+      !a.startsWith('--') && !['--objects', '--per', '--max', '--profile'].includes(argv[i - 1]),
+  );
+  const objFlag = getFlag('--objects', null);
+  const objects = objFlag
+    ? objFlag
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : null;
+  const per = parseInt(getFlag('--per', '2'), 10);
+  const max = parseInt(getFlag('--max', '3'), 10);
+  const noCrop = argv.includes('--no-crop');
+  const profile = getFlag('--profile', null); // IG username to also pull relevant footage from
+  if (!file) {
+    console.log(
+      'Usage: bun build_footage.ts <content_set.json> [--objects "a,b"] [--per 2] [--max 3] [--no-crop]',
+    );
+    process.exit(1);
+  }
+  if (!fs.existsSync(file)) {
+    console.log(ui.red(`${ui.ERR} File tak ada: ${file}`));
+    process.exit(1);
+  }
+  return { file, objects, per, max, noCrop, profile };
 }
 
 const VIDEO = new Set(['tiktok', 'youtube']);
@@ -134,7 +153,7 @@ function topComments(set, n = 12) {
 }
 
 // Run topic_to_urls for an object, gated to that object, return the merged `all` list.
-function searchObject(query) {
+function searchObject(query, max) {
   try {
     execFileSync(
       process.execPath,
@@ -144,7 +163,7 @@ function searchObject(query) {
         '--platforms',
         'tiktok,tw,ig,fb',
         '--max',
-        String(MAX),
+        String(max),
         '--keywords',
         query,
       ],
@@ -204,8 +223,13 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
   return { added, mediaDropped };
 }
 
-(async () => {
-  const set = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+export async function runBuildFootage(
+  options: BuildFootageOptions,
+  context: AcquisitionRunContext,
+): Promise<void> {
+  void context;
+  const { file, objects, per, max, noCrop, profile } = options;
+  const set = JSON.parse(fs.readFileSync(file, 'utf8'));
   set.footage = set.footage || [];
   const main = set.main || {};
 
@@ -221,7 +245,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
       console.log('  Build Footage dari SLIDE CAROUSEL main (opsi A: slide-only)');
       console.log(ui.rule());
       let slides = dropCoverSlide(allSlides); // slide #1 = cover/main → buang
-      if (slides.some((s) => s.kind === 'photo') && !NO_CROP) {
+      if (slides.some((s) => s.kind === 'photo') && !noCrop) {
         try {
           const cr = await cropPost({ url: main.url, maxSlides: 10 }); // crop HANYA buat panen gambar photo-slide
           if (cr.ok) {
@@ -243,7 +267,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
         'slide post utama',
         main.description || '',
       );
-      fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+      fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
       console.log(
         `Selesai: +${slideResult.added} footage dari ${slides.length} slide carousel main → footage total ${set.footage.length}. (skip cari eksternal)` +
           formatMediaDropSummary(slideResult.mediaDropped),
@@ -254,16 +278,13 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
 
   // IG creator to ALSO pull footage from: explicit --profile, else auto from a traced IG source.
   const profileUser =
-    PROFILE_FLAG ||
+    profile ||
     (main.source_traced && /instagram/i.test(main.platform || '') ? main.source_traced : '');
 
   // --objects manual override bypasses resolveFootageTasks (query = obj verbatim); otherwise
   // dossier.search_queries (Task 1) drives tasks, falling back to footageObjects extraction.
-  const tasks = OBJ_FLAG
-    ? OBJ_FLAG.split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((obj) => ({ obj, query: obj }))
+  const tasks = objects
+    ? objects.map((obj) => ({ obj, query: obj }))
     : await resolveFootageTasks(
         set,
         (input) => footageObjects(input),
@@ -279,7 +300,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
   console.log('Query  :', tasks.map((t) => t.query).join(' | ') || '(kosong)');
   if (!tasks.length && !profileUser) {
     console.log('Tak ada query/objek. Selesai.');
-    process.exit(0);
+    return;
   }
 
   const have = new Set(set.footage.map((f) => f.url));
@@ -338,7 +359,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
       taskQueries.forEach(addToks);
       addToks(main.title); // event tokens only (no figure name — see above)
       for (const r of ranked) {
-        if (added >= PER + 1) break;
+        if (added >= per + 1) break;
         if (r.url === main.url || have.has(r.url)) continue;
         if (useSim) {
           if (r.sim < REL_MIN) continue;
@@ -356,7 +377,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           // cover dulu, BARU cap — biar cap-nya berisi slide 2..4, bukan cover + 2 slide
           let slides = dropCoverSlide(igCarouselSlides(r.url, 5)).slice(0, 3); // cap so one post can't flood footage
           const needPhotos = slides.some((s) => s.kind === 'photo') || !slides.length;
-          if (needPhotos && !NO_CROP) {
+          if (needPhotos && !noCrop) {
             try {
               const cr = await cropPost({ url: r.url, maxSlides: 5 });
               if (cr.ok) {
@@ -416,7 +437,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           addedV++;
         }
       }
-      fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+      fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
     } catch (e) {
       throw e;
     }
@@ -428,7 +449,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
   for (const { obj, query } of tasks) {
     try {
       process.stdout.write(`• "${query}" … `);
-      const rawAll = searchObject(query);
+      const rawAll = searchObject(query, max);
       const all = rawAll.filter((e) => !isCuratedAggregator(urlHandle(e.url))); // never footage from ig_accounts curators / their cross-posts
       const aggSkip = rawAll.length - all.length;
       const vids = all.filter(
@@ -441,8 +462,8 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
       // candidates fail the relevance/main gate, so iterate ALL candidates until the quota is
       // filled (or we run out), then cross-fill any shortfall from the other type. (Old code
       // sliced only the top nVid/nPost and quit, yielding 0 footage when those few failed.)
-      const wantV = Math.ceil(PER / 2),
-        wantP = PER - Math.ceil(PER / 2);
+      const wantV = Math.ceil(per / 2),
+        wantP = per - Math.ceil(per / 2);
       let pv = 0,
         pp = 0,
         dropped = 0,
@@ -508,7 +529,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           description = '';
         // IG posts can be a carousel mixing PHOTO + VIDEO slides → capture up to 5 slides; cropPost marks
         // each as {kind:'photo',image_path} or {kind:'video',index}.
-        if (!NO_CROP) {
+        if (!noCrop) {
           try {
             const r = await cropPost({ url: e.url, maxSlides: isIG ? 5 : 1 });
             if (r.ok) {
@@ -541,7 +562,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           return false;
         }
         const plat = e.platform === 'tw' ? 'twitter' : isIG ? 'instagram' : e.platform;
-        if (NO_CROP) {
+        if (noCrop) {
           set.footage.push({
             url: e.url,
             platform: plat,
@@ -579,11 +600,11 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
       }
       // Pass 2: cross-fill shortfall (e.g. no croppable posts) from leftover candidates of EITHER type.
       for (const e of vids) {
-        if (pv + pp >= PER) break;
+        if (pv + pp >= per) break;
         if (!have.has(e.url)) await addVideo(e);
       }
       for (const e of posts) {
-        if (pv + pp >= PER) break;
+        if (pv + pp >= per) break;
         if (!have.has(e.url)) await addPost(e);
       }
       console.log(
@@ -593,7 +614,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           formatMediaDropSummary(mediaDropped) +
           (aggSkip ? ` (${aggSkip} drop akun-kurator)` : ''),
       );
-      fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8'); // persist after EACH object (crash-resilient)
+      fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8'); // persist after EACH object (crash-resilient)
     } catch (e) {
       throw e;
     }
@@ -603,17 +624,17 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
   // Twitter usually has related NON-video posts about the story (eyewitness/news/threads). Crop them as
   // image-cards. LOOSE admit (no object-token gate) — the story-gate cosine below drops off-topic. Video
   // tweets self-skip: cropPost returns no image_path for a video slide (we only want NON-video here).
-  if (!NO_CROP) {
+  if (!noCrop) {
     const twQuery = (main.title || '').trim() || (tasks[0]?.query || '');
     if (twQuery) {
       process.stdout.write(`• twitter "${twQuery.slice(0, 50)}" … `);
       let tw = 0;
       try {
-        const cands = searchObject(twQuery).filter(
+        const cands = searchObject(twQuery, max).filter(
           (e) => /(?:x|twitter)\.com/.test(e.url) && !have.has(e.url) && !sameAsMain(e.url, ''),
         );
         for (const e of cands) {
-          if (tw >= PER) break;
+          if (tw >= per) break;
           have.add(e.url);
           let cr;
           try {
@@ -641,7 +662,7 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
           tw++;
           addedP++;
         }
-        fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+        fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
       } catch (e) {}
       console.log(`+${tw} kartu twitter`);
     }
@@ -685,10 +706,18 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
     }
   } catch (e) {}
 
-  fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+  fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
   console.log(ui.rule('thin'));
   console.log(
-    `Selesai: +${addedV} video b-roll, +${addedP} kartu post → footage total ${set.footage.length}. (${FILE})`,
+    `Selesai: +${addedV} video b-roll, +${addedP} kartu post → footage total ${set.footage.length}. (${file})`,
   );
-  console.log('Lalu: bun validate_content_set.ts "' + FILE + '"');
-})();
+  console.log('Lalu: bun validate_content_set.ts "' + file + '"');
+}
+
+if (import.meta.main) {
+  runAcquisitionCli(async () => {
+    const options = parseBuildFootageArgs(process.argv.slice(2));
+    const context = await createStandaloneAcquisitionContext();
+    await runBuildFootage(options, context);
+  });
+}

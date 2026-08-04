@@ -99,11 +99,15 @@ function step(label, script, scriptArgs, options: { required: boolean; timeoutMs
   return runPipelineStep(
     { label, required: options.required },
     {
-      execute: () =>
+      execute: () => {
+        // Block body on purpose: execFileSync returns a Buffer, and the harness's
+        // execute contract is `void | Promise<void>`. Nothing ever read this value
+        // (stdio is 'inherit'), so discarding it keeps behavior identical.
         execFileSync(process.execPath, [here(script), ...scriptArgs], {
           stdio: 'inherit',
           timeout: options.timeoutMs ?? STEP_TIMEOUT_MS,
-        }),
+        });
+      },
       warn: (message) => console.log(ui.amber(`  ${ui.WARN} ${message}`)),
     },
   );
@@ -138,12 +142,16 @@ run(async () => {
   // can mine the comments too (names/brands often surface there). extract_figures runs AFTER build_footage
   // so it can also read footage descriptions — named subjects (e.g. "Sara Wijayanto", "MVP Pictures")
   // often surface there even when the topic/main caption is just a teaser.
-  step('trace_source (sumber/main)', 'trace_source.ts', [file], {
+  // Every step is awaited: they run strictly in order and each one reads the file the
+  // previous step wrote. `step` returns a promise now, so dropping an await would make
+  // the chain fire-and-forget and turn a required step's failure into an unhandled
+  // rejection instead of aborting the run.
+  await step('trace_source (sumber/main)', 'trace_source.ts', [file], {
     required: true,
     timeoutMs: TRACE_SOURCE_TIMEOUT_MS,
   });
   if (!NO_COMMENTS)
-    step('collect_comments (multi-sumber)', 'collect_comments.ts', [
+    await step('collect_comments (multi-sumber)', 'collect_comments.ts', [
       file,
       '--cap',
       CAP,
@@ -153,21 +161,21 @@ run(async () => {
   // topic_dossier SEBELUM build_footage: search_queries-nya men-drive pencarian footage.
   // Best-effort; bila gagal, build_footage fallback ke footageObjects.
   if (!NO_COMMENTS)
-    step('topic_dossier (enrich topik + query footage)', '../enrich/topic_dossier.ts', [file], {
+    await step('topic_dossier (enrich topik + query footage)', '../enrich/topic_dossier.ts', [file], {
       required: false,
     });
-  step(
+  await step(
     'build_footage (dossier→footage)',
     'build_footage.ts',
     [file, '--per', PER, '--max', MAX],
     { required: true, timeoutMs: FOOTAGE_TIMEOUT_MS },
   );
-  step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file], {
+  await step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file], {
     required: false,
   });
 
   // 6) Validate + summary.
-  step('validate', 'validate_content_set.ts', [file], { required: true });
+  await step('validate', 'validate_content_set.ts', [file], { required: true });
 
   try {
     const s = JSON.parse(fs.readFileSync(file, 'utf8'));

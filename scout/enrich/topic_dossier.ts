@@ -19,24 +19,16 @@
 // about subtext/recent memes needs a strong model). Best-effort: any failure leaves the set unchanged.
 
 import fs from 'node:fs';
-import path from 'node:path';
 import * as ckb from './ckb.ts';
 import { parseDossier } from './dossier_parse.ts';
 
 import { novitaKey } from '../lib/env.ts';
 import { ui } from '../lib/ui.ts';
+import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+
 const KEY = novitaKey();
 const MODEL = process.env.THOTH_CONTEXT_MODEL || 'deepseek/deepseek-v3.1'; // reasoner teks utk subteks/sentimen ID (current-event di-ground di Fase 2)
-
-const FILE = process.argv[2];
-if (!FILE) {
-  console.log('Usage: bun topic_dossier.ts <content_set.json>');
-  process.exit(1);
-}
-if (!fs.existsSync(FILE)) {
-  console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`));
-  process.exit(1);
-}
 
 const PROMPT = (
   title,
@@ -320,20 +312,52 @@ Keluarkan HANYA JSON: {"items":[{"term":"","summary":"","as_of_date":""}]}`;
   }
 }
 
-(async () => {
+export interface FileStageOptions {
+  file: string;
+}
+
+export async function runTopicDossier(
+  options: FileStageOptions,
+  context: AcquisitionRunContext,
+): Promise<void> {
+  void context;
+  const { file } = options;
   console.log(ui.rule());
   console.log('  Topic Dossier (referensi budaya + maksud komentar + dossier topik)');
   console.log(ui.rule());
   let set;
   try {
-    set = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+    set = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) {
-    console.log(ui.red(`${ui.ERR} JSON tak valid: ${FILE}`));
-    process.exit(0);
+    console.log(ui.red(`${ui.ERR} JSON tak valid: ${file}`));
+    // ponytail: original CLI exits 0 here despite the error (pre-existing bug,
+    // spotted while moving this code — not fixed per Task 11's no-behavior-change rule).
+    return;
   }
   const changed = await enrich(set);
   if (changed) {
-    fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
-    console.log(`📄 ${FILE} (references/discourse/comment-context/dossier ditulis)`);
+    fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
+    console.log(`📄 ${file} (references/discourse/comment-context/dossier ditulis)`);
   }
-})();
+}
+
+export function parseTopicDossierArgs(argv: string[]): FileStageOptions {
+  const file = argv[0];
+  if (!file) {
+    console.log('Usage: bun topic_dossier.ts <content_set.json>');
+    process.exit(1);
+  }
+  if (!fs.existsSync(file)) {
+    console.log(ui.red(`${ui.ERR} File tak ada: ${file}`));
+    process.exit(1);
+  }
+  return { file };
+}
+
+if (import.meta.main) {
+  runAcquisitionCli(async () => {
+    const options = parseTopicDossierArgs(process.argv.slice(2));
+    const context = await createStandaloneAcquisitionContext();
+    await runTopicDossier(options, context);
+  });
+}

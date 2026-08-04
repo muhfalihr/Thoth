@@ -3,7 +3,7 @@ import { PipelineStepError, runPipelineStep } from './run_pipeline_step.ts';
 
 {
   let warned = false;
-  assert.throws(
+  await assert.rejects(
     () =>
       runPipelineStep(
         { label: 'trace_source', required: true },
@@ -21,7 +21,7 @@ import { PipelineStepError, runPipelineStep } from './run_pipeline_step.ts';
   assert.equal(warned, false);
 }
 
-assert.throws(
+await assert.rejects(
   () =>
     runPipelineStep(
       {
@@ -40,7 +40,7 @@ assert.throws(
   (error: unknown) => error instanceof PipelineStepError && error.step === 'build_footage',
 );
 
-assert.throws(
+await assert.rejects(
   () =>
     runPipelineStep(
       { label: 'trace_source', required: true },
@@ -65,7 +65,7 @@ assert.throws(
 // nothing of its own, so without this the operator sees the same bare
 // "Required pipeline step failed" as a genuine crash — the failure that cost a
 // live acceptance run two 15-minute debugging cycles.
-assert.throws(
+await assert.rejects(
   () =>
     runPipelineStep(
       { label: 'build_footage', required: true },
@@ -87,7 +87,7 @@ assert.throws(
 
 {
   let warning = '';
-  const ok = runPipelineStep(
+  const ok = await runPipelineStep(
     { label: 'comments', required: false },
     {
       execute: () => {
@@ -104,7 +104,7 @@ assert.throws(
 
 {
   let calls = 0;
-  const ok = runPipelineStep(
+  const ok = await runPipelineStep(
     { label: 'validate', required: true },
     {
       execute: () => {
@@ -117,4 +117,22 @@ assert.throws(
   );
   assert.equal(ok, true);
   assert.equal(calls, 1);
+}
+
+{
+  let completed = false;
+  const ok = await runPipelineStep(
+    { label: 'async-stage', required: true },
+    {
+      execute: async () => {
+        await Promise.resolve();
+        completed = true;
+      },
+      warn: () => {
+        throw new Error('must not warn');
+      },
+    },
+  );
+  assert.equal(ok, true);
+  assert.equal(completed, true);
 }

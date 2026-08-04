@@ -46,29 +46,41 @@ import {
   selectTraceVisionInput,
   visionInputDataUrl,
 } from './trace_source_vision.ts';
+import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
-const args = process.argv.slice(2);
-const getFlag = (n) => {
-  const i = args.indexOf(n);
-  return i >= 0 ? args[i + 1] : null;
-};
-const FILE = args.find(
-  (a, i) => !a.startsWith('--') && !['--keywords', '--username', '--model'].includes(args[i - 1]),
-);
-const KEYWORDS = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
-const FORCE_USER = getFlag('--username');
-const NO_DL = args.includes('--no-threads-dl') || args.includes('--no-dl'); // skip local mp4 backup (Threads/TikTok)
-const MODEL =
-  getFlag('--model') || process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
-if (!FILE) {
-  console.log(
-    'Usage: bun trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]',
-  );
-  process.exit(1);
+export interface TraceSourceOptions {
+  file: string;
+  keywords: string[];
+  username: string | null;
+  model: string;
+  noDl: boolean;
 }
-if (!fs.existsSync(FILE)) {
-  console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`));
-  process.exit(1);
+
+export function parseTraceSourceArgs(argv: string[]): TraceSourceOptions {
+  const getFlag = (n: string) => {
+    const i = argv.indexOf(n);
+    return i >= 0 ? argv[i + 1] : null;
+  };
+  const file = argv.find(
+    (a, i) => !a.startsWith('--') && !['--keywords', '--username', '--model'].includes(argv[i - 1]),
+  );
+  const keywords = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
+  const username = getFlag('--username');
+  const noDl = argv.includes('--no-threads-dl') || argv.includes('--no-dl'); // skip local mp4 backup (Threads/TikTok)
+  const model =
+    getFlag('--model') || process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
+  if (!file) {
+    console.log(
+      'Usage: bun trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]',
+    );
+    process.exit(1);
+  }
+  if (!fs.existsSync(file)) {
+    console.log(ui.red(`${ui.ERR} File tak ada: ${file}`));
+    process.exit(1);
+  }
+  return { file, keywords, username, model, noDl };
 }
 
 const VIDEO = new Set(['tiktok', 'youtube']);
@@ -631,6 +643,7 @@ async function discoverReplacementCandidates({
   keywords,
   storyText,
   query,
+  cliKeywords,
 }): Promise<MainCandidate[]> {
   const credited: MainCandidate[] = [];
   if (username && platHint === 'instagram') {
@@ -641,7 +654,7 @@ async function discoverReplacementCandidates({
   } else if (username && platHint === 'youtube') {
     credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
   } else if (username && platHint === 'threads') {
-    const post = await findOriginalThreads(username, keywords.length ? keywords : KEYWORDS);
+    const post = await findOriginalThreads(username, keywords.length ? keywords : cliKeywords);
     if (post) {
       const videoSrc = await threadsVideoSrc(post.url);
       if (videoSrc) {
@@ -659,7 +672,7 @@ async function discoverReplacementCandidates({
     credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
   }
 
-  const generic = await findStoryCandidates(keywords.length ? keywords : KEYWORDS, storyText, {
+  const generic = await findStoryCandidates(keywords.length ? keywords : cliKeywords, storyText, {
     credited: username,
     query,
   });
@@ -668,7 +681,7 @@ async function discoverReplacementCandidates({
     (candidate) => candidate.url && !seen.has(candidate.url) && Boolean(seen.add(candidate.url)),
   );
 }
-async function setMainTo(set, orig, username) {
+async function setMainTo(set, orig, username, noDl) {
   clearVideoOcrMetadata(set.main);
   set.main.url = orig.url;
   set.main.platform = orig.platform;
@@ -711,7 +724,7 @@ async function setMainTo(set, orig, username) {
       set.main.source_url = orig.url;
       set.main.url = vurl;
       set.main.is_video = true;
-      if (!NO_DL) {
+      if (!noDl) {
         const code = (orig.url.split('/post/')[1] || 'thr').replace(/[/?#].*$/, '');
         const out = outPath(`threads_${code}.mp4`);
         if (downloadThreads(vurl, out)) set.main.source_local = out;
@@ -740,7 +753,7 @@ async function setMainTo(set, orig, username) {
       if (d && d.url) {
         set.main.source_url = orig.url;
         set.main.url = d.url;
-        if (!NO_DL) {
+        if (!noDl) {
           const id = (orig.url.match(/video\/(\d+)/) || [])[1] || 'tt';
           const out = outPath(`tiktok_${id}.mp4`);
           const local = await downloadTiktok(orig.url, out);
@@ -777,14 +790,18 @@ async function setMainTo(set, orig, username) {
   carryCurrentOcrMetadata(set.main, orig);
 }
 
-(async () => {
-  const set = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+export async function runTraceSource(
+  options: TraceSourceOptions,
+  context: AcquisitionRunContext,
+): Promise<void> {
+  void context;
+  const { file, keywords: cliKeywords, username: forceUser, model, noDl } = options;
+  const set = JSON.parse(fs.readFileSync(file, 'utf8'));
   const main = set.main;
   if (!main || !main.url) {
-    console.log(ui.red(`${ui.ERR} content-set tanpa main.url.`));
-    process.exit(1);
+    throw new Error('content-set tanpa main.url.');
   }
-  const topic = KEYWORDS[0] || (main.query || main.title || '').split(/\s+/)[0] || '';
+  const topic = cliKeywords[0] || (main.query || main.title || '').split(/\s+/)[0] || '';
 
   console.log(ui.rule());
   console.log('  Trace Source (LLM) — MAIN');
@@ -799,8 +816,8 @@ async function setMainTo(set, orig, username) {
   let username = '',
     platHint = '',
     keywords = [];
-  if (FORCE_USER) {
-    username = cleanUser(FORCE_USER);
+  if (forceUser) {
+    username = cleanUser(forceUser);
     console.log(`[force] username=@${username}`);
   } else {
     caption = await captionOf(main);
@@ -809,8 +826,8 @@ async function setMainTo(set, orig, username) {
       log: (line) => console.log(line),
     });
     const signals = await readVisionSignals(selectedCover.input, {
-      headline: (input) => visionHeadline(input, novitaKey(), MODEL),
-      scene: (input) => visionCover(input, novitaKey(), MODEL),
+      headline: (input) => visionHeadline(input, novitaKey(), model),
+      scene: (input) => visionCover(input, novitaKey(), model),
     });
     headline = signals.headline;
     scene = signals.scene;
@@ -878,11 +895,11 @@ async function setMainTo(set, orig, username) {
   const runtimeDeps = createMainCandidateRuntimeDeps({
     describeEvidence: async (candidate) => {
       if (!candidate.thumbnail) return '';
-      const result = await visionCoverKind(candidate.thumbnail, novitaKey(), MODEL);
+      const result = await visionCoverKind(candidate.thumbnail, novitaKey(), model);
       return result.desc || '';
     },
     classifyImage: async (image) => {
-      const result = await visionCoverKind(image, novitaKey(), MODEL);
+      const result = await visionCoverKind(image, novitaKey(), model);
       return result.kind === 'footage' || result.kind === 'commentary' ? result.kind : 'unknown';
     },
   });
@@ -914,6 +931,7 @@ async function setMainTo(set, orig, username) {
         keywords,
         storyText: storyCtx,
         query: '',
+        cliKeywords,
       }),
     rankAccepted: (results) =>
       rankAcceptedMainCandidates(results, {
@@ -934,7 +952,7 @@ async function setMainTo(set, orig, username) {
     console.log(`[main-gate] input ${decision.suitability} confidence=${decision.confidence}`);
   } else {
     const oldUrl = set.main.url;
-    await setMainTo(set, decision.candidate, username);
+    await setMainTo(set, decision.candidate, username, noDl);
     if (decision.confidence === 'low') {
       set.main.source_low_confidence = true;
     } else {
@@ -956,7 +974,7 @@ async function setMainTo(set, orig, username) {
       if (d && d.url) {
         set.main.source_url = page;
         set.main.url = d.url;
-        if (!NO_DL) {
+        if (!noDl) {
           const id = (page.match(/video\/(\d+)/) || [])[1] || 'tt';
           const out = outPath(`tiktok_${id}.mp4`);
           const local = await downloadTiktok(page, out);
@@ -987,7 +1005,7 @@ async function setMainTo(set, orig, username) {
         set.main.source_url = page;
         set.main.url = vurl;
         set.main.is_video = true;
-        if (!NO_DL) {
+        if (!noDl) {
           const code = (page.split('/post/')[1] || 'thr').replace(/[/?#].*$/, '');
           const out = outPath(`threads_${code}.mp4`);
           if (downloadThreads(vurl, out)) set.main.source_local = out;
@@ -1060,7 +1078,15 @@ async function setMainTo(set, orig, username) {
     await attachVideoOcr(set.main);
   }
 
-  fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+  fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
   console.log(ui.rule('thin'));
-  console.log(`📄 ${FILE}`);
-})();
+  console.log(`📄 ${file}`);
+}
+
+if (import.meta.main) {
+  runAcquisitionCli(async () => {
+    const options = parseTraceSourceArgs(process.argv.slice(2));
+    const context = await createStandaloneAcquisitionContext();
+    await runTraceSource(options, context);
+  });
+}

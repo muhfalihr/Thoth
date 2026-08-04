@@ -18,76 +18,55 @@ import path from 'node:path';
 import { cropPost, inferPlatform } from '../scrapers/crop_post.ts';
 import { matchesTopic } from '../lib/verify.ts';
 import { ui } from '../lib/ui.ts';
+import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
-const args = process.argv.slice(2);
-const getFlag = (n) => {
-  const i = args.indexOf(n);
-  return i >= 0 ? args[i + 1] : null;
-};
-const FORCE = args.includes('--force');
-const MODE = getFlag('--mode') || 'any';
-const KEYWORDS = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
-const FILE = args.find(
-  (a, i) => !a.startsWith('--') && args[i - 1] !== '--keywords' && args[i - 1] !== '--mode',
-);
-if (!FILE) {
-  console.log(
-    'Usage: bun enrich_image_paths.ts <content_set.json> [--force] [--keywords k1,k2] [--mode any|all]',
+export interface EnrichImagePathsOptions {
+  file: string;
+  force: boolean;
+  keywords: string[];
+  mode: 'any' | 'all';
+}
+
+const hasCrop = (e: any) =>
+  e && typeof e.image_path === 'string' && e.image_path.trim() && fs.existsSync(e.image_path.trim());
+
+export async function runEnrichImagePaths(
+  options: EnrichImagePathsOptions,
+  context: AcquisitionRunContext,
+): Promise<void> {
+  void context;
+  const { file, force, keywords, mode } = options;
+  const set = JSON.parse(fs.readFileSync(file, 'utf8'));
+
+  // Collect non-video entries that need a crop.
+  const targets: { label: string; e: any }[] = [];
+  if (set.main) targets.push({ label: 'main', e: set.main });
+  (set.footage || []).forEach((e: any, i: number) => targets.push({ label: `footage[${i}]`, e }));
+
+  const todo = targets.filter(
+    ({ e }) =>
+      e &&
+      e.is_video === false &&
+      typeof e.url === 'string' &&
+      inferPlatform(e.url) &&
+      (force || !hasCrop(e)),
   );
-  process.exit(1);
-}
-if (!fs.existsSync(FILE)) {
-  console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`));
-  process.exit(1);
-}
 
-let set;
-try {
-  set = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-} catch (e) {
-  console.log(ui.red(`${ui.ERR} JSON tak valid: ${e.message}`));
-  process.exit(1);
-}
-if (Array.isArray(set) || !set || typeof set !== 'object') {
-  console.log(ui.red(`${ui.ERR} content-set harus objek tunggal {main,footage,comments}.`));
-  process.exit(1);
-}
+  console.log(ui.rule());
+  console.log('  Enrich image_path (DOM crop post non-video)');
+  console.log(ui.rule());
+  console.log(`File: ${file}`);
+  console.log(
+    `Kandidat non-video: ${todo.length} (dari ${targets.length} entri; sisanya video / sudah ada crop / platform tak didukung)`,
+  );
+  if (!todo.length) {
+    console.log('Tak ada yang perlu di-crop. Selesai.');
+    return;
+  }
 
-const hasCrop = (e) =>
-  e &&
-  typeof e.image_path === 'string' &&
-  e.image_path.trim() &&
-  fs.existsSync(e.image_path.trim());
+  if (keywords.length) console.log(`Gate relevansi: keywords=[${keywords.join(', ')}] mode=${mode}`);
 
-// Collect non-video entries that need a crop.
-const targets = [];
-if (set.main) targets.push({ label: 'main', e: set.main });
-(set.footage || []).forEach((e, i) => targets.push({ label: `footage[${i}]`, e }));
-
-const todo = targets.filter(
-  ({ e }) =>
-    e &&
-    e.is_video === false &&
-    typeof e.url === 'string' &&
-    inferPlatform(e.url) &&
-    (FORCE || !hasCrop(e)),
-);
-
-console.log(ui.rule());
-console.log('  Enrich image_path (DOM crop post non-video)');
-console.log(ui.rule());
-console.log(`File: ${FILE}`);
-console.log(
-  `Kandidat non-video: ${todo.length} (dari ${targets.length} entri; sisanya video / sudah ada crop / platform tak didukung)`,
-);
-if (!todo.length) {
-  console.log('Tak ada yang perlu di-crop. Selesai.');
-  process.exit(0);
-}
-
-if (KEYWORDS.length) console.log(`Gate relevansi: keywords=[${KEYWORDS.join(', ')}] mode=${MODE}`);
-
-(async () => {
   let ok = 0,
     fail = 0,
     matched = 0;
@@ -100,8 +79,8 @@ if (KEYWORDS.length) console.log(`Gate relevansi: keywords=[${KEYWORDS.join(', '
         e.image_path = r.image_path;
         ok++;
         let tag = '';
-        if (KEYWORDS.length) {
-          const hit = matchesTopic(r.text || '', KEYWORDS, MODE);
+        if (keywords.length) {
+          const hit = matchesTopic(r.text || '', keywords, mode);
           e.relevance = hit ? 'match' : 'unverified';
           if (hit) matched++;
           tag = hit ? ' [match]' : ' [unverified→Thoth buang]';
@@ -112,7 +91,7 @@ if (KEYWORDS.length) console.log(`Gate relevansi: keywords=[${KEYWORDS.join(', '
         e.image_path = '';
         console.log(ui.amber(`${ui.WARN}  ${r.reason}`));
       } // clear stale path → drop filter below catches it
-    } catch (err) {
+    } catch (err: any) {
       fail++;
       if (err && err.relay)
         console.log(
@@ -127,18 +106,63 @@ if (KEYWORDS.length) console.log(`Gate relevansi: keywords=[${KEYWORDS.join(', '
   // — re-run with the tab attached + --force to recover them.
   const before = (set.footage || []).length;
   set.footage = (set.footage || []).filter(
-    (f) => !(f.is_video === false && !(f.image_path && String(f.image_path).trim())),
+    (f: any) => !(f.is_video === false && !(f.image_path && String(f.image_path).trim())),
   );
   const dropped = before - set.footage.length;
 
-  fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+  fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
   console.log(ui.rule('thin'));
   if (dropped)
     console.log(
       `🧹 ${dropped} footage non-video gagal di-crop → dibuang (attach tab + --force utk pulihkan).`,
     );
   console.log(
-    `Selesai: ${ok} crop terisi${KEYWORDS.length ? ` (${matched} on-topic/"match")` : ''}, ${fail} gagal/skip → ${FILE}`,
+    `Selesai: ${ok} crop terisi${keywords.length ? ` (${matched} on-topic/"match")` : ''}, ${fail} gagal/skip → ${file}`,
   );
-  console.log('Validasi: bun validate_content_set.ts "' + FILE + '"');
-})();
+  console.log('Validasi: bun validate_content_set.ts "' + file + '"');
+}
+
+export function parseEnrichImagePathsArgs(argv: string[]): EnrichImagePathsOptions {
+  const getFlag = (n: string) => {
+    const i = argv.indexOf(n);
+    return i >= 0 ? argv[i + 1] : null;
+  };
+  const force = argv.includes('--force');
+  const mode = (getFlag('--mode') || 'any') as 'any' | 'all';
+  const keywords = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
+  const file = argv.find(
+    (a, i) => !a.startsWith('--') && argv[i - 1] !== '--keywords' && argv[i - 1] !== '--mode',
+  );
+  if (!file) {
+    console.log(
+      'Usage: bun enrich_image_paths.ts <content_set.json> [--force] [--keywords k1,k2] [--mode any|all]',
+    );
+    process.exit(1);
+  }
+  if (!fs.existsSync(file)) {
+    console.log(ui.red(`${ui.ERR} File tak ada: ${file}`));
+    process.exit(1);
+  }
+
+  let set;
+  try {
+    set = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (e: any) {
+    console.log(ui.red(`${ui.ERR} JSON tak valid: ${e.message}`));
+    process.exit(1);
+  }
+  if (Array.isArray(set) || !set || typeof set !== 'object') {
+    console.log(ui.red(`${ui.ERR} content-set harus objek tunggal {main,footage,comments}.`));
+    process.exit(1);
+  }
+
+  return { file, force, keywords, mode };
+}
+
+if (import.meta.main) {
+  runAcquisitionCli(async () => {
+    const options = parseEnrichImagePathsArgs(process.argv.slice(2));
+    const context = await createStandaloneAcquisitionContext();
+    await runEnrichImagePaths(options, context);
+  });
+}

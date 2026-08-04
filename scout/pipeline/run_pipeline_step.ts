@@ -29,7 +29,7 @@ type StepPolicy = {
 };
 
 type StepDeps = {
-  execute: () => void;
+  execute: () => Promise<void> | void;
   warn: (message: string) => void;
 };
 
@@ -49,9 +49,9 @@ function extractExitStatus(failure: unknown): number | null {
   return typeof status === 'number' && Number.isInteger(status) && status >= 0 ? status : null;
 }
 
-export function runPipelineStep(policy: StepPolicy, deps: StepDeps): boolean {
+export async function runPipelineStep(policy: StepPolicy, deps: StepDeps): Promise<boolean> {
   try {
-    deps.execute();
+    await deps.execute();
     return true;
   } catch (failure) {
     if (policy.required) throw new PipelineStepError(policy.label, failure);
