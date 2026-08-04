@@ -4,13 +4,15 @@
 // CDN URL only when the caller registered a `media` intent. Discovery wraps
 // `tiktokProfileVideos()` for profile grids only; keyword/topic discovery has
 // no post-URL-producing helper in this task's reuse set (Task 13 owns
-// building that on `search_social_v2.ts`). Comment collection has no TikTok
-// comment scraper in this task's reuse set either (Task 15 owns migrating
-// that onto `lib/comment_engine.ts`, the way `scrape_comments_x.ts` already
-// is for Twitter).
+// building that on `search_social_v2.ts`). Comment collection reuses
+// scrape_comments.ts's exported EXTRACT_JS/loadComments against a CDP
+// client obtained through context.visit(), without changing its selectors.
 import fs from 'node:fs';
+import { normalizeLikes } from '../../lib/comments.ts';
+import { sleep } from '../../lib/cdp.ts';
 import { cropPath } from '../../lib/paths.ts';
 import { tiktokOembed } from '../../lib/verify.ts';
+import { EXTRACT_JS, loadComments } from '../../scrapers/scrape_comments.ts';
 import { tiktokDirectUrl } from '../../scrapers/tiktok_video.ts';
 import { tiktokProfileVideos } from '../../scrapers/tiktok_profile.ts';
 import type {
@@ -39,6 +41,14 @@ interface ProfileVideo {
   views: number;
   caption: string;
   thumbnail?: string;
+}
+
+interface RawTikTokComment {
+  idx: number;
+  author: string;
+  text: string;
+  likes_raw: string;
+  avatar_url: string;
 }
 
 export interface TikTokAdapterDeps {
@@ -186,18 +196,37 @@ export function createTikTokAdapter(overrides: Partial<TikTokAdapterDeps> = {}):
 
   async function collectComments(
     url: string,
-    _limits: CommentLimits,
-    _context: AdapterContext,
+    limits: CommentLimits,
+    context: AdapterContext,
   ): Promise<CommentRecord[]> {
-    // No TikTok comment scraper is part of this task's reuse set (unlike
-    // scrape_comments_x.ts for Twitter/scrape_comments_yt.ts for YouTube).
-    // Task 15 owns migrating comment collection onto lib/comment_engine.ts;
-    // implementing a fresh DOM scraper here would be new, untested surface
-    // outside this task's scope.
-    throw new AcquisitionError(
-      `tiktok: comment collection is not implemented by this adapter for ${hostnameOf(url)}`,
-      { status: 'unavailable', reason: 'unsupported', attempts: 0, elapsed_ms: 0 },
-    );
+    return context.visit('tiktok', url, async (client) => {
+      await loadComments(client);
+      const byKey = new Map<string, CommentRecord>();
+      for (let step = 0; step < 4 && byKey.size < limits.max; step += 1) {
+        if (step > 0) {
+          await client.evaluate('window.scrollBy(0, 1600)');
+          await sleep(1500);
+        }
+        let raw: RawTikTokComment[] = [];
+        try {
+          raw = JSON.parse((await client.evaluate(EXTRACT_JS)) || '[]');
+        } catch {
+          raw = [];
+        }
+        for (const item of raw) {
+          const key = `${item.author}:${item.text}`;
+          if (!item.author && !item.text) continue;
+          if (byKey.has(key)) continue;
+          byKey.set(key, {
+            id: key,
+            author: item.author || '',
+            text: item.text || '',
+            likes: normalizeLikes(item.likes_raw),
+          });
+        }
+      }
+      return [...byKey.values()].slice(0, limits.max);
+    });
   }
 
   async function captureSocialCard(
@@ -218,7 +247,20 @@ export function createTikTokAdapter(overrides: Partial<TikTokAdapterDeps> = {}):
         },
       );
     }
-    const bytes = await deps.fetchBytes(meta.thumbnail);
+    let bytes: Buffer;
+    try {
+      bytes = await deps.fetchBytes(meta.thumbnail);
+    } catch {
+      throw new AcquisitionError(
+        `tiktok: thumbnail fetch failed for social card (${hostnameOf(url)})`,
+        {
+          status: 'unavailable',
+          reason: 'invalid-response',
+          attempts: 1,
+          elapsed_ms: (context?.now?.() ?? Date.now()) - startedAt,
+        },
+      );
+    }
     const postId = postIdFromUrl(url) || 'unknown';
     const filePath = cropPath(`social_tiktok_${purpose}_${postId}.jpg`);
     fs.writeFileSync(filePath, bytes);

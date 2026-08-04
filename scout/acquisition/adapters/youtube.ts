@@ -1,10 +1,18 @@
 // youtube.ts — YouTube platform adapter. Metadata-first: oEmbed answers
 // inspect() (title/author/thumbnail — no ephemeral CDN URL needed, since
 // materialize.ts's YouTube chain is yt-dlp directly against canonical_url).
-// Discovery has no existing YouTube scraper anywhere in this codebase
-// (checked: no scrapers/pipeline file mentions "youtube" outside comment
-// collection, and search_social_v2.ts has zero YouTube-specific logic) —
-// Task 13 owns building that from scratch. Comment collection reuses
+// Discovery: two YouTube post-list helpers already exist in this codebase —
+// pipeline/discover_topics.ts's fromYouTube() (navigates the YouTube home
+// feed, returns {topic,url} pairs with real /watch?v= URLs) and
+// pipeline/trace_source.ts's findOriginalYouTubeCandidates() (drives a
+// youtube.com/results search and returns candidate video URLs). Neither is
+// reusable as-is: fromYouTube() returns topic-shaped records, not
+// DiscoveryResult; findOriginalYouTubeCandidates() is private/unexported,
+// filters by channel name rather than doing a general query search, and
+// opens its own ad-hoc connect() with an unconditional close() and no `own`
+// ownership flag. Extracting either means restructuring pipeline files that
+// Tasks 12/13 own, so Task 13 owns building discover() on
+// search_social_v2.ts instead. Comment collection reuses
 // scrape_comments_yt.ts's exported EXTRACT_JS/ensureLoaded against a CDP
 // client obtained through context.visit(), without changing its selectors.
 import fs from 'node:fs';
@@ -120,10 +128,10 @@ export function createYouTubeAdapter(overrides: Partial<YouTubeAdapterDeps> = {}
     context: AdapterContext,
   ): Promise<DiscoveryResult> {
     const startedAt = context.now();
-    // No YouTube discovery helper (query/profile/trending) exists anywhere in
-    // this codebase today — search_social_v2.ts has no YouTube branch and no
-    // pipeline/scrapers file builds a YouTube post list. Task 13 owns
-    // building YouTube discovery from scratch on search_social_v2.ts.
+    // discover_topics.ts's fromYouTube() and trace_source.ts's
+    // findOriginalYouTubeCandidates() already produce YouTube post URLs (see
+    // the module comment above for why neither is reusable as-is). Task 13
+    // owns building discover() on search_social_v2.ts.
     throw new AcquisitionError(
       `youtube: discovery kind "${request.kind}" is not implemented by this adapter`,
       { status: 'unavailable', reason: 'unsupported', attempts: 0, elapsed_ms: context.now() - startedAt },
@@ -183,7 +191,20 @@ export function createYouTubeAdapter(overrides: Partial<YouTubeAdapterDeps> = {}
         },
       );
     }
-    const bytes = await deps.fetchBytes(meta.thumbnail);
+    let bytes: Buffer;
+    try {
+      bytes = await deps.fetchBytes(meta.thumbnail);
+    } catch {
+      throw new AcquisitionError(
+        `youtube: thumbnail fetch failed for social card (${hostnameOf(url)})`,
+        {
+          status: 'unavailable',
+          reason: 'invalid-response',
+          attempts: 1,
+          elapsed_ms: (context?.now?.() ?? Date.now()) - startedAt,
+        },
+      );
+    }
     const postId = postIdFromUrl(url) || 'unknown';
     const filePath = cropPath(`social_youtube_${purpose}_${postId}.jpg`);
     fs.writeFileSync(filePath, bytes);
