@@ -16,6 +16,8 @@ const HOST_PLATFORMS: Record<string, Platform> = {
   'www.facebook.com': 'facebook',
   'threads.net': 'threads',
   'www.threads.net': 'threads',
+  'threads.com': 'threads',
+  'www.threads.com': 'threads',
   'reddit.com': 'reddit',
   'www.reddit.com': 'reddit',
 };

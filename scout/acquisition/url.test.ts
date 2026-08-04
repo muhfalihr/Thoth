@@ -22,4 +22,22 @@ assert.equal(
 assert.equal(platformForUrl('https://www.reddit.com/r/test/comments/abc/post/'), 'reddit');
 assert.throws(() => canonicalizeUrl('not a URL'), /unsupported URL/i);
 
+// --- Threads is served on BOTH threads.net and threads.com (Meta serves
+// both; scrapers/threads_video.ts and scrapers/crop_post.ts both match
+// `.com`) — both hosts, with and without `www.`, must resolve to the
+// `threads` platform and canonicalize (strip tracking params/fragment)
+// identically.
+assert.equal(platformForUrl('https://www.threads.net/@owner/post/ABC123'), 'threads');
+assert.equal(platformForUrl('https://threads.net/@owner/post/ABC123'), 'threads');
+assert.equal(platformForUrl('https://www.threads.com/@owner/post/ABC123'), 'threads');
+assert.equal(platformForUrl('https://threads.com/@owner/post/ABC123'), 'threads');
+assert.equal(
+  canonicalizeUrl('https://www.threads.net/@owner/post/ABC123?utm_source=ig_web_copy_link#frag'),
+  'https://www.threads.net/@owner/post/ABC123',
+);
+assert.equal(
+  canonicalizeUrl('https://www.threads.com/@owner/post/ABC123?utm_source=ig_web_copy_link#frag'),
+  'https://www.threads.com/@owner/post/ABC123',
+);
+
 console.log('ok acquisition_url');

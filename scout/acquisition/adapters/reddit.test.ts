@@ -75,10 +75,16 @@ console.log('ok reddit_parse_empty_listing');
 }
 console.log('ok reddit_inspect_uses_json_with_honest_user_agent');
 
-// --- pinned: a failed `.json` fetch wraps in AcquisitionError with reason
-// 'invalid-response' — NEVER a bare Error, and never 'rate-limited' /
-// 'auth-required' / 'challenge' (those trip CIRCUIT_OPENING_REASONS for what
-// is here just a CDN/HTTP failure, per Ruling 9).
+// --- pinned: a failed `.json` fetch does NOT throw by itself — inspect()'s
+// catch silently calls domFallback() instead. Only when THAT ALSO fails (here
+// because fakeContext()'s client has no `.evaluate`, so domFallback()'s
+// title-empty guard fires) does inspect() wrap the compound failure in an
+// AcquisitionError with reason 'invalid-response' — NEVER a bare Error, and
+// never 'rate-limited' / 'auth-required' / 'challenge' (those trip
+// CIRCUIT_OPENING_REASONS for what is here just a CDN/HTTP + DOM failure, per
+// Ruling 9). See reddit_inspect_dom_fallback_succeeds below for the case
+// where the `.json` fetch fails but the DOM fallback resolves fine — that is
+// the path this test does NOT exercise.
 {
   const deps = {
     fetchJson: async () => {
@@ -100,7 +106,42 @@ console.log('ok reddit_inspect_uses_json_with_honest_user_agent');
     assert.ok(!(error as Error).message.includes('network down'));
   }
 }
-console.log('ok reddit_inspect_wraps_fetch_failure');
+console.log('ok reddit_inspect_wraps_fetch_and_dom_failure');
+
+// --- pinned: a failed `.json` fetch whose DOM fallback SUCCEEDS resolves a
+// valid PostRecord with outcome.source honestly set to 'dom'. Without this
+// test, a broken-but-not-throwing domFallback() (e.g. one that always
+// returned an empty/wrong PostRecord instead of the real page title) would
+// ship undetected, since the test above only ever exercises the fallback's
+// failing form.
+{
+  const deps = {
+    fetchJson: async () => {
+      throw new Error('network down');
+    },
+  };
+  const fakeClient: any = {
+    evaluate: async (expr: string) => {
+      if (expr === 'document.title') return 'Cool Post Title : r/test';
+      return null;
+    },
+  };
+  const context: any = {
+    intents: () => new Set(),
+    now: () => 0,
+    visit: async (_platform: string, _url: string, acquire: any) => acquire(fakeClient, new Set()),
+  };
+  const adapter = createRedditAdapter(deps);
+  const post = await adapter.inspect(
+    'https://www.reddit.com/r/test/comments/r1/title/',
+    context,
+  );
+  assert.equal(post.outcome.source, 'dom');
+  assert.equal(post.post_id, 'r1');
+  assert.equal(post.text, 'Cool Post Title');
+  assert.equal(post.media.length, 0);
+}
+console.log('ok reddit_inspect_dom_fallback_succeeds');
 
 // --- pinned: collectComments() reuses EXTRACT_JS from scrape_comments_reddit.ts
 // verbatim (reference equality) through context.visit(), normalizes the

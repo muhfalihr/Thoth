@@ -9,7 +9,8 @@
 import { pollCount } from '../../lib/comment_engine.ts';
 import { normalizeLikes } from '../../lib/comments.ts';
 import { sleep } from '../../lib/cdp.ts';
-import { cropPost } from '../../scrapers/crop_post.ts';
+import type { CdpClient } from '../../lib/cdp.ts';
+import { cropPost as defaultCropPost } from '../../scrapers/crop_post.ts';
 import { COUNT_JS, EXTRACT_JS } from '../../scrapers/scrape_comments_fb.ts';
 import { readAcquisitionConfig } from '../config.ts';
 import type { NetworkMatcher } from '../network_capture.ts';
@@ -35,6 +36,29 @@ interface RawFbComment {
   author: string;
   text: string;
   likes_raw: string;
+}
+
+interface CropResult {
+  ok: boolean;
+  image_path?: string | null;
+  bytes?: number;
+  text?: string;
+}
+
+export interface FacebookAdapterDeps {
+  cropPost: (opts: { url: string; client: CdpClient; navigate: boolean }) => Promise<CropResult>;
+  // Network-capture deadline (ms). Defaults to the shared config knob
+  // (THOTH_ACQUISITION_CAPTURE_MS, 15s) — injectable so tests can shrink it
+  // without mutating process.env (which Bun would leak across test files
+  // batched into one process; see threads.ts for the same pattern).
+  captureMs: number;
+}
+
+function resolveDeps(overrides: Partial<FacebookAdapterDeps>): FacebookAdapterDeps {
+  return {
+    cropPost: overrides.cropPost ?? defaultCropPost,
+    captureMs: overrides.captureMs ?? readAcquisitionConfig().captureDeadlineMs,
+  };
 }
 
 function hostnameOf(url: string): string {
@@ -140,12 +164,13 @@ function facebookPostMatcher(canonicalUrl: string): NetworkMatcher<PostRecord> {
   };
 }
 
-export function createFacebookAdapter(): PlatformAdapter {
+export function createFacebookAdapter(overrides: Partial<FacebookAdapterDeps> = {}): PlatformAdapter {
+  const deps = resolveDeps(overrides);
   const socialCardCache = new Map<string, LocalAsset>();
 
   async function stashSocialCardIfRequested(url: string, client: any): Promise<void> {
     try {
-      const crop = await cropPost({ url, client, navigate: false });
+      const crop = await deps.cropPost({ url, client, navigate: false });
       if (crop.ok && crop.image_path) {
         socialCardCache.set(url, {
           path: crop.image_path,
@@ -160,13 +185,12 @@ export function createFacebookAdapter(): PlatformAdapter {
   }
 
   async function inspect(url: string, context: AdapterContext): Promise<PostRecord> {
-    const config = readAcquisitionConfig();
     const startedAt = context.now();
     const wantsSocialCard = context.intents(url).has('social-card');
 
     return context.visit('facebook', url, async (client) => {
       const captured = await observeNetworkResponses(client, {
-        deadlineMs: config.captureDeadlineMs,
+        deadlineMs: deps.captureMs,
         matchers: [facebookPostMatcher(url)],
         action: async () => {},
       });
@@ -180,7 +204,7 @@ export function createFacebookAdapter(): PlatformAdapter {
       // No GraphQL response observed within the deadline — fall back to the
       // existing DOM search (crop_post.ts's PLATFORMS.facebook) for the
       // post's visible text, during the same visit/navigation.
-      const crop = await cropPost({ url, client, navigate: false });
+      const crop = await deps.cropPost({ url, client, navigate: false });
       if (!crop.ok) {
         throw new AcquisitionError(`facebook: no network or DOM data for ${hostnameOf(url)}`, {
           status: 'unavailable',
@@ -261,7 +285,7 @@ export function createFacebookAdapter(): PlatformAdapter {
     if (stashed) return stashed;
 
     return context.visit('facebook', url, async (client) => {
-      const crop = await cropPost({ url, client, navigate: false });
+      const crop = await deps.cropPost({ url, client, navigate: false });
       if (!crop.ok || !crop.image_path) {
         throw new AcquisitionError(`facebook: social-card crop failed for ${hostnameOf(url)}`, {
           status: 'unavailable',

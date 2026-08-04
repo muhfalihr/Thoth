@@ -39,11 +39,17 @@ interface OpenGraphMeta {
 
 export interface ThreadsAdapterDeps {
   videoSrc: (postUrl: string, opts: { client: unknown }) => Promise<string>;
+  // Network-capture deadline (ms). Defaults to the shared config knob
+  // (THOTH_ACQUISITION_CAPTURE_MS, 15s) — injectable so tests can shrink it
+  // without mutating process.env (which Bun would leak across test files
+  // batched into one process).
+  captureMs: number;
 }
 
 function resolveDeps(overrides: Partial<ThreadsAdapterDeps>): ThreadsAdapterDeps {
   return {
     videoSrc: overrides.videoSrc ?? ((postUrl, opts) => threadsVideoSrc(postUrl, opts)),
+    captureMs: overrides.captureMs ?? readAcquisitionConfig().captureDeadlineMs,
   };
 }
 
@@ -175,14 +181,13 @@ export function createThreadsAdapter(overrides: Partial<ThreadsAdapterDeps> = {}
   const socialCardCache = new Map<string, LocalAsset>();
 
   async function inspect(url: string, context: AdapterContext): Promise<PostRecord> {
-    const config = readAcquisitionConfig();
     const startedAt = context.now();
     const wantsMedia = context.intents(url).has('media');
     const wantsSocialCard = context.intents(url).has('social-card');
 
     return context.visit('threads', url, async (client) => {
       const captured = await observeNetworkResponses(client, {
-        deadlineMs: config.captureDeadlineMs,
+        deadlineMs: deps.captureMs,
         matchers: [threadsPostMatcher(url)],
         action: async () => {},
       });

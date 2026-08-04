@@ -4,8 +4,12 @@ import { createThreadsAdapter, parseThreadsPost } from './threads.ts';
 
 // Shrink the network-capture deadline so inspect() tests below (which never
 // have a real CDP socket emitting responses) don't block on the config
-// default (15s) waiting for a capture that will never arrive.
-process.env.THOTH_ACQUISITION_CAPTURE_MS = '20';
+// default (15s) waiting for a capture that will never arrive. Threaded
+// through createThreadsAdapter({ captureMs }) instead of mutating
+// process.env.THOTH_ACQUISITION_CAPTURE_MS — Bun batches multiple test files
+// into one process, so a module-scope env mutation here would leak a 20ms
+// capture deadline into any test file loaded after this one.
+const TEST_CAPTURE_MS = 20;
 
 // Minimal, inert CDP transport stub: observeNetworkResponses() only needs
 // ws.addEventListener/removeEventListener + cmd('Network.enable'/'disable')
@@ -62,6 +66,7 @@ console.log('ok threads_parse_returns_null_when_absent');
       videoSrcCalls += 1;
       return 'https://video.fbcdn.net/x.mp4';
     },
+    captureMs: TEST_CAPTURE_MS,
   };
   const fakeClient: any = {
     ws: fakeWs(),
@@ -89,6 +94,7 @@ console.log('ok threads_inspect_skips_video_without_media_intent');
       videoSrcCalls += 1;
       return 'https://video.fbcdn.net/x.mp4';
     },
+    captureMs: TEST_CAPTURE_MS,
   };
   const fakeClient: any = {
     ws: fakeWs(),
