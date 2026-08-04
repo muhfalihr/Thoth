@@ -10,7 +10,10 @@ import path from 'node:path';
 import { connect, run as runCdpRelay } from '../lib/cdp.ts';
 import { ensureDir, OUTPUT_DIR } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
+import { createFacebookAdapter } from './adapters/facebook.ts';
 import { createInstagramAdapter } from './adapters/instagram.ts';
+import { createRedditAdapter } from './adapters/reddit.ts';
+import { createThreadsAdapter } from './adapters/threads.ts';
 import { createTikTokAdapter } from './adapters/tiktok.ts';
 import { createTwitterAdapter } from './adapters/twitter.ts';
 import { createYouTubeAdapter } from './adapters/youtube.ts';
@@ -115,6 +118,9 @@ export class AcquisitionService {
       createTwitterAdapter(),
       createTikTokAdapter(),
       createYouTubeAdapter(),
+      createFacebookAdapter(),
+      createThreadsAdapter(),
+      createRedditAdapter(),
     ],
   ): Promise<AcquisitionService> {
     const config = readAcquisitionConfig();

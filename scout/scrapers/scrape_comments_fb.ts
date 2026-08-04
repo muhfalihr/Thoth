@@ -34,39 +34,43 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) {
-  console.log('Usage: bun scrape_comments_fb.ts <post_url> [out.json] [--max N]');
-  process.exit(1);
-}
+export { EXTRACT_JS, COUNT_JS };
 
-run(() =>
-  scrapeComments({
-    url,
-    platform: 'facebook',
-    label: 'Facebook',
-    match: 'facebook.com',
-    idToken: '',
-    ensureLoaded: (client) => pollCount(client, COUNT_JS, 10, 1000),
-    extractJs: EXTRACT_JS,
-    // FB loads more comments via a "View more comments" button, not infinite scroll. Click it
-    // when present (EN/ID), otherwise scroll.
-    scrollJs: `(() => {
+if (import.meta.main) {
+  const { url, out, max } = parseArgs(process.argv.slice(2));
+  if (!url) {
+    console.log('Usage: bun scrape_comments_fb.ts <post_url> [out.json] [--max N]');
+    process.exit(1);
+  }
+
+  run(() =>
+    scrapeComments({
+      url,
+      platform: 'facebook',
+      label: 'Facebook',
+      match: 'facebook.com',
+      idToken: '',
+      ensureLoaded: (client) => pollCount(client, COUNT_JS, 10, 1000),
+      extractJs: EXTRACT_JS,
+      // FB loads more comments via a "View more comments" button, not infinite scroll. Click it
+      // when present (EN/ID), otherwise scroll.
+      scrollJs: `(() => {
     const want = /(view\\s+\\d*\\s*more\\s+comment|view\\s+more\\s+comment|more comments|lihat\\s+.*komentar|komentar lainnya|komentar sebelumnya)/i;
     const btn = Array.from(document.querySelectorAll('[role="button"], span, div'))
       .find(b => want.test((b.innerText || '').trim()) && b.offsetParent !== null);
     if (btn) { btn.click(); return; }
     window.scrollBy(0, 1100);
   })()`,
-    buildMain: (u) => ({
-      url: u,
-      platform: 'facebook',
-      title: 'Facebook post',
-      is_video: false,
-      duration_sec: 0,
-      profile: { name: '', handle: '', followers: '', avatar_url: '' },
+      buildMain: (u) => ({
+        url: u,
+        platform: 'facebook',
+        title: 'Facebook post',
+        is_video: false,
+        duration_sec: 0,
+        profile: { name: '', handle: '', followers: '', avatar_url: '' },
+      }),
+      max: max || 12,
+      out: out || 'thoth_content_set.json',
     }),
-    max: max || 12,
-    out: out || 'thoth_content_set.json',
-  }),
-);
+  );
+}
