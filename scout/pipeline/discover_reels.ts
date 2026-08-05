@@ -16,13 +16,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
-import { connect, sleep, run } from '../lib/cdp.ts';
+import { connect, sleep } from '../lib/cdp.ts';
 import { outPath } from '../lib/paths.ts';
 import { normalizeLikes } from '../lib/comments.ts';
 import { fetchTrending } from './discover_tiktok_trending.ts';
 import { ytdlpCookieArgs, postShape, warmPostShapes } from '../lib/verify.ts';
-import { tiktokProfileVideos } from '../scrapers/tiktok_profile.ts';
-import { xProfileTweets } from '../scrapers/x_profile.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/service.ts';
+import type { PostRecord, Platform } from '../acquisition/types.ts';
 
 const args = process.argv.slice(2);
 const getFlag = (n, d) => {
@@ -296,65 +296,41 @@ function cleanTopic(t) {
   return t;
 }
 
-// Scan an account's grid for BOTH reels (/reel/) and feed posts (/p/). The main grid (/<handle>/)
-// mixes posts + reels; the reels tab (/<handle>/reels/) catches more reels. We hit whichever pages
-// the requested --include needs, dedup by code, and apply the same owner-handle filter (an anchor
-// that EXPLICITLY names a DIFFERENT account is an IG "Suggested"/related leak → dropped). Returns
-// { reel:[...], post:[...] } each newest-first and capped at MAX_PER.
-async function collectItems(client, handle) {
-  const byCode = new Map();
-  const pages = [];
-  if (INCLUDE.posts) pages.push(`https://www.instagram.com/${handle}/`); // posts + reels
-  if (INCLUDE.reels) pages.push(`https://www.instagram.com/${handle}/reels/`); // reels (depth)
-  for (const pg of pages) {
-    try {
-      await client.navigate(pg, 6000);
-      await sleep(3000);
-      const grab = async () => {
-        const raw = await client.evaluate(SNAPSHOT_JS);
-        try {
-          return JSON.parse(raw || '[]');
-        } catch (e) {
-          return [];
-        }
-      };
-      const SNAPSHOT_JS = `(() => {
-        const HANDLE = ${JSON.stringify(handle)}.toLowerCase();
-        const seen = new Set(); const out = [];
-        document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]').forEach(a => {
-          let href = a.getAttribute('href'); if (!href) return;
-          const u = new URL(href, location.origin);
-          const m = u.pathname.match(/^\\/(?:([\\w.]+)\\/)?(reel|p)\\/([\\w-]+)/);
-          if (!m) return;
-          const owner = (m[1] || '').toLowerCase();        // '' = bare /<seg>/<code> (own grid)
-          if (owner && owner !== HANDLE) return;            // cross-account leak → drop
-          const type = m[2] === 'p' ? 'post' : 'reel';
-          const code = m[3];
-          if (seen.has(code)) return; seen.add(code);
-          const sp = Array.from(a.querySelectorAll('span')).map(s => (s.innerText || '').trim()).find(t => /^[\\d.,]+\\s*[KMrbjt]*$/i.test(t));
-          out.push({ url: u.href, code, type, views: sp || '' });
-        });
-        return JSON.stringify(out);
-      })()`;
-      let list = await grab();
-      if (!list.length) {
-        // grid virtualized/blank di snapshot pertama (mis. @jktlogy) → 1x scroll + retry
-        try {
-          await client.evaluate('window.scrollBy(0, 800)');
-        } catch (e) {}
-        await sleep(2500);
-        list = await grab();
-      }
-      for (const it of list) if (!byCode.has(it.code)) byCode.set(it.code, it); // first (newest) wins
-    } catch (e) {}
-  }
-  const reel = [],
-    post = [];
-  for (const it of byCode.values()) {
-    if (it.type === 'reel' && INCLUDE.reels) reel.push(it);
-    else if (it.type === 'post' && INCLUDE.posts) post.push(it);
-  }
-  return { reel: reel.slice(0, MAX_PER), post: post.slice(0, MAX_PER) };
+// Legacy candidate-row shape this pipeline's downstream loops/ranking/checkpoint code expects
+// (mirrors what the old per-platform DOM scrapers used to hand back). `kind` is derived from
+// canonical_url instead of a caller-supplied flag so a single mapping works for every platform.
+export interface DiscoveryPostRow {
+  account: string;
+  kind: string;
+  url: string;
+  views: string;
+  time: string | undefined;
+  caption: string;
+}
+
+function kindForPost(platform: Platform, url: string): string {
+  if (platform === 'instagram') return /\/p\//.test(url) ? 'post' : 'reel';
+  if (platform === 'twitter') return 'tweet';
+  if (platform === 'tiktok') return 'tiktok';
+  return platform;
+}
+
+// Pure mapping: AcquisitionService.discover()'s PostRecord[] (thin — engagement/text come from
+// the discovery scan itself, media/published_at are usually NOT backfilled yet — that needs a
+// separate inspectPost() per URL) -> the flat row shape used below. No service/browser/network
+// calls in here — that's the whole point (testability seam per Task 13's brief); keep it that way.
+export function mapDiscoveryPosts(account: string, items: PostRecord[]): DiscoveryPostRow[] {
+  return items.map((it) => {
+    const v = it.engagement && it.engagement.views;
+    return {
+      account,
+      kind: kindForPost(it.platform, it.canonical_url),
+      url: it.canonical_url,
+      views: v == null ? '' : String(v),
+      time: it.published_at,
+      caption: it.text,
+    };
+  });
 }
 
 // Open a reel OR post, return {time, frameB64, isVideo}. For video items it pauses at t=0 to grab the
@@ -396,7 +372,13 @@ async function itemFrame(client, url) {
   return { time: m.time, frameB64, isVideo: !!m.isVideo };
 }
 
-run(async () => {
+// ponytail: guarded like trace_source.ts's Task-12 migration — mapDiscoveryPosts is a pure,
+// importable export (discovery_acquisition.test.ts imports it directly), so the live pipeline
+// below must NOT run as a side effect of that import; only run it when this file is the entry
+// point (`bun pipeline/discover_reels.ts`), not when something merely imports from it.
+if (import.meta.main) {
+runAcquisitionCli(async () => {
+  const context = await createStandaloneAcquisitionContext();
   console.log(ui.rule());
   console.log('  Discover Topics (reels + posts dari akun kurator IG)');
   console.log(ui.rule());
@@ -471,113 +453,137 @@ run(async () => {
     } catch (e) {}
   };
   const flush = () => writeRanked(true);
+  // ponytail: instagram.ts's discover(kind:'profile') only calls igProfileReels (reels-only,
+  // includePosts defaults off) — it does not cover the feed-post ("/p/") side that the old
+  // collectItems() dual-page grid scan handled under --include posts. Extending it would mean
+  // editing acquisition/adapters/instagram.ts, outside Task 13's file scope (and would risk
+  // changing trace_source.ts's Task-12 discover(kind:'profile') behavior too). Disclosed, not
+  // silently dropped: --include posts is now a no-op for Instagram.
+  if (INCLUDE.posts) {
+    console.log(
+      ui.amber(
+        `${ui.WARN}  --include posts tak didukung pasca migrasi ke AcquisitionService (instagram discover() hanya reel)`,
+      ),
+    );
+  }
   for (const h of ACCOUNTS) {
-    process.stdout.write(`\n• @${h}: ambil postingan ... `);
-    let bundle;
+    process.stdout.write(`\n• @${h}: ambil reel ... `);
+    let rows: DiscoveryPostRow[] = [];
     try {
-      bundle = await collectItems(client, h);
+      if (INCLUDE.reels) {
+        const disc = await context.service.discover({
+          platform: 'instagram',
+          kind: 'profile',
+          value: h,
+          limit: MAX_PER,
+        });
+        rows = mapDiscoveryPosts(h, disc.items);
+      }
     } catch (e) {
-      console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 50)}`));
+      console.log(ui.amber(`${ui.WARN} ${String((e as Error).message || e).slice(0, 50)}`));
       continue;
     }
-    const lists = [];
-    if (INCLUDE.reels) lists.push(['reel', bundle.reel]);
-    if (INCLUDE.posts) lists.push(['post', bundle.post]);
-    const total = lists.reduce((n, [, l]) => n + l.length, 0);
-    console.log(`${total} item (${bundle.reel.length} reel, ${bundle.post.length} post)`);
-    if (!total) {
+    console.log(`${rows.length} item (${rows.length} reel, 0 post)`);
+    if (!rows.length) {
       console.log(
         ui.amber(
-          `    ${ui.WARN}  grid kosong/virtualized (atau semua leak antar-akun di-drop) — skip akun ini`,
+          `    ${ui.WARN}  tak ada reel (atau semua leak antar-akun di-drop) — skip akun ini`,
         ),
       );
       continue;
     }
     let acctViews = 0;
-    // Warm the postShape cache for every grid item CONCURRENTLY before the serial per-item loop
+    // Warm the postShape cache for every item CONCURRENTLY before the serial per-item loop
     // (the loop is CDP-bound on itemFrame, but this removes the yt-dlp probe from its critical path).
     await warmPostShapes(
-      lists.flatMap(([, l]) => l.map((x) => x.url)),
+      rows.map((x) => x.url),
       5,
     );
-    for (const [kind, items] of lists) {
-      for (const r of items) {
-        let fr;
-        try {
-          fr = await itemFrame(client, r.url);
-        } catch (e) {
-          continue;
-        }
-        const ts = fr.time ? Date.parse(fr.time) : NaN;
-        if (!isNaN(ts) && ts < cutoff) {
-          console.log(`    ⏹  ${kind} >${HOURS}h → stop ${kind} akun ini`);
-          break;
-        } // newest-first per list
-        let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
-        let via = 'hook';
-        let shape = '';
-        if (topic.length < 8) {
-          // Bentuk post menentukan sumber topik berikutnya. BUKAN heuristik DOM <video> —
-          // carousel foto+video memuat elemen <video> untuk slide lain padahal item pertamanya
-          // foto (false-positive → yt-dlp "No video formats found"). Tangga per bentuk:
-          //   video    → audio → caption
-          //   photo    → caption
-          //   carousel → caption → audio slide VIDEO pertama (--playlist-items N)
-          const ps = postShape(r.url);
-          shape = ps.ok ? ps.shape : fr.isVideo ? 'video' : 'photo'; // yt-dlp gagal → tebakan DOM lama
-          const caption = ps.ok ? cleanTopic(ps.caption).slice(0, 200) : '';
-          if (shape === 'video') {
-            const a = await audioTopic(r.url);
+    const kind = 'reel';
+    for (const r of rows) {
+      // Bookkeeping only, per the brief's "register inspect and media intents before
+      // inspecting each returned canonical URL": itemFrame() right below performs this
+      // URL's single allowed navigation (raw DOM, unchanged) and already derives
+      // time+isVideo itself, so service.inspectPost() is deliberately NOT also called
+      // here — a second call would be a second navigation to the same canonical URL,
+      // which the one-navigation-per-URL rule forbids.
+      context.service.registerIntent(r.url, 'inspect');
+      context.service.registerIntent(r.url, 'media');
+      let fr;
+      try {
+        fr = await itemFrame(client, r.url);
+      } catch (e) {
+        continue;
+      }
+      const ts = fr.time ? Date.parse(fr.time) : NaN;
+      if (!isNaN(ts) && ts < cutoff) {
+        console.log(`    ⏹  ${kind} >${HOURS}h → stop ${kind} akun ini`);
+        break;
+      } // newest-first per list
+      let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
+      let via = 'hook';
+      let shape = '';
+      if (topic.length < 8) {
+        // Bentuk post menentukan sumber topik berikutnya. BUKAN heuristik DOM <video> —
+        // carousel foto+video memuat elemen <video> untuk slide lain padahal item pertamanya
+        // foto (false-positive → yt-dlp "No video formats found"). Tangga per bentuk:
+        //   video    → audio → caption
+        //   photo    → caption
+        //   carousel → caption → audio slide VIDEO pertama (--playlist-items N)
+        const ps = postShape(r.url);
+        shape = ps.ok ? ps.shape : fr.isVideo ? 'video' : 'photo'; // yt-dlp gagal → tebakan DOM lama
+        const caption = ps.ok ? cleanTopic(ps.caption).slice(0, 200) : '';
+        if (shape === 'video') {
+          const a = await audioTopic(r.url);
+          const at = cleanTopic(a.text);
+          if (at) {
+            topic = at;
+            via = a.note;
+          } else if (caption) {
+            topic = caption;
+            via = 'caption';
+          } else via = a.note;
+        } else if (shape === 'carousel') {
+          const vs = (ps.slides || []).find((s) => s.kind === 'video');
+          if (caption) {
+            topic = caption;
+            via = 'caption';
+          } else if (vs) {
+            const a = await audioTopic(r.url, vs.index);
             const at = cleanTopic(a.text);
             if (at) {
               topic = at;
-              via = a.note;
-            } else if (caption) {
-              topic = caption;
-              via = 'caption';
+              via = `audio-slide-${vs.index}`;
             } else via = a.note;
-          } else if (shape === 'carousel') {
-            const vs = (ps.slides || []).find((s) => s.kind === 'video');
-            if (caption) {
-              topic = caption;
-              via = 'caption';
-            } else if (vs) {
-              const a = await audioTopic(r.url, vs.index);
-              const at = cleanTopic(a.text);
-              if (at) {
-                topic = at;
-                via = `audio-slide-${vs.index}`;
-              } else via = a.note;
-            } else via = 'carousel-foto (tanpa caption/teks)';
-          } else {
-            if (caption) {
-              topic = caption;
-              via = 'caption';
-            } else via = 'image-post (tanpa caption/teks)';
-          }
+          } else via = 'carousel-foto (tanpa caption/teks)';
+        } else {
+          if (caption) {
+            topic = caption;
+            via = 'caption';
+          } else via = 'image-post (tanpa caption/teks)';
         }
-        const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
-        const vn = normalizeLikes(r.views);
-        if (vn > 0) acctViews++;
-        found.push({
-          account: h,
-          kind,
-          url: r.url,
-          views: r.views,
-          views_n: vn,
-          time: fr.time,
-          age: ageH,
-          topic,
-          via,
-          shape,
-        });
-        console.log(
-          `    [${kind}, ${ageH}, ${r.views || '?'} views, ${via}] ${topic || '(tak terbaca)'}`,
-        );
-        flush(); // checkpoint after each item
       }
+      const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
+      const vn = normalizeLikes(r.views);
+      if (vn > 0) acctViews++;
+      found.push({
+        account: h,
+        kind,
+        url: r.url,
+        views: r.views,
+        views_n: vn,
+        time: fr.time,
+        age: ageH,
+        topic,
+        via,
+        shape,
+      });
+      console.log(
+        `    [${kind}, ${ageH}, ${r.views || '?'} views, ${via}] ${topic || '(tak terbaca)'}`,
+      );
+      flush(); // checkpoint after each item
     }
-    if (total && acctViews === 0)
+    if (rows.length && acctViews === 0)
       console.log(
         ui.amber(
           `    ${ui.WARN}  views 0 untuk semua item @${h} (grid view-count tak render) — ranking pakai recency saja`,
@@ -594,28 +600,41 @@ run(async () => {
   // sudah menutup) — tambah nanti kalau kurasi TikTok terbukti sering tanpa caption.
   for (const h of TT_ACCOUNTS) {
     process.stdout.write(`\n• @${h} (tiktok): ambil video ... `);
-    let items = [];
+    let rows: DiscoveryPostRow[] = [];
     try {
-      items = await tiktokProfileVideos(h, { max: MAX_PER, captions: true });
+      const disc = await context.service.discover({
+        platform: 'tiktok',
+        kind: 'profile',
+        value: h,
+        limit: MAX_PER,
+      });
+      rows = mapDiscoveryPosts(h, disc.items);
     } catch (e) {
-      console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 60)}`));
+      console.log(ui.amber(`${ui.WARN} ${String((e as Error).message || e).slice(0, 60)}`));
       continue;
     }
-    console.log(`${items.length} video`);
+    console.log(`${rows.length} video`);
     // TikTok loop probes postShape unconditionally per item and has NO CDP in it → pure yt-dlp.
     // Warming concurrently first turns N serial probes into ceil(N/5) waves (biggest win here).
     await warmPostShapes(
-      items.map((it) => it.url),
+      rows.map((r) => r.url),
       5,
     );
-    for (const it of items) {
-      const ps = postShape(it.url);
+    for (const r of rows) {
+      // Bookkeeping only (brief: "register inspect and media intents before inspecting"):
+      // TikTok items are definitionally video (no hasVideo/hasPhoto branch to backfill) and
+      // this loop has no other per-item navigation, so there is nothing for
+      // service.inspectPost() to usefully add here — intents are registered, the extra
+      // navigation is skipped to avoid spending it for no functional benefit.
+      context.service.registerIntent(r.url, 'inspect');
+      context.service.registerIntent(r.url, 'media');
+      const ps = postShape(r.url);
       const ts = ps.ok && ps.time ? ps.time * 1000 : NaN;
       if (!isNaN(ts) && ts < cutoff) continue; // pinned/lama tampil duluan → skip item, jangan break
-      let topic = cleanTopic(it.caption || (ps.ok ? ps.caption : '')).slice(0, 200);
+      let topic = cleanTopic(r.caption || (ps.ok ? ps.caption : '')).slice(0, 200);
       let via = 'caption';
       if (topic.length < 8) {
-        const a = await audioTopic(it.url);
+        const a = await audioTopic(r.url);
         const at = cleanTopic(a.text);
         if (at) {
           topic = at;
@@ -623,11 +642,11 @@ run(async () => {
         } else via = a.note;
       }
       const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
-      const vn = it.views || 0;
+      const vn = Number(r.views) || 0;
       found.push({
         account: h,
         kind: 'tiktok',
-        url: it.url,
+        url: r.url,
         views: vn ? String(vn) : '',
         views_n: vn,
         time: isNaN(ts) ? null : new Date(ts).toISOString(),
@@ -645,36 +664,59 @@ run(async () => {
   // Topik tweet = TEKSNYA langsung (tanpa vision/audio). Video tweet tanpa teks → tangga audio.
   for (const h of X_ACCOUNTS) {
     process.stdout.write(`\n• @${h} (x): ambil tweet ... `);
-    let tweets = [];
+    let rows: DiscoveryPostRow[] = [];
     try {
-      tweets = await xProfileTweets(h, { max: MAX_PER });
+      const disc = await context.service.discover({
+        platform: 'twitter',
+        kind: 'profile',
+        value: h,
+        limit: MAX_PER,
+      });
+      rows = mapDiscoveryPosts(h, disc.items);
     } catch (e) {
-      console.log(ui.amber(`${ui.WARN} ${String(e.message || e).slice(0, 60)}`));
+      console.log(ui.amber(`${ui.WARN} ${String((e as Error).message || e).slice(0, 60)}`));
       continue;
     }
-    console.log(`${tweets.length} tweet`);
-    for (const tw of tweets) {
-      const ts = tw.time ? Date.parse(tw.time) : NaN;
+    console.log(`${rows.length} tweet`);
+    for (const r of rows) {
+      // ponytail: twitter.ts's discover() intentionally returns media:[] and no published_at
+      // (adapter comment: "Deferred; discover() callers that need media call inspect() on the
+      // returned canonical_url") — this loop needs hasVideo/hasPhoto + a real timestamp for the
+      // recency gate/shape, so X is the one candidate set that actually calls inspectPost()
+      // (one navigation per tweet; discover() itself never visited this URL, so it stays at
+      // most one navigation total for it). Best-effort: a failed inspect just falls back to
+      // the thin discover() row instead of dropping the tweet.
+      context.service.registerIntent(r.url, 'inspect');
+      context.service.registerIntent(r.url, 'media');
+      let full: PostRecord | null = null;
+      try {
+        full = await context.service.inspectPost(r.url);
+      } catch (e) {}
+      const text = (full ? full.text : '') || r.caption;
+      const timeStr = full?.published_at || r.time || null;
+      const hasVideo = !!full?.media.some((m) => m.kind === 'video');
+      const hasPhoto = !!full?.media.some((m) => m.kind === 'image');
+      const ts = timeStr ? Date.parse(timeStr) : NaN;
       if (!isNaN(ts) && ts < cutoff) continue; // pinned tampil pertama → skip item, jangan break
-      let topic = cleanTopic(tw.text).slice(0, 200);
+      let topic = cleanTopic(text).slice(0, 200);
       let via = 'tweet-text';
-      if (topic.length < 8 && tw.hasVideo) {
-        const a = await audioTopic(tw.url);
+      if (topic.length < 8 && hasVideo) {
+        const a = await audioTopic(r.url);
         const at = cleanTopic(a.text);
         if (at) {
           topic = at;
           via = a.note;
         } else via = a.note;
       }
-      const shape = tw.hasVideo ? 'video' : tw.hasPhoto ? 'photo' : 'text';
+      const shape = hasVideo ? 'video' : hasPhoto ? 'photo' : 'text';
       const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
       found.push({
         account: h,
         kind: 'tweet',
-        url: tw.url,
+        url: r.url,
         views: '',
         views_n: 0,
-        time: tw.time || null,
+        time: timeStr,
         age: ageH,
         topic,
         via,
@@ -714,3 +756,4 @@ run(async () => {
   }
   console.log(`📄 ${out}`);
 });
+}
