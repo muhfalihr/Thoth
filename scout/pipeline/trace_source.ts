@@ -34,11 +34,9 @@ import {
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
-import { matchesTopic, probeVideo, tiktokOembed, youtubeOembed } from '../lib/verify.ts';
-import { igPostOg, igProfileReels } from '../scrapers/ig_profile.ts';
+import { matchesTopic, tiktokOembed, youtubeOembed } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
 import { downloadThreads, threadsVideoSrc } from '../scrapers/threads_video.ts';
-import { tiktokProfileVideos } from '../scrapers/tiktok_profile.ts';
 import { downloadTiktok, tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { resolveSource, tightenQuery } from './resolve_source.ts';
 import {
@@ -46,7 +44,7 @@ import {
   selectTraceVisionInput,
   visionInputDataUrl,
 } from './trace_source_vision.ts';
-import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import type { AcquisitionRunContext, PostRecord } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
 export interface TraceSourceOptions {
@@ -98,137 +96,20 @@ const cleanUser = (u) =>
     .replace(/[^A-Za-z0-9._].*$/, '')
     .toLowerCase();
 
-// Caption of the main video via public oEmbed (TikTok/YouTube). '' otherwise.
-async function captionOf(main) {
-  if (main.platform === 'tiktok') {
-    const m = await tiktokOembed(main.url);
-    return (m && m.title) || '';
-  }
-  if (main.platform === 'youtube') {
-    const m = await youtubeOembed(main.url);
-    return (m && m.title) || '';
-  }
-  if (main.platform === 'twitter') {
-    return await twitterText(main.url);
-  }
-  if (main.platform === 'threads') {
-    return (await threadsOg(main.url)).text;
-  }
-  if (main.platform === 'instagram') {
-    return (await igPostOg(main.url)).text;
-  }
-  return '';
-}
-// Threads keeps clean og:description (post text) + og:image (poster/photo) in the logged-in DOM —
-// unlike X, which strips them. One CDP read serves both captionOf and coverOf; cached per-url since
-// trace_source handles one main per run. ponytail: 1-entry cache is enough for a single-main process.
-let _thrOg = { url: '', text: '', image: '' };
-async function threadsOg(url) {
-  if (_thrOg.url === url) return _thrOg;
-  const res = { url, text: '', image: '' };
-  let c: Awaited<ReturnType<typeof connect>>;
+// Cover image/local asset for vision: an image-kind media asset's CDN url when the post has one, else
+// a DOM social-card crop (ponytail: no adapter's PostRecord exposes a poster/thumbnail for a VIDEO
+// post -- only the raw video CDN url -- so a crop is the only cover source left for video mains;
+// upgrade path is an adapter-level poster field if one becomes available). captureSocialCard is a
+// cache hit, not a second navigation, when 'social-card' was pre-registered before inspectPost ran.
+async function coverOf(main, record: PostRecord, context: AcquisitionRunContext): Promise<string> {
+  const image = record.media.find((m) => m.kind === 'image');
+  if (image?.ephemeral_url) return image.ephemeral_url;
   try {
-    c = await connect({ match: ['threads.com', 'threads.net'], requireMatch: true });
-  } catch (e) {
-    _thrOg = res;
-    return res;
-  }
-  try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(url, 8000);
-    await sleep(3000);
-    const raw = await c.evaluate(`JSON.stringify({
-      text: (document.querySelector('meta[property="og:description"]')||{}).content||'',
-      image: (document.querySelector('meta[property="og:image"]')||{}).content||''
-    })`);
-    try {
-      const o = JSON.parse(raw || '{}');
-      res.text = (o.text || '').trim();
-      res.image = (o.image || '').trim();
-    } catch (e) {}
-  } catch (e) {
-  } finally {
-    try {
-      c.close();
-    } catch (e) {}
-  }
-  _thrOg = res;
-  return res;
-}
-// X/Twitter has no post-text oEmbed → read the tweet body from the logged-in X tab over CDP,
-// same selector the comment scraper uses (article[data-testid="tweet"] → tweetText). og:description
-// is the fallback when the SPA article DOM hasn't hydrated yet.
-async function twitterText(url) {
-  let c: Awaited<ReturnType<typeof connect>>;
-  try {
-    c = await connect({ match: ['x.com', 'twitter.com'], requireMatch: true });
+    const card = await context.service.captureSocialCard(main.url, 'post');
+    return card.path;
   } catch (e) {
     return '';
   }
-  try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(url, 8000);
-    await sleep(3000);
-    const txt = await c.evaluate(`(() => {
-      const a = document.querySelector('article[data-testid="tweet"]');
-      const t = a && a.querySelector('[data-testid="tweetText"]');
-      if (t && t.innerText.trim()) return t.innerText.trim();
-      return (document.querySelector('meta[property="og:description"]')||{}).content || '';
-    })()`);
-    return (txt || '').trim();
-  } catch (e) {
-    return '';
-  } finally {
-    try {
-      c.close();
-    } catch (e) {}
-  }
-}
-// Cover image of an IG reel = its og:image (the generated cover frame, which carries the on-screen
-// HEADLINE overlay) — same CDP read as the caption, so igPostOg serves both in one page visit.
-// X/Twitter cover = the video poster frame (or photo) via yt-dlp's %(thumbnail)s. Tab-independent —
-// the logged-in SPA does NOT inject og:image client-side (only server-rendered HTML has it), so a CDP
-// og read returns empty; yt-dlp reads the real amplify_video_thumb URL. '' for text-only tweets.
-function xCoverImage(url) {
-  const YTDLP = process.env.YTDLP || 'yt-dlp';
-  try {
-    const out = execFileSync(
-      YTDLP,
-      ['--skip-download', '--no-warnings', '--print', '%(thumbnail)s', '--', url],
-      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 40000 },
-    )
-      .toString()
-      .trim()
-      .split(/\r?\n/)[0]
-      .trim();
-    return /^https?:\/\//.test(out) ? out : '';
-  } catch (e) {
-    return '';
-  }
-}
-async function coverOf(main) {
-  if (main.platform === 'tiktok') {
-    const m = await tiktokOembed(main.url);
-    return (m && m.thumbnail) || '';
-  }
-  if (main.platform === 'youtube') {
-    const m = await youtubeOembed(main.url);
-    return (m && m.thumbnail) || '';
-  }
-  if (main.platform === 'instagram') {
-    return (await igPostOg(main.url)).image;
-  }
-  if (main.platform === 'twitter') {
-    return await xCoverImage(main.url);
-  }
-  if (main.platform === 'threads') {
-    return (await threadsOg(main.url)).image;
-  }
-  return '';
 }
 
 // VISION: read the on-screen HEADLINE/HOOK text (+ any visible credit/watermark) from the cover, as
@@ -445,47 +326,63 @@ async function findOriginalThreads(username, keywords = []) {
   }
 }
 
-// Find the ORIGINAL on Instagram by PROFILE: open instagram.com/<user>/reels/ → newest reel.
-// The creator's own reel is the authentic source (vs a curator repost with baked overlay). Reels grid
-// has no captions, so take the newest reel (creators like this post on-topic consistently). IG reels
-// are downloadable by Thoth via firefox cookies. Guarded: needs an instagram.com tab attached.
-async function findOriginalInstagramCandidates(username): Promise<MainCandidate[]> {
-  // includePosts:true → also scan feed posts (/p/), since creators often publish the source as a feed
-  // VIDEO post, not a Reel; keep only verified-video posts (a /p/ can be a photo/carousel).
-  const all = await igProfileReels(username, { max: 10, captions: true, includePosts: true });
-  return all
-    .filter((item) => item.isVideo !== false)
-    .map((item) => ({
-      url: item.url,
-      platform: 'instagram',
-      caption: item.caption || '',
-      thumbnail: 'thumbnail' in item ? String(item.thumbnail || '') : '',
-      uploader: username,
-      isVideo: true,
-    }));
+// PostRecord -> MainCandidate shape ranking/setMainTo already expect. thumbnail is always '' here:
+// discover() never exposes a poster/thumbnail (only the raw media CDN url) -- same gap coverOf()
+// works around with a social-card crop; per-candidate crops aren't done here (10-30 candidates per
+// run x an extra navigation each is a real cost the old thumbnail-bearing scrapers didn't pay), so
+// describeEvidence's vision-evidence step degrades to '' for these two sources. Upgrade path: an
+// adapter-level poster field, or a capped per-candidate captureSocialCard if that cost is worth it.
+function candidateFromDiscovery(record: PostRecord, uploader: string): MainCandidate {
+  return {
+    url: record.canonical_url,
+    platform: record.platform,
+    caption: record.text || '',
+    thumbnail: '',
+    uploader: record.owner_handle || uploader,
+    isVideo: record.media.some((m) => m.kind === 'video'),
+  };
 }
 
-// Find the ORIGINAL on TikTok by PROFILE (not search): open tiktok.com/@user, list the video grid, and
-// return every profile video so the shared gate can evaluate and rank them against the story.
-async function findOriginalTiktokCandidates(username): Promise<MainCandidate[]> {
-  let videos = [];
+// Find the ORIGINAL on Instagram by PROFILE: discover() 'profile' request → newest video posts.
+// The creator's own post is the authentic source (vs a curator repost with baked overlay). IG reels
+// are downloadable by Thoth via firefox cookies.
+async function findOriginalInstagramCandidates(
+  username,
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
+  const { items } = await context.service.discover({
+    platform: 'instagram',
+    kind: 'profile',
+    value: username,
+    limit: 10,
+  });
+  return items
+    .filter((item) => item.media.some((m) => m.kind === 'video'))
+    .map((item) => candidateFromDiscovery(item, username));
+}
+
+// Find the ORIGINAL on TikTok by PROFILE (not search): discover() 'profile' request over the video
+// grid, returning every profile video so the shared gate can evaluate and rank them against the story.
+async function findOriginalTiktokCandidates(
+  username,
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
+  let items: PostRecord[] = [];
   try {
-    videos = await tiktokProfileVideos(username, { max: 30, captions: true });
+    ({ items } = await context.service.discover({
+      platform: 'tiktok',
+      kind: 'profile',
+      value: username,
+      limit: 30,
+    }));
   } catch (e) {
     return [];
   }
-  if (!videos.length) {
+  if (!items.length) {
     console.log(`    [tiktok] profil @${username}: 0 video terbaca (login/tab?).`);
     return [];
   }
-  return videos.map((video) => ({
-    url: video.url,
-    platform: 'tiktok',
-    caption: video.caption || '',
-    thumbnail: video.thumbnail || '',
-    uploader: username,
-    isVideo: true,
-  }));
+  return items.map((item) => candidateFromDiscovery(item, username));
 }
 
 // Detect a camera-emoji credit ("[📸 @user]", "📷 @user", "🎥 cr: @user") → the original is on
@@ -609,7 +506,27 @@ function urlHandle(url) {
 
 // Discover raw replacement candidates only. Suitability evaluation, ranking, and final selection belong
 // to evaluateMainSuitability and main_gate.
-async function findStoryCandidates(keywords, storyText, opts: any = {}): Promise<MainCandidate[]> {
+async function probeGenericViaService(url: string, context: AcquisitionRunContext) {
+  try {
+    const record = await context.service.inspectPost(url);
+    return {
+      isVideo: record.media.some((m) => m.kind === 'video'),
+      caption: record.text || '',
+      thumbnail: '',
+      uploader: record.owner_handle || '',
+      webpageUrl: record.canonical_url || url,
+    };
+  } catch (e) {
+    return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: url };
+  }
+}
+
+async function findStoryCandidates(
+  keywords,
+  storyText,
+  opts: any = {},
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
   const kws = (keywords || []).map((value) => String(value).trim()).filter(Boolean);
   const query = tightenQuery(
     (opts.query || '').trim() ||
@@ -623,7 +540,7 @@ async function findStoryCandidates(keywords, storyText, opts: any = {}): Promise
   const entries = searchAll(query, kws[0] || query.split(/\s+/)[0]);
   return admitSearchCandidates(entries, {
     downloadablePlatforms: DLABLE,
-    probeGeneric: async (entry) => probeVideo(entry.url),
+    probeGeneric: async (entry) => probeGenericViaService(entry.url, context),
     youtubeMeta: async (url) => {
       const meta = await youtubeOembed(url);
       return meta ? { title: meta.title || '', thumbnail: meta.thumbnail || '' } : null;
@@ -644,12 +561,13 @@ async function discoverReplacementCandidates({
   storyText,
   query,
   cliKeywords,
+  context,
 }): Promise<MainCandidate[]> {
   const credited: MainCandidate[] = [];
   if (username && platHint === 'instagram') {
-    credited.push(...(await findOriginalInstagramCandidates(username)));
+    credited.push(...(await findOriginalInstagramCandidates(username, context)));
   } else if (username && platHint === 'tiktok') {
-    credited.push(...(await findOriginalTiktokCandidates(username)));
+    credited.push(...(await findOriginalTiktokCandidates(username, context)));
     credited.push(...findOriginalHandleCandidates(username, searchTopic));
   } else if (username && platHint === 'youtube') {
     credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
@@ -672,10 +590,12 @@ async function discoverReplacementCandidates({
     credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
   }
 
-  const generic = await findStoryCandidates(keywords.length ? keywords : cliKeywords, storyText, {
-    credited: username,
-    query,
-  });
+  const generic = await findStoryCandidates(
+    keywords.length ? keywords : cliKeywords,
+    storyText,
+    { credited: username, query },
+    context,
+  );
   const seen = new Set<string>();
   return [...credited, ...generic].filter(
     (candidate) => candidate.url && !seen.has(candidate.url) && Boolean(seen.add(candidate.url)),
@@ -794,7 +714,6 @@ export async function runTraceSource(
   options: TraceSourceOptions,
   context: AcquisitionRunContext,
 ): Promise<void> {
-  void context;
   const { file, keywords: cliKeywords, username: forceUser, model, noDl } = options;
   const set = JSON.parse(fs.readFileSync(file, 'utf8'));
   const main = set.main;
@@ -820,8 +739,14 @@ export async function runTraceSource(
     username = cleanUser(forceUser);
     console.log(`[force] username=@${username}`);
   } else {
-    caption = await captionOf(main);
-    const fallbackCover = await coverOf(main);
+    let record: PostRecord | null = null;
+    try {
+      record = await context.service.inspectPost(main.url);
+    } catch (e) {
+      record = null;
+    }
+    caption = record?.text || '';
+    const fallbackCover = record ? await coverOf(main, record, context) : '';
     const selectedCover = await selectTraceVisionInput(main, fallbackCover, {
       log: (line) => console.log(line),
     });
@@ -932,6 +857,7 @@ export async function runTraceSource(
         storyText: storyCtx,
         query: '',
         cliKeywords,
+        context,
       }),
     rankAccepted: (results) =>
       rankAcceptedMainCandidates(results, {

@@ -3,12 +3,21 @@
 // `og:image` (which for carousels often reflects the wrong slide or a stale share-card render);
 // every other shape/platform keeps using the existing cover-URL fallback unchanged.
 
+import fs from 'node:fs';
 import {
   resolveIgFirstSlideVisionInput,
   type FirstSlideVisionInput,
   type IgFirstSlideDiagnostic,
 } from '../lib/ig_first_slide.ts';
 import { postShape } from '../lib/verify.ts';
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+};
 
 export type TraceVisionSelection = {
   input: string;
@@ -74,6 +83,18 @@ export async function visionInputDataUrl(
 ): Promise<string> {
   if (!input) return '';
   if (input.startsWith('data:')) return input;
+  // ponytail: LocalAsset paths from AcquisitionService.captureSocialCard() never go through fetch —
+  // sniff extension for MIME, default to png (captureSocialCard's own output format).
+  if (!/^https?:\/\//i.test(input)) {
+    try {
+      const ext = input.slice(input.lastIndexOf('.')).toLowerCase();
+      const ct = MIME_BY_EXT[ext] || 'image/png';
+      const b64 = fs.readFileSync(input).toString('base64');
+      return `data:${ct};base64,${b64}`;
+    } catch (_) {
+      return '';
+    }
+  }
   try {
     const res = await fetchImpl(input);
     if (!res.ok) return '';
