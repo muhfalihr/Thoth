@@ -56,16 +56,30 @@ export interface RunPipelineDeps {
   summarize(file: string): Promise<void>;
 }
 
+const STEP_TIMEOUT_MS = 600_000;
+// build_footage searches once per dossier query (each search alone is capped at
+// 200 s) and then OCRs every surviving candidate, so its real cost is measured in
+// tens of minutes — 61 min on a live acceptance run. The default budget silently
+// SIGTERM'd it mid-query, which reads exactly like a crash.
+const FOOTAGE_TIMEOUT_MS = 5_400_000;
+// trace_source is in the same class since the main gate started grading a REAL frame per
+// candidate: it resolves a video slide to a signed CDN url and seeks into that remote stream,
+// where it used to classify the carousel's cover JPEG (fast, and always wrong — a title card
+// reads as 'commentary', which rejected every candidate). Measured ~1 min per candidate against
+// a live search, so the 10 min default SIGTERM'd it mid-evaluation right after its first accept.
+const TRACE_SOURCE_TIMEOUT_MS = 1_800_000;
+
 // Required safety steps abort the run; optional enrichment may degrade gracefully — same policy the
 // old subprocess-based `step()` used, just wrapping an in-process call instead of execFileSync.
 function runStage(
   label: string,
   required: boolean,
   execute: () => Promise<void>,
+  timeoutMs: number = STEP_TIMEOUT_MS,
 ): Promise<boolean> {
   ui.stage(label);
   return runPipelineStep(
-    { label, required },
+    { label, required, timeoutMs },
     { execute, warn: (message) => console.log(ui.amber(`  ${ui.WARN} ${message}`)) },
   );
 }
@@ -100,8 +114,12 @@ export async function runPipelineWithDeps(
   // subject/object extraction can mine the comments too. extract_figures runs AFTER build_footage so it
   // can also read footage descriptions. Every step is awaited: they run strictly in order and each one
   // reads the file the previous step wrote.
-  await runStage('trace_source (sumber/main)', true, () =>
-    deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
+  await runStage(
+    'trace_source (sumber/main)',
+    true,
+    () =>
+      deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
+    TRACE_SOURCE_TIMEOUT_MS,
   );
 
   if (!noComments) {
@@ -117,11 +135,15 @@ export async function runPipelineWithDeps(
     );
   }
 
-  await runStage('build_footage (dossier→footage)', true, () =>
-    deps.buildFootage(
-      { file, objects: null, per: options.per ?? 2, max: options.max ?? 4, noCrop: false, profile: null },
-      context,
-    ),
+  await runStage(
+    'build_footage (dossier→footage)',
+    true,
+    () =>
+      deps.buildFootage(
+        { file, objects: null, per: options.per ?? 2, max: options.max ?? 4, noCrop: false, profile: null },
+        context,
+      ),
+    FOOTAGE_TIMEOUT_MS,
   );
 
   await runStage('extract_figures (tokoh — main + footage)', false, () =>

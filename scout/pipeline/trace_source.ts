@@ -332,21 +332,24 @@ async function findOriginalThreads(username, keywords = []) {
 // run x an extra navigation each is a real cost the old thumbnail-bearing scrapers didn't pay), so
 // describeEvidence's vision-evidence step degrades to '' for these two sources. Upgrade path: an
 // adapter-level poster field, or a capped per-candidate captureSocialCard if that cost is worth it.
-function candidateFromDiscovery(record: PostRecord, uploader: string): MainCandidate {
+export function candidateFromDiscovery(record: PostRecord, uploader: string): MainCandidate {
   return {
     url: record.canonical_url,
     platform: record.platform,
     caption: record.text || '',
     thumbnail: '',
     uploader: record.owner_handle || uploader,
-    isVideo: record.media.some((m) => m.kind === 'video'),
+    // `record.media` is always [] for profile-discovery PostRecords (adapters don't populate it
+    // there -- see reelToPostRecord/videoToPostRecord) so it cannot be used as a video signal.
+    // Both callers of this function only ever discover video/reel entries by construction.
+    isVideo: true,
   };
 }
 
 // Find the ORIGINAL on Instagram by PROFILE: discover() 'profile' request → newest video posts.
 // The creator's own post is the authentic source (vs a curator repost with baked overlay). IG reels
 // are downloadable by Thoth via firefox cookies.
-async function findOriginalInstagramCandidates(
+export async function findOriginalInstagramCandidates(
   username,
   context: AcquisitionRunContext,
 ): Promise<MainCandidate[]> {
@@ -356,9 +359,9 @@ async function findOriginalInstagramCandidates(
     value: username,
     limit: 10,
   });
-  return items
-    .filter((item) => item.media.some((m) => m.kind === 'video'))
-    .map((item) => candidateFromDiscovery(item, username));
+  // No video filter here: profile-discovery `item.media` is always [] (see candidateFromDiscovery
+  // comment), and IG profile 'discover' by construction only returns reel/video entries.
+  return items.map((item) => candidateFromDiscovery(item, username));
 }
 
 // Find the ORIGINAL on TikTok by PROFILE (not search): discover() 'profile' request over the video

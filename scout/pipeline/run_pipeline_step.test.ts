@@ -136,3 +136,62 @@ await assert.rejects(
   assert.equal(ok, true);
   assert.equal(completed, true);
 }
+
+// FIX 3: a plain in-process Error (the only kind of throw possible now that stages run in-process,
+// not as subprocesses) must keep its real message and stack through the wrapper -- not fall through
+// to the generic "subprocess failed" text, which erases all operator diagnostics.
+{
+  const original = new Error('content-set validation failed: main.url missing');
+  await assert.rejects(
+    () =>
+      runPipelineStep(
+        { label: 'validate', required: true },
+        {
+          execute: () => {
+            throw original;
+          },
+          warn: () => {},
+        },
+      ),
+    (error: unknown) =>
+      error instanceof PipelineStepError &&
+      error.message.includes('content-set validation failed: main.url missing') &&
+      error.cause instanceof Error &&
+      error.cause.message === original.message &&
+      error.cause.stack === original.stack,
+  );
+}
+
+// FIX 2: a hung stage must be bounded by timeoutMs, not hang the pipeline forever. Optional steps
+// warn-and-continue like any other failure; required steps throw like any other failure.
+{
+  let warning = '';
+  const ok = await runPipelineStep(
+    { label: 'topic_dossier', required: false, timeoutMs: 20 },
+    {
+      execute: () => new Promise<void>(() => {}), // never resolves
+      warn: (message) => {
+        warning = message;
+      },
+    },
+  );
+  assert.equal(ok, false);
+  assert.match(warning, /topic_dossier.*optional.*continue/i);
+}
+
+await assert.rejects(
+  () =>
+    runPipelineStep(
+      { label: 'build_footage', required: true, timeoutMs: 20 },
+      {
+        execute: () => new Promise<void>(() => {}), // never resolves
+        warn: () => {
+          throw new Error('required timeout must not warn-and-continue');
+        },
+      },
+    ),
+  (error: unknown) =>
+    error instanceof PipelineStepError && /timed out after 20ms/.test(error.message),
+);
+
+console.log('run_pipeline_step.test.ts OK');
