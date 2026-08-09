@@ -37,8 +37,52 @@ import {
 } from '../lib/footage_candidate_selection.ts';
 import { resolveFootageTasks } from './footage_queries.ts';
 import { ui } from '../lib/ui.ts';
-import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import type { AcquisitionRunContext, LocalAsset, MediaAsset, PostRecord } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+
+// ── Footage admission seam ──────────────────────────────────────────────────────────────────────
+// Every footage candidate must pass non-media gates BEFORE any downloader/materializer call.
+// `post` here is an already-inspected PostRecord (service.inspectPost() — cheap, 6h-cached), never
+// bytes fetched for the candidate itself: gating on post.text costs no download. Only an admitted
+// candidate ever reaches deps.materialize(). A video candidate is admitted WITHOUT materializing
+// here — OCR (attachFootageOcrCandidate via selectFootageVideoCandidate) decides for itself whether
+// it needs local media, unchanged.
+export interface FootageAdmissionDeps {
+  query: string;
+  isRelevant(text: string, query: string): boolean;
+  isMain(url: string, text: string): boolean;
+  looksReaction(text: string): boolean;
+  materialize(asset: MediaAsset): Promise<LocalAsset>;
+}
+
+export type FootageAdmissionResult =
+  | { status: 'accepted'; entry: Record<string, unknown> }
+  | { status: 'rejected'; reason: 'main' | 'irrelevant' | 'reaction' | 'no-media' };
+
+export async function admitAndMaterializeFootage(
+  post: PostRecord,
+  deps: FootageAdmissionDeps,
+): Promise<FootageAdmissionResult> {
+  const text = post.text || '';
+  if (deps.isMain(post.canonical_url, text)) return { status: 'rejected', reason: 'main' };
+  if (deps.looksReaction(text)) return { status: 'rejected', reason: 'reaction' };
+  if (!deps.isRelevant(text, deps.query)) return { status: 'rejected', reason: 'irrelevant' };
+  const asset = post.media[0];
+  if (!asset) return { status: 'rejected', reason: 'no-media' };
+
+  const base = {
+    url: post.canonical_url,
+    platform: post.platform,
+    query: deps.query,
+    relevance: 'match',
+    description: text,
+  };
+  if (asset.kind === 'video') {
+    return { status: 'accepted', entry: { ...base, is_video: true } };
+  }
+  const local = await deps.materialize(asset);
+  return { status: 'accepted', entry: { ...base, is_video: false, image_path: local.path } };
+}
 
 export interface BuildFootageOptions {
   file: string;
@@ -421,14 +465,22 @@ export async function runBuildFootage(
               }
           }
         } else {
-          const analyzed = await selectFootageVideoCandidate({
-            url: r.url,
-            platform: 'instagram',
-            query: 'profil @' + profileUser,
-            is_video: true,
-            relevance: 'match',
-            description: r.caption || '',
-          });
+          // preAdmit: this branch previously had no main/reaction gate at all before OCR's
+          // downloader ran (only the earlier cosine/token relevance floor on r.caption) — closed
+          // via the same seam every other candidate site uses, so a reel that IS the main content
+          // or a reaction/repost of it never reaches attachFootageOcrCandidate's download.
+          const analyzed = await selectFootageVideoCandidate(
+            {
+              url: r.url,
+              platform: 'instagram',
+              query: 'profil @' + profileUser,
+              is_video: true,
+              relevance: 'match',
+              description: r.caption || '',
+            },
+            undefined,
+            () => !isMain(r.url, r.caption || '') && !looksReaction(r.caption || ''),
+          );
           mediaDropped += analyzed.mediaDropped;
           if (analyzed.result.status === 'unavailable') continue;
           if (analyzed.result.entry.ocr_outcome === 'subtitle') continue;
@@ -527,6 +579,25 @@ export async function runBuildFootage(
         const isIG = e.platform === 'ig' || e.platform === 'instagram';
         let slides = [],
           description = '';
+        // Gate on the post's OWN text (service.inspectPost — cheap, 6h-cached, no screenshot)
+        // BEFORE cropPost's CDP screenshot capture, so a candidate that is main/reaction/off-topic
+        // never triggers that capture at all. Falls back to the legacy crop-first gate below when
+        // inspect is unsupported/fails for this platform/url, so recall never regresses.
+        try {
+          const inspected = await context.service.inspectPost(e.url);
+          const text = inspected.text || '';
+          if (sameAsMain(e.url, text) || looksReaction(text)) {
+            if (looksReaction(text)) dropReact++;
+            else dropped++;
+            return false;
+          }
+          if (!relevant(text, obj) || looksSpam(text)) {
+            dropped++;
+            return false;
+          }
+        } catch (inspectErr) {
+          // inspect unsupported/failed → defer entirely to the post-crop gate below (unchanged).
+        }
         // IG posts can be a carousel mixing PHOTO + VIDEO slides → capture up to 5 slides; cropPost marks
         // each as {kind:'photo',image_path} or {kind:'video',index}.
         if (!noCrop) {
@@ -636,6 +707,39 @@ export async function runBuildFootage(
         for (const e of cands) {
           if (tw >= per) break;
           have.add(e.url);
+
+          // Gate + materialize via the shared seam: inspectPost (cheap, cached, no screenshot)
+          // supplies the tweet's own text AND its media list. A photo-attached tweet that passes
+          // the gates never needs cropPost's CDP screenshot at all — service.materialize() fetches
+          // the attachment directly (direct-http/gallery-dl). Only a gated-through text-only tweet
+          // ('no-media' — no attachment to fetch, but still wanted as a screenshotted "card") falls
+          // through to the legacy cropPost path, and only AFTER admission, never before.
+          let inspected = null;
+          try {
+            inspected = await context.service.inspectPost(e.url);
+          } catch (inspectErr) {
+            inspected = null;
+          }
+          if (inspected) {
+            if (looksSpam(inspected.text || '')) continue;
+            const admission = await admitAndMaterializeFootage(inspected, {
+              query: 'twitter',
+              isRelevant: () => true, // LOOSE admit (existing behavior) — story-gate below drops off-topic
+              isMain: (url, text) => sameAsMain(url, text),
+              looksReaction,
+              materialize: (asset) => context.service.materialize(asset, 'footage'),
+            });
+            if (admission.status === 'accepted') {
+              if (admission.entry.is_video) continue; // video tweet — this branch wants non-video only
+              set.footage.push(admission.entry as any);
+              tw++;
+              addedP++;
+              continue;
+            }
+            if (admission.reason !== 'no-media') continue; // main/reaction rejected before any download
+            // else: no attachment to fetch → fall through to the screenshot-card path below.
+          }
+
           let cr;
           try {
             cr = await cropPost({ url: e.url, maxSlides: 1 });

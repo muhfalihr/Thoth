@@ -26,9 +26,14 @@ export function formatMediaDropSummary(mediaDropped: number): string {
   return mediaDropped ? ` (${mediaDropped} drop media tak dapat diakses)` : '';
 }
 
+// `preAdmit`, when given, is checked BEFORE anything else in this module: resolving a direct
+// media URL (TikTok/carousel) and attaching OCR (the actual downloader call) both cost a real
+// network fetch, so a candidate the caller's non-media gates already rejected must never reach
+// either. Optional and defaults to admit (unchanged behavior) for backward compatibility.
 export function selectFootageVideoCandidate<T extends VideoRecord, A extends T & PersistedOcrFields>(
   record: T,
   attach: (record: T) => Promise<A>,
+  preAdmit?: () => boolean,
 ): Promise<{
   result:
     | { status: 'accepted'; entry: A }
@@ -38,11 +43,14 @@ export function selectFootageVideoCandidate<T extends VideoRecord, A extends T &
 export function selectFootageVideoCandidate<T extends VideoRecord>(
   record: T,
   attach?: (record: T) => Promise<T & PersistedOcrFields>,
+  preAdmit?: () => boolean,
 ): Promise<FootageCandidateSelection<T>>;
 export async function selectFootageVideoCandidate<T extends VideoRecord>(
   record: T,
   attach?: (record: T) => Promise<T & PersistedOcrFields>,
+  preAdmit?: () => boolean,
 ): Promise<FootageCandidateSelection<T>> {
+  if (preAdmit && !preAdmit()) return unavailable<T>();
   const result = await attachFootageOcrCandidate(record, attach);
   return { result, mediaDropped: result.status === 'unavailable' ? 1 : 0 };
 }
@@ -51,7 +59,9 @@ export async function selectTikTokFootageVideoCandidate<T extends VideoRecord>(
   record: T,
   resolveDirect: (url: string) => Promise<{ url: string } | null>,
   attach?: (record: T & { source_url: string }) => Promise<(T & { source_url: string }) & PersistedOcrFields>,
+  preAdmit?: () => boolean,
 ): Promise<FootageCandidateSelection<T & { source_url: string }>> {
+  if (preAdmit && !preAdmit()) return unavailable<T & { source_url: string }>();
   const sourceUrl = String(record.url || '');
   const direct = await resolveDirect(sourceUrl);
   if (!direct?.url) return unavailable<T & { source_url: string }>();
@@ -65,7 +75,9 @@ export async function selectCarouselFootageVideoCandidate<T extends VideoRecord>
   record: T,
   resolveDirect: () => string | null | undefined,
   attach?: (record: T & { source_url: string }) => Promise<(T & { source_url: string }) & PersistedOcrFields>,
+  preAdmit?: () => boolean,
 ): Promise<FootageCandidateSelection<T & { source_url: string }>> {
+  if (preAdmit && !preAdmit()) return unavailable<T & { source_url: string }>();
   const sourceUrl = String(record.url || '');
   const direct = resolveDirect();
   if (!direct) return unavailable<T & { source_url: string }>();

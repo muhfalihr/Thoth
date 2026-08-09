@@ -49,6 +49,38 @@ assert.equal(mediaDropped, 1);
 assert.equal(quota, 1);
 assert.deepEqual(retained.map((entry) => entry.url), ['https://example.test/accepted']);
 
+// preAdmit gates BEFORE resolveDirect/attach — a candidate the caller's non-media gates already
+// rejected must never trigger the direct-url resolver (a real network fetch) or OCR's downloader.
+let gatedAttachCalls = 0;
+const gated = await selectFootageVideoCandidate(
+  { ...record, url: 'https://example.test/gated' },
+  async (value) => {
+    gatedAttachCalls++;
+    return { ...analyzed, url: value.url };
+  },
+  () => false,
+);
+assert.equal(gated.result.status, 'unavailable');
+assert.equal(gatedAttachCalls, 0);
+
+let gatedResolverCalls = 0;
+let gatedTiktokAttachCalls = 0;
+const gatedTiktok = await selectTikTokFootageVideoCandidate(
+  { ...record, platform: 'tiktok', url: 'https://www.tiktok.com/@user/video/999' },
+  async () => {
+    gatedResolverCalls++;
+    return { url: 'https://cdn.example.test/999.mp4' };
+  },
+  async (value) => {
+    gatedTiktokAttachCalls++;
+    return { ...analyzed, ...value };
+  },
+  () => false,
+);
+assert.equal(gatedTiktok.result.status, 'unavailable');
+assert.equal(gatedResolverCalls, 0);
+assert.equal(gatedTiktokAttachCalls, 0);
+
 let tiktokResolverCalls = 0;
 let tiktokAttachCalls = 0;
 const tiktok = await selectTikTokFootageVideoCandidate(
