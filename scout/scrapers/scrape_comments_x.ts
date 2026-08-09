@@ -40,7 +40,14 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-export { EXTRACT_JS, COUNT_JS };
+// Scroll to lazy-load more replies. Exported alongside ensureLoaded (Task 15 review fix) so
+// pipeline/collect_comments.ts can reuse the exact same wait/scroll through
+// AcquisitionService.browse() instead of duplicating it.
+const SCROLL_JS = 'window.scrollBy(0, 1400)';
+const ensureLoaded = (client: import('../lib/cdp.ts').CdpClient) =>
+  pollCount(client, COUNT_JS, 8, 1000);
+
+export { EXTRACT_JS, COUNT_JS, SCROLL_JS, ensureLoaded };
 
 if (import.meta.main) {
   const { url, out, max } = parseArgs(process.argv.slice(2));
@@ -59,9 +66,9 @@ if (import.meta.main) {
       label: 'X/Twitter',
       match: ['x.com', 'twitter.com'],
       idToken: id,
-      ensureLoaded: (client) => pollCount(client, COUNT_JS, 8, 1000),
+      ensureLoaded,
       extractJs: EXTRACT_JS,
-      scrollJs: 'window.scrollBy(0, 1400)',
+      scrollJs: SCROLL_JS,
       buildMain: (u) => ({
         url: u,
         platform: 'twitter',

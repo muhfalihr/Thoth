@@ -10,6 +10,7 @@
 //   (tab instagram.com harus login & ter-attach relay)
 
 import { run } from '../lib/cdp.ts';
+import type { CdpClient } from '../lib/cdp.ts';
 import { scrapeComments, parseArgs, pollCount, sleep } from '../lib/comment_engine.ts';
 
 // Reels open in the FULLSCREEN viewer (/reels/<code>) with comments HIDDEN — you must click the
@@ -73,41 +74,51 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) {
-  console.log('Usage: bun scrape_comments_ig.ts <post_or_reel_url> [out.json] [--max N]');
-  process.exit(1);
+// Reels hide the comment panel until the "Comment"/"Komentar" icon is clicked; poll briefly
+// first (inline /p/ posts already show comments), then open the panel and poll again. Exported
+// (Task 15 review fix) so pipeline/collect_comments.ts can reuse the exact same wait logic
+// through AcquisitionService.browse() instead of duplicating it.
+async function ensureLoaded(client: CdpClient) {
+  let n = await pollCount(client, COUNT_JS, 2, 800);
+  if (!n) {
+    await client.evaluate(OPEN_COMMENTS_JS);
+    await sleep(1600);
+    n = await pollCount(client, COUNT_JS, 10, 1000);
+  }
+  return n;
 }
 
-const code = (url.match(/\/(?:p|reel|tv)\/([\w-]+)/) || [, ''])[1];
+export { EXTRACT_JS, SCROLL_JS, COUNT_JS, ensureLoaded };
 
-run(() =>
-  scrapeComments({
-    url,
-    platform: 'instagram',
-    label: 'Instagram',
-    match: 'instagram.com',
-    idToken: code,
-    ensureLoaded: async (client) => {
-      let n = await pollCount(client, COUNT_JS, 2, 800);
-      if (!n) {
-        await client.evaluate(OPEN_COMMENTS_JS);
-        await sleep(1600);
-        n = await pollCount(client, COUNT_JS, 10, 1000);
-      }
-      return n;
-    },
-    extractJs: EXTRACT_JS,
-    scrollJs: SCROLL_JS,
-    buildMain: (u) => ({
-      url: u,
+if (import.meta.main) {
+  const { url, out, max } = parseArgs(process.argv.slice(2));
+  if (!url) {
+    console.log('Usage: bun scrape_comments_ig.ts <post_or_reel_url> [out.json] [--max N]');
+    process.exit(1);
+  }
+
+  const code = (url.match(/\/(?:p|reel|tv)\/([\w-]+)/) || [, ''])[1];
+
+  run(() =>
+    scrapeComments({
+      url,
       platform: 'instagram',
-      title: `Instagram ${code}`,
-      is_video: false,
-      duration_sec: 0,
-      profile: { name: '', handle: '', followers: '', avatar_url: '' },
+      label: 'Instagram',
+      match: 'instagram.com',
+      idToken: code,
+      ensureLoaded,
+      extractJs: EXTRACT_JS,
+      scrollJs: SCROLL_JS,
+      buildMain: (u: string) => ({
+        url: u,
+        platform: 'instagram',
+        title: `Instagram ${code}`,
+        is_video: false,
+        duration_sec: 0,
+        profile: { name: '', handle: '', followers: '', avatar_url: '' },
+      }),
+      max: max || 12,
+      out: out || 'thoth_content_set.json',
     }),
-    max: max || 12,
-    out: out || 'thoth_content_set.json',
-  }),
-);
+  );
+}

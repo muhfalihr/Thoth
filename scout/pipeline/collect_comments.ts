@@ -14,7 +14,8 @@
 
 import fs from 'node:fs';
 import { ui } from '../lib/ui.ts';
-import { dedupeAndRankComments } from '../lib/comment_engine.ts';
+import { dedupeAndRankComments, isLinkSpam, isStickerOnly, scrapeCommentsOnPage } from '../lib/comment_engine.ts';
+import type { CdpClient } from '../lib/cdp.ts';
 import type {
   AcquisitionRunContext,
   CommentRecord,
@@ -22,6 +23,40 @@ import type {
   Platform,
 } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+import { EXTRACT_JS as TIKTOK_EXTRACT_JS, loadComments as tiktokEnsureLoaded } from '../scrapers/scrape_comments.ts';
+import {
+  EXTRACT_JS as IG_EXTRACT_JS,
+  SCROLL_JS as IG_SCROLL_JS,
+  ensureLoaded as igEnsureLoaded,
+} from '../scrapers/scrape_comments_ig.ts';
+import {
+  EXTRACT_JS as X_EXTRACT_JS,
+  SCROLL_JS as X_SCROLL_JS,
+  ensureLoaded as xEnsureLoaded,
+} from '../scrapers/scrape_comments_x.ts';
+import {
+  EXTRACT_JS as FB_EXTRACT_JS,
+  SCROLL_JS as FB_SCROLL_JS,
+  ensureLoaded as fbEnsureLoaded,
+} from '../scrapers/scrape_comments_fb.ts';
+
+// Platforms whose CLI scrape_comments_*.ts already knows how to wait-for-load + extract +
+// (via scrapeCommentsOnPage) crop each comment individually. collectNormalizedComments()
+// routes these through AcquisitionService.browse() (ONE navigation, same as
+// service.collectComments() would have used) instead of the adapter's text-only
+// collectComments() — see the ponytail note at its call site for why.
+interface CropCapableOpts {
+  ensureLoaded: (client: CdpClient) => Promise<number>;
+  extractJs: string;
+  scrollJs?: string;
+}
+
+const CROP_CAPABLE: Partial<Record<Platform, CropCapableOpts>> = {
+  tiktok: { ensureLoaded: tiktokEnsureLoaded, extractJs: TIKTOK_EXTRACT_JS },
+  instagram: { ensureLoaded: igEnsureLoaded, extractJs: IG_EXTRACT_JS, scrollJs: IG_SCROLL_JS },
+  twitter: { ensureLoaded: xEnsureLoaded, extractJs: X_EXTRACT_JS, scrollJs: X_SCROLL_JS },
+  facebook: { ensureLoaded: fbEnsureLoaded, extractJs: FB_EXTRACT_JS, scrollJs: FB_SCROLL_JS },
+};
 
 export interface CollectCommentsOptions {
   file: string;
@@ -108,9 +143,13 @@ export interface CommentInfo {
 type TaggedComment = CommentRecord & { _sourceUrl: string };
 
 // Collect from every source, tolerating a single source's failure (unsupported platform,
-// timeout, ...) without aborting the rest. Merge + dedupe + rank by likes, cap to deps.cap,
-// THEN capture a screenshot only for the comments that survive the cap — the perSource pool
-// that gets filtered out never pays for a screenshot.
+// timeout, ...) without aborting the rest. Junk (sticker-only / link-spam) is dropped here so
+// EVERY caller is covered uniformly — not just the crop-capable path below, whose own
+// scrapeCommentsOnPage() already filters at extraction time, but also the deps.collect()
+// fallback (service.collectComments(), e.g. reddit/youtube) which does not. Merge + dedupe +
+// rank by likes, cap to deps.cap, THEN capture a screenshot only for the comments that survive
+// the cap AND don't already carry their own per-comment image_path — the perSource pool that
+// gets filtered out never pays for a screenshot.
 export async function collectNormalizedComments(
   sources: CommentSource[],
   deps: CollectNormalizedCommentDeps,
@@ -123,19 +162,30 @@ export async function collectNormalizedComments(
     } catch (error) {
       continue; // one bad source must not abort the others
     }
-    for (const c of got) collected.push({ ...c, _sourceUrl: source.url });
+    for (const c of got) {
+      const text = (c.text || '').trim();
+      if (!text || isStickerOnly(text) || isLinkSpam(text)) continue;
+      collected.push({ ...c, _sourceUrl: source.url });
+    }
   }
 
   const capped = dedupeAndRankComments(collected, deps.cap);
 
   const results: CommentInfo[] = [];
   for (const c of capped) {
-    let image_path = '';
-    try {
-      const asset = await deps.capture(c._sourceUrl, c);
-      image_path = asset.path;
-    } catch (error) {
-      image_path = ''; // screenshot failed → Thoth draws its synthetic card
+    // Prefer the record's OWN per-comment crop (scrapeCommentsOnPage via the crop-capable path)
+    // over deps.capture() — deps.capture() memoizes on the SOURCE URL, so calling it for every
+    // comment from the same post would collapse them all onto one shared post-level screenshot
+    // (the Critical bug this restores). Only fall back to deps.capture() when the record has no
+    // crop of its own (the service.collectComments() fallback path never sets image_path).
+    let image_path = c.image_path || '';
+    if (!image_path) {
+      try {
+        const asset = await deps.capture(c._sourceUrl, c);
+        image_path = asset.path;
+      } catch (error) {
+        image_path = ''; // screenshot failed → Thoth draws its synthetic card
+      }
     }
     results.push({
       author: c.author || 'anon',
@@ -180,7 +230,21 @@ export async function runCollectComments(
   const comments = await collectNormalizedComments(sources, {
     perSource,
     cap,
-    collect: (url, max) => context.service.collectComments(url, { max }),
+    collect: (url, max) => {
+      const platform = platformOf(url);
+      const opts = platform ? CROP_CAPABLE[platform] : undefined;
+      if (!platform || !opts) return context.service.collectComments(url, { max });
+      // ponytail: bypasses AcquisitionService.collectComments() (text-only) for crop-capable
+      // platforms. Navigation still goes through the kernel's sanctioned browse() primitive —
+      // ONE visit per canonical URL, same as collectComments() would have used — we just run
+      // scrape_comments_*.ts's proven per-comment extract+crop pass (scrapeCommentsOnPage)
+      // against it instead of the adapter's text-only extractor. Product correctness (real
+      // per-comment crops, not one shared post card) beats kernel purity here; see the task-15
+      // review findings for why the adapters themselves are not extended to do this.
+      return context.service.browse(platform, url, (client) =>
+        scrapeCommentsOnPage(client, { ...opts, max }),
+      );
+    },
     capture: (url) => context.service.captureSocialCard(url, 'comment'),
   });
   set.comments = comments;
