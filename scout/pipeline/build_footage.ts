@@ -84,6 +84,24 @@ export async function admitAndMaterializeFootage(
   return { status: 'accepted', entry: { ...base, is_video: false, image_path: local.path } };
 }
 
+// Tolerant wrapper for admitAndMaterializeFootage() — for loops that iterate several
+// candidates (e.g. the twitter-card loop below): a materialize() failure (AcquisitionError,
+// transient network blip, etc.) for ONE candidate must never abort processing of the rest.
+export type FootageMaterializeOutcome =
+  | { status: 'ok'; result: FootageAdmissionResult }
+  | { status: 'error'; error: unknown };
+
+export async function admitAndMaterializeFootageTolerant(
+  post: PostRecord,
+  deps: FootageAdmissionDeps,
+): Promise<FootageMaterializeOutcome> {
+  try {
+    return { status: 'ok', result: await admitAndMaterializeFootage(post, deps) };
+  } catch (error) {
+    return { status: 'error', error };
+  }
+}
+
 export interface BuildFootageOptions {
   file: string;
   objects: string[] | null;
@@ -722,13 +740,24 @@ export async function runBuildFootage(
           }
           if (inspected) {
             if (looksSpam(inspected.text || '')) continue;
-            const admission = await admitAndMaterializeFootage(inspected, {
+            const outcome = await admitAndMaterializeFootageTolerant(inspected, {
               query: 'twitter',
               isRelevant: () => true, // LOOSE admit (existing behavior) — story-gate below drops off-topic
               isMain: (url, text) => sameAsMain(url, text),
               looksReaction,
               materialize: (asset) => context.service.materialize(asset, 'footage'),
             });
+            if (outcome.status === 'error') {
+              // One bad candidate (e.g. transient network blip) must not abort the remaining
+              // ones — matches the pre-existing per-candidate tolerance of the cropPost fallback below.
+              console.log(
+                ui.amber(
+                  `  ${ui.WARN} materialize gagal (${e.url}): ${String((outcome.error as Error)?.message || outcome.error).slice(0, 80)}`,
+                ),
+              );
+              continue;
+            }
+            const admission = outcome.result;
             if (admission.status === 'accepted') {
               if (admission.entry.is_video) continue; // video tweet — this branch wants non-video only
               set.footage.push(admission.entry as any);
