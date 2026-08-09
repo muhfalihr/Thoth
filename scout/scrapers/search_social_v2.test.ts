@@ -22,7 +22,10 @@ import type { CdpClient } from '../lib/cdp.ts';
 function fakeClient(rawLinksJson: string): CdpClient {
   return {
     evaluate: async (js: string) => {
-      if (js.includes('log in')) return 'false';
+      // Real CdpClient.evaluate() uses Runtime.evaluate({returnByValue:true}), so a JS boolean
+      // expression like LOGGED_OUT_JS's `.test(...)` yields a real boolean, not a string — the
+      // fake must match, since searchPlatform() now branches on this value's truthiness.
+      if (js.includes('log in')) return false;
       return rawLinksJson;
     },
   } as unknown as CdpClient;

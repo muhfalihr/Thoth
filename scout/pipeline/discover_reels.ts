@@ -334,6 +334,27 @@ export function mapDiscoveryPosts(account: string, items: PostRecord[]): Discove
   });
 }
 
+// Pure per-row recency decision, extracted so the cutoff logic is unit-testable without a live
+// browser/CDP client. `rows` (built above) is reel rows (newest-first) ++ post rows (grid/recency
+// order — igProfileReels's includePosts:true preserves DOM/grid order, and filtering to
+// type==='p' keeps that order as a subsequence, so posts ARE recency-ordered exactly like reels).
+// staleFlags is keyed PER KIND: once a list's first stale item is hit, every later item of THAT
+// list is stale too (newest-first), but the other list is a separate concatenated list and must
+// keep going — a single shared flag would let one stale reel silently drop every post after it.
+export function isRowStale(
+  kind: string,
+  ts: number,
+  cutoff: number,
+  staleFlags: Record<string, boolean>,
+): boolean {
+  if (staleFlags[kind]) return true;
+  if (!isNaN(ts) && ts < cutoff) {
+    staleFlags[kind] = true;
+    return true;
+  }
+  return false;
+}
+
 // Open a reel OR post, return {time, frameB64, isVideo}. For video items it pauses at t=0 to grab the
 // opening (hook) frame; for image posts (no <video>) it captures the largest cover image (where the
 // headline card lives). isVideo gates the audio fallback (image posts have no audio to transcribe).
@@ -513,20 +534,23 @@ runAcquisitionCli(async () => {
       rows.map((x) => x.url),
       5,
     );
-    // rows = reel rows (newest-first) ++ post rows (grid/recency order, unsorted — see
-    // igProfileReels comment). Once a stale reel is hit, later reels are stale too (newest-first),
-    // but posts are a SEPARATE list appended after — reelStale must only skip remaining reels,
-    // never break the whole loop, or every post would silently get dropped too.
-    let reelStale = false;
+    // rows = reel rows (newest-first) ++ post rows (grid/recency order, newest-first — see
+    // igProfileReels: includePosts:true preserves DOM/grid order, and filtering to type==='p'
+    // keeps that order as a subsequence, so posts ARE recency-ordered exactly like reels). Each
+    // list gets its own stale flag (see isRowStale) — hitting a stale item in one list must only
+    // stop THAT list, never break the whole loop or bleed into the other list's rows.
+    const staleFlags: Record<string, boolean> = {};
     for (const r of rows) {
       const kind = r.kind;
-      if (kind === 'reel' && reelStale) continue;
-      // Bookkeeping only, per the brief's "register inspect and media intents before
-      // inspecting each returned canonical URL": itemFrame() right below performs this
-      // URL's single allowed navigation (raw DOM, unchanged) and already derives
-      // time+isVideo itself, so service.inspectPost() is deliberately NOT also called
-      // here — a second call would be a second navigation to the same canonical URL,
-      // which the one-navigation-per-URL rule forbids.
+      if (staleFlags[kind]) continue;
+      // Registered for coordinator bookkeeping only — NOT functionally consumed. The navigation
+      // that follows is itemFrame(client, r.url): a raw client.navigate() on a `client` obtained
+      // from lib/cdp.ts connect(), entirely outside browser_coordinator (pre-dates Task 13), so
+      // coordinator.intents() is never read for this URL and service.inspectPost() is
+      // deliberately NOT also called here — a second call would be a second navigation to the
+      // same canonical URL, which the one-navigation-per-URL rule forbids. Functional routing of
+      // these intents through the coordinator is deferred to Task 16 (acquisition-boundary
+      // enforcement).
       context.service.registerIntent(r.url, 'inspect');
       context.service.registerIntent(r.url, 'media');
       let fr;
@@ -536,11 +560,8 @@ runAcquisitionCli(async () => {
         continue;
       }
       const ts = fr.time ? Date.parse(fr.time) : NaN;
-      // posts have no grid-order recency guarantee like reels do — only stop REELS early on a
-      // >HOURS one, never a post.
-      if (kind === 'reel' && !isNaN(ts) && ts < cutoff) {
+      if (isRowStale(kind, ts, cutoff, staleFlags)) {
         console.log(`    ⏹  ${kind} >${HOURS}h → stop ${kind} akun ini`);
-        reelStale = true;
         continue;
       } // newest-first per list
       let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
@@ -644,11 +665,11 @@ runAcquisitionCli(async () => {
       5,
     );
     for (const r of rows) {
-      // Bookkeeping only (brief: "register inspect and media intents before inspecting"):
-      // TikTok items are definitionally video (no hasVideo/hasPhoto branch to backfill) and
-      // this loop has no other per-item navigation, so there is nothing for
-      // service.inspectPost() to usefully add here — intents are registered, the extra
-      // navigation is skipped to avoid spending it for no functional benefit.
+      // Registered for coordinator bookkeeping only — NOT functionally consumed. This loop has
+      // NO CDP navigation at all: postShape() below is a yt-dlp SUBPROCESS probe, not a browser
+      // visit, so there is no navigation here for the coordinator to route by these intents.
+      // Functional routing of these intents through the coordinator is deferred to Task 16
+      // (acquisition-boundary enforcement).
       context.service.registerIntent(r.url, 'inspect');
       context.service.registerIntent(r.url, 'media');
       const ps = postShape(r.url);
@@ -709,6 +730,11 @@ runAcquisitionCli(async () => {
       // (one navigation per tweet; discover() itself never visited this URL, so it stays at
       // most one navigation total for it). Best-effort: a failed inspect just falls back to
       // the thin discover() row instead of dropping the tweet.
+      // Registered for coordinator bookkeeping only — NOT functionally consumed even though a
+      // real navigation (inspectPost above) does follow: twitter.ts's inspect() only branches on
+      // `.has('social-card')`, never on 'inspect'/'media', so it can't route by these intents.
+      // Functional routing of these intents through the coordinator is deferred to Task 16
+      // (acquisition-boundary enforcement).
       context.service.registerIntent(r.url, 'inspect');
       context.service.registerIntent(r.url, 'media');
       let full: PostRecord | null = null;

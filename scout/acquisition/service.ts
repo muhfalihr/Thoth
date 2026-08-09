@@ -195,7 +195,11 @@ export class AcquisitionService {
     url: string,
     acquire: (client: CdpClient) => Promise<T>,
   ): Promise<T> {
-    return this.context.visit(platform, url, (client) => acquire(client));
+    try {
+      return await this.context.visit(platform, url, (client) => acquire(client));
+    } catch (error) {
+      this.failUrlOperation(platform, canonicalizeUrl(url), error);
+    }
   }
 
   private resolveAdapter(url: string): { platform: Platform; adapter: PlatformAdapter } {

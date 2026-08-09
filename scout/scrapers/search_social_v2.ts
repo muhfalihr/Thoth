@@ -22,7 +22,7 @@
 
 import fs from 'node:fs';
 import { sleep } from '../lib/cdp.ts';
-import { FB_RE, validIG, validTW } from '../lib/validate.ts';
+import { validIG, validTW } from '../lib/validate.ts';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/service.ts';
@@ -113,13 +113,25 @@ export async function searchPlatform(
     // client-side after that, so give them a beat before reading the DOM.
     await sleep(1500);
     const hint = await client.evaluate(LOGGED_OUT_JS);
+    // Throw (not just return a boolean) so this signal actually reaches the coordinator's
+    // circuit breaker + negative cache via AcquisitionService.browse()'s failUrlOperation()
+    // path — a silently-returned hint never opened the breaker, so a challenged/logged-out
+    // search page kept getting re-navigated to on every following query.
+    if (hint) {
+      throw new AcquisitionError(`search: logged-out/challenge page for ${cfg.platform}`, {
+        status: 'blocked',
+        reason: 'auth-required',
+        attempts: 1,
+        elapsed_ms: 0,
+      });
+    }
     let links: string[] = [];
     try {
       links = JSON.parse((await client.evaluate(cfg.extractJs)) || '[]');
     } catch {
       links = [];
     }
-    return { rawLinks: links as string[], loggedOutHint: !!hint };
+    return { rawLinks: links as string[], loggedOutHint: false };
   });
 
   const seen = new Set<string>();

@@ -111,8 +111,16 @@ if (import.meta.main) {
         console.log(ui.gold(`${ui.OK} ${urls.length} URL`));
       } catch (err) {
         platforms[p] = [];
+        // Friendlier hint for the common "managed Chromium/CDP relay isn't up" failure mode,
+        // recovered from the pre-kernel version — a raw ECONNREFUSED/port message is confusing,
+        // this names the actual fix (open the tab / start the managed browser).
+        const relay = /1880\d|18792|ECONNREFUSED/.test(String((err as Error)?.message || err));
         console.log(
-          ui.amber(`${ui.WARN}  ${String((err as Error).message || err).slice(0, 90)}`),
+          ui.amber(
+            relay
+              ? `${ui.WARN}  tab ${p} belum terbuka/login di managed browser (skip)`
+              : `${ui.WARN}  ${String((err as Error).message || err).slice(0, 90)}`,
+          ),
         );
       }
     }

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { AcquisitionService } from './service.ts';
 import { AcquisitionError } from './types.ts';
+import { BrowserCoordinator } from './browser_coordinator.ts';
+import { AcquisitionCache } from './cache.ts';
+import { canonicalizeUrl } from './url.ts';
 
 let inspections = 0;
 const fakeAdapter = {
@@ -91,5 +97,57 @@ cachedWithMedia.media.push({
 const cachedWithMediaAgain = await service.inspectPost(urlWithMedia);
 assert.equal(cachedWithMediaAgain.media.length, 1);
 assert.equal(cachedWithMediaAgain.media[0]!.id, 'm1');
+
+// Regression (Task 13 review, Important 3): browse() must feed failures to the coordinator's
+// circuit breaker and negative cache via failUrlOperation(), same as inspectPost/collectComments/
+// captureSocialCard — previously it swallowed a thrown AcquisitionError's signal entirely
+// (recordOutcome/setNegative never ran for it), so a challenge/rate-limit hit while browsing a
+// search-results page never opened that platform's breaker.
+{
+  const coordinator = new BrowserCoordinator();
+  const cache = new AcquisitionCache({
+    root: fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-acq-browse-test-')),
+  });
+  const browseService = AcquisitionService.createForTest({
+    adapters: [],
+    coordinator,
+    cache,
+    context: {
+      intents: (u) => coordinator.intents(u),
+      now: () => Date.now(),
+      visit: async (_platform, url, run) => run({} as never, coordinator.intents(url)),
+    },
+  });
+
+  // Success path: acquire()'s return value passes through untouched.
+  const ok = await browseService.browse('twitter', 'https://x.com/search?q=ok', async () => 'value');
+  assert.equal(ok, 'value');
+  assert.equal(coordinator.isBlocked('twitter'), false);
+
+  // Failure path: an AcquisitionError raised inside acquire() (e.g. search_social_v2.ts's
+  // logged-out/challenge DOM sniff) must reach the coordinator + negative cache, not just
+  // rethrow silently.
+  const searchUrl = 'https://x.com/search?q=blocked';
+  await assert.rejects(
+    browseService.browse('twitter', searchUrl, async () => {
+      throw new AcquisitionError('search: logged-out/challenge page for twitter', {
+        status: 'blocked',
+        reason: 'auth-required',
+        attempts: 1,
+        elapsed_ms: 0,
+      });
+    }),
+    /logged-out\/challenge/,
+  );
+  assert.equal(
+    coordinator.isBlocked('twitter'),
+    true,
+    'browse() failure must open the platform circuit breaker',
+  );
+  assert.ok(
+    cache.getNegative(canonicalizeUrl(searchUrl)),
+    'browse() failure must write a negative-cache entry for the canonical URL',
+  );
+}
 
 console.log('ok acquisition_service');
