@@ -22,6 +22,7 @@ import { normalizeLikes } from '../lib/comments.ts';
 import { fetchTrending } from './discover_tiktok_trending.ts';
 import { ytdlpCookieArgs, postShape, warmPostShapes } from '../lib/verify.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/service.ts';
+import { igProfileReels } from '../scrapers/ig_profile.ts';
 import type { PostRecord, Platform } from '../acquisition/types.ts';
 
 const args = process.argv.slice(2);
@@ -453,19 +454,6 @@ runAcquisitionCli(async () => {
     } catch (e) {}
   };
   const flush = () => writeRanked(true);
-  // ponytail: instagram.ts's discover(kind:'profile') only calls igProfileReels (reels-only,
-  // includePosts defaults off) — it does not cover the feed-post ("/p/") side that the old
-  // collectItems() dual-page grid scan handled under --include posts. Extending it would mean
-  // editing acquisition/adapters/instagram.ts, outside Task 13's file scope (and would risk
-  // changing trace_source.ts's Task-12 discover(kind:'profile') behavior too). Disclosed, not
-  // silently dropped: --include posts is now a no-op for Instagram.
-  if (INCLUDE.posts) {
-    console.log(
-      ui.amber(
-        `${ui.WARN}  --include posts tak didukung pasca migrasi ke AcquisitionService (instagram discover() hanya reel)`,
-      ),
-    );
-  }
   for (const h of ACCOUNTS) {
     process.stdout.write(`\n• @${h}: ambil reel ... `);
     let rows: DiscoveryPostRow[] = [];
@@ -479,11 +467,37 @@ runAcquisitionCli(async () => {
         });
         rows = mapDiscoveryPosts(h, disc.items);
       }
+      // ponytail: instagram.ts's discover(kind:'profile') only calls igProfileReels reels-only
+      // (includePosts defaults off) — it never covers the feed-post ("/p/") side. Rather than
+      // editing acquisition/adapters/instagram.ts (out of scope, and would risk changing
+      // trace_source.ts's Task-12 discover(kind:'profile') behavior too), call igProfileReels
+      // directly here with includePosts:true, reusing the SAME already-open raw `client` the
+      // itemFrame loop below already uses (this file's existing convention — pre-dates and is
+      // untouched by Task 13). No browser_coordinator collision: includePosts:true navigates to
+      // /@handle/ (the mixed grid), while the adapter's own reels discover() above navigates to
+      // /@handle/reels/ — different canonical URLs, so this is a genuinely separate visit, not a
+      // second hit on a URL the coordinator already served.
+      if (INCLUDE.posts) {
+        const grid = await igProfileReels(h, { max: MAX_PER, captions: true, client, includePosts: true });
+        const postRows: DiscoveryPostRow[] = grid
+          .filter((it) => it.type === 'p')
+          .map((it) => ({
+            account: h,
+            kind: 'post',
+            url: it.url,
+            views: it.views ? String(it.views) : '',
+            time: undefined,
+            caption: it.caption || '',
+          }));
+        rows = rows.concat(postRows);
+      }
     } catch (e) {
       console.log(ui.amber(`${ui.WARN} ${String((e as Error).message || e).slice(0, 50)}`));
       continue;
     }
-    console.log(`${rows.length} item (${rows.length} reel, 0 post)`);
+    const reelCount = rows.filter((r) => r.kind === 'reel').length;
+    const postCount = rows.filter((r) => r.kind === 'post').length;
+    console.log(`${rows.length} item (${reelCount} reel, ${postCount} post)`);
     if (!rows.length) {
       console.log(
         ui.amber(
@@ -499,8 +513,14 @@ runAcquisitionCli(async () => {
       rows.map((x) => x.url),
       5,
     );
-    const kind = 'reel';
+    // rows = reel rows (newest-first) ++ post rows (grid/recency order, unsorted — see
+    // igProfileReels comment). Once a stale reel is hit, later reels are stale too (newest-first),
+    // but posts are a SEPARATE list appended after — reelStale must only skip remaining reels,
+    // never break the whole loop, or every post would silently get dropped too.
+    let reelStale = false;
     for (const r of rows) {
+      const kind = r.kind;
+      if (kind === 'reel' && reelStale) continue;
       // Bookkeeping only, per the brief's "register inspect and media intents before
       // inspecting each returned canonical URL": itemFrame() right below performs this
       // URL's single allowed navigation (raw DOM, unchanged) and already derives
@@ -516,9 +536,12 @@ runAcquisitionCli(async () => {
         continue;
       }
       const ts = fr.time ? Date.parse(fr.time) : NaN;
-      if (!isNaN(ts) && ts < cutoff) {
+      // posts have no grid-order recency guarantee like reels do — only stop REELS early on a
+      // >HOURS one, never a post.
+      if (kind === 'reel' && !isNaN(ts) && ts < cutoff) {
         console.log(`    ⏹  ${kind} >${HOURS}h → stop ${kind} akun ini`);
-        break;
+        reelStale = true;
+        continue;
       } // newest-first per list
       let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
       let via = 'hook';

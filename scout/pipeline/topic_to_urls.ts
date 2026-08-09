@@ -1,31 +1,37 @@
 // topic_to_urls.ts — ONE topic → REAL post URLs across platforms, in one tested command.
-// Routes the same query through AcquisitionService.discover({kind:'query'}) per selected
-// platform and merges the results (canonical_url per PostRecord). Each platform is isolated: a
-// discover() failure (including "kind not supported" — see the disclosure below) is logged and
-// SKIPPED, never aborts the rest.
 //
-//   bun topic_to_urls.ts "<query>" [--platforms tiktok,tw,ig,fb] [--max N]
+//   bun topic_to_urls.ts "<query>" [--platforms tiktok,tw,ig,fb] [--max N] [--keywords "a b"]
 //
 // Output → output/topic_urls_<slug>.json { query, fetched_at, platforms:{...}, all:[...] }.
 //
-// ponytail/DISCLOSED REGRESSION: as of Task 13, no adapter (instagram/twitter/tiktok/facebook)
-// implements DiscoveryRequest.kind:'query' — each throws AcquisitionError(reason:'unsupported').
-// That means every platform below will return 0 URLs until a future task implements query-based
-// discovery in the adapters (acquisition/adapters/*.ts, out of Task 13's file scope). The
-// per-platform try/catch + retry-on-zero already degrade this to a clean "0 URL" + warning line
-// per platform rather than a crash, but the command's core purpose (finding real post URLs for a
-// topic) is non-functional end-to-end right now. This is NOT a mild caveat — it's the honest
-// state of this file after this migration.
+// tw/ig/fb route through scrapers/search_social_v2.ts's searchPlatform(), which navigates via
+// AcquisitionService.browse() (one navigation per canonical URL per run, globally serialized —
+// see service.ts) and confirms each hit via inspectPost(). No adapter implements
+// DiscoveryRequest.kind:'query' (instagram.ts/twitter.ts/facebook.ts all defer keyword search
+// to search_social_v2.ts by design — see each adapter's discover() comment), so this is the
+// correct owner, not a workaround.
+//
+// tiktok keeps its own dedicated subprocess (search_tiktok_v2.ts, unmigrated raw-CDP script,
+// out of this task's scope) — run via execFileSync, which blocks until it exits, so it never
+// overlaps the tw/ig/fb browse() calls above (the per-platform loop below is sequential):
+// global navigation concurrency stays at one across both code paths even though tiktok isn't
+// using the shared coordinator internally.
 
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { sleep } from '../lib/cdp.ts';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/service.ts';
-import type { Platform } from '../acquisition/types.ts';
+import { searchPlatform } from '../scrapers/search_social_v2.ts';
+import type { SearchContext, SearchPlatformKey } from '../scrapers/search_social_v2.ts';
+
+const here = (f: string) => path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scrapers', f);
 
 const args = process.argv.slice(2);
-const getFlag = (n, d) => {
+const getFlag = (n: string, d: string) => {
   const i = args.indexOf(n);
   return i >= 0 ? args[i + 1] : d;
 };
@@ -45,20 +51,28 @@ if (!QUERY) {
   process.exit(1);
 }
 
+// Primary keyword → caption-gate TikTok search at source (drops generic-feed spam). Default =
+// first word of the query. search_tiktok_v2 gates with ALL keywords, so pass ONLY the primary
+// entity to stay lenient; finer relevance is re-checked downstream (urls_to_contentset, mode
+// "any").
+const KEYWORDS = (getFlag('--keywords', '') || QUERY).split(/[ ,]+/).filter(Boolean);
+const TT_KW = KEYWORDS[0] || '';
+
 const slug =
   QUERY.toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_|_$/g, '')
     .slice(0, 40) || 'topic';
 
-// platform key (CLI shorthand) -> Platform (acquisition/types.ts). 'fb'/'tw' predate the kernel's
-// full platform names; keep the short CLI flags for backward compatibility with existing callers.
-const PLATFORM_OF: Record<string, Platform> = {
-  tiktok: 'tiktok',
-  tw: 'twitter',
-  ig: 'instagram',
-  fb: 'facebook',
-};
+// Blocking subprocess call: runs search_tiktok_v2.ts to completion (its own CDP connect()),
+// then reads back the JSON file it wrote. Sequential with the loop below → no overlap with
+// browse()'s in-process navigations.
+function runTikTokFetcher(query: string, keyword: string): string[] {
+  const scriptArgs = [here('search_tiktok_v2.ts'), query, ...(keyword ? [keyword] : [])];
+  execFileSync(process.execPath, scriptArgs, { stdio: 'pipe', timeout: 150000 });
+  const data = JSON.parse(fs.readFileSync(outPath('tiktok_urls.json'), 'utf8'));
+  return (data.urls || []).map((u: unknown) => (typeof u === 'string' ? u : (u as { url?: string })?.url)).filter(Boolean);
+}
 
 if (import.meta.main) {
   runAcquisitionCli(async () => {
@@ -68,28 +82,26 @@ if (import.meta.main) {
     console.log(ui.rule());
     console.log('Query:', QUERY, '| platforms:', PLATFORMS.join(','), '| max/platform:', MAX);
 
-    // Every platform routes through the SAME discover(kind:'query') call; the CLI key just picks
-    // which Platform to pass. No per-platform script/inline-CDP branching left to maintain.
-    const fetchOne = async (platform: Platform): Promise<string[]> => {
-      const disc = await context.service.discover({ platform, kind: 'query', value: QUERY, limit: MAX });
-      return disc.items.map((it) => it.canonical_url);
+    const searchCtx: SearchContext = context.service;
+    const fetchOne = async (p: string): Promise<string[]> => {
+      if (p === 'tiktok') return runTikTokFetcher(QUERY, TT_KW);
+      if (p === 'tw' || p === 'ig' || p === 'fb') {
+        const result = await searchPlatform(searchCtx, p as SearchPlatformKey, QUERY, MAX);
+        return result.urls;
+      }
+      throw new Error(`tak didukung (pilih: tiktok, tw, ig, fb)`);
     };
 
     const platforms: Record<string, string[]> = {};
     for (const p of PLATFORMS) {
-      const platform = PLATFORM_OF[p];
-      if (!platform) {
-        console.log(`• ${p}: tak didukung (pilih: tiktok, tw, ig, fb)`);
-        continue;
-      }
       process.stdout.write(`• ${p}: cari "${QUERY}" ... `);
       try {
         // Retry-on-zero: a platform sometimes returns 0 mid-pipeline (relay/tab hiccup) even though
         // the content exists — one retry after a short pause recovers it (avoids a non-video main).
-        let urls = (await fetchOne(platform)).slice(0, MAX);
+        let urls = (await fetchOne(p)).slice(0, MAX);
         if (!urls.length) {
           await sleep(2500);
-          const r = (await fetchOne(platform)).slice(0, MAX);
+          const r = (await fetchOne(p)).slice(0, MAX);
           if (r.length) {
             urls = r;
             process.stdout.write('(retry) ');

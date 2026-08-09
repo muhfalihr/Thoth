@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { CdpClient } from '../lib/cdp.ts';
 import { connect, run as runCdpRelay } from '../lib/cdp.ts';
 import { ensureDir, OUTPUT_DIR } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
@@ -180,6 +181,21 @@ export class AcquisitionService {
 
   registerIntent(url: string, intent: AcquisitionIntent): void {
     this.coordinator.registerIntent(url, intent);
+  }
+
+  // Exposes the SAME context.visit() every adapter's discover()/inspect() routes
+  // through — one navigation per canonical URL per run, all navigations globally
+  // serialized (browser_coordinator's tail chain) — to pipeline code that has no
+  // adapter to call through (e.g. keyword search: no adapter implements
+  // DiscoveryRequest.kind:'query', so search_social_v2.ts scrapes the search
+  // results page itself, but must never do that via a raw lib/cdp.ts connect()).
+  // Adapters stay untouched; this is the one seam pipeline code gets instead.
+  async browse<T>(
+    platform: Platform,
+    url: string,
+    acquire: (client: CdpClient) => Promise<T>,
+  ): Promise<T> {
+    return this.context.visit(platform, url, (client) => acquire(client));
   }
 
   private resolveAdapter(url: string): { platform: Platform; adapter: PlatformAdapter } {
