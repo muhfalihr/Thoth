@@ -21,6 +21,28 @@ import { okCrop } from './crop_guard.ts';
 
 const PAD = 6; // CSS px padding around each comment crop
 
+// Reusable multi-source merge (Task 15): NOT CLI-only — this operates on already-collected
+// comment records (from the kernel's AcquisitionService.collectComments(), one call per source),
+// independent of the DOM/CDP scraping above. Used by pipeline/collect_comments.ts to fold several
+// sources' comments into one deduped, likes-ranked, capped list before any screenshot is taken.
+export const dedupeKey = (c: { author?: string; text?: string }) =>
+  `${(c.author || '').toLowerCase()}|${(c.text || '').trim().slice(0, 60).toLowerCase()}`;
+
+export function dedupeAndRankComments<
+  T extends { author?: string; text?: string; likes?: number },
+>(comments: T[], cap: number): T[] {
+  const merged: T[] = [];
+  const seen = new Set<string>();
+  for (const c of comments) {
+    const key = dedupeKey(c);
+    if (!c.text || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(c);
+  }
+  merged.sort((a, b) => (b.likes || 0) - (a.likes || 0));
+  return merged.slice(0, cap);
+}
+
 // "[Sticker]"/"[Stiker]" (and the like) carry no text for narration grounding.
 const isStickerOnly = (t) => /^\[\s*sti?c?ker\s*\]$/i.test((t || '').trim());
 
