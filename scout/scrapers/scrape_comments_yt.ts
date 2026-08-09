@@ -33,6 +33,7 @@ const EXTRACT_JS = `(() => {
 
 const THREAD_COUNT =
   'document.querySelectorAll("ytd-comment-thread-renderer, ytd-comment-view-model").length';
+const SCROLL_JS = 'window.scrollBy(0, 1600)';
 
 // Watch pages: comments mount once you scroll the page (relative scrollBy — absolute scrollTo
 // fights YT's layout). Shorts: the page doesn't scroll; you must click the Comments button to
@@ -80,7 +81,7 @@ if (import.meta.main) {
       idToken: id,
       ensureLoaded,
       extractJs: EXTRACT_JS,
-      scrollJs: 'window.scrollBy(0, 1600)',
+      scrollJs: SCROLL_JS,
       buildMain: (u) => ({
         url: u,
         platform: 'youtube',
@@ -95,4 +96,4 @@ if (import.meta.main) {
   );
 }
 
-export { EXTRACT_JS, THREAD_COUNT, ensureLoaded };
+export { EXTRACT_JS, THREAD_COUNT, ensureLoaded, SCROLL_JS };

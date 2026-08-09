@@ -39,6 +39,16 @@ import {
   SCROLL_JS as FB_SCROLL_JS,
   ensureLoaded as fbEnsureLoaded,
 } from '../scrapers/scrape_comments_fb.ts';
+import {
+  EXTRACT_JS as REDDIT_EXTRACT_JS,
+  SCROLL_JS as REDDIT_SCROLL_JS,
+  ensureLoaded as redditEnsureLoaded,
+} from '../scrapers/scrape_comments_reddit.ts';
+import {
+  EXTRACT_JS as YT_EXTRACT_JS,
+  SCROLL_JS as YT_SCROLL_JS,
+  ensureLoaded as ytEnsureLoaded,
+} from '../scrapers/scrape_comments_yt.ts';
 
 // Platforms whose CLI scrape_comments_*.ts already knows how to wait-for-load + extract +
 // (via scrapeCommentsOnPage) crop each comment individually. collectNormalizedComments()
@@ -56,7 +66,30 @@ const CROP_CAPABLE: Partial<Record<Platform, CropCapableOpts>> = {
   instagram: { ensureLoaded: igEnsureLoaded, extractJs: IG_EXTRACT_JS, scrollJs: IG_SCROLL_JS },
   twitter: { ensureLoaded: xEnsureLoaded, extractJs: X_EXTRACT_JS, scrollJs: X_SCROLL_JS },
   facebook: { ensureLoaded: fbEnsureLoaded, extractJs: FB_EXTRACT_JS, scrollJs: FB_SCROLL_JS },
+  reddit: { ensureLoaded: redditEnsureLoaded, extractJs: REDDIT_EXTRACT_JS, scrollJs: REDDIT_SCROLL_JS },
+  youtube: { ensureLoaded: ytEnsureLoaded, extractJs: YT_EXTRACT_JS, scrollJs: YT_SCROLL_JS },
 };
+
+// Extracted as its own function (instead of inlined where it's used) purely so a test can prove
+// the routing decision — crop-capable platforms go through browse()+scrapeCommentsOnPage, not the
+// collapsing collectComments() fallback — without needing to fake a full CdpClient.
+export function collectFor(
+  url: string,
+  max: number,
+  service: Pick<AcquisitionRunContext['service'], 'browse' | 'collectComments'>,
+): Promise<CommentRecord[]> {
+  const platform = platformOf(url);
+  const opts = platform ? CROP_CAPABLE[platform] : undefined;
+  if (!platform || !opts) return service.collectComments(url, { max });
+  // ponytail: bypasses AcquisitionService.collectComments() (text-only) for crop-capable
+  // platforms. Navigation still goes through the kernel's sanctioned browse() primitive —
+  // ONE visit per canonical URL, same as collectComments() would have used — we just run
+  // scrape_comments_*.ts's proven per-comment extract+crop pass (scrapeCommentsOnPage)
+  // against it instead of the adapter's text-only extractor. Product correctness (real
+  // per-comment crops, not one shared post card) beats kernel purity here; see the task-15
+  // review findings for why the adapters themselves are not extended to do this.
+  return service.browse(platform, url, (client) => scrapeCommentsOnPage(client, { ...opts, max }));
+}
 
 export interface CollectCommentsOptions {
   file: string;
@@ -230,22 +263,13 @@ export async function runCollectComments(
   const comments = await collectNormalizedComments(sources, {
     perSource,
     cap,
-    collect: (url, max) => {
-      const platform = platformOf(url);
-      const opts = platform ? CROP_CAPABLE[platform] : undefined;
-      if (!platform || !opts) return context.service.collectComments(url, { max });
-      // ponytail: bypasses AcquisitionService.collectComments() (text-only) for crop-capable
-      // platforms. Navigation still goes through the kernel's sanctioned browse() primitive —
-      // ONE visit per canonical URL, same as collectComments() would have used — we just run
-      // scrape_comments_*.ts's proven per-comment extract+crop pass (scrapeCommentsOnPage)
-      // against it instead of the adapter's text-only extractor. Product correctness (real
-      // per-comment crops, not one shared post card) beats kernel purity here; see the task-15
-      // review findings for why the adapters themselves are not extended to do this.
-      return context.service.browse(platform, url, (client) =>
-        scrapeCommentsOnPage(client, { ...opts, max }),
-      );
-    },
-    capture: (url) => context.service.captureSocialCard(url, 'comment'),
+    collect: (url, max) => collectFor(url, max, context.service),
+    // Every platform is crop-capable now (CROP_CAPABLE covers all six), so this only fires for a
+    // future/unknown platform that lands on the collectComments() fallback with no per-comment
+    // image_path. Rejecting (not calling captureSocialCard) is deliberate: a single shared
+    // post-level card duplicated onto every comment is worse than none — Thoth's synthetic card
+    // already degrades gracefully when image_path is empty. See collectNormalizedComments().
+    capture: () => Promise.reject(new Error('no per-comment crop support for this platform')),
   });
   set.comments = comments;
   fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');

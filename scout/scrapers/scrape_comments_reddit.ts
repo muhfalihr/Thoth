@@ -27,7 +27,10 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-export { EXTRACT_JS, COUNT_JS };
+const SCROLL_JS = 'window.scrollBy(0, 1400)';
+const ensureLoaded = (client: import('../lib/cdp.ts').CdpClient) => pollCount(client, COUNT_JS, 10, 1000);
+
+export { EXTRACT_JS, COUNT_JS, SCROLL_JS, ensureLoaded };
 
 if (import.meta.main) {
   const { url, out, max } = parseArgs(process.argv.slice(2));
@@ -45,9 +48,9 @@ if (import.meta.main) {
       label: 'Reddit',
       match: 'reddit.com',
       idToken: id,
-      ensureLoaded: (client) => pollCount(client, COUNT_JS, 10, 1000),
+      ensureLoaded,
       extractJs: EXTRACT_JS,
-      scrollJs: 'window.scrollBy(0, 1400)',
+      scrollJs: SCROLL_JS,
       buildMain: (u) => ({
         url: u,
         platform: 'reddit',

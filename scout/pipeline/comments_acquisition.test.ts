@@ -1,6 +1,6 @@
 // scout/pipeline/comments_acquisition.test.ts
 import assert from 'node:assert/strict';
-import { collectNormalizedComments } from './collect_comments.ts';
+import { collectNormalizedComments, collectFor } from './collect_comments.ts';
 
 const calls: string[] = [];
 const comments = await collectNormalizedComments(
@@ -85,3 +85,41 @@ assert.deepEqual(
   'sticker-only and link-spam comments must be dropped while a real comment survives',
 );
 console.log('ok comments_acquisition junk filtering');
+
+// ── Reddit/youtube must route through service.browse() (crop-capable), not the collapsing
+// service.collectComments() fallback. Regression guard for the follow-up finding: CROP_CAPABLE
+// originally covered only tiktok/instagram/twitter/facebook, silently leaving reddit and youtube
+// on the fallback that collapses every comment onto one shared post-level card. The fake browse()
+// below returns genuinely distinct per-comment image_path values (not the same object/reference);
+// the fake collectComments() returns records with NO image_path, mirroring the real collapsing
+// fallback shape — so if a platform is missing from CROP_CAPABLE, this test's distinctness
+// assertion fails instead of silently passing.
+for (const [platform, url] of [
+  ['reddit', 'https://reddit.com/r/x/comments/2'],
+  ['youtube', 'https://youtube.com/watch?v=abc123'],
+] as const) {
+  const browseCalls: string[] = [];
+  const fakeService = {
+    browse: async (p: string) => {
+      browseCalls.push(p);
+      return [
+        { id: '1', author: 'g', text: 'nice', likes: 4, image_path: `crops/${platform}-1.png` },
+        { id: '2', author: 'h', text: 'wow', likes: 3, image_path: `crops/${platform}-2.png` },
+      ];
+    },
+    collectComments: async () => [
+      { id: '1', author: 'g', text: 'nice', likes: 4 },
+      { id: '2', author: 'h', text: 'wow', likes: 3 },
+    ],
+  };
+  const got = await collectFor(url, 10, fakeService as any);
+  assert.deepEqual(
+    browseCalls,
+    [platform],
+    `${platform} must route through service.browse(), not the collapsing service.collectComments() fallback`,
+  );
+  const paths = got.map((c) => c.image_path);
+  assert.deepEqual(paths, [`crops/${platform}-1.png`, `crops/${platform}-2.png`]);
+  assert.equal(new Set(paths).size, 2, `${platform} comments must keep distinct per-comment image_path`);
+}
+console.log('ok comments_acquisition reddit/youtube crop-capable routing');
