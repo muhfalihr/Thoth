@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AcquisitionService } from './service.ts';
+import { AcquisitionService, visitWithFocus } from './service.ts';
 import { AcquisitionError } from './types.ts';
 import { BrowserCoordinator } from './browser_coordinator.ts';
 import { AcquisitionCache } from './cache.ts';
@@ -151,3 +151,88 @@ assert.equal(cachedWithMediaAgain.media[0]!.id, 'm1');
 }
 
 console.log('ok acquisition_service');
+
+// ── Regression guard: the browse()/adapter navigation path must force tab focus BEFORE
+// navigating (many SPAs only mount the detail view — comments, search results, etc. — when the
+// tab is focused; a backgrounded relay tab renders just a shell). The fake client below records
+// every cmd()/navigate() call in order, and the fake acquire() records when IT was called, so we
+// can prove the full sequence: bringToFront → setFocusEmulationEnabled → navigate → acquire.
+{
+  const calls: string[] = [];
+  const fakeClient: any = {
+    cmd: async (method: string) => {
+      calls.push(`cmd:${method}`);
+    },
+    navigate: async (url: string) => {
+      calls.push(`navigate:${url}`);
+    },
+    close: () => {
+      calls.push('close');
+    },
+  };
+  const fakeConnect = async () => fakeClient;
+
+  let acquireCalledAt = -1;
+  const result = await visitWithFocus(
+    'https://reddit.com/r/x/comments/1',
+    async (client) => {
+      acquireCalledAt = calls.length;
+      assert.equal(client, fakeClient, 'acquire must receive the connected client');
+      return 'acquired';
+    },
+    new Set(),
+    fakeConnect,
+  );
+
+  assert.equal(result, 'acquired');
+  assert.deepEqual(calls.slice(0, 3), [
+    'cmd:Page.bringToFront',
+    'cmd:Emulation.setFocusEmulationEnabled',
+    'navigate:https://reddit.com/r/x/comments/1',
+  ]);
+  assert.equal(
+    acquireCalledAt,
+    3,
+    'acquire() must run only after both focus commands and navigate — not before',
+  );
+  console.log('ok service focus-before-navigate ordering');
+}
+
+// ── A browser that doesn't support one of the focus commands must not fail the whole visit.
+// The fake genuinely throws (not just returns) for BOTH focus commands, proving the try/catch
+// pair actually swallows a real rejection rather than this being vacuously true because the
+// fake never throws.
+{
+  const calls: string[] = [];
+  const fakeClient: any = {
+    cmd: async (method: string) => {
+      calls.push(`cmd:${method}`);
+      throw new Error(`${method} not supported on this browser`);
+    },
+    navigate: async (url: string) => {
+      calls.push(`navigate:${url}`);
+    },
+    close: () => {},
+  };
+  const fakeConnect = async () => fakeClient;
+
+  let acquireRan = false;
+  const result = await visitWithFocus(
+    'https://youtube.com/watch?v=1',
+    async () => {
+      acquireRan = true;
+      return 'ok despite focus failure';
+    },
+    new Set(),
+    fakeConnect,
+  );
+
+  assert.equal(result, 'ok despite focus failure');
+  assert.equal(acquireRan, true, 'acquire() must still run when both focus commands throw');
+  assert.deepEqual(calls, [
+    'cmd:Page.bringToFront',
+    'cmd:Emulation.setFocusEmulationEnabled',
+    'navigate:https://youtube.com/watch?v=1',
+  ]);
+  console.log('ok service focus-commands-tolerate-unsupported-browser');
+}

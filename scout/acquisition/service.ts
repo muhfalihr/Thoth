@@ -66,6 +66,34 @@ function hostnameOf(url: string): string {
   }
 }
 
+// The ONE shared navigation site every adapter and browse() caller routes through (via
+// AdapterContext.visit() below). Many SPAs only mount the detail view (comments, search
+// results, ...) when the tab is focused; a backgrounded relay tab renders just a shell. Force
+// focus BEFORE navigating — same fix comment_engine.ts's scrapeComments() already relies on
+// (its own copy of this pair is left untouched, for the CLI path). Fixing it here covers every
+// consumer instead of patching each call site. `connectFn` defaults to the real connect() and
+// is overridable only so tests can prove the ordering with a fake client, without real CDP.
+export async function visitWithFocus<T>(
+  url: string,
+  acquire: (client: CdpClient, intents: ReadonlySet<AcquisitionIntent>) => Promise<T>,
+  intents: ReadonlySet<AcquisitionIntent>,
+  connectFn: typeof connect = connect,
+): Promise<T> {
+  const client = await connectFn({ match: hostnameOf(url) });
+  try {
+    await client.cmd('Page.bringToFront');
+  } catch (e) {}
+  try {
+    await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true });
+  } catch (e) {}
+  await client.navigate(url);
+  try {
+    return await acquire(client, intents);
+  } finally {
+    client.close();
+  }
+}
+
 // Deep clone: cache hits must be independent of the value held in
 // cache.runValues / cache.file.posts, otherwise a caller mutating nested
 // fields (e.g. PostRecord.media[]) in place corrupts the shared cached
@@ -140,14 +168,9 @@ export class AcquisitionService {
       intents: (url) => coordinator.intents(url),
       now: () => Date.now(),
       visit: (platform, url, acquire) =>
-        coordinator.visitOnce(platform, url, async () => {
-          const client = await connect({ match: hostnameOf(url), navigate: url });
-          try {
-            return await acquire(client, coordinator.intents(url));
-          } finally {
-            client.close();
-          }
-        }),
+        coordinator.visitOnce(platform, url, () =>
+          visitWithFocus(url, acquire, coordinator.intents(url)),
+        ),
     };
     return new AcquisitionService(adapters, config, cache, coordinator, materializer, context);
   }

@@ -195,6 +195,9 @@ export async function collectNormalizedComments(
     } catch (error) {
       continue; // one bad source must not abort the others
     }
+    if (!got.length) {
+      console.log(ui.amber(`${ui.WARN} 0 comments from ${source.url}`));
+    }
     for (const c of got) {
       const text = (c.text || '').trim();
       if (!text || isStickerOnly(text) || isLinkSpam(text)) continue;
