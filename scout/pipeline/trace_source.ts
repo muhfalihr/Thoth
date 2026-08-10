@@ -16,7 +16,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { connect, sleep } from '../lib/cdp.ts';
 import {
   evaluateMainSuitability,
   type MainCandidate,
@@ -34,10 +33,8 @@ import {
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
-import { matchesTopic, tiktokOembed, youtubeOembed } from '../lib/verify.ts';
+import { matchesTopic } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
-import { downloadThreads, threadsVideoSrc } from '../scrapers/threads_video.ts';
-import { downloadTiktok, tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { resolveSource, tightenQuery } from './resolve_source.ts';
 import {
   readVisionSignals,
@@ -84,7 +81,7 @@ export function parseTraceSourceArgs(argv: string[]): TraceSourceOptions {
 const VIDEO = new Set(['tiktok', 'youtube']);
 // Platforms whose posts can become a downloadable MAIN. tiktok/youtube are always video; twitter/
 // instagram/facebook are admitted as candidates but each must pass a per-URL yt-dlp video probe;
-// threads can't be probed by yt-dlp (page = "Unsupported URL") → confirmed via threadsVideoSrc (fbcdn).
+// threads can't be probed by yt-dlp (page = "Unsupported URL") → confirmed via its fbcdn video src.
 const DLABLE = new Set(['tiktok', 'youtube', 'twitter', 'instagram', 'facebook', 'threads']);
 
 import { novitaKey } from '../lib/env.ts';
@@ -280,50 +277,132 @@ function handleMatch(url, u) {
   return !!h && normHandle(h) === want;
 }
 
+// Resolve a TikTok page URL to a direct downloadable CDN mp4 url. tikwm.com mirror API first (plain
+// HTTP, no browser); CDP fallback reads the page's own <video> element through the ONE sanctioned
+// navigation seam (context.service.browse) instead of a raw CDP connection. Mirrors the old
+// scrapers/tiktok_video.ts strategy, inlined so this file never imports that module.
+async function resolveTiktokCdn(
+  pageUrl: string,
+  context: AcquisitionRunContext,
+): Promise<{ url: string; via: string } | null> {
+  try {
+    const r = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(pageUrl)}&hd=1`, {
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (r.ok) {
+      const j: any = await r.json();
+      let p = j?.data?.hdplay || j?.data?.play || j?.data?.wmplay;
+      if (p) {
+        if (!/^https?:\/\//.test(p)) p = `https://www.tikwm.com${p}`;
+        return { url: p, via: 'tikwm' };
+      }
+    }
+  } catch (e) {}
+  try {
+    const src = await context.service.browse('tiktok', pageUrl, async (client) => {
+      await new Promise((r) => setTimeout(r, 3500));
+      return (
+        (await client.evaluate(`(() => {
+          let best = '', n = 0;
+          document.querySelectorAll('video').forEach(v => {
+            const s = v.currentSrc || v.src || '';
+            const a = (v.clientWidth || 0) * (v.clientHeight || 0);
+            if (/^https?:/.test(s) && a >= n) { best = s; n = a; }
+          });
+          return best;
+        })()`)) || ''
+      );
+    });
+    if (/^https?:\/\//.test(src)) return { url: src, via: 'cdp' };
+  } catch (e) {}
+  return null;
+}
+
+// Resolve a Threads page's fbcdn <video> src through context.service.browse() (never a raw CDP connection).
+async function resolveThreadsCdn(pageUrl: string, context: AcquisitionRunContext): Promise<string> {
+  try {
+    const src = await context.service.browse('threads', pageUrl, async (client) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      return (
+        (await client.evaluate(`(() => {
+          const v = document.querySelector('video[src], video');
+          return v ? v.currentSrc || v.src || '' : '';
+        })()`)) || ''
+      );
+    });
+    return /^https?:\/\//.test(src) ? src : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// Download an already-resolved ephemeral CDN url into a local file through the acquisition kernel's
+// materializer (direct-http chain) — the only place this file writes downloaded bytes to disk.
+async function materializeCdn(
+  canonicalPageUrl: string,
+  cdnUrl: string,
+  context: AcquisitionRunContext,
+): Promise<string> {
+  try {
+    const local = await context.service.materialize(
+      {
+        id: `${canonicalPageUrl}#1`,
+        kind: 'video',
+        index: 1,
+        canonical_post_url: canonicalPageUrl,
+        ephemeral_url: cdnUrl,
+      },
+      'main',
+    );
+    return local.path;
+  } catch (e) {
+    return '';
+  }
+}
+
 // Find a Threads source by PROFILE: open threads.com/@user, read each post's text, and pick the one
 // whose text MATCHES the keywords (not just the newest). Falls back to newest if no keyword match.
-// Guarded: needs a threads.com/threads.net tab attached.
-async function findOriginalThreads(username, keywords = []) {
-  let c: Awaited<ReturnType<typeof connect>>;
+async function findOriginalThreads(username, keywords = [], context: AcquisitionRunContext) {
+  let raw = '';
   try {
-    c = await connect({ match: ['threads.com', 'threads.net'], requireMatch: true });
+    raw = await context.service.browse(
+      'threads',
+      `https://www.threads.com/@${username}`,
+      async (client) => {
+        await new Promise((r) => setTimeout(r, 2800));
+        return (
+          (await client.evaluate(`(() => {
+            const seen = new Set(); const out = [];
+            document.querySelectorAll('[data-pressable-container="true"]').forEach(el => {
+              const a = Array.from(el.querySelectorAll('a')).find(x => (x.getAttribute('href') || '').includes('/post/'));
+              if (!a) return;
+              const href = new URL(a.getAttribute('href'), location.origin).href.split('?')[0];
+              if (seen.has(href)) return; seen.add(href);
+              out.push({ href, text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 240) });
+            });
+            return JSON.stringify(out.slice(0, 20));
+          })()`)) || ''
+        );
+      },
+    );
   } catch (e) {
     return null;
   }
+  let posts = [];
   try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate('https://www.threads.com/@' + username, 6000);
-    await sleep(2800);
-    const raw = await c.evaluate(`(() => {
-      const seen = new Set(); const out = [];
-      document.querySelectorAll('[data-pressable-container="true"]').forEach(el => {
-        const a = Array.from(el.querySelectorAll('a')).find(x => (x.getAttribute('href') || '').includes('/post/'));
-        if (!a) return;
-        const href = new URL(a.getAttribute('href'), location.origin).href.split('?')[0];
-        if (seen.has(href)) return; seen.add(href);
-        out.push({ href, text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 240) });
-      });
-      return JSON.stringify(out.slice(0, 20));
-    })()`);
-    let posts = [];
-    try {
-      posts = JSON.parse(raw || '[]');
-    } catch (e) {}
-    const ownRe = new RegExp('/@' + username.replace(/\./g, '\\.') + '/post/', 'i');
-    const pool = posts.filter((p) => ownRe.test(p.href));
-    const list = pool.length ? pool : posts;
-    let pick = keywords.length ? list.find((p) => matchesTopic(p.text, keywords, 'any')) : null;
-    if (!pick) pick = list[0];
-    if (pick)
-      console.log(
-        `    [threads] pilih post ${keywords.length && list.indexOf(pick) >= 0 && matchesTopic(pick.text, keywords, 'any') ? '(match keyword)' : '(terbaru)'}: ${pick.href}`,
-      );
-    return pick ? { url: pick.href, platform: 'threads' } : null;
-  } finally {
-    c.close();
-  }
+    posts = JSON.parse(raw || '[]');
+  } catch (e) {}
+  const ownRe = new RegExp('/@' + username.replace(/\./g, '\\.') + '/post/', 'i');
+  const pool = posts.filter((p) => ownRe.test(p.href));
+  const list = pool.length ? pool : posts;
+  let pick = keywords.length ? list.find((p) => matchesTopic(p.text, keywords, 'any')) : null;
+  if (!pick) pick = list[0];
+  if (pick)
+    console.log(
+      `    [threads] pilih post ${keywords.length && list.indexOf(pick) >= 0 && matchesTopic(pick.text, keywords, 'any') ? '(match keyword)' : '(terbaru)'}: ${pick.href}`,
+    );
+  return pick ? { url: pick.href, platform: 'threads' } : null;
 }
 
 // PostRecord -> MainCandidate shape ranking/setMainTo already expect. thumbnail is always '' here:
@@ -456,42 +535,42 @@ function findOriginalHandleCandidates(username, topic): MainCandidate[] {
 }
 
 // Find all originals on YouTube by CHANNEL NAME (watch URLs lack the handle).
-async function findOriginalYouTubeCandidates(username, topic): Promise<MainCandidate[]> {
+async function findOriginalYouTubeCandidates(
+  username,
+  topic,
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
   const query = `${username.replace(/[._]+/g, ' ')} ${topic || ''}`.trim();
-  let c: Awaited<ReturnType<typeof connect>>;
+  let raw = '';
   try {
-    c = await connect({ match: 'youtube.com', requireMatch: true });
+    raw = await context.service.browse(
+      'youtube',
+      `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+      async (client) => {
+        await new Promise((r) => setTimeout(r, 2000));
+        return (
+          (await client.evaluate(
+            `(() => { const out=[]; document.querySelectorAll('ytd-video-renderer').forEach(v=>{ const a=v.querySelector('a#video-title'); const ch=v.querySelector('ytd-channel-name #text, .ytd-channel-name'); const cn=((ch&&ch.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean)[0])||''; if(a && a.href.includes('watch')) out.push({u:a.href.split('&')[0], ch:cn}); }); return JSON.stringify(out.slice(0,12)); })()`,
+          )) || ''
+        );
+      },
+    );
   } catch (e) {
     return [];
   }
+  let items = [];
   try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(
-      `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
-      6000,
-    );
-    await sleep(2000);
-    const raw = await c.evaluate(
-      `(() => { const out=[]; document.querySelectorAll('ytd-video-renderer').forEach(v=>{ const a=v.querySelector('a#video-title'); const ch=v.querySelector('ytd-channel-name #text, .ytd-channel-name'); const cn=((ch&&ch.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean)[0])||''; if(a && a.href.includes('watch')) out.push({u:a.href.split('&')[0], ch:cn}); }); return JSON.stringify(out.slice(0,12)); })()`,
-    );
-    let items = [];
-    try {
-      items = JSON.parse(raw || '[]');
-    } catch (e) {}
-    const wanted = normHandle(username);
-    return items
-      .filter((item) => normHandle(item.ch) === wanted)
-      .map((item) => ({
-        url: item.u,
-        platform: 'youtube',
-        uploader: username,
-        isVideo: true,
-      }));
-  } finally {
-    c.close();
-  }
+    items = JSON.parse(raw || '[]');
+  } catch (e) {}
+  const wanted = normHandle(username);
+  return items
+    .filter((item) => normHandle(item.ch) === wanted)
+    .map((item) => ({
+      url: item.u,
+      platform: 'youtube',
+      uploader: username,
+      isVideo: true,
+    }));
 }
 
 // Handle in a post URL (the @username for TikTok/X/Threads, the path-user for IG). '' if none.
@@ -544,15 +623,19 @@ async function findStoryCandidates(
   return admitSearchCandidates(entries, {
     downloadablePlatforms: DLABLE,
     probeGeneric: async (entry) => probeGenericViaService(entry.url, context),
+    // inspectPost() is the kernel's cached oEmbed seam (the youtube/tiktok adapters call the same
+    // oEmbed endpoints and put the title in record.text). It THROWS where the raw helpers returned
+    // null, so catch back to null. thumbnail stays '' — PostRecord carries no cover field; it is only
+    // the last-ditch image for visual classification when media resolution fails.
     youtubeMeta: async (url) => {
-      const meta = await youtubeOembed(url);
-      return meta ? { title: meta.title || '', thumbnail: meta.thumbnail || '' } : null;
+      const record = await context.service.inspectPost(url).catch(() => null);
+      return record ? { title: record.text || '', thumbnail: '' } : null;
     },
     tiktokMeta: async (url) => {
-      const meta = await tiktokOembed(url);
-      return meta ? { title: meta.title || '', thumbnail: meta.thumbnail || '' } : null;
+      const record = await context.service.inspectPost(url).catch(() => null);
+      return record ? { title: record.text || '', thumbnail: '' } : null;
     },
-    threadsVideoSrc: (url) => threadsVideoSrc(url),
+    threadsVideoSrc: (url) => resolveThreadsCdn(url, context),
   });
 }
 
@@ -573,11 +656,15 @@ async function discoverReplacementCandidates({
     credited.push(...(await findOriginalTiktokCandidates(username, context)));
     credited.push(...findOriginalHandleCandidates(username, searchTopic));
   } else if (username && platHint === 'youtube') {
-    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
+    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic, context)));
   } else if (username && platHint === 'threads') {
-    const post = await findOriginalThreads(username, keywords.length ? keywords : cliKeywords);
+    const post = await findOriginalThreads(
+      username,
+      keywords.length ? keywords : cliKeywords,
+      context,
+    );
     if (post) {
-      const videoSrc = await threadsVideoSrc(post.url);
+      const videoSrc = await resolveThreadsCdn(post.url, context);
       if (videoSrc) {
         credited.push({
           url: post.url,
@@ -590,7 +677,7 @@ async function discoverReplacementCandidates({
     }
   } else if (username) {
     credited.push(...findOriginalHandleCandidates(username, searchTopic));
-    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
+    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic, context)));
   }
 
   const generic = await findStoryCandidates(
@@ -604,7 +691,7 @@ async function discoverReplacementCandidates({
     (candidate) => candidate.url && !seen.has(candidate.url) && Boolean(seen.add(candidate.url)),
   );
 }
-async function setMainTo(set, orig, username, noDl) {
+async function setMainTo(set, orig, username, noDl, context: AcquisitionRunContext) {
   clearVideoOcrMetadata(set.main);
   set.main.url = orig.url;
   set.main.platform = orig.platform;
@@ -642,15 +729,14 @@ async function setMainTo(set, orig, username, noDl) {
   } else if (orig.platform === 'threads') {
     // Threads PAGE can't be yt-dlp'd → resolve to its fbcdn <video> src (downloadable). fbcdn URL is
     // ephemeral → keep a local mp4 backup. source_url = the Threads post (credit; survives expiry).
-    const vurl = orig.videoSrc || (await threadsVideoSrc(orig.url));
+    const vurl = orig.videoSrc || (await resolveThreadsCdn(orig.url, context));
     if (vurl) {
       set.main.source_url = orig.url;
       set.main.url = vurl;
       set.main.is_video = true;
       if (!noDl) {
-        const code = (orig.url.split('/post/')[1] || 'thr').replace(/[/?#].*$/, '');
-        const out = outPath(`threads_${code}.mp4`);
-        if (downloadThreads(vurl, out)) set.main.source_local = out;
+        const local = await materializeCdn(orig.url, vurl, context);
+        if (local) set.main.source_local = local;
       }
       console.log(
         ui.amber(
@@ -664,22 +750,20 @@ async function setMainTo(set, orig, username, noDl) {
   } else if (orig.platform === 'tiktok') {
     // Fill title/description from oEmbed only when EMPTY — keep a curated news-style description
     // (it grounds narration far better than a creator's casual hashtag caption).
-    const m = await tiktokOembed(orig.url);
-    if (m && m.title) {
-      if (!(set.main.title || '').trim()) set.main.title = m.title;
-      if (!(set.main.description || '').trim()) set.main.description = m.title;
+    const m = await context.service.inspectPost(orig.url).catch(() => null);
+    if (m && m.text) {
+      if (!(set.main.title || '').trim()) set.main.title = m.text;
+      if (!(set.main.description || '').trim()) set.main.description = m.text;
     }
     // yt-dlp tak bisa download PAGE TikTok → resolve ke URL CDN mp4 langsung (tikwm→CDP) + simpan mp4
     // lokal (cadangan krn CDN ephemeral). main.url=CDN (yt-dlp generic bisa), source_url=page TikTok asli.
     try {
-      const d = await tiktokDirectUrl(orig.url);
+      const d = await resolveTiktokCdn(orig.url, context);
       if (d && d.url) {
         set.main.source_url = orig.url;
         set.main.url = d.url;
         if (!noDl) {
-          const id = (orig.url.match(/video\/(\d+)/) || [])[1] || 'tt';
-          const out = outPath(`tiktok_${id}.mp4`);
-          const local = await downloadTiktok(orig.url, out);
+          const local = await materializeCdn(orig.url, d.url, context);
           if (local) set.main.source_local = local;
         }
         console.log(
@@ -696,10 +780,10 @@ async function setMainTo(set, orig, username, noDl) {
       }
     } catch (e) {}
   } else if (orig.platform === 'youtube') {
-    const m = await youtubeOembed(orig.url);
-    if (m && m.title) {
-      if (!(set.main.title || '').trim()) set.main.title = m.title;
-      if (!(set.main.description || '').trim()) set.main.description = m.title;
+    const m = await context.service.inspectPost(orig.url).catch(() => null);
+    if (m && m.text) {
+      if (!(set.main.title || '').trim()) set.main.title = m.text;
+      if (!(set.main.description || '').trim()) set.main.description = m.text;
     }
   }
   // username (credited path) wins; otherwise keep a branch-set identity (e.g. twitter uploader) and
@@ -881,7 +965,7 @@ export async function runTraceSource(
     console.log(`[main-gate] input ${decision.suitability} confidence=${decision.confidence}`);
   } else {
     const oldUrl = set.main.url;
-    await setMainTo(set, decision.candidate, username, noDl);
+    await setMainTo(set, decision.candidate, username, noDl, context);
     if (decision.confidence === 'low') {
       set.main.source_low_confidence = true;
     } else {
@@ -899,14 +983,12 @@ export async function runTraceSource(
   try {
     if (/tiktok\.com\/@[^/]+\/video\//.test(set.main.url || '') && !set.main.source_url) {
       const page = set.main.url;
-      const d = await tiktokDirectUrl(page);
+      const d = await resolveTiktokCdn(page, context);
       if (d && d.url) {
         set.main.source_url = page;
         set.main.url = d.url;
         if (!noDl) {
-          const id = (page.match(/video\/(\d+)/) || [])[1] || 'tt';
-          const out = outPath(`tiktok_${id}.mp4`);
-          const local = await downloadTiktok(page, out);
+          const local = await materializeCdn(page, d.url, context);
           if (local) set.main.source_local = local;
         }
         console.log(
@@ -929,15 +1011,14 @@ export async function runTraceSource(
   try {
     if (/threads\.(com|net)\/@[^/]+\/post\//.test(set.main.url || '') && !set.main.source_url) {
       const page = set.main.url;
-      const vurl = await threadsVideoSrc(page);
+      const vurl = await resolveThreadsCdn(page, context);
       if (vurl) {
         set.main.source_url = page;
         set.main.url = vurl;
         set.main.is_video = true;
         if (!noDl) {
-          const code = (page.split('/post/')[1] || 'thr').replace(/[/?#].*$/, '');
-          const out = outPath(`threads_${code}.mp4`);
-          if (downloadThreads(vurl, out)) set.main.source_local = out;
+          const local = await materializeCdn(page, vurl, context);
+          if (local) set.main.source_local = local;
         }
         console.log(
           ui.amber(
