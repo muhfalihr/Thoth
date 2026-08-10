@@ -17,16 +17,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { footageObjects } from '../lib/footage_objects.ts';
 import { cropPost, inferPlatform } from '../scrapers/crop_post.ts';
-import {
-  igCarouselSlides,
-  igSlideDirectUrl,
-  dropCoverSlide,
-  tiktokOembed,
-  youtubeOembed,
-} from '../lib/verify.ts';
-import { igProfileReels } from '../scrapers/ig_profile.ts';
+import { igCarouselSlides, igSlideDirectUrl, dropCoverSlide } from '../lib/verify.ts';
 import { rankBySimilarity, embed, cosine } from '../lib/embed.ts';
-import { tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { outPath } from '../lib/paths.ts';
 import { isCuratedAggregator, urlHandle } from '../lib/aggregators.ts';
 import {
@@ -39,6 +31,7 @@ import { resolveFootageTasks } from './footage_queries.ts';
 import { ui } from '../lib/ui.ts';
 import type { AcquisitionRunContext, LocalAsset, MediaAsset, PostRecord } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+import { scrapeIgProfileGrid } from './ig_grid_scrape.ts';
 
 // ── Footage admission seam ──────────────────────────────────────────────────────────────────────
 // Every footage candidate must pass non-media gates BEFORE any downloader/materializer call.
@@ -289,7 +282,6 @@ export async function runBuildFootage(
   options: BuildFootageOptions,
   context: AcquisitionRunContext,
 ): Promise<void> {
-  void context;
   const { file, objects, per, max, noCrop, profile } = options;
   const set = JSON.parse(fs.readFileSync(file, 'utf8'));
   set.footage = set.footage || [];
@@ -399,11 +391,14 @@ export async function runBuildFootage(
     try {
       // includePosts:true → also scan feed posts (/p/), since creators often publish the topic as a
       // carousel/slide feed post (photo+video), not a Reel. max bumped: the grid mixes photos+reels.
-      const reels = await igProfileReels(profileUser, {
-        max: 12,
-        captions: true,
-        includePosts: true,
-      });
+      // ponytail: pipeline files may not import scrapers/ig_profile.ts directly (Task 16
+      // acquisition boundary) — pipeline/ig_grid_scrape.ts duplicates just the grid-scan logic,
+      // navigated through this ONE kernel browse() visit to the profile root.
+      const reels = await context.service.browse(
+        'instagram',
+        `https://www.instagram.com/${profileUser}/`,
+        (client) => scrapeIgProfileGrid(client, profileUser, { max: 12, captions: true, includePosts: true }),
+      );
       // Topic text = task queries + title (the EVENT), NOT figure names. We're ranking the creator's OWN
       // posts, so the figure's name matches EVERY post and discriminates nothing — it lets the creator's
       // off-topic posts (e.g. a sales rant) score above the floor. Rank by event relevance only.
@@ -542,17 +537,14 @@ export async function runBuildFootage(
 
       const addVideo = async (e) => {
         have.add(e.url);
-        // description = caption asli footage (oEmbed) → di-embed Thoth utk cocokkan ke narasi.
+        // description = caption asli footage (via kernel inspectPost) → di-embed Thoth utk
+        // cocokkan ke narasi. tiktok.ts's inspect() is a pure oEmbed HTTP call; youtube.ts's is
+        // the analogous metadata fetch — neither does a CDP navigation.
         let description = '';
-        try {
-          if (e.platform === 'tiktok') {
-            const m = await tiktokOembed(e.url);
-            description = (m && m.title) || '';
-          } else if (e.platform === 'youtube') {
-            const m = await youtubeOembed(e.url);
-            description = (m && m.title) || '';
-          }
-        } catch (err) {}
+        if (e.platform === 'tiktok' || e.platform === 'youtube') {
+          const record = await context.service.inspectPost(e.url).catch(() => null);
+          description = record?.text || '';
+        }
         if (sameAsMain(e.url, description)) {
           dropped++;
           return false;
@@ -577,9 +569,22 @@ export async function runBuildFootage(
           relevance: 'match',
           description,
         };
+        // ponytail: kernel replacement for the old raw tiktokDirectUrl scraper call —
+        // registerIntent('media') gates tiktok.ts's inspect() into resolving ephemeral_url at
+        // all (see acquisition/adapters/tiktok.ts). Pure oEmbed/HTTP, no CDP navigation.
+        const resolveDirect = async (u: string) => {
+          try {
+            context.service.registerIntent(u, 'media');
+            const record = await context.service.inspectPost(u);
+            const direct = record.media[0]?.ephemeral_url;
+            return direct ? { url: direct } : null;
+          } catch (err) {
+            return null;
+          }
+        };
         const analyzed =
           e.platform === 'tiktok'
-            ? await selectTikTokFootageVideoCandidate(candidate, tiktokDirectUrl)
+            ? await selectTikTokFootageVideoCandidate(candidate, resolveDirect)
             : await selectFootageVideoCandidate(candidate);
         mediaDropped += analyzed.mediaDropped;
         if (analyzed.result.status === 'unavailable') return false;

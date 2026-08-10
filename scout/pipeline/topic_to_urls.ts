@@ -21,12 +21,16 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sleep } from '../lib/cdp.ts';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
-import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/service.ts';
-import { searchPlatform } from '../scrapers/search_social_v2.ts';
-import type { SearchContext, SearchPlatformKey } from '../scrapers/search_social_v2.ts';
+import {
+  createStandaloneAcquisitionContext,
+  runAcquisitionCli,
+  searchPlatform,
+} from '../acquisition/index.ts';
+import type { SearchContext, SearchPlatformKey } from '../acquisition/index.ts';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const here = (f: string) => path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scrapers', f);
 
@@ -64,9 +68,10 @@ const slug =
     .replace(/^_|_$/g, '')
     .slice(0, 40) || 'topic';
 
-// Blocking subprocess call: runs search_tiktok_v2.ts to completion (its own CDP connect()),
-// then reads back the JSON file it wrote. Sequential with the loop below → no overlap with
-// browse()'s in-process navigations.
+// Blocking subprocess call: runs search_tiktok_v2.ts to completion (its own dedicated CDP
+// session, outside the acquisition kernel — unmigrated, out of this task's scope), then reads
+// back the JSON file it wrote. Sequential with the loop below → no overlap with browse()'s
+// in-process navigations.
 function runTikTokFetcher(query: string, keyword: string): string[] {
   const scriptArgs = [here('search_tiktok_v2.ts'), query, ...(keyword ? [keyword] : [])];
   execFileSync(process.execPath, scriptArgs, { stdio: 'pipe', timeout: 150000 });

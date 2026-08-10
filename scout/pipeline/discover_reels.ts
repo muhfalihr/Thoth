@@ -16,14 +16,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
-import { connect, sleep } from '../lib/cdp.ts';
 import { outPath } from '../lib/paths.ts';
 import { normalizeLikes } from '../lib/comments.ts';
 import { fetchTrending } from './discover_tiktok_trending.ts';
-import { ytdlpCookieArgs, postShape, warmPostShapes } from '../lib/verify.ts';
-import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/service.ts';
-import { igProfileReels } from '../scrapers/ig_profile.ts';
-import type { PostRecord, Platform } from '../acquisition/types.ts';
+import { ytdlpCookieArgs } from '../lib/verify.ts';
+import {
+  createStandaloneAcquisitionContext,
+  runAcquisitionCli,
+} from '../acquisition/index.ts';
+import type { AcquisitionRunContext, PostRecord, Platform } from '../acquisition/index.ts';
+import { scrapeIgProfileGrid } from './ig_grid_scrape.ts';
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const args = process.argv.slice(2);
 const getFlag = (n, d) => {
@@ -394,6 +398,41 @@ async function itemFrame(client, url) {
   return { time: m.time, frameB64, isVideo: !!m.isVideo };
 }
 
+// ponytail: kernel replacement for the old yt-dlp-subprocess shape probe (formerly named
+// postShape). Maps AcquisitionService.inspectPost()'s PostRecord onto the {ok, shape, caption,
+// slides, publishedAt} shape this file's topic-detection cascade expects. A thrown OR
+// wrong-shaped inspectPost result is treated as ok:false — every call site below already has a
+// DOM-guess or caption-only fallback for that case (this never blocks an item, only downgrades
+// its topic source). See the call sites for the specific coordinator-dedup risk on Instagram.
+async function postShapeViaInspect(
+  url: string,
+  context: AcquisitionRunContext,
+): Promise<{
+  ok: boolean;
+  shape: string;
+  caption: string;
+  slides: { kind: string; index: number }[];
+  publishedAt?: string;
+}> {
+  try {
+    const record = await context.service.inspectPost(url);
+    if (record?.outcome?.status !== 'resolved') {
+      return { ok: false, shape: '', caption: '', slides: [] };
+    }
+    const media = record.media || [];
+    const shape = media.length > 1 ? 'carousel' : media[0]?.kind === 'video' ? 'video' : 'photo';
+    return {
+      ok: true,
+      shape,
+      caption: record.text || '',
+      slides: media.map((m) => ({ kind: m.kind, index: m.index })),
+      publishedAt: record.published_at,
+    };
+  } catch (e) {
+    return { ok: false, shape: '', caption: '', slides: [] };
+  }
+}
+
 // ponytail: guarded like trace_source.ts's Task-12 migration — mapDiscoveryPosts is a pure,
 // importable export (discovery_acquisition.test.ts imports it directly), so the live pipeline
 // below must NOT run as a side effect of that import; only run it when this file is the entry
@@ -432,14 +471,6 @@ runAcquisitionCli(async () => {
   );
   if (!GROQ_KEY)
     console.log('ℹ️  audio-fallback OFF (belum ada GROQ key) — pakai hook-frame vision saja.');
-
-  const client = await connect({ match: 'instagram.com', requireMatch: true });
-  try {
-    await client.cmd('Page.bringToFront');
-  } catch (e) {}
-  try {
-    await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true });
-  } catch (e) {}
 
   const cutoff = Date.now() - HOURS * 3600 * 1000;
   const found = [];
@@ -488,19 +519,20 @@ runAcquisitionCli(async () => {
         });
         rows = mapDiscoveryPosts(h, disc.items);
       }
-      // ponytail: instagram.ts's discover(kind:'profile') only calls igProfileReels reels-only
-      // (includePosts defaults off) — it never covers the feed-post ("/p/") side. Rather than
-      // editing acquisition/adapters/instagram.ts (out of scope, and would risk changing
-      // trace_source.ts's Task-12 discover(kind:'profile') behavior too), call igProfileReels
-      // directly here with includePosts:true, reusing the SAME already-open raw `client` the
-      // itemFrame loop below already uses (this file's existing convention — pre-dates and is
-      // untouched by Task 13). No browser_coordinator collision: includePosts:true navigates to
-      // /@handle/ (the mixed grid), while the adapter's own reels discover() above navigates to
-      // /@handle/reels/ — different canonical URLs, so this is a genuinely separate visit, not a
-      // second hit on a URL the coordinator already served.
+      // ponytail: instagram.ts's discover(kind:'profile') only fetches reels (includePosts isn't
+      // part of its contract) and pipeline files may not import scrapers/ig_profile.ts directly
+      // (Task 16 acquisition boundary) — so the mixed grid ("/p/" + "/reel/") is scraped via
+      // pipeline/ig_grid_scrape.ts's scrapeIgProfileGrid(), navigated through this ONE extra
+      // browse() visit to the profile root (a different canonical URL from the adapter's own
+      // /<handle>/reels/ discover() above, so this is a genuinely separate visit, not a repeat
+      // hit the coordinator would dedup).
       if (INCLUDE.posts) {
-        const grid = await igProfileReels(h, { max: MAX_PER, captions: true, client, includePosts: true });
-        const postRows: DiscoveryPostRow[] = grid
+        const grid = await context.service.browse(
+          'instagram',
+          `https://www.instagram.com/${h}/`,
+          (client) => scrapeIgProfileGrid(client, h, { max: MAX_PER, captions: true, includePosts: true }),
+        );
+        const postRows: DiscoveryPostRow[] = (grid || [])
           .filter((it) => it.type === 'p')
           .map((it) => ({
             account: h,
@@ -528,14 +560,8 @@ runAcquisitionCli(async () => {
       continue;
     }
     let acctViews = 0;
-    // Warm the postShape cache for every item CONCURRENTLY before the serial per-item loop
-    // (the loop is CDP-bound on itemFrame, but this removes the yt-dlp probe from its critical path).
-    await warmPostShapes(
-      rows.map((x) => x.url),
-      5,
-    );
     // rows = reel rows (newest-first) ++ post rows (grid/recency order, newest-first — see
-    // igProfileReels: includePosts:true preserves DOM/grid order, and filtering to type==='p'
+    // scrapeIgProfileGrid: includePosts:true preserves DOM/grid order, and filtering to type==='p'
     // keeps that order as a subsequence, so posts ARE recency-ordered exactly like reels). Each
     // list gets its own stale flag (see isRowStale) — hitting a stale item in one list must only
     // stop THAT list, never break the whole loop or bleed into the other list's rows.
@@ -543,19 +569,14 @@ runAcquisitionCli(async () => {
     for (const r of rows) {
       const kind = r.kind;
       if (staleFlags[kind]) continue;
-      // Registered for coordinator bookkeeping only — NOT functionally consumed. The navigation
-      // that follows is itemFrame(client, r.url): a raw client.navigate() on a `client` obtained
-      // from lib/cdp.ts connect(), entirely outside browser_coordinator (pre-dates Task 13), so
-      // coordinator.intents() is never read for this URL and service.inspectPost() is
-      // deliberately NOT also called here — a second call would be a second navigation to the
-      // same canonical URL, which the one-navigation-per-URL rule forbids. Functional routing of
-      // these intents through the coordinator is deferred to Task 16 (acquisition-boundary
-      // enforcement).
+      // Registered before itemFrame's browse() visit below (registerIntent requires this — it
+      // throws if called after a URL's visit has already started). postShapeViaInspect() further
+      // down reuses these same intents for its own inspectPost() call.
       context.service.registerIntent(r.url, 'inspect');
       context.service.registerIntent(r.url, 'media');
       let fr;
       try {
-        fr = await itemFrame(client, r.url);
+        fr = await context.service.browse('instagram', r.url, (client) => itemFrame(client, r.url));
       } catch (e) {
         continue;
       }
@@ -574,8 +595,14 @@ runAcquisitionCli(async () => {
         //   video    → audio → caption
         //   photo    → caption
         //   carousel → caption → audio slide VIDEO pertama (--playlist-items N)
-        const ps = postShape(r.url);
-        shape = ps.ok ? ps.shape : fr.isVideo ? 'video' : 'photo'; // yt-dlp gagal → tebakan DOM lama
+        // ponytail: this is a SECOND visit to r.url (itemFrame's browse() above already visited
+        // it this run) — the coordinator's one-visit-per-URL rule hands back that cached result
+        // instead of running instagram.ts's inspect() logic, so `ps.ok` comes back false here on
+        // Instagram (the DOM-guess fallback below covers it). Harmless on platforms whose
+        // inspect() doesn't navigate. Upgrade path: have itemFrame's browse() itself return
+        // enough (media/caption) that this second call isn't needed.
+        const ps = await postShapeViaInspect(r.url, context);
+        shape = ps.ok ? ps.shape : fr.isVideo ? 'video' : 'photo'; // inspect gagal → tebakan DOM lama
         const caption = ps.ok ? cleanTopic(ps.caption).slice(0, 200) : '';
         if (shape === 'video') {
           const a = await audioTopic(r.url);
@@ -635,11 +662,10 @@ runAcquisitionCli(async () => {
       );
     flush(); // checkpoint after each account
   }
-  client.close();
 
   // ── Kurator TikTok (curator_accounts.json .tiktok) ──────────────────────────────────────
   // Grid TikTok expose VIEWS nyata (beda IG) → scoring dapat sinyal views betulan; tapi grid
-  // tanpa <time> → recency diambil dari postShape (yt-dlp timestamp). Topik: caption → audio.
+  // tanpa <time> → recency diambil dari inspect (metadata oEmbed). Topik: caption → audio.
   // Vision hook sengaja DILEWATI di TikTok (butuh navigasi per-item di tab tiktok; caption+audio
   // sudah menutup) — tambah nanti kalau kurasi TikTok terbukti sering tanpa caption.
   for (const h of TT_ACCOUNTS) {
@@ -658,22 +684,14 @@ runAcquisitionCli(async () => {
       continue;
     }
     console.log(`${rows.length} video`);
-    // TikTok loop probes postShape unconditionally per item and has NO CDP in it → pure yt-dlp.
-    // Warming concurrently first turns N serial probes into ceil(N/5) waves (biggest win here).
-    await warmPostShapes(
-      rows.map((r) => r.url),
-      5,
-    );
     for (const r of rows) {
-      // Registered for coordinator bookkeeping only — NOT functionally consumed. This loop has
-      // NO CDP navigation at all: postShape() below is a yt-dlp SUBPROCESS probe, not a browser
-      // visit, so there is no navigation here for the coordinator to route by these intents.
-      // Functional routing of these intents through the coordinator is deferred to Task 16
-      // (acquisition-boundary enforcement).
+      // tiktok.ts's inspect() is pure HTTP oEmbed (no CDP navigation) and only resolves
+      // ephemeral_url when 'media' was registered first — register before the inspectPost()
+      // call inside postShapeViaInspect() below.
       context.service.registerIntent(r.url, 'inspect');
       context.service.registerIntent(r.url, 'media');
-      const ps = postShape(r.url);
-      const ts = ps.ok && ps.time ? ps.time * 1000 : NaN;
+      const ps = await postShapeViaInspect(r.url, context);
+      const ts = ps.ok && ps.publishedAt ? Date.parse(ps.publishedAt) : NaN;
       if (!isNaN(ts) && ts < cutoff) continue; // pinned/lama tampil duluan → skip item, jangan break
       let topic = cleanTopic(r.caption || (ps.ok ? ps.caption : '')).slice(0, 200);
       let via = 'caption';

@@ -8,6 +8,12 @@ export {
   createStandaloneAcquisitionContext,
   runAcquisitionCli,
 } from './service.ts';
+// searchPlatform() is pipeline-facing keyword search (no adapter implements
+// DiscoveryRequest.kind:'query'): it takes a kernel-built SearchContext
+// (browse/registerIntent/inspectPost) — re-exported here so pipeline code
+// reaches it through the facade instead of importing scrapers/ directly.
+export { searchPlatform } from '../scrapers/search_social_v2.ts';
+export type { SearchContext, SearchPlatformKey } from '../scrapers/search_social_v2.ts';
 export type {
   AcquisitionIntent,
   AcquisitionOutcome,

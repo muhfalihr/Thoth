@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import { ui } from '../lib/ui.ts';
 import { dedupeAndRankComments, isLinkSpam, isStickerOnly, scrapeCommentsOnPage } from '../lib/comment_engine.ts';
-import type { CdpClient } from '../lib/cdp.ts';
+import type { CdpClient } from '../acquisition/types.ts';
 import type {
   AcquisitionRunContext,
   CommentRecord,
