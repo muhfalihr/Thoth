@@ -88,7 +88,19 @@ export function collectFor(
   // against it instead of the adapter's text-only extractor. Product correctness (real
   // per-comment crops, not one shared post card) beats kernel purity here; see the task-15
   // review findings for why the adapters themselves are not extended to do this.
-  return service.browse(platform, url, (client) => scrapeCommentsOnPage(client, { ...opts, max }));
+  //
+  // The explicit 'comments' purpose is load-bearing, not decoration. Omitting it
+  // fell back to browse()'s default 'browse', and for the seed URL — which
+  // run_pipeline's inspectSeed() has already navigated under 'inspect', and which
+  // buildCommentSources() always feeds back in — the coordinator then had a purpose
+  // collision. Every comment source lost its comments, swallowed by this stage's
+  // required:false, on every IG/X/FB/Threads/Reddit run.
+  return service.browse(
+    platform,
+    url,
+    (client) => scrapeCommentsOnPage(client, { ...opts, max }),
+    'comments',
+  );
 }
 
 export interface CollectCommentsOptions {

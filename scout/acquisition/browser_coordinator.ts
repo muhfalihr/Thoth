@@ -7,9 +7,14 @@ const INVALID_RESPONSE_THRESHOLD = 2;
 
 interface UrlState {
   intents: Set<AcquisitionIntent>;
+  // True once ANY purpose has begun visiting this URL. Only gates registerIntent;
+  // the navigation budget itself lives in `visits`, keyed per (url, purpose).
+  started: boolean;
+}
+
+interface VisitState {
   started: boolean;
   promise?: Promise<unknown>;
-  purpose?: string;
 }
 
 /**
@@ -21,6 +26,8 @@ interface UrlState {
  */
 export class BrowserCoordinator {
   private readonly urls = new Map<string, UrlState>();
+  // Keyed `${canonicalUrl}::${purpose}` — the navigation budget is per (url, purpose).
+  private readonly visits = new Map<string, VisitState>();
   private readonly blocked = new Map<Platform, AcquisitionOutcome>();
   private readonly invalidResponseStreak = new Map<Platform, number>();
   private tail: Promise<void> = Promise.resolve();
@@ -43,6 +50,16 @@ export class BrowserCoordinator {
     return state;
   }
 
+  private visitFor(canonicalUrl: string, purpose: string): VisitState {
+    const key = `${canonicalUrl}::${purpose}`;
+    let visit = this.visits.get(key);
+    if (!visit) {
+      visit = { started: false };
+      this.visits.set(key, visit);
+    }
+    return visit;
+  }
+
   registerIntent(url: string, intent: AcquisitionIntent): void {
     const canonicalUrl = canonicalizeUrl(url);
     const state = this.stateFor(canonicalUrl);
@@ -61,16 +78,26 @@ export class BrowserCoordinator {
 
   // `purpose` is a short stable label identifying WHAT the caller is visiting
   // this URL for ('inspect', 'comments', 'social-card', 'ig-grid', ...). It is
-  // required, not optional: visitOnce()'s memoization key is the canonical URL
-  // ALONE, so without a purpose check a second, unrelated consumer visiting
-  // the same URL would silently receive the FIRST consumer's result — same
-  // canonical URL, different (and wrong) payload shape. That aliasing is the
-  // Task 16 fix-round-1 defect (browser_coordinator.ts:74-76 in the original
-  // report): itemFrame()'s browse() cached a frame object under a post URL,
-  // then inspectPost()'s adapter.inspect() visited the SAME URL expecting a
-  // PostRecord and silently got the frame object back instead, force-cast
-  // through `as Promise<T>`. See discover_reels.ts for how the real call site
-  // was fixed once this could no longer alias in silence.
+  // required, not optional, and it is PART OF THE MEMO KEY.
+  //
+  // Two rules are in tension here and the key resolves both:
+  //
+  //  1. Never alias one purpose's result to another purpose's caller. Keyed by
+  //     canonical URL alone, itemFrame()'s browse() cached a frame object under
+  //     a post URL, then inspectPost()'s adapter.inspect() visited the SAME URL
+  //     expecting a PostRecord and silently got the frame object back instead,
+  //     force-cast through `as Promise<T>`. Distinct purposes now hold distinct
+  //     memo entries, so that cross-typed hand-off cannot occur at all.
+  //
+  //  2. Don't re-navigate redundantly. The budget is ONE navigation per
+  //     (canonical URL, purpose) per run — not one per URL. The stricter
+  //     per-URL form was tried and is not implementable: the pipeline has to
+  //     inspect a post AND scrape its comments, and discovery has to visit a
+  //     profile for both reels and the post grid. Refusing the second purpose
+  //     did not prevent a navigation, it just lost the data — seed-post
+  //     comments and all Instagram curator discovery, silently, because both
+  //     callers sit in required:false stages. Repeat work for the SAME purpose
+  //     is still deduped, which is what the rule was protecting against.
   visitOnce<T>(
     platform: Platform,
     url: string,
@@ -88,40 +115,29 @@ export class BrowserCoordinator {
     }
 
     const canonicalUrl = canonicalizeUrl(url);
-    const state = this.stateFor(canonicalUrl);
-    if (state.started && state.promise) {
-      if (state.purpose !== purpose) {
-        // Same URL, different purpose, visit already in flight or done: this
-        // is exactly the aliasing shape above. Refuse loudly instead of
-        // returning the (differently-typed) cached promise — and do NOT
-        // navigate again either; the "at most one navigation per canonical
-        // post URL per run" rule is not being relaxed to work around this.
-        return Promise.reject(
-          new Error(
-            `browser coordinator: ${canonicalUrl} was already visited for purpose ` +
-              `"${state.purpose}" — refusing to alias that result for purpose "${purpose}" ` +
-              `(and refusing a second navigation to serve it)`,
-          ),
-        );
-      }
-      return state.promise as Promise<T>;
-    }
+    // `started` on the URL gates registerIntent() only. Intents describe what the
+    // run wants from a post and are meant to be declared up front, so the first
+    // navigation for ANY purpose closes registration.
+    this.stateFor(canonicalUrl).started = true;
 
-    state.started = true;
-    state.purpose = purpose;
+    const visit = this.visitFor(canonicalUrl, purpose);
+    // Same URL AND same purpose, already in flight or done: hand back the memo.
+    // The result type matches by construction, because the purpose is in the key.
+    if (visit.started && visit.promise) return visit.promise as Promise<T>;
+
+    visit.started = true;
     const promise = this.enqueue(acquire).catch((error: unknown) => {
       // A failed visit must not permanently poison the URL (Ruling 2): clear
-      // the cached state so a later visitOnce() for the same URL can retry.
-      // A resolved visit stays cached for the rest of the run — "at most one
-      // navigation per canonical post URL per run" only holds for successes.
-      if (state.promise === promise) {
-        state.promise = undefined;
-        state.started = false;
-        state.purpose = undefined;
+      // the cached state so a later visitOnce() for the same (url, purpose) can
+      // retry. A resolved visit stays cached for the rest of the run — the
+      // one-navigation-per-(url, purpose) budget only holds for successes.
+      if (visit.promise === promise) {
+        visit.promise = undefined;
+        visit.started = false;
       }
       throw error;
     });
-    state.promise = promise;
+    visit.promise = promise;
     return promise;
   }
 

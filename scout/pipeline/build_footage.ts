@@ -30,7 +30,11 @@ import {
 import { resolveFootageTasks } from './footage_queries.ts';
 import { ui } from '../lib/ui.ts';
 import type { AcquisitionRunContext, LocalAsset, MediaAsset, PostRecord } from '../acquisition/index.ts';
-import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+import {
+  createStandaloneAcquisitionContext,
+  platformForUrl,
+  runAcquisitionCli,
+} from '../acquisition/index.ts';
 import { scrapeIgProfileGrid } from './ig_grid_scrape.ts';
 
 // ── Footage admission seam ──────────────────────────────────────────────────────────────────────
@@ -626,7 +630,24 @@ export async function runBuildFootage(
         // each as {kind:'photo',image_path} or {kind:'video',index}.
         if (!noCrop) {
           try {
-            const r = await cropPost({ url: e.url, maxSlides: isIG ? 5 : 1 });
+            // Routed through the coordinator rather than calling cropPost({url}) bare. Without a
+            // `client` cropPost opens its OWN CDP connection and navigates e.url a second time —
+            // invisible to the coordinator, so it escaped both the navigation budget and the
+            // global concurrency-of-one. Its own 'footage-crop' purpose keeps it from colliding
+            // with the inspectPost() above while still deduping repeats of the crop itself.
+            // Guarded, not asserted: platformForUrl returns undefined for a host the kernel
+            // doesn't classify, and scout's tsconfig has strict:false so the compiler will not
+            // flag that. A URL outside the seven supported platforms has no adapter and no
+            // circuit to trip, so there is nothing to crop — fall through to the post-crop gate.
+            const cropPlatform = platformForUrl(e.url);
+            if (!cropPlatform) throw new Error(`no acquisition platform for ${e.url}`);
+            const r = await context.service.browse(
+              cropPlatform,
+              e.url,
+              (client) =>
+                cropPost({ url: e.url, maxSlides: isIG ? 5 : 1, client, navigate: true }),
+              'footage-crop',
+            );
             if (r.ok) {
               slides =
                 r.slides ||

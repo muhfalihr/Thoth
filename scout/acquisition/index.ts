@@ -8,6 +8,10 @@ export type { SearchContext, SearchPlatformKey } from '../scrapers/search_social
 // (browse/registerIntent/inspectPost) — re-exported here so pipeline code
 // reaches it through the facade instead of importing scrapers/ directly.
 export { searchPlatform } from '../scrapers/search_social_v2.ts';
+// Pipeline callers of browse() need the Platform for a URL to pass as its first
+// argument. Exposing the kernel's own resolver beats each stage hand-rolling a
+// host-to-platform switch that drifts from the adapters'.
+export { platformForUrl } from './url.ts';
 export type { AcquisitionRunContext } from './service.ts';
 export {
   AcquisitionService,

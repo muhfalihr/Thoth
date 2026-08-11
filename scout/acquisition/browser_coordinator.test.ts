@@ -188,10 +188,17 @@ assert.equal(cachedFirst, 'first');
 assert.equal(cachedSecond, 'first');
 assert.equal(cachedAttempts, 1);
 
-// Same URL, DIFFERENT purpose: the cached promise belongs to the first purpose and is a
-// different payload shape entirely, so handing it back (through visitOnce's `as Promise<T>`)
-// silently mistypes the second caller's result. Refuse, naming both purposes — and do not
-// navigate a second time either (one navigation per canonical URL per run still holds).
+// Same URL, DIFFERENT purpose: each purpose gets its OWN visit and its OWN result.
+//
+// The danger being guarded is aliasing — the cached promise for purpose A has a
+// different payload shape than purpose B expects, and visitOnce's `as Promise<T>`
+// would force-cast it silently. Putting the purpose in the memo key removes that
+// possibility structurally: B can never read A's entry.
+//
+// The budget is one navigation per (url, purpose), so B DOES navigate. Keyed per
+// URL instead, B was refused outright — which lost the seed post's comments and
+// all Instagram curator discovery, since both callers sit in required:false
+// stages that swallow the throw.
 const aliasCoordinator = new BrowserCoordinator();
 const aliasUrl = 'https://www.instagram.com/p/ABC123/';
 let aliasAttempts = 0;
@@ -205,20 +212,34 @@ const aliasFirst = await aliasCoordinator.visitOnce(
   },
 );
 assert.deepEqual(aliasFirst, { frameB64: 'aGk=' });
-await assert.rejects(
-  aliasCoordinator.visitOnce('instagram', aliasUrl, 'inspect', async () => {
+
+const aliasSecond = await aliasCoordinator.visitOnce(
+  'instagram',
+  aliasUrl,
+  'inspect',
+  async () => {
     aliasAttempts++;
     return { post_id: 'ABC123' };
-  }),
-  (error: unknown) => {
-    const message = (error as Error).message;
-    assert.match(message, /ig-item-frame/);
-    assert.match(message, /inspect/);
-    assert.match(message, /ABC123/);
-    return true;
   },
 );
-// The refusal must not have navigated again to serve the second purpose.
-assert.equal(aliasAttempts, 1);
+// Distinct objects, each matching its own purpose. Asserting the SHAPE (not just
+// that a value came back) is what makes this catch aliasing: under a URL-only key
+// this reads { frameB64: 'aGk=' } and deepEqual fails.
+assert.deepEqual(aliasSecond, { post_id: 'ABC123' }, 'second purpose received the first’s result');
+assert.equal(aliasAttempts, 2, 'each distinct purpose gets its own navigation');
+
+// ...and repeating a purpose still dedupes, which is the half of the rule that
+// actually prevents redundant page loads.
+const aliasRepeat = await aliasCoordinator.visitOnce(
+  'instagram',
+  aliasUrl,
+  'inspect',
+  async () => {
+    aliasAttempts++;
+    return { post_id: 'SHOULD-NOT-RUN' };
+  },
+);
+assert.deepEqual(aliasRepeat, { post_id: 'ABC123' });
+assert.equal(aliasAttempts, 2, 'a repeated (url, purpose) must not navigate again');
 
 console.log('ok browser_coordinator additional assertions');

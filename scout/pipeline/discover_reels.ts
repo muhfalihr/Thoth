@@ -525,9 +525,14 @@ runAcquisitionCli(async () => {
       // part of its contract) and pipeline files may not import scrapers/ig_profile.ts directly
       // (Task 16 acquisition boundary) — so the mixed grid ("/p/" + "/reel/") is scraped via
       // pipeline/ig_grid_scrape.ts's scrapeIgProfileGrid(), navigated through this ONE extra
-      // browse() visit to the profile root (a different canonical URL from the adapter's own
-      // /<handle>/reels/ discover() above, so this is a genuinely separate visit, not a repeat
-      // hit the coordinator would dedup).
+      // browse() visit.
+      //
+      // This IS the same canonical URL the adapter's discover() above already visited — it goes to
+      // the profile ROOT, not to /<handle>/reels/, whatever an earlier version of this comment
+      // claimed. The distinct 'ig-grid' purpose is what makes the second visit legal: the budget is
+      // one navigation per (url, purpose). Keyed per URL, this browse() was refused outright and the
+      // catch below `continue`d, dropping the account's REELS along with its grid — every Instagram
+      // curator yielded nothing on any run that missed the 30-minute discovery cache.
       if (INCLUDE.posts) {
         const grid = await context.service.browse(
           'instagram',
