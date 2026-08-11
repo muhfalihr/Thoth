@@ -105,10 +105,18 @@ export type AssetPurpose = 'main' | 'footage' | 'ocr';
 
 export interface AdapterContext {
   intents(url: string): ReadonlySet<AcquisitionIntent>;
+  // `purpose` is optional here ONLY because frozen adapter code never passes
+  // it (adapters call `context.visit(platform, url, acquire)`, 3 args) — it
+  // cannot know or care which AcquisitionService method reached it. Non-frozen
+  // callers (AcquisitionService.contextFor()/browse()) DO pass it, so the
+  // BrowserCoordinator's per-URL purpose guard (browser_coordinator.ts) still
+  // gets real labels for every operation that isn't routed through a frozen
+  // adapter's own internal call.
   visit<T>(
     platform: Platform,
     url: string,
     acquire: (client: CdpClient, intents: ReadonlySet<AcquisitionIntent>) => Promise<T>,
+    purpose?: string,
   ): Promise<T>;
   now(): number;
 }

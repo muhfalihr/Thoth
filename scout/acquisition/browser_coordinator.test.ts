@@ -19,8 +19,8 @@ const acquire = async () => {
   return { value: visits };
 };
 const [first, second] = await Promise.all([
-  coordinator.visitOnce('instagram', url, acquire),
-  coordinator.visitOnce('instagram', url, acquire),
+  coordinator.visitOnce('instagram', url, 'inspect', acquire),
+  coordinator.visitOnce('instagram', url, 'inspect', acquire),
 ]);
 assert.equal(first.value, 1);
 assert.equal(second.value, 1);
@@ -40,8 +40,8 @@ const distinctVisit = async () => {
 serialized.registerIntent('https://x.com/a/status/1', 'inspect');
 serialized.registerIntent('https://www.instagram.com/p/TWO/', 'inspect');
 await Promise.all([
-  serialized.visitOnce('twitter', 'https://x.com/a/status/1', distinctVisit),
-  serialized.visitOnce('instagram', 'https://www.instagram.com/p/TWO/', distinctVisit),
+  serialized.visitOnce('twitter', 'https://x.com/a/status/1', 'inspect', distinctVisit),
+  serialized.visitOnce('instagram', 'https://www.instagram.com/p/TWO/', 'inspect', distinctVisit),
 ]);
 assert.equal(globalMax, 1);
 
@@ -53,7 +53,7 @@ coordinator.recordOutcome('instagram', {
 });
 assert.equal(coordinator.isBlocked('instagram'), true);
 await assert.rejects(
-  coordinator.visitOnce('instagram', 'https://www.instagram.com/p/NEW/', acquire),
+  coordinator.visitOnce('instagram', 'https://www.instagram.com/p/NEW/', 'inspect', acquire),
   /rate-limited/,
 );
 
@@ -83,7 +83,7 @@ const lateUrl = 'https://www.tiktok.com/@user/video/1';
 lateRegistration.registerIntent(lateUrl, 'inspect');
 let releaseLateVisit: (() => void) | undefined;
 const lateVisitStarted = new Promise<void>((resolveStarted) => {
-  const lateVisitPromise = lateRegistration.visitOnce('tiktok', lateUrl, async () => {
+  const lateVisitPromise = lateRegistration.visitOnce('tiktok', lateUrl, 'inspect', async () => {
     resolveStarted();
     await new Promise<void>((resolve) => {
       releaseLateVisit = resolve;
@@ -153,13 +153,13 @@ const retryCoordinator = new BrowserCoordinator();
 const retryUrl = 'https://www.reddit.com/r/test/comments/abc/post/';
 let retryAttempts = 0;
 await assert.rejects(
-  retryCoordinator.visitOnce('reddit', retryUrl, async () => {
+  retryCoordinator.visitOnce('reddit', retryUrl, 'inspect', async () => {
     retryAttempts++;
     throw new Error('boom');
   }),
   /boom/,
 );
-const retryResult = await retryCoordinator.visitOnce('reddit', retryUrl, async () => {
+const retryResult = await retryCoordinator.visitOnce('reddit', retryUrl, 'inspect', async () => {
   retryAttempts++;
   return 'recovered';
 });
@@ -171,14 +171,19 @@ assert.equal(retryAttempts, 2);
 const cachedCoordinator = new BrowserCoordinator();
 const cachedUrl = 'https://www.youtube.com/watch?v=ABC123';
 let cachedAttempts = 0;
-const cachedFirst = await cachedCoordinator.visitOnce('youtube', cachedUrl, async () => {
+const cachedFirst = await cachedCoordinator.visitOnce('youtube', cachedUrl, 'inspect', async () => {
   cachedAttempts++;
   return 'first';
 });
-const cachedSecond = await cachedCoordinator.visitOnce('youtube', cachedUrl, async () => {
-  cachedAttempts++;
-  return 'second';
-});
+const cachedSecond = await cachedCoordinator.visitOnce(
+  'youtube',
+  cachedUrl,
+  'inspect',
+  async () => {
+    cachedAttempts++;
+    return 'second';
+  },
+);
 assert.equal(cachedFirst, 'first');
 assert.equal(cachedSecond, 'first');
 assert.equal(cachedAttempts, 1);

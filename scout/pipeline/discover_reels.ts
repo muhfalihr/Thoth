@@ -531,6 +531,7 @@ runAcquisitionCli(async () => {
           'instagram',
           `https://www.instagram.com/${h}/`,
           (client) => scrapeIgProfileGrid(client, h, { max: MAX_PER, captions: true, includePosts: true }),
+          'ig-grid',
         );
         const postRows: DiscoveryPostRow[] = (grid || [])
           .filter((it) => it.type === 'p')
@@ -576,7 +577,12 @@ runAcquisitionCli(async () => {
       context.service.registerIntent(r.url, 'media');
       let fr;
       try {
-        fr = await context.service.browse('instagram', r.url, (client) => itemFrame(client, r.url));
+        fr = await context.service.browse(
+          'instagram',
+          r.url,
+          (client) => itemFrame(client, r.url),
+          'ig-item-frame',
+        );
       } catch (e) {
         continue;
       }

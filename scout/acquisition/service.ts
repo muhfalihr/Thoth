@@ -167,8 +167,12 @@ export class AcquisitionService {
     const context: AdapterContext = {
       intents: (url) => coordinator.intents(url),
       now: () => Date.now(),
-      visit: (platform, url, acquire) =>
-        coordinator.visitOnce(platform, url, () =>
+      // `purpose` defaults to 'adapter' because frozen adapter files call
+      // context.visit(platform, url, acquire) with only 3 args — they cannot
+      // supply a purpose. AcquisitionService.contextFor()/browse() (below)
+      // supply a real one by calling this SAME visit with a 4th arg.
+      visit: (platform, url, acquire, purpose = 'adapter') =>
+        coordinator.visitOnce(platform, url, purpose, () =>
           visitWithFocus(url, acquire, coordinator.intents(url)),
         ),
     };
@@ -206,6 +210,21 @@ export class AcquisitionService {
     this.coordinator.registerIntent(url, intent);
   }
 
+  // Builds an AdapterContext whose .visit() tags every navigation it makes with
+  // `purpose` — WITHOUT changing the 3-arg shape frozen adapter files call
+  // (they still just write context.visit(platform, url, acquire)). Each of the
+  // 4 methods below calls adapter.X(url, this.contextFor('x')) with its own
+  // distinct purpose so BrowserCoordinator.visitOnce() can tell apart, on the
+  // SAME canonical URL, an inspect() from a comments() from a captureSocialCard()
+  // — instead of every adapter-driven visit collapsing into one anonymous bucket.
+  private contextFor(purpose: string): AdapterContext {
+    return {
+      intents: this.context.intents,
+      now: this.context.now,
+      visit: (platform, url, acquire) => this.context.visit(platform, url, acquire, purpose),
+    };
+  }
+
   // Exposes the SAME context.visit() every adapter's discover()/inspect() routes
   // through — one navigation per canonical URL per run, all navigations globally
   // serialized (browser_coordinator's tail chain) — to pipeline code that has no
@@ -213,13 +232,21 @@ export class AcquisitionService {
   // DiscoveryRequest.kind:'query', so search_social_v2.ts scrapes the search
   // results page itself, but must never do that via a raw lib/cdp.ts connect()).
   // Adapters stay untouched; this is the one seam pipeline code gets instead.
+  // `purpose` is optional (default 'browse') so existing call sites keep
+  // compiling untouched (trace_source.ts in particular must not be edited for
+  // this fix) — but any pipeline file that browse()s the SAME URL more than
+  // once per run, or that a kernel-driven inspect/comments/social-card call
+  // might ALSO reach, should pass its own distinct label for the same reason
+  // contextFor() below does: BrowserCoordinator.visitOnce() refuses to alias
+  // one purpose's result to a different purpose's caller on the same URL.
   async browse<T>(
     platform: Platform,
     url: string,
     acquire: (client: CdpClient) => Promise<T>,
+    purpose = 'browse',
   ): Promise<T> {
     try {
-      return await this.context.visit(platform, url, (client) => acquire(client));
+      return await this.context.visit(platform, url, (client) => acquire(client), purpose);
     } catch (error) {
       this.failUrlOperation(platform, canonicalizeUrl(url), error);
     }
@@ -263,7 +290,7 @@ export class AcquisitionService {
     if (durable) return withCacheSource(durable);
     return this.cache.memoize(key, async () => {
       try {
-        const result = await adapter.discover(request, this.context);
+        const result = await adapter.discover(request, this.contextFor('discover'));
         this.coordinator.recordOutcome(request.platform, result.outcome);
         this.cache.setDiscovery(key, result, this.config.discoveryTtlMs);
         return result;
@@ -288,7 +315,7 @@ export class AcquisitionService {
     if (durable) return withCacheSource(durable);
     return this.cache.memoize(key, async () => {
       try {
-        const result = await adapter.inspect(canonical, this.context);
+        const result = await adapter.inspect(canonical, this.contextFor('inspect'));
         this.coordinator.recordOutcome(platform, result.outcome);
         this.cache.setPost(result, this.config.postTtlMs);
         return result;
@@ -309,7 +336,7 @@ export class AcquisitionService {
     if (runValue) return runValue;
     return this.cache.memoize(key, async () => {
       try {
-        return await adapter.collectComments(canonical, limits, this.context);
+        return await adapter.collectComments(canonical, limits, this.contextFor('comments'));
       } catch (error) {
         this.failUrlOperation(platform, canonical, error);
       }
@@ -328,7 +355,7 @@ export class AcquisitionService {
     if (runValue) return runValue;
     return this.cache.memoize(key, async () => {
       try {
-        return await adapter.captureSocialCard(canonical, purpose, this.context);
+        return await adapter.captureSocialCard(canonical, purpose, this.contextFor('social-card'));
       } catch (error) {
         this.failUrlOperation(platform, canonical, error);
       }

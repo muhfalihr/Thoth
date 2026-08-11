@@ -398,6 +398,7 @@ export async function runBuildFootage(
         'instagram',
         `https://www.instagram.com/${profileUser}/`,
         (client) => scrapeIgProfileGrid(client, profileUser, { max: 12, captions: true, includePosts: true }),
+        'ig-grid',
       );
       // Topic text = task queries + title (the EVENT), NOT figure names. We're ranking the creator's OWN
       // posts, so the figure's name matches EVERY post and discriminates nothing — it lets the creator's

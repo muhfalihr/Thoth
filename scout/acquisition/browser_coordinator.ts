@@ -9,6 +9,7 @@ interface UrlState {
   intents: Set<AcquisitionIntent>;
   started: boolean;
   promise?: Promise<unknown>;
+  purpose?: string;
 }
 
 /**
@@ -58,7 +59,24 @@ export class BrowserCoordinator {
     return this.urls.get(canonicalUrl)?.intents ?? new Set();
   }
 
-  visitOnce<T>(platform: Platform, url: string, acquire: () => Promise<T>): Promise<T> {
+  // `purpose` is a short stable label identifying WHAT the caller is visiting
+  // this URL for ('inspect', 'comments', 'social-card', 'ig-grid', ...). It is
+  // required, not optional: visitOnce()'s memoization key is the canonical URL
+  // ALONE, so without a purpose check a second, unrelated consumer visiting
+  // the same URL would silently receive the FIRST consumer's result — same
+  // canonical URL, different (and wrong) payload shape. That aliasing is the
+  // Task 16 fix-round-1 defect (browser_coordinator.ts:74-76 in the original
+  // report): itemFrame()'s browse() cached a frame object under a post URL,
+  // then inspectPost()'s adapter.inspect() visited the SAME URL expecting a
+  // PostRecord and silently got the frame object back instead, force-cast
+  // through `as Promise<T>`. See discover_reels.ts for how the real call site
+  // was fixed once this could no longer alias in silence.
+  visitOnce<T>(
+    platform: Platform,
+    url: string,
+    purpose: string,
+    acquire: () => Promise<T>,
+  ): Promise<T> {
     const blockedOutcome = this.blocked.get(platform);
     if (blockedOutcome) {
       return Promise.reject(
@@ -72,10 +90,25 @@ export class BrowserCoordinator {
     const canonicalUrl = canonicalizeUrl(url);
     const state = this.stateFor(canonicalUrl);
     if (state.started && state.promise) {
+      if (state.purpose !== purpose) {
+        // Same URL, different purpose, visit already in flight or done: this
+        // is exactly the aliasing shape above. Refuse loudly instead of
+        // returning the (differently-typed) cached promise — and do NOT
+        // navigate again either; the "at most one navigation per canonical
+        // post URL per run" rule is not being relaxed to work around this.
+        return Promise.reject(
+          new Error(
+            `browser coordinator: ${canonicalUrl} was already visited for purpose ` +
+              `"${state.purpose}" — refusing to alias that result for purpose "${purpose}" ` +
+              `(and refusing a second navigation to serve it)`,
+          ),
+        );
+      }
       return state.promise as Promise<T>;
     }
 
     state.started = true;
+    state.purpose = purpose;
     const promise = this.enqueue(acquire).catch((error: unknown) => {
       // A failed visit must not permanently poison the URL (Ruling 2): clear
       // the cached state so a later visitOnce() for the same URL can retry.
@@ -84,6 +117,7 @@ export class BrowserCoordinator {
       if (state.promise === promise) {
         state.promise = undefined;
         state.started = false;
+        state.purpose = undefined;
       }
       throw error;
     });
