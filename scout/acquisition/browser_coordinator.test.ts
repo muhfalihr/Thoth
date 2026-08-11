@@ -188,4 +188,37 @@ assert.equal(cachedFirst, 'first');
 assert.equal(cachedSecond, 'first');
 assert.equal(cachedAttempts, 1);
 
+// Same URL, DIFFERENT purpose: the cached promise belongs to the first purpose and is a
+// different payload shape entirely, so handing it back (through visitOnce's `as Promise<T>`)
+// silently mistypes the second caller's result. Refuse, naming both purposes — and do not
+// navigate a second time either (one navigation per canonical URL per run still holds).
+const aliasCoordinator = new BrowserCoordinator();
+const aliasUrl = 'https://www.instagram.com/p/ABC123/';
+let aliasAttempts = 0;
+const aliasFirst = await aliasCoordinator.visitOnce(
+  'instagram',
+  aliasUrl,
+  'ig-item-frame',
+  async () => {
+    aliasAttempts++;
+    return { frameB64: 'aGk=' };
+  },
+);
+assert.deepEqual(aliasFirst, { frameB64: 'aGk=' });
+await assert.rejects(
+  aliasCoordinator.visitOnce('instagram', aliasUrl, 'inspect', async () => {
+    aliasAttempts++;
+    return { post_id: 'ABC123' };
+  }),
+  (error: unknown) => {
+    const message = (error as Error).message;
+    assert.match(message, /ig-item-frame/);
+    assert.match(message, /inspect/);
+    assert.match(message, /ABC123/);
+    return true;
+  },
+);
+// The refusal must not have navigated again to serve the second purpose.
+assert.equal(aliasAttempts, 1);
+
 console.log('ok browser_coordinator additional assertions');

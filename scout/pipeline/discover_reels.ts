@@ -401,9 +401,11 @@ async function itemFrame(client, url) {
 // ponytail: kernel replacement for the old yt-dlp-subprocess shape probe (formerly named
 // postShape). Maps AcquisitionService.inspectPost()'s PostRecord onto the {ok, shape, caption,
 // slides, publishedAt} shape this file's topic-detection cascade expects. A thrown OR
-// wrong-shaped inspectPost result is treated as ok:false — every call site below already has a
-// DOM-guess or caption-only fallback for that case (this never blocks an item, only downgrades
-// its topic source). See the call sites for the specific coordinator-dedup risk on Instagram.
+// wrong-shaped inspectPost result is treated as ok:false — the call site has a caption-only
+// fallback for that case (this never blocks an item, only downgrades its topic source).
+// TikTok-only: tiktok.ts's inspect() is pure HTTP oEmbed, so it costs no browser navigation.
+// The Instagram loop must NOT call this — inspect() there navigates, and itemFrame()'s browse()
+// has already spent this run's one allowed navigation for that URL.
 async function postShapeViaInspect(
   url: string,
   context: AcquisitionRunContext,
@@ -570,11 +572,6 @@ runAcquisitionCli(async () => {
     for (const r of rows) {
       const kind = r.kind;
       if (staleFlags[kind]) continue;
-      // Registered before itemFrame's browse() visit below (registerIntent requires this — it
-      // throws if called after a URL's visit has already started). postShapeViaInspect() further
-      // down reuses these same intents for its own inspectPost() call.
-      context.service.registerIntent(r.url, 'inspect');
-      context.service.registerIntent(r.url, 'media');
       let fr;
       try {
         fr = await context.service.browse(
@@ -593,24 +590,20 @@ runAcquisitionCli(async () => {
       } // newest-first per list
       let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
       let via = 'hook';
-      let shape = '';
+      let shape = ''; // stays '' when the vision hook already produced the topic (unchanged)
       if (topic.length < 8) {
-        // Bentuk post menentukan sumber topik berikutnya. BUKAN heuristik DOM <video> —
-        // carousel foto+video memuat elemen <video> untuk slide lain padahal item pertamanya
-        // foto (false-positive → yt-dlp "No video formats found"). Tangga per bentuk:
-        //   video    → audio → caption
-        //   photo    → caption
-        //   carousel → caption → audio slide VIDEO pertama (--playlist-items N)
-        // ponytail: this is a SECOND visit to r.url (itemFrame's browse() above already visited
-        // it this run) — the coordinator's one-visit-per-URL rule hands back that cached result
-        // instead of running instagram.ts's inspect() logic, so `ps.ok` comes back false here on
-        // Instagram (the DOM-guess fallback below covers it). Harmless on platforms whose
-        // inspect() doesn't navigate. Upgrade path: have itemFrame's browse() itself return
-        // enough (media/caption) that this second call isn't needed.
-        const ps = await postShapeViaInspect(r.url, context);
-        shape = ps.ok ? ps.shape : fr.isVideo ? 'video' : 'photo'; // inspect gagal → tebakan DOM lama
-        const caption = ps.ok ? cleanTopic(ps.caption).slice(0, 200) : '';
-        if (shape === 'video') {
+        // Tangga sumber topik: video → audio → caption; foto → caption.
+        // Caption comes with the row already (grid scrape for /p/, discovery record for reels),
+        // so there is NO second acquisition call for r.url here: itemFrame's browse() above
+        // spent this run's one allowed navigation, and the coordinator now REFUSES to serve a
+        // differently-purposed second visit rather than silently aliasing the frame object back
+        // as a PostRecord (which is what used to make every Instagram inspect here come back
+        // empty). Losing the shape probe also stops mattering: a photo+video carousel whose DOM
+        // <video> false-positives to isVideo just fails audioTopic and lands on the caption,
+        // which — unlike before — is now actually populated.
+        const caption = cleanTopic(r.caption || '').slice(0, 200);
+        shape = fr.isVideo ? 'video' : 'photo';
+        if (fr.isVideo) {
           const a = await audioTopic(r.url);
           const at = cleanTopic(a.text);
           if (at) {
@@ -620,25 +613,10 @@ runAcquisitionCli(async () => {
             topic = caption;
             via = 'caption';
           } else via = a.note;
-        } else if (shape === 'carousel') {
-          const vs = (ps.slides || []).find((s) => s.kind === 'video');
-          if (caption) {
-            topic = caption;
-            via = 'caption';
-          } else if (vs) {
-            const a = await audioTopic(r.url, vs.index);
-            const at = cleanTopic(a.text);
-            if (at) {
-              topic = at;
-              via = `audio-slide-${vs.index}`;
-            } else via = a.note;
-          } else via = 'carousel-foto (tanpa caption/teks)';
-        } else {
-          if (caption) {
-            topic = caption;
-            via = 'caption';
-          } else via = 'image-post (tanpa caption/teks)';
-        }
+        } else if (caption) {
+          topic = caption;
+          via = 'caption';
+        } else via = 'image-post (tanpa caption/teks)';
       }
       const ageH = isNaN(ts) ? '?' : ((Date.now() - ts) / 3600000).toFixed(1) + 'h';
       const vn = normalizeLikes(r.views);
