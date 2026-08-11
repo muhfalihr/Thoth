@@ -115,14 +115,24 @@ export class AcquisitionCache {
     this.persist();
   }
 
-  getNegative(url: string): AcquisitionOutcome | null {
-    return this.read(this.file.negatives, this.hashKey(canonicalizeUrl(url)));
+  // Negative entries are keyed by (operation, url), NEVER by url alone. A
+  // capability failure on one operation must not block a different operation on
+  // the same post: reddit's captureSocialCard() throws `unsupported` by design
+  // on every call, and a url-only key turned that into "this Reddit post is
+  // unavailable" for inspect() and collectComments() too — durably, for the
+  // whole negative TTL, in this process and every later one.
+  getNegative(operation: string, url: string): AcquisitionOutcome | null {
+    return this.read(this.file.negatives, this.negativeKey(operation, url));
   }
 
-  setNegative(url: string, outcome: AcquisitionOutcome, ttlMs: number): void {
-    const key = this.hashKey(canonicalizeUrl(url));
+  setNegative(operation: string, url: string, outcome: AcquisitionOutcome, ttlMs: number): void {
+    const key = this.negativeKey(operation, url);
     this.file.negatives[key] = { expires_at: this.now() + ttlMs, value: outcome };
     this.persist();
+  }
+
+  private negativeKey(operation: string, url: string): string {
+    return this.hashKey(`${operation}:${canonicalizeUrl(url)}`);
   }
 
   // Run-scoped memoization: dedupes concurrent identical work and keeps the

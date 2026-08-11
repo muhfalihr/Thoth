@@ -149,7 +149,8 @@ assert.equal(cachedWithMediaAgain.media[0]!.id, 'm1');
     'browse() failure must open the platform circuit breaker',
   );
   assert.ok(
-    cache.getNegative(canonicalizeUrl(searchUrl)),
+    // 'browse' is browse()'s default purpose, and the negative is scoped to it.
+    cache.getNegative('browse', canonicalizeUrl(searchUrl)),
     'browse() failure must write a negative-cache entry for the canonical URL',
   );
 }

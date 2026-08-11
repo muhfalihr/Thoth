@@ -248,7 +248,9 @@ export class AcquisitionService {
     try {
       return await this.context.visit(platform, url, (client) => acquire(client), purpose);
     } catch (error) {
-      this.failUrlOperation(platform, canonicalizeUrl(url), error);
+      // Scope the negative to this browse's own purpose, not to the URL: an
+      // 'ig-grid' failure must not make inspect() think the post is unavailable.
+      this.failUrlOperation(platform, purpose, canonicalizeUrl(url), error);
     }
   }
 
@@ -274,10 +276,22 @@ export class AcquisitionService {
   // Records the outcome and writes a negative-cache entry before rethrowing.
   // A non-AcquisitionError throw is a bug, not a platform outcome: propagate
   // it untouched.
-  private failUrlOperation(platform: Platform, canonicalUrl: string, error: unknown): never {
+  //
+  // `operation` scopes the negative entry. It must NOT be dropped: a url-only
+  // negative key lets one operation's failure block every other operation on
+  // that post for the whole negative TTL, durably. reddit.captureSocialCard()
+  // throws `unsupported` unconditionally by design, and trace_source's coverOf()
+  // calls it on every run — which used to poison inspect() and collectComments()
+  // for that URL, aborting the next run's pipeline before its first stage.
+  private failUrlOperation(
+    platform: Platform,
+    operation: string,
+    canonicalUrl: string,
+    error: unknown,
+  ): never {
     if (!(error instanceof AcquisitionError)) throw error;
     this.coordinator.recordOutcome(platform, error.outcome);
-    this.cache.setNegative(canonicalUrl, error.outcome, this.config.negativeTtlMs);
+    this.cache.setNegative(operation, canonicalUrl, error.outcome, this.config.negativeTtlMs);
     throw error;
   }
 
@@ -305,7 +319,7 @@ export class AcquisitionService {
   async inspectPost(url: string): Promise<PostRecord> {
     const { platform, adapter } = this.resolveAdapter(url);
     const canonical = canonicalizeUrl(url);
-    const negative = this.cache.getNegative(canonical);
+    const negative = this.cache.getNegative('inspect', canonical);
     if (negative)
       throw new AcquisitionError(`inspect: cached negative outcome for ${platform}`, negative);
     const key = `inspect:${canonical}`;
@@ -320,7 +334,7 @@ export class AcquisitionService {
         this.cache.setPost(result, this.config.postTtlMs);
         return result;
       } catch (error) {
-        this.failUrlOperation(platform, canonical, error);
+        this.failUrlOperation(platform, 'inspect', canonical, error);
       }
     });
   }
@@ -328,7 +342,7 @@ export class AcquisitionService {
   async collectComments(url: string, limits: CommentLimits): Promise<CommentRecord[]> {
     const { platform, adapter } = this.resolveAdapter(url);
     const canonical = canonicalizeUrl(url);
-    const negative = this.cache.getNegative(canonical);
+    const negative = this.cache.getNegative('comments', canonical);
     if (negative)
       throw new AcquisitionError(`comments: cached negative outcome for ${platform}`, negative);
     const key = `comments:${canonical}:${limits.max}`;
@@ -338,7 +352,7 @@ export class AcquisitionService {
       try {
         return await adapter.collectComments(canonical, limits, this.contextFor('comments'));
       } catch (error) {
-        this.failUrlOperation(platform, canonical, error);
+        this.failUrlOperation(platform, 'comments', canonical, error);
       }
     });
   }
@@ -346,7 +360,10 @@ export class AcquisitionService {
   async captureSocialCard(url: string, purpose: SocialCardPurpose): Promise<LocalAsset> {
     const { platform, adapter } = this.resolveAdapter(url);
     const canonical = canonicalizeUrl(url);
-    const negative = this.cache.getNegative(canonical);
+    // Scoped by card purpose too, matching the memo key below: a failed 'comment'
+    // card must not stand in for a 'post' card's outcome.
+    const operation = `social-card:${purpose}`;
+    const negative = this.cache.getNegative(operation, canonical);
     if (negative) {
       throw new AcquisitionError(`social-card: cached negative outcome for ${platform}`, negative);
     }
@@ -357,7 +374,7 @@ export class AcquisitionService {
       try {
         return await adapter.captureSocialCard(canonical, purpose, this.contextFor('social-card'));
       } catch (error) {
-        this.failUrlOperation(platform, canonical, error);
+        this.failUrlOperation(platform, operation, canonical, error);
       }
     });
   }

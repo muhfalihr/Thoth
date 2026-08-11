@@ -76,13 +76,26 @@ try {
 
   const negativeUrl = 'https://www.instagram.com/p/GHI/';
   cache.setNegative(
+    'inspect',
     negativeUrl,
     { status: 'unavailable', reason: 'not-found', attempts: 2, elapsed_ms: 5 },
     50,
   );
-  assert.equal(cache.getNegative(negativeUrl)?.reason, 'not-found');
+  assert.equal(cache.getNegative('inspect', negativeUrl)?.reason, 'not-found');
+
+  // Negatives are scoped to the operation that failed. Keyed by URL alone, one
+  // permanently-unsupported capability (reddit's social card) blocked inspect and
+  // comments on that post for the whole TTL, durably and across processes — a
+  // poisoned seed URL then aborted the next run before its first stage.
+  assert.equal(
+    cache.getNegative('comments', negativeUrl),
+    null,
+    "an inspect failure must not block that URL's comments",
+  );
+  assert.equal(cache.getNegative('social-card:post', negativeUrl), null);
+
   clock += 51;
-  assert.equal(cache.getNegative(negativeUrl), null);
+  assert.equal(cache.getNegative('inspect', negativeUrl), null);
 
   let calls = 0;
   const one = cache.memoize('same', async () => {
