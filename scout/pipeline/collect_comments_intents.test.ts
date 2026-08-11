@@ -41,10 +41,9 @@ const service = {
   },
 };
 
-await runCollectComments(
-  { file, perSource: 2, cap: 10, maxSources: 5, extra: [] },
-  { service } as never,
-);
+await runCollectComments({ file, perSource: 2, cap: 10, maxSources: 5, extra: [] }, {
+  service,
+} as never);
 
 // The stage completed rather than aborting on the seed's throw...
 const written = JSON.parse(fs.readFileSync(file, 'utf8'));

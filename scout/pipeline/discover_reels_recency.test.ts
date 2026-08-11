@@ -46,7 +46,10 @@ const rows = [
   ];
   const staleFlags: Record<string, boolean> = {};
   const kept = reelStaleRows.filter((r) => !isRowStale(r.kind, r.ts, cutoff, staleFlags));
-  assert.deepEqual(kept.map((r) => r.kind), ['reel', 'post']);
+  assert.deepEqual(
+    kept.map((r) => r.kind),
+    ['reel', 'post'],
+  );
 }
 
 console.log('ok discover_reels_recency');

@@ -1,6 +1,6 @@
 // scout/pipeline/comments_acquisition.test.ts
 import assert from 'node:assert/strict';
-import { collectNormalizedComments, collectFor } from './collect_comments.ts';
+import { collectFor, collectNormalizedComments } from './collect_comments.ts';
 
 const calls: string[] = [];
 const comments = await collectNormalizedComments(
@@ -19,7 +19,10 @@ const comments = await collectNormalizedComments(
     },
   },
 );
-assert.deepEqual(comments.map((item) => item.image_path), ['a.png', 'b.png']);
+assert.deepEqual(
+  comments.map((item) => item.image_path),
+  ['a.png', 'b.png'],
+);
 assert.deepEqual(calls, ['a', 'b']);
 console.log('ok comments_acquisition');
 
@@ -37,9 +40,21 @@ const identityComments = await collectNormalizedComments(
     perSource: 5,
     cap: 5,
     collect: async () => [
-      { id: 'p1', author: 'alice', text: 'alpha comment', likes: 30, image_path: 'crops/alice.png' },
+      {
+        id: 'p1',
+        author: 'alice',
+        text: 'alpha comment',
+        likes: 30,
+        image_path: 'crops/alice.png',
+      },
       { id: 'p2', author: 'bob', text: 'bravo comment', likes: 20, image_path: 'crops/bob.png' },
-      { id: 'p3', author: 'carol', text: 'charlie comment', likes: 10, image_path: 'crops/carol.png' },
+      {
+        id: 'p3',
+        author: 'carol',
+        text: 'charlie comment',
+        likes: 10,
+        image_path: 'crops/carol.png',
+      },
     ],
     capture: async (_url, comment) => {
       identityCaptureCalls.push(comment.id);
@@ -120,6 +135,10 @@ for (const [platform, url] of [
   );
   const paths = got.map((c) => c.image_path);
   assert.deepEqual(paths, [`crops/${platform}-1.png`, `crops/${platform}-2.png`]);
-  assert.equal(new Set(paths).size, 2, `${platform} comments must keep distinct per-comment image_path`);
+  assert.equal(
+    new Set(paths).size,
+    2,
+    `${platform} comments must keep distinct per-comment image_path`,
+  );
 }
 console.log('ok comments_acquisition reddit/youtube crop-capable routing');

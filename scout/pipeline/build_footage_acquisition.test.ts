@@ -9,7 +9,9 @@ const rejected = await admitAndMaterializeFootage(
     post_id: '1',
     owner_handle: 'owner',
     text: 'unrelated advertisement',
-    media: [{ id: '1:1', kind: 'image', index: 1, canonical_post_url: 'https://x.com/owner/status/1' }],
+    media: [
+      { id: '1:1', kind: 'image', index: 1, canonical_post_url: 'https://x.com/owner/status/1' },
+    ],
     outcome: { status: 'resolved', source: 'network', attempts: 1, elapsed_ms: 1 },
   } as any,
   {
@@ -36,7 +38,9 @@ const accepted = await admitAndMaterializeFootage(
     post_id: '2',
     owner_handle: 'owner',
     text: 'specific event unfolds downtown',
-    media: [{ id: '2:1', kind: 'image', index: 1, canonical_post_url: 'https://x.com/owner/status/2' }],
+    media: [
+      { id: '2:1', kind: 'image', index: 1, canonical_post_url: 'https://x.com/owner/status/2' },
+    ],
     outcome: { status: 'resolved', source: 'network', attempts: 1, elapsed_ms: 1 },
   } as any,
   {

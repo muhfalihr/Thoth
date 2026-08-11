@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AcquisitionService, visitWithFocus } from './service.ts';
-import { AcquisitionError } from './types.ts';
 import { BrowserCoordinator } from './browser_coordinator.ts';
 import { AcquisitionCache } from './cache.ts';
+import { AcquisitionService, visitWithFocus } from './service.ts';
+import { AcquisitionError } from './types.ts';
 import { canonicalizeUrl } from './url.ts';
 
 let inspections = 0;
@@ -120,7 +120,11 @@ assert.equal(cachedWithMediaAgain.media[0]!.id, 'm1');
   });
 
   // Success path: acquire()'s return value passes through untouched.
-  const ok = await browseService.browse('twitter', 'https://x.com/search?q=ok', async () => 'value');
+  const ok = await browseService.browse(
+    'twitter',
+    'https://x.com/search?q=ok',
+    async () => 'value',
+  );
   assert.equal(ok, 'value');
   assert.equal(coordinator.isBlocked('twitter'), false);
 

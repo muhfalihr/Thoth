@@ -1,4 +1,5 @@
 import type { CdpClient } from '../lib/cdp.ts';
+
 export type { CdpClient };
 
 export type Platform =

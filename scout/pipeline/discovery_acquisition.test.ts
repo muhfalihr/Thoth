@@ -11,7 +11,14 @@ const rows = mapDiscoveryPosts('curator', [
     text: 'topic caption',
     published_at: '2026-08-02T00:00:00.000Z',
     engagement: { views: 1200 },
-    media: [{ id: 'ABC:1', kind: 'video', index: 1, canonical_post_url: 'https://www.instagram.com/reel/ABC/' }],
+    media: [
+      {
+        id: 'ABC:1',
+        kind: 'video',
+        index: 1,
+        canonical_post_url: 'https://www.instagram.com/reel/ABC/',
+      },
+    ],
     outcome: { status: 'resolved', source: 'network', attempts: 1, elapsed_ms: 1 },
   },
 ] as any);

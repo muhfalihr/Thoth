@@ -11,10 +11,10 @@
 // candidate got a DISTINCT normalization (the fake never returns the same object twice — see
 // note below on why that matters).
 import assert from 'node:assert';
-import { searchPlatform } from './search_social_v2.ts';
-import type { SearchContext } from './search_social_v2.ts';
 import type { AcquisitionIntent, Platform, PostRecord } from '../acquisition/types.ts';
 import type { CdpClient } from '../lib/cdp.ts';
+import type { SearchContext } from './search_social_v2.ts';
+import { searchPlatform } from './search_social_v2.ts';
 
 // Fake CdpClient: evaluate() is content-addressed by which JS snippet searchPlatform() sends,
 // not by call order — matches how the real client is used (one login-wall probe, one link

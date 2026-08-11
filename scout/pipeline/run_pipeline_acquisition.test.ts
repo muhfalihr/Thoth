@@ -14,12 +14,30 @@ await runPipelineWithDeps(
       return { title: 'caption', description: 'caption', platform: 'instagram', is_video: true };
     },
     writeSeed: async () => {},
-    traceSource: async (_options, received) => { stages.push('trace'); contexts.add(received); },
-    collectComments: async (_options, received) => { stages.push('comments'); contexts.add(received); },
-    topicDossier: async (_options, received) => { stages.push('dossier'); contexts.add(received); },
-    buildFootage: async (_options, received) => { stages.push('footage'); contexts.add(received); },
-    extractFigures: async (_options, received) => { stages.push('figures'); contexts.add(received); },
-    validate: async (_options, received) => { stages.push('validate'); contexts.add(received); },
+    traceSource: async (_options, received) => {
+      stages.push('trace');
+      contexts.add(received);
+    },
+    collectComments: async (_options, received) => {
+      stages.push('comments');
+      contexts.add(received);
+    },
+    topicDossier: async (_options, received) => {
+      stages.push('dossier');
+      contexts.add(received);
+    },
+    buildFootage: async (_options, received) => {
+      stages.push('footage');
+      contexts.add(received);
+    },
+    extractFigures: async (_options, received) => {
+      stages.push('figures');
+      contexts.add(received);
+    },
+    validate: async (_options, received) => {
+      stages.push('validate');
+      contexts.add(received);
+    },
     summarize: async () => {},
   },
 );

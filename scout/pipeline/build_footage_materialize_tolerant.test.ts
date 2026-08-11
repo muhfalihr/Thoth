@@ -14,13 +14,22 @@ const post = (id: string, text: string) => ({
   owner_handle: 'owner',
   text,
   media: [
-    { id: `${id}:1`, kind: 'image', index: 1, canonical_post_url: `https://x.com/owner/status/${id}` },
+    {
+      id: `${id}:1`,
+      kind: 'image',
+      index: 1,
+      canonical_post_url: `https://x.com/owner/status/${id}`,
+    },
   ],
   outcome: { status: 'resolved', source: 'network', attempts: 1, elapsed_ms: 1 },
 });
 
 // tweetA: photo, transient network blip in materialize(). tweetB/tweetC: photo, healthy.
-const candidates = [post('A', 'story unfolds A'), post('B', 'story unfolds B'), post('C', 'story unfolds C')];
+const candidates = [
+  post('A', 'story unfolds A'),
+  post('B', 'story unfolds B'),
+  post('C', 'story unfolds C'),
+];
 
 let materializeCalls = 0;
 const outcomes = [];
@@ -34,7 +43,12 @@ for (const p of candidates) {
       materialize: async () => {
         materializeCalls++;
         if (p.post_id === 'A') throw new Error('transient network blip');
-        return { path: `/tmp/footage-${p.post_id}.jpg`, kind: 'image', source: 'direct-http', bytes: 1 };
+        return {
+          path: `/tmp/footage-${p.post_id}.jpg`,
+          kind: 'image',
+          source: 'direct-http',
+          bytes: 1,
+        };
       },
     }),
   );
