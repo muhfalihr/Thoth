@@ -49,6 +49,20 @@ async function resolveImagePath(
   context: AcquisitionRunContext,
 ): Promise<ResolvedImage | null> {
   let text = '';
+  // Register BOTH intents before the first acquisition call: inspect() holds this URL's one
+  // allowed navigation, and the twitter/instagram adapters only stash a social-card crop during
+  // that visit when the 'social-card' intent is already registered. Without this the fallback
+  // below asks for a second, differently-purposed visit, which the coordinator refuses — i.e.
+  // no card at all for exactly the text-tweet/photo-post entries this stage exists to serve.
+  // Tolerant: registerIntent() throws once a URL's visit has started (e.g. run_pipeline already
+  // seeded the main URL), and this function must never throw.
+  try {
+    for (const intent of ['inspect', 'media', 'social-card'] as const) {
+      context.service.registerIntent(url, intent);
+    }
+  } catch {
+    // already visited this run — its intents are whatever the earlier caller registered
+  }
   try {
     const inspected = await context.service.inspectPost(url);
     text = inspected.text || '';
