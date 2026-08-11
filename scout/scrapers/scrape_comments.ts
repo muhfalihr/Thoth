@@ -22,24 +22,6 @@ import { ui } from '../lib/ui.ts';
 const OUT_DIR = CROPS_DIR;
 const PAD = 6; // CSS px padding around each comment crop
 
-const args = process.argv.slice(2);
-const flags: any = {};
-const pos: string[] = [];
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--max') flags.max = parseInt(args[++i], 10);
-  else if (args[i] === '--comments-only') flags.commentsOnly = true;
-  else pos.push(args[i]);
-}
-const TARGET_URL = pos[0];
-const OUT_JSON = outPath(pos[1] || 'thoth_content_set.json');
-const MAX = flags.max || 12;
-const COMMENTS_ONLY = Boolean(flags.commentsOnly);
-
-if (!TARGET_URL) {
-  console.log('Usage: bun scrape_comments.ts <tiktok_url> [out.json] [--max N]');
-  process.exit(1);
-}
-
 const extractUsername = (u) => (u.match(/@([\w.]+)/) || [, 'unknown'])[1];
 const extractVideoId = (u) => (u.match(/video\/(\d+)/) || [, 'unknown'])[1];
 
@@ -99,7 +81,7 @@ async function loadComments(client) {
   return 0;
 }
 
-async function main() {
+async function main(TARGET_URL: string, OUT_JSON: string, MAX: number, COMMENTS_ONLY: boolean) {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
   console.log(ui.rule());
   console.log('  Scrape Comments (DOM/CDP)');
@@ -269,4 +251,26 @@ async function main() {
   console.log(`  thoth run --content "${OUT_JSON}"`);
 }
 
-run(main);
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  const flags: any = {};
+  const pos: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--max') flags.max = parseInt(args[++i], 10);
+    else if (args[i] === '--comments-only') flags.commentsOnly = true;
+    else pos.push(args[i]);
+  }
+  const TARGET_URL = pos[0];
+  const OUT_JSON = outPath(pos[1] || 'thoth_content_set.json');
+  const MAX = flags.max || 12;
+  const COMMENTS_ONLY = Boolean(flags.commentsOnly);
+
+  if (!TARGET_URL) {
+    console.log('Usage: bun scrape_comments.ts <tiktok_url> [out.json] [--max N]');
+    process.exit(1);
+  }
+
+  run(() => main(TARGET_URL, OUT_JSON, MAX, COMMENTS_ONLY));
+}
+
+export { EXTRACT_JS, loadComments };

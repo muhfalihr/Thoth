@@ -11,10 +11,12 @@
 // Novita (THOTH_NOVITA_API_KEY via lib/env.js); model via THOTH_LLM_MODEL (default deepseek-v3.1 — discrimination needs a strong text reasoner).
 
 import fs from 'node:fs';
-import path from 'node:path';
 
 import { novitaKey } from '../lib/env.ts';
 import { ui } from '../lib/ui.ts';
+import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+
 const KEY = novitaKey();
 const MODEL = process.env.THOTH_LLM_MODEL || 'deepseek/deepseek-v3.1'; // text reasoning (diskriminasi tokoh) — reasoner teks, bukan model vision
 const TYPES = ['person', 'organization', 'community'];
@@ -91,10 +93,51 @@ async function figuresFrom({
 
 export { figuresFrom };
 
+export interface FileStageOptions {
+  file: string;
+}
+
+export async function runExtractFigures(
+  options: FileStageOptions,
+  context: AcquisitionRunContext,
+): Promise<void> {
+  void context;
+  const { file } = options;
+  const set = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const main = set.main || {};
+  // Include footage descriptions — named subjects (people/orgs) often appear there even when the
+  // main caption is a teaser. Comments too (sometimes name the subject).
+  const footageDesc = (set.footage || [])
+    .map((f) => f.description)
+    .filter(Boolean)
+    .slice(0, 12)
+    .join(' | ');
+  const desc = ((main.description || '') + ' ' + footageDesc).trim();
+  const figures = await figuresFrom({ title: main.title || '', description: desc });
+  set.figures = figures;
+  fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
+  console.log(
+    `figures (${figures.length}): ${figures.map((f) => `${f.name} [${f.type}]`).join(', ') || '(tak ada tokoh spesifik)'}`,
+  );
+  console.log('📄 ' + file);
+}
+
+export function parseExtractFiguresArgs(argv: string[]): FileStageOptions {
+  const file = argv.find(
+    (a, i) => !a.startsWith('--') && !['--title', '--desc', '--caption', '--headline'].includes(argv[i - 1]),
+  );
+  if (!file) throw new Error('no content-set file given');
+  if (!fs.existsSync(file)) {
+    console.log(ui.red(`${ui.ERR} File tak ada: ${file}`));
+    process.exit(1);
+  }
+  return { file };
+}
+
 // ---- CLI ----
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const get = (n) => {
+  const get = (n: string) => {
     const i = args.indexOf(n);
     return i >= 0 ? args[i + 1] : '';
   };
@@ -103,30 +146,14 @@ if (import.meta.main) {
       !a.startsWith('--') &&
       !['--title', '--desc', '--caption', '--headline'].includes(args[i - 1]),
   );
-  (async () => {
-    if (FILE) {
-      if (!fs.existsSync(FILE)) {
-        console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`));
-        process.exit(1);
-      }
-      const set = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-      const main = set.main || {};
-      // Include footage descriptions — named subjects (people/orgs) often appear there even when the
-      // main caption is a teaser. Comments too (sometimes name the subject).
-      const footageDesc = (set.footage || [])
-        .map((f) => f.description)
-        .filter(Boolean)
-        .slice(0, 12)
-        .join(' | ');
-      const desc = ((main.description || '') + ' ' + footageDesc).trim();
-      const figures = await figuresFrom({ title: main.title || '', description: desc });
-      set.figures = figures;
-      fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
-      console.log(
-        `figures (${figures.length}): ${figures.map((f) => `${f.name} [${f.type}]`).join(', ') || '(tak ada tokoh spesifik)'}`,
-      );
-      console.log('📄 ' + FILE);
-    } else {
+  if (FILE) {
+    runAcquisitionCli(async () => {
+      const options = parseExtractFiguresArgs(args);
+      const context = await createStandaloneAcquisitionContext();
+      await runExtractFigures(options, context);
+    });
+  } else {
+    (async () => {
       const input = {
         title: get('--title'),
         description: get('--desc'),
@@ -140,6 +167,6 @@ if (import.meta.main) {
         process.exit(1);
       }
       console.log(JSON.stringify(await figuresFrom(input), null, 2));
-    }
-  })();
+    })();
+  }
 }

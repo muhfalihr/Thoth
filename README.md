@@ -33,7 +33,7 @@ and reaction/news cards assembled around it).
 - 🗣️ **Narrator-driven mode** — an LLM script + TTS voiceover becomes the audio spine, grounded in the source and its comments.
 - 🖼️ **AI cover, hook titles & reaction/news overlays** — viral-thumbnail intros, bold hook titles, real profile/comment cards.
 - 🎨 **GPU color grading & transitions** — CapCut-style shaders (wgpu) + NVENC encoding.
-- 🔎 **Content sourcing** — the `scout/` layer assembles content-sets from multiple platforms.
+- 🔎 **Content sourcing** — the `scout/` layer assembles content-sets from multiple platforms, all acquisition routed through one enforced kernel (`scout/acquisition/`) with cache/TTL, circuit breaking, and sensitive-data rules.
 - 🌐 **CLI or server + worker** — run one-off from the terminal, or as a warm two-process deployment with a dashboard.
 
 ## Quick start
@@ -134,7 +134,7 @@ Manual acceptance checklist: **[docs/superpowers/plans/2026-07-18-project-profil
 | **[docs/FEATURES.md](docs/FEATURES.md)** | Feature catalog — narration, cover, overlays, color grading, transitions, audio |
 | **[docs/PIPELINE.md](docs/PIPELINE.md)** | Architecture — the five stages, output layout, and the `ViralMoment` schema |
 | **[docs/MODELS.md](docs/MODELS.md)** | Every AI model used, where it's configured, and how to swap it |
-| **[scout/README.md](scout/README.md)** | Content sourcing — discovery, content-sets, cultural enrichment |
+| **[scout/README.md](scout/README.md)** | Content sourcing — discovery, content-sets, cultural enrichment, acquisition kernel (env vars, cache, safety rules) |
 | **[CHANGELOG.md](CHANGELOG.md)** · **[BLUEPRINT.md](BLUEPRINT.md)** | Change history · architecture blueprint & feature status |
 
 ## Stack

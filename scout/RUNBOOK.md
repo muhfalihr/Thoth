@@ -112,3 +112,31 @@ Yang otomatis ditangani runner: preflight CDP, discovery + cetak kandidat, run_p
 enrich_image_paths, validate (**abort kalau FAIL**), lalu render Thoth + cetak lokasi output.
 Karena runner jalan **foreground/sinkron**, tidak ada masalah "premature kill" dari poll timeout —
 biarkan saja build_footage berjalan walau diam beberapa menit.
+
+---
+
+## 8. Acquisition kernel — troubleshooting
+
+Semua `pipeline/*.ts` akuisisi lewat `acquisition/index.ts` (lihat `scout/README.md` bagian 7 untuk
+detail lengkap: env vars, fallback order, circuit breaker, aturan data sensitif). Yang paling sering
+relevan saat debug lapangan:
+
+- **"circuit is open (rate-limited/auth-required/challenge)"** — platform itu di-blok untuk SISA
+  run ini (bukan bug transien). Login ulang di tab managed browser platform tsb, lalu jalankan
+  ulang pipeline-nya (circuit breaker reset per-proses, tak persist antar-run).
+- **Item yang baru saja tampil di satu tahap (mis. `itemFrame`) tiba-tiba "tak ada data" di tahap
+  berikutnya untuk URL yang SAMA dalam satu run** — itu aturan one-navigation-per-URL kernel: visit
+  KEDUA ke URL yang sama dalam satu run mendapat hasil visit PERTAMA (bukan navigasi baru). Ini
+  tercatat sebagai keterbatasan yang diketahui di `pipeline/discover_reels.ts` (komentar `ponytail:`
+  di sekitar `postShapeViaInspect`).
+- **Hasil terasa "basi" padahal platform sudah update** — cache durable ada di
+  `scout/output/acquisition-cache/v1/`. Hapus HANYA folder itu untuk memaksa fetch ulang:
+  ```
+  rm -rf scout/output/acquisition-cache/v1
+  ```
+  (tidak menyentuh content-set/crops lain di `scout/output/`).
+- **`gallery-dl: command not found`-style warning di log startup** — aman diabaikan; `gallery-dl`
+  opsional (`pip install gallery-dl` untuk mengaktifkan), kernel otomatis lanjut ke `direct-http`/
+  `dom` untuk media gambar.
+- **Verifikasi cepat kernel sehat**: dari `scout/`, `bun acquisition/boundary.test.ts` harus cetak
+  `ok acquisition_boundary`, dan `bun run test:acquisition` harus diakhiri `ok acquisition_suite`.

@@ -16,7 +16,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { connect, sleep } from '../lib/cdp.ts';
 import {
   evaluateMainSuitability,
   type MainCandidate,
@@ -34,47 +33,55 @@ import {
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
-import { matchesTopic, probeVideo, tiktokOembed, youtubeOembed } from '../lib/verify.ts';
-import { igPostOg, igProfileReels } from '../scrapers/ig_profile.ts';
+import { matchesTopic } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
-import { downloadThreads, threadsVideoSrc } from '../scrapers/threads_video.ts';
-import { tiktokProfileVideos } from '../scrapers/tiktok_profile.ts';
-import { downloadTiktok, tiktokDirectUrl } from '../scrapers/tiktok_video.ts';
 import { resolveSource, tightenQuery } from './resolve_source.ts';
 import {
   readVisionSignals,
   selectTraceVisionInput,
   visionInputDataUrl,
 } from './trace_source_vision.ts';
+import type { AcquisitionRunContext, PostRecord } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
-const args = process.argv.slice(2);
-const getFlag = (n) => {
-  const i = args.indexOf(n);
-  return i >= 0 ? args[i + 1] : null;
-};
-const FILE = args.find(
-  (a, i) => !a.startsWith('--') && !['--keywords', '--username', '--model'].includes(args[i - 1]),
-);
-const KEYWORDS = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
-const FORCE_USER = getFlag('--username');
-const NO_DL = args.includes('--no-threads-dl') || args.includes('--no-dl'); // skip local mp4 backup (Threads/TikTok)
-const MODEL =
-  getFlag('--model') || process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
-if (!FILE) {
-  console.log(
-    'Usage: bun trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]',
-  );
-  process.exit(1);
+export interface TraceSourceOptions {
+  file: string;
+  keywords: string[];
+  username: string | null;
+  model: string;
+  noDl: boolean;
 }
-if (!fs.existsSync(FILE)) {
-  console.log(ui.red(`${ui.ERR} File tak ada: ${FILE}`));
-  process.exit(1);
+
+export function parseTraceSourceArgs(argv: string[]): TraceSourceOptions {
+  const getFlag = (n: string) => {
+    const i = argv.indexOf(n);
+    return i >= 0 ? argv[i + 1] : null;
+  };
+  const file = argv.find(
+    (a, i) => !a.startsWith('--') && !['--keywords', '--username', '--model'].includes(argv[i - 1]),
+  );
+  const keywords = (getFlag('--keywords') || '').split(/[ ,]+/).filter(Boolean);
+  const username = getFlag('--username');
+  const noDl = argv.includes('--no-threads-dl') || argv.includes('--no-dl'); // skip local mp4 backup (Threads/TikTok)
+  const model =
+    getFlag('--model') || process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
+  if (!file) {
+    console.log(
+      'Usage: bun trace_source.ts <content_set.json> [--keywords k1,k2] [--username <u>] [--model <m>]',
+    );
+    process.exit(1);
+  }
+  if (!fs.existsSync(file)) {
+    console.log(ui.red(`${ui.ERR} File tak ada: ${file}`));
+    process.exit(1);
+  }
+  return { file, keywords, username, model, noDl };
 }
 
 const VIDEO = new Set(['tiktok', 'youtube']);
 // Platforms whose posts can become a downloadable MAIN. tiktok/youtube are always video; twitter/
 // instagram/facebook are admitted as candidates but each must pass a per-URL yt-dlp video probe;
-// threads can't be probed by yt-dlp (page = "Unsupported URL") → confirmed via threadsVideoSrc (fbcdn).
+// threads can't be probed by yt-dlp (page = "Unsupported URL") → confirmed via its fbcdn video src.
 const DLABLE = new Set(['tiktok', 'youtube', 'twitter', 'instagram', 'facebook', 'threads']);
 
 import { novitaKey } from '../lib/env.ts';
@@ -86,137 +93,20 @@ const cleanUser = (u) =>
     .replace(/[^A-Za-z0-9._].*$/, '')
     .toLowerCase();
 
-// Caption of the main video via public oEmbed (TikTok/YouTube). '' otherwise.
-async function captionOf(main) {
-  if (main.platform === 'tiktok') {
-    const m = await tiktokOembed(main.url);
-    return (m && m.title) || '';
-  }
-  if (main.platform === 'youtube') {
-    const m = await youtubeOembed(main.url);
-    return (m && m.title) || '';
-  }
-  if (main.platform === 'twitter') {
-    return await twitterText(main.url);
-  }
-  if (main.platform === 'threads') {
-    return (await threadsOg(main.url)).text;
-  }
-  if (main.platform === 'instagram') {
-    return (await igPostOg(main.url)).text;
-  }
-  return '';
-}
-// Threads keeps clean og:description (post text) + og:image (poster/photo) in the logged-in DOM —
-// unlike X, which strips them. One CDP read serves both captionOf and coverOf; cached per-url since
-// trace_source handles one main per run. ponytail: 1-entry cache is enough for a single-main process.
-let _thrOg = { url: '', text: '', image: '' };
-async function threadsOg(url) {
-  if (_thrOg.url === url) return _thrOg;
-  const res = { url, text: '', image: '' };
-  let c: Awaited<ReturnType<typeof connect>>;
+// Cover image/local asset for vision: an image-kind media asset's CDN url when the post has one, else
+// a DOM social-card crop (ponytail: no adapter's PostRecord exposes a poster/thumbnail for a VIDEO
+// post -- only the raw video CDN url -- so a crop is the only cover source left for video mains;
+// upgrade path is an adapter-level poster field if one becomes available). captureSocialCard is a
+// cache hit, not a second navigation, when 'social-card' was pre-registered before inspectPost ran.
+async function coverOf(main, record: PostRecord, context: AcquisitionRunContext): Promise<string> {
+  const image = record.media.find((m) => m.kind === 'image');
+  if (image?.ephemeral_url) return image.ephemeral_url;
   try {
-    c = await connect({ match: ['threads.com', 'threads.net'], requireMatch: true });
-  } catch (e) {
-    _thrOg = res;
-    return res;
-  }
-  try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(url, 8000);
-    await sleep(3000);
-    const raw = await c.evaluate(`JSON.stringify({
-      text: (document.querySelector('meta[property="og:description"]')||{}).content||'',
-      image: (document.querySelector('meta[property="og:image"]')||{}).content||''
-    })`);
-    try {
-      const o = JSON.parse(raw || '{}');
-      res.text = (o.text || '').trim();
-      res.image = (o.image || '').trim();
-    } catch (e) {}
-  } catch (e) {
-  } finally {
-    try {
-      c.close();
-    } catch (e) {}
-  }
-  _thrOg = res;
-  return res;
-}
-// X/Twitter has no post-text oEmbed → read the tweet body from the logged-in X tab over CDP,
-// same selector the comment scraper uses (article[data-testid="tweet"] → tweetText). og:description
-// is the fallback when the SPA article DOM hasn't hydrated yet.
-async function twitterText(url) {
-  let c: Awaited<ReturnType<typeof connect>>;
-  try {
-    c = await connect({ match: ['x.com', 'twitter.com'], requireMatch: true });
+    const card = await context.service.captureSocialCard(main.url, 'post');
+    return card.path;
   } catch (e) {
     return '';
   }
-  try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(url, 8000);
-    await sleep(3000);
-    const txt = await c.evaluate(`(() => {
-      const a = document.querySelector('article[data-testid="tweet"]');
-      const t = a && a.querySelector('[data-testid="tweetText"]');
-      if (t && t.innerText.trim()) return t.innerText.trim();
-      return (document.querySelector('meta[property="og:description"]')||{}).content || '';
-    })()`);
-    return (txt || '').trim();
-  } catch (e) {
-    return '';
-  } finally {
-    try {
-      c.close();
-    } catch (e) {}
-  }
-}
-// Cover image of an IG reel = its og:image (the generated cover frame, which carries the on-screen
-// HEADLINE overlay) — same CDP read as the caption, so igPostOg serves both in one page visit.
-// X/Twitter cover = the video poster frame (or photo) via yt-dlp's %(thumbnail)s. Tab-independent —
-// the logged-in SPA does NOT inject og:image client-side (only server-rendered HTML has it), so a CDP
-// og read returns empty; yt-dlp reads the real amplify_video_thumb URL. '' for text-only tweets.
-function xCoverImage(url) {
-  const YTDLP = process.env.YTDLP || 'yt-dlp';
-  try {
-    const out = execFileSync(
-      YTDLP,
-      ['--skip-download', '--no-warnings', '--print', '%(thumbnail)s', '--', url],
-      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 40000 },
-    )
-      .toString()
-      .trim()
-      .split(/\r?\n/)[0]
-      .trim();
-    return /^https?:\/\//.test(out) ? out : '';
-  } catch (e) {
-    return '';
-  }
-}
-async function coverOf(main) {
-  if (main.platform === 'tiktok') {
-    const m = await tiktokOembed(main.url);
-    return (m && m.thumbnail) || '';
-  }
-  if (main.platform === 'youtube') {
-    const m = await youtubeOembed(main.url);
-    return (m && m.thumbnail) || '';
-  }
-  if (main.platform === 'instagram') {
-    return (await igPostOg(main.url)).image;
-  }
-  if (main.platform === 'twitter') {
-    return await xCoverImage(main.url);
-  }
-  if (main.platform === 'threads') {
-    return (await threadsOg(main.url)).image;
-  }
-  return '';
 }
 
 // VISION: read the on-screen HEADLINE/HOOK text (+ any visible credit/watermark) from the cover, as
@@ -387,93 +277,194 @@ function handleMatch(url, u) {
   return !!h && normHandle(h) === want;
 }
 
+// Resolve a TikTok page URL to a direct downloadable CDN mp4 url. tikwm.com mirror API first (plain
+// HTTP, no browser); CDP fallback reads the page's own <video> element through the ONE sanctioned
+// navigation seam (context.service.browse) instead of a raw CDP connection. Mirrors the old
+// scrapers/tiktok_video.ts strategy, inlined so this file never imports that module.
+async function resolveTiktokCdn(
+  pageUrl: string,
+  context: AcquisitionRunContext,
+): Promise<{ url: string; via: string } | null> {
+  try {
+    const r = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(pageUrl)}&hd=1`, {
+      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (r.ok) {
+      const j: any = await r.json();
+      let p = j?.data?.hdplay || j?.data?.play || j?.data?.wmplay;
+      if (p) {
+        if (!/^https?:\/\//.test(p)) p = `https://www.tikwm.com${p}`;
+        return { url: p, via: 'tikwm' };
+      }
+    }
+  } catch (e) {}
+  try {
+    const src = await context.service.browse('tiktok', pageUrl, async (client) => {
+      await new Promise((r) => setTimeout(r, 3500));
+      return (
+        (await client.evaluate(`(() => {
+          let best = '', n = 0;
+          document.querySelectorAll('video').forEach(v => {
+            const s = v.currentSrc || v.src || '';
+            const a = (v.clientWidth || 0) * (v.clientHeight || 0);
+            if (/^https?:/.test(s) && a >= n) { best = s; n = a; }
+          });
+          return best;
+        })()`)) || ''
+      );
+    });
+    if (/^https?:\/\//.test(src)) return { url: src, via: 'cdp' };
+  } catch (e) {}
+  return null;
+}
+
+// Resolve a Threads page's fbcdn <video> src through context.service.browse() (never a raw CDP connection).
+async function resolveThreadsCdn(pageUrl: string, context: AcquisitionRunContext): Promise<string> {
+  try {
+    const src = await context.service.browse('threads', pageUrl, async (client) => {
+      await new Promise((r) => setTimeout(r, 2500));
+      return (
+        (await client.evaluate(`(() => {
+          const v = document.querySelector('video[src], video');
+          return v ? v.currentSrc || v.src || '' : '';
+        })()`)) || ''
+      );
+    });
+    return /^https?:\/\//.test(src) ? src : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// Download an already-resolved ephemeral CDN url into a local file through the acquisition kernel's
+// materializer (direct-http chain) — the only place this file writes downloaded bytes to disk.
+async function materializeCdn(
+  canonicalPageUrl: string,
+  cdnUrl: string,
+  context: AcquisitionRunContext,
+): Promise<string> {
+  try {
+    const local = await context.service.materialize(
+      {
+        id: `${canonicalPageUrl}#1`,
+        kind: 'video',
+        index: 1,
+        canonical_post_url: canonicalPageUrl,
+        ephemeral_url: cdnUrl,
+      },
+      'main',
+    );
+    return local.path;
+  } catch (e) {
+    return '';
+  }
+}
+
 // Find a Threads source by PROFILE: open threads.com/@user, read each post's text, and pick the one
 // whose text MATCHES the keywords (not just the newest). Falls back to newest if no keyword match.
-// Guarded: needs a threads.com/threads.net tab attached.
-async function findOriginalThreads(username, keywords = []) {
-  let c: Awaited<ReturnType<typeof connect>>;
+async function findOriginalThreads(username, keywords = [], context: AcquisitionRunContext) {
+  let raw = '';
   try {
-    c = await connect({ match: ['threads.com', 'threads.net'], requireMatch: true });
+    raw = await context.service.browse(
+      'threads',
+      `https://www.threads.com/@${username}`,
+      async (client) => {
+        await new Promise((r) => setTimeout(r, 2800));
+        return (
+          (await client.evaluate(`(() => {
+            const seen = new Set(); const out = [];
+            document.querySelectorAll('[data-pressable-container="true"]').forEach(el => {
+              const a = Array.from(el.querySelectorAll('a')).find(x => (x.getAttribute('href') || '').includes('/post/'));
+              if (!a) return;
+              const href = new URL(a.getAttribute('href'), location.origin).href.split('?')[0];
+              if (seen.has(href)) return; seen.add(href);
+              out.push({ href, text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 240) });
+            });
+            return JSON.stringify(out.slice(0, 20));
+          })()`)) || ''
+        );
+      },
+    );
   } catch (e) {
     return null;
   }
+  let posts = [];
   try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate('https://www.threads.com/@' + username, 6000);
-    await sleep(2800);
-    const raw = await c.evaluate(`(() => {
-      const seen = new Set(); const out = [];
-      document.querySelectorAll('[data-pressable-container="true"]').forEach(el => {
-        const a = Array.from(el.querySelectorAll('a')).find(x => (x.getAttribute('href') || '').includes('/post/'));
-        if (!a) return;
-        const href = new URL(a.getAttribute('href'), location.origin).href.split('?')[0];
-        if (seen.has(href)) return; seen.add(href);
-        out.push({ href, text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 240) });
-      });
-      return JSON.stringify(out.slice(0, 20));
-    })()`);
-    let posts = [];
-    try {
-      posts = JSON.parse(raw || '[]');
-    } catch (e) {}
-    const ownRe = new RegExp('/@' + username.replace(/\./g, '\\.') + '/post/', 'i');
-    const pool = posts.filter((p) => ownRe.test(p.href));
-    const list = pool.length ? pool : posts;
-    let pick = keywords.length ? list.find((p) => matchesTopic(p.text, keywords, 'any')) : null;
-    if (!pick) pick = list[0];
-    if (pick)
-      console.log(
-        `    [threads] pilih post ${keywords.length && list.indexOf(pick) >= 0 && matchesTopic(pick.text, keywords, 'any') ? '(match keyword)' : '(terbaru)'}: ${pick.href}`,
-      );
-    return pick ? { url: pick.href, platform: 'threads' } : null;
-  } finally {
-    c.close();
-  }
+    posts = JSON.parse(raw || '[]');
+  } catch (e) {}
+  const ownRe = new RegExp('/@' + username.replace(/\./g, '\\.') + '/post/', 'i');
+  const pool = posts.filter((p) => ownRe.test(p.href));
+  const list = pool.length ? pool : posts;
+  let pick = keywords.length ? list.find((p) => matchesTopic(p.text, keywords, 'any')) : null;
+  if (!pick) pick = list[0];
+  if (pick)
+    console.log(
+      `    [threads] pilih post ${keywords.length && list.indexOf(pick) >= 0 && matchesTopic(pick.text, keywords, 'any') ? '(match keyword)' : '(terbaru)'}: ${pick.href}`,
+    );
+  return pick ? { url: pick.href, platform: 'threads' } : null;
 }
 
-// Find the ORIGINAL on Instagram by PROFILE: open instagram.com/<user>/reels/ → newest reel.
-// The creator's own reel is the authentic source (vs a curator repost with baked overlay). Reels grid
-// has no captions, so take the newest reel (creators like this post on-topic consistently). IG reels
-// are downloadable by Thoth via firefox cookies. Guarded: needs an instagram.com tab attached.
-async function findOriginalInstagramCandidates(username): Promise<MainCandidate[]> {
-  // includePosts:true → also scan feed posts (/p/), since creators often publish the source as a feed
-  // VIDEO post, not a Reel; keep only verified-video posts (a /p/ can be a photo/carousel).
-  const all = await igProfileReels(username, { max: 10, captions: true, includePosts: true });
-  return all
-    .filter((item) => item.isVideo !== false)
-    .map((item) => ({
-      url: item.url,
-      platform: 'instagram',
-      caption: item.caption || '',
-      thumbnail: 'thumbnail' in item ? String(item.thumbnail || '') : '',
-      uploader: username,
-      isVideo: true,
+// PostRecord -> MainCandidate shape ranking/setMainTo already expect. thumbnail is always '' here:
+// discover() never exposes a poster/thumbnail (only the raw media CDN url) -- same gap coverOf()
+// works around with a social-card crop; per-candidate crops aren't done here (10-30 candidates per
+// run x an extra navigation each is a real cost the old thumbnail-bearing scrapers didn't pay), so
+// describeEvidence's vision-evidence step degrades to '' for these two sources. Upgrade path: an
+// adapter-level poster field, or a capped per-candidate captureSocialCard if that cost is worth it.
+export function candidateFromDiscovery(record: PostRecord, uploader: string): MainCandidate {
+  return {
+    url: record.canonical_url,
+    platform: record.platform,
+    caption: record.text || '',
+    thumbnail: '',
+    uploader: record.owner_handle || uploader,
+    // `record.media` is always [] for profile-discovery PostRecords (adapters don't populate it
+    // there -- see reelToPostRecord/videoToPostRecord) so it cannot be used as a video signal.
+    // Both callers of this function only ever discover video/reel entries by construction.
+    isVideo: true,
+  };
+}
+
+// Find the ORIGINAL on Instagram by PROFILE: discover() 'profile' request → newest video posts.
+// The creator's own post is the authentic source (vs a curator repost with baked overlay). IG reels
+// are downloadable by Thoth via firefox cookies.
+export async function findOriginalInstagramCandidates(
+  username,
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
+  const { items } = await context.service.discover({
+    platform: 'instagram',
+    kind: 'profile',
+    value: username,
+    limit: 10,
+  });
+  // No video filter here: profile-discovery `item.media` is always [] (see candidateFromDiscovery
+  // comment), and IG profile 'discover' by construction only returns reel/video entries.
+  return items.map((item) => candidateFromDiscovery(item, username));
+}
+
+// Find the ORIGINAL on TikTok by PROFILE (not search): discover() 'profile' request over the video
+// grid, returning every profile video so the shared gate can evaluate and rank them against the story.
+async function findOriginalTiktokCandidates(
+  username,
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
+  let items: PostRecord[] = [];
+  try {
+    ({ items } = await context.service.discover({
+      platform: 'tiktok',
+      kind: 'profile',
+      value: username,
+      limit: 30,
     }));
-}
-
-// Find the ORIGINAL on TikTok by PROFILE (not search): open tiktok.com/@user, list the video grid, and
-// return every profile video so the shared gate can evaluate and rank them against the story.
-async function findOriginalTiktokCandidates(username): Promise<MainCandidate[]> {
-  let videos = [];
-  try {
-    videos = await tiktokProfileVideos(username, { max: 30, captions: true });
   } catch (e) {
     return [];
   }
-  if (!videos.length) {
+  if (!items.length) {
     console.log(`    [tiktok] profil @${username}: 0 video terbaca (login/tab?).`);
     return [];
   }
-  return videos.map((video) => ({
-    url: video.url,
-    platform: 'tiktok',
-    caption: video.caption || '',
-    thumbnail: video.thumbnail || '',
-    uploader: username,
-    isVideo: true,
-  }));
+  return items.map((item) => candidateFromDiscovery(item, username));
 }
 
 // Detect a camera-emoji credit ("[📸 @user]", "📷 @user", "🎥 cr: @user") → the original is on
@@ -544,42 +535,42 @@ function findOriginalHandleCandidates(username, topic): MainCandidate[] {
 }
 
 // Find all originals on YouTube by CHANNEL NAME (watch URLs lack the handle).
-async function findOriginalYouTubeCandidates(username, topic): Promise<MainCandidate[]> {
+async function findOriginalYouTubeCandidates(
+  username,
+  topic,
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
   const query = `${username.replace(/[._]+/g, ' ')} ${topic || ''}`.trim();
-  let c: Awaited<ReturnType<typeof connect>>;
+  let raw = '';
   try {
-    c = await connect({ match: 'youtube.com', requireMatch: true });
+    raw = await context.service.browse(
+      'youtube',
+      `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+      async (client) => {
+        await new Promise((r) => setTimeout(r, 2000));
+        return (
+          (await client.evaluate(
+            `(() => { const out=[]; document.querySelectorAll('ytd-video-renderer').forEach(v=>{ const a=v.querySelector('a#video-title'); const ch=v.querySelector('ytd-channel-name #text, .ytd-channel-name'); const cn=((ch&&ch.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean)[0])||''; if(a && a.href.includes('watch')) out.push({u:a.href.split('&')[0], ch:cn}); }); return JSON.stringify(out.slice(0,12)); })()`,
+          )) || ''
+        );
+      },
+    );
   } catch (e) {
     return [];
   }
+  let items = [];
   try {
-    try {
-      await c.cmd('Page.bringToFront');
-    } catch (e) {}
-    await c.navigate(
-      `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
-      6000,
-    );
-    await sleep(2000);
-    const raw = await c.evaluate(
-      `(() => { const out=[]; document.querySelectorAll('ytd-video-renderer').forEach(v=>{ const a=v.querySelector('a#video-title'); const ch=v.querySelector('ytd-channel-name #text, .ytd-channel-name'); const cn=((ch&&ch.innerText||'').split('\\n').map(s=>s.trim()).filter(Boolean)[0])||''; if(a && a.href.includes('watch')) out.push({u:a.href.split('&')[0], ch:cn}); }); return JSON.stringify(out.slice(0,12)); })()`,
-    );
-    let items = [];
-    try {
-      items = JSON.parse(raw || '[]');
-    } catch (e) {}
-    const wanted = normHandle(username);
-    return items
-      .filter((item) => normHandle(item.ch) === wanted)
-      .map((item) => ({
-        url: item.u,
-        platform: 'youtube',
-        uploader: username,
-        isVideo: true,
-      }));
-  } finally {
-    c.close();
-  }
+    items = JSON.parse(raw || '[]');
+  } catch (e) {}
+  const wanted = normHandle(username);
+  return items
+    .filter((item) => normHandle(item.ch) === wanted)
+    .map((item) => ({
+      url: item.u,
+      platform: 'youtube',
+      uploader: username,
+      isVideo: true,
+    }));
 }
 
 // Handle in a post URL (the @username for TikTok/X/Threads, the path-user for IG). '' if none.
@@ -597,7 +588,27 @@ function urlHandle(url) {
 
 // Discover raw replacement candidates only. Suitability evaluation, ranking, and final selection belong
 // to evaluateMainSuitability and main_gate.
-async function findStoryCandidates(keywords, storyText, opts: any = {}): Promise<MainCandidate[]> {
+async function probeGenericViaService(url: string, context: AcquisitionRunContext) {
+  try {
+    const record = await context.service.inspectPost(url);
+    return {
+      isVideo: record.media.some((m) => m.kind === 'video'),
+      caption: record.text || '',
+      thumbnail: '',
+      uploader: record.owner_handle || '',
+      webpageUrl: record.canonical_url || url,
+    };
+  } catch (e) {
+    return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: url };
+  }
+}
+
+async function findStoryCandidates(
+  keywords,
+  storyText,
+  opts: any = {},
+  context: AcquisitionRunContext,
+): Promise<MainCandidate[]> {
   const kws = (keywords || []).map((value) => String(value).trim()).filter(Boolean);
   const query = tightenQuery(
     (opts.query || '').trim() ||
@@ -611,16 +622,20 @@ async function findStoryCandidates(keywords, storyText, opts: any = {}): Promise
   const entries = searchAll(query, kws[0] || query.split(/\s+/)[0]);
   return admitSearchCandidates(entries, {
     downloadablePlatforms: DLABLE,
-    probeGeneric: async (entry) => probeVideo(entry.url),
+    probeGeneric: async (entry) => probeGenericViaService(entry.url, context),
+    // inspectPost() is the kernel's cached oEmbed seam (the youtube/tiktok adapters call the same
+    // oEmbed endpoints and put the title in record.text). It THROWS where the raw helpers returned
+    // null, so catch back to null. thumbnail stays '' — PostRecord carries no cover field; it is only
+    // the last-ditch image for visual classification when media resolution fails.
     youtubeMeta: async (url) => {
-      const meta = await youtubeOembed(url);
-      return meta ? { title: meta.title || '', thumbnail: meta.thumbnail || '' } : null;
+      const record = await context.service.inspectPost(url).catch(() => null);
+      return record ? { title: record.text || '', thumbnail: '' } : null;
     },
     tiktokMeta: async (url) => {
-      const meta = await tiktokOembed(url);
-      return meta ? { title: meta.title || '', thumbnail: meta.thumbnail || '' } : null;
+      const record = await context.service.inspectPost(url).catch(() => null);
+      return record ? { title: record.text || '', thumbnail: '' } : null;
     },
-    threadsVideoSrc: (url) => threadsVideoSrc(url),
+    threadsVideoSrc: (url) => resolveThreadsCdn(url, context),
   });
 }
 
@@ -631,19 +646,25 @@ async function discoverReplacementCandidates({
   keywords,
   storyText,
   query,
+  cliKeywords,
+  context,
 }): Promise<MainCandidate[]> {
   const credited: MainCandidate[] = [];
   if (username && platHint === 'instagram') {
-    credited.push(...(await findOriginalInstagramCandidates(username)));
+    credited.push(...(await findOriginalInstagramCandidates(username, context)));
   } else if (username && platHint === 'tiktok') {
-    credited.push(...(await findOriginalTiktokCandidates(username)));
+    credited.push(...(await findOriginalTiktokCandidates(username, context)));
     credited.push(...findOriginalHandleCandidates(username, searchTopic));
   } else if (username && platHint === 'youtube') {
-    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
+    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic, context)));
   } else if (username && platHint === 'threads') {
-    const post = await findOriginalThreads(username, keywords.length ? keywords : KEYWORDS);
+    const post = await findOriginalThreads(
+      username,
+      keywords.length ? keywords : cliKeywords,
+      context,
+    );
     if (post) {
-      const videoSrc = await threadsVideoSrc(post.url);
+      const videoSrc = await resolveThreadsCdn(post.url, context);
       if (videoSrc) {
         credited.push({
           url: post.url,
@@ -656,19 +677,21 @@ async function discoverReplacementCandidates({
     }
   } else if (username) {
     credited.push(...findOriginalHandleCandidates(username, searchTopic));
-    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic)));
+    credited.push(...(await findOriginalYouTubeCandidates(username, searchTopic, context)));
   }
 
-  const generic = await findStoryCandidates(keywords.length ? keywords : KEYWORDS, storyText, {
-    credited: username,
-    query,
-  });
+  const generic = await findStoryCandidates(
+    keywords.length ? keywords : cliKeywords,
+    storyText,
+    { credited: username, query },
+    context,
+  );
   const seen = new Set<string>();
   return [...credited, ...generic].filter(
     (candidate) => candidate.url && !seen.has(candidate.url) && Boolean(seen.add(candidate.url)),
   );
 }
-async function setMainTo(set, orig, username) {
+async function setMainTo(set, orig, username, noDl, context: AcquisitionRunContext) {
   clearVideoOcrMetadata(set.main);
   set.main.url = orig.url;
   set.main.platform = orig.platform;
@@ -706,15 +729,14 @@ async function setMainTo(set, orig, username) {
   } else if (orig.platform === 'threads') {
     // Threads PAGE can't be yt-dlp'd → resolve to its fbcdn <video> src (downloadable). fbcdn URL is
     // ephemeral → keep a local mp4 backup. source_url = the Threads post (credit; survives expiry).
-    const vurl = orig.videoSrc || (await threadsVideoSrc(orig.url));
+    const vurl = orig.videoSrc || (await resolveThreadsCdn(orig.url, context));
     if (vurl) {
       set.main.source_url = orig.url;
       set.main.url = vurl;
       set.main.is_video = true;
-      if (!NO_DL) {
-        const code = (orig.url.split('/post/')[1] || 'thr').replace(/[/?#].*$/, '');
-        const out = outPath(`threads_${code}.mp4`);
-        if (downloadThreads(vurl, out)) set.main.source_local = out;
+      if (!noDl) {
+        const local = await materializeCdn(orig.url, vurl, context);
+        if (local) set.main.source_local = local;
       }
       console.log(
         ui.amber(
@@ -728,22 +750,20 @@ async function setMainTo(set, orig, username) {
   } else if (orig.platform === 'tiktok') {
     // Fill title/description from oEmbed only when EMPTY — keep a curated news-style description
     // (it grounds narration far better than a creator's casual hashtag caption).
-    const m = await tiktokOembed(orig.url);
-    if (m && m.title) {
-      if (!(set.main.title || '').trim()) set.main.title = m.title;
-      if (!(set.main.description || '').trim()) set.main.description = m.title;
+    const m = await context.service.inspectPost(orig.url).catch(() => null);
+    if (m && m.text) {
+      if (!(set.main.title || '').trim()) set.main.title = m.text;
+      if (!(set.main.description || '').trim()) set.main.description = m.text;
     }
     // yt-dlp tak bisa download PAGE TikTok → resolve ke URL CDN mp4 langsung (tikwm→CDP) + simpan mp4
     // lokal (cadangan krn CDN ephemeral). main.url=CDN (yt-dlp generic bisa), source_url=page TikTok asli.
     try {
-      const d = await tiktokDirectUrl(orig.url);
+      const d = await resolveTiktokCdn(orig.url, context);
       if (d && d.url) {
         set.main.source_url = orig.url;
         set.main.url = d.url;
-        if (!NO_DL) {
-          const id = (orig.url.match(/video\/(\d+)/) || [])[1] || 'tt';
-          const out = outPath(`tiktok_${id}.mp4`);
-          const local = await downloadTiktok(orig.url, out);
+        if (!noDl) {
+          const local = await materializeCdn(orig.url, d.url, context);
           if (local) set.main.source_local = local;
         }
         console.log(
@@ -760,10 +780,10 @@ async function setMainTo(set, orig, username) {
       }
     } catch (e) {}
   } else if (orig.platform === 'youtube') {
-    const m = await youtubeOembed(orig.url);
-    if (m && m.title) {
-      if (!(set.main.title || '').trim()) set.main.title = m.title;
-      if (!(set.main.description || '').trim()) set.main.description = m.title;
+    const m = await context.service.inspectPost(orig.url).catch(() => null);
+    if (m && m.text) {
+      if (!(set.main.title || '').trim()) set.main.title = m.text;
+      if (!(set.main.description || '').trim()) set.main.description = m.text;
     }
   }
   // username (credited path) wins; otherwise keep a branch-set identity (e.g. twitter uploader) and
@@ -777,14 +797,17 @@ async function setMainTo(set, orig, username) {
   carryCurrentOcrMetadata(set.main, orig);
 }
 
-(async () => {
-  const set = JSON.parse(fs.readFileSync(FILE, 'utf8'));
+export async function runTraceSource(
+  options: TraceSourceOptions,
+  context: AcquisitionRunContext,
+): Promise<void> {
+  const { file, keywords: cliKeywords, username: forceUser, model, noDl } = options;
+  const set = JSON.parse(fs.readFileSync(file, 'utf8'));
   const main = set.main;
   if (!main || !main.url) {
-    console.log(ui.red(`${ui.ERR} content-set tanpa main.url.`));
-    process.exit(1);
+    throw new Error('content-set tanpa main.url.');
   }
-  const topic = KEYWORDS[0] || (main.query || main.title || '').split(/\s+/)[0] || '';
+  const topic = cliKeywords[0] || (main.query || main.title || '').split(/\s+/)[0] || '';
 
   console.log(ui.rule());
   console.log('  Trace Source (LLM) — MAIN');
@@ -799,18 +822,24 @@ async function setMainTo(set, orig, username) {
   let username = '',
     platHint = '',
     keywords = [];
-  if (FORCE_USER) {
-    username = cleanUser(FORCE_USER);
+  if (forceUser) {
+    username = cleanUser(forceUser);
     console.log(`[force] username=@${username}`);
   } else {
-    caption = await captionOf(main);
-    const fallbackCover = await coverOf(main);
+    let record: PostRecord | null = null;
+    try {
+      record = await context.service.inspectPost(main.url);
+    } catch (e) {
+      record = null;
+    }
+    caption = record?.text || '';
+    const fallbackCover = record ? await coverOf(main, record, context) : '';
     const selectedCover = await selectTraceVisionInput(main, fallbackCover, {
       log: (line) => console.log(line),
     });
     const signals = await readVisionSignals(selectedCover.input, {
-      headline: (input) => visionHeadline(input, novitaKey(), MODEL),
-      scene: (input) => visionCover(input, novitaKey(), MODEL),
+      headline: (input) => visionHeadline(input, novitaKey(), model),
+      scene: (input) => visionCover(input, novitaKey(), model),
     });
     headline = signals.headline;
     scene = signals.scene;
@@ -878,11 +907,11 @@ async function setMainTo(set, orig, username) {
   const runtimeDeps = createMainCandidateRuntimeDeps({
     describeEvidence: async (candidate) => {
       if (!candidate.thumbnail) return '';
-      const result = await visionCoverKind(candidate.thumbnail, novitaKey(), MODEL);
+      const result = await visionCoverKind(candidate.thumbnail, novitaKey(), model);
       return result.desc || '';
     },
     classifyImage: async (image) => {
-      const result = await visionCoverKind(image, novitaKey(), MODEL);
+      const result = await visionCoverKind(image, novitaKey(), model);
       return result.kind === 'footage' || result.kind === 'commentary' ? result.kind : 'unknown';
     },
   });
@@ -914,6 +943,8 @@ async function setMainTo(set, orig, username) {
         keywords,
         storyText: storyCtx,
         query: '',
+        cliKeywords,
+        context,
       }),
     rankAccepted: (results) =>
       rankAcceptedMainCandidates(results, {
@@ -934,7 +965,7 @@ async function setMainTo(set, orig, username) {
     console.log(`[main-gate] input ${decision.suitability} confidence=${decision.confidence}`);
   } else {
     const oldUrl = set.main.url;
-    await setMainTo(set, decision.candidate, username);
+    await setMainTo(set, decision.candidate, username, noDl, context);
     if (decision.confidence === 'low') {
       set.main.source_low_confidence = true;
     } else {
@@ -952,14 +983,12 @@ async function setMainTo(set, orig, username) {
   try {
     if (/tiktok\.com\/@[^/]+\/video\//.test(set.main.url || '') && !set.main.source_url) {
       const page = set.main.url;
-      const d = await tiktokDirectUrl(page);
+      const d = await resolveTiktokCdn(page, context);
       if (d && d.url) {
         set.main.source_url = page;
         set.main.url = d.url;
-        if (!NO_DL) {
-          const id = (page.match(/video\/(\d+)/) || [])[1] || 'tt';
-          const out = outPath(`tiktok_${id}.mp4`);
-          const local = await downloadTiktok(page, out);
+        if (!noDl) {
+          const local = await materializeCdn(page, d.url, context);
           if (local) set.main.source_local = local;
         }
         console.log(
@@ -982,15 +1011,14 @@ async function setMainTo(set, orig, username) {
   try {
     if (/threads\.(com|net)\/@[^/]+\/post\//.test(set.main.url || '') && !set.main.source_url) {
       const page = set.main.url;
-      const vurl = await threadsVideoSrc(page);
+      const vurl = await resolveThreadsCdn(page, context);
       if (vurl) {
         set.main.source_url = page;
         set.main.url = vurl;
         set.main.is_video = true;
-        if (!NO_DL) {
-          const code = (page.split('/post/')[1] || 'thr').replace(/[/?#].*$/, '');
-          const out = outPath(`threads_${code}.mp4`);
-          if (downloadThreads(vurl, out)) set.main.source_local = out;
+        if (!noDl) {
+          const local = await materializeCdn(page, vurl, context);
+          if (local) set.main.source_local = local;
         }
         console.log(
           ui.amber(
@@ -1060,7 +1088,15 @@ async function setMainTo(set, orig, username) {
     await attachVideoOcr(set.main);
   }
 
-  fs.writeFileSync(FILE, JSON.stringify(set, null, 2), 'utf8');
+  fs.writeFileSync(file, JSON.stringify(set, null, 2), 'utf8');
   console.log(ui.rule('thin'));
-  console.log(`📄 ${FILE}`);
-})();
+  console.log(`📄 ${file}`);
+}
+
+if (import.meta.main) {
+  runAcquisitionCli(async () => {
+    const options = parseTraceSourceArgs(process.argv.slice(2));
+    const context = await createStandaloneAcquisitionContext();
+    await runTraceSource(options, context);
+  });
+}

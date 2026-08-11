@@ -271,3 +271,70 @@ Aturan:
 - Selector DOM (IG/X/FB/TikTok) adalah bagian paling rapuh — kalau platform ganti layout, file yang
   diretune: `scrape_comments_*.ts`, `scrapers/crop_post.ts`, `scrapers/ig_profile.ts`, `pipeline/discover_reels.ts`.
 - Script baru: tulis langsung di folder yang sesuai (`pipeline/`, `scrapers/`, `enrich/`) → test → commit.
+
+## 7. Acquisition Kernel (`acquisition/`)
+
+Semua akuisisi (discover/inspect/comments/social-card/media) dari file `pipeline/*.ts` WAJIB lewat
+`acquisition/index.ts` — satu-satunya permukaan yang boleh diimpor. Boundary ini ditegakkan otomatis
+oleh `acquisition/boundary.test.ts` (grep 6 pola terlarang lintas 7 file target: import langsung
+`lib/cdp.ts`, import langsung `scrapers/{ig_profile,tiktok_profile,tiktok_video,x_profile,
+threads_video,search_social_v2}.ts`, panggilan `connect(` mentah, nama helper scraper lama
+`tiktokOembed`/`youtubeOembed`/`probeVideo`/`postShape`/`directStreamUrl`/`tiktokDirectUrl`/
+`threadsVideoSrc`, dan `execFileSync`/`spawn` langsung ke `yt-dlp`/`gallery-dl`). Jalankan:
+
+```
+bun acquisition/boundary.test.ts   # ok acquisition_boundary
+bun run test:acquisition           # seluruh test kernel, ok acquisition_suite di akhir
+```
+
+**Environment variables** (default persis seperti di bawah — lihat `acquisition/config.ts`):
+
+```dotenv
+GALLERY_DL=gallery-dl
+THOTH_ACQUISITION_CAPTURE_MS=15000
+THOTH_ACQUISITION_DISCOVERY_TTL_MS=1800000
+THOTH_ACQUISITION_POST_TTL_MS=21600000
+THOTH_ACQUISITION_NEGATIVE_TTL_MS=900000
+```
+
+(`YTDLP` — default `yt-dlp` — juga dibaca `config.ts` untuk chain video/YouTube, di luar 5 var akuisisi inti di atas.)
+
+- **Browser visibility**: kernel tidak meluncurkan browser sendiri — ia melekat (attach) ke tab
+  Chromium/Brave/Edge yang SUDAH terbuka & login lewat CDP relay yang sama dipakai `lib/cdp.ts`
+  (lihat bagian 1). Setiap navigasi memaksa tab itu ke foreground (`Page.bringToFront` +
+  `Emulation.setFocusEmulationEnabled`) sebelum `navigate()` — banyak SPA hanya me-render penuh saat
+  tab-nya fokus.
+- **One-navigation-per-URL rule**: `BrowserCoordinator` (`acquisition/browser_coordinator.ts`)
+  membatasi MAKSIMAL SATU navigasi per canonical URL per run (dedup lewat cache promise) DAN
+  menyerialkan SEMUA navigasi secara global (satu ekor antrean) — dua pemanggil yang minta visit ke
+  URL yang sama dalam satu run akan mendapat hasil visit PERTAMA, bukan visit kedua yang terpisah.
+  Panggilan yang gagal TIDAK di-cache secara permanen (retryable); panggilan yang sukses tetap
+  di-cache untuk sisa run itu.
+- **Circuit breaker**: `BrowserCoordinator.recordOutcome()` membuka circuit per-platform (semua
+  panggilan berikutnya ke platform itu langsung gagal, tanpa navigasi baru) kalau outcome
+  bereason `rate-limited`/`auth-required`/`challenge`, atau kalau `invalid-response` terjadi 2x
+  berturut-turut untuk platform yang sama.
+- **Fallback order per intent** (`acquisition/policy.ts`, difilter oleh kapabilitas yang terdeteksi
+  saat start — `gallery-dl`/`yt-dlp` diprobe via `<bin> --version`, GAGAL diam-diam kalau binary
+  tak terpasang, bukan error keras):
+  - inspect/comments (non-YouTube): `network` → `public-metadata` → `dom`
+  - inspect/comments (YouTube): `public-metadata` → `yt-dlp`
+  - media gambar: `gallery-dl` → `direct-http` → `dom`
+  - media video (non-YouTube): `direct-http` → `yt-dlp`
+  - media video (YouTube): `yt-dlp`
+  - social-card: `dom`
+- **`gallery-dl` opsional**: install lewat `pip install gallery-dl` kalau mau chain gambar
+  memakainya; kalau tidak ada, kernel otomatis lanjut ke `direct-http`/`dom` tanpa gagal.
+- **Sensitive-data rules** (`acquisition/network_capture.ts`): kernel hanya MENGAMATI response
+  network (read-only) untuk mengekstrak field publik yang relevan (mis. hitungan comment) — TIDAK
+  PERNAH: menyimpan header lengkap, body mentah, URL CDN yang sudah di-sign, cookie, atau header
+  `Authorization`/CSRF apa pun ke disk. Request GraphQL privat/berlogin BOLEH diamati untuk membaca
+  isinya, tapi TIDAK PERNAH direplay/dipanggil ulang oleh kernel.
+- **Cache lokasi**: `scout/output/acquisition-cache/v1/` (durable, lintas-run — lihat
+  `lib/paths.ts::ACQUISITION_CACHE_DIR` dan `acquisition/cache.ts`). Untuk mengosongkan HANYA
+  cache akuisisi (tanpa menyentuh output content-set/crops lain di `scout/output/`):
+  ```
+  rm -rf scout/output/acquisition-cache/v1
+  ```
+  (PowerShell: `Remove-Item -Recurse -Force scout/output/acquisition-cache/v1`). Cache akan
+  dibuat ulang otomatis di run berikutnya.

@@ -252,6 +252,14 @@ try {
     /json-client|json-password|json-auth|colon-client|cli-password|cli-client/i,
   );
 
+  // Instagram GraphQL request logging: x-csrf-token header, a `variables={...}` JSON blob
+  // carrying a token, and a signed CDN query string, all in one captured request line.
+  const capturedRequest = sanitizeResolverDetail(
+    'x-csrf-token: csrf-secret variables={"shortcode":"ABC","token":"private"} ' +
+      'https://cdn.test/image.jpg?oe=secret&sig=signed',
+  );
+  assert.doesNotMatch(capturedRequest, /csrf-secret|private|signed|https?:\/\//i);
+
   // A known platform host serving an UNRECOGNIZED path is still an HTML page, never media. The
   // resolver used to key off a handful of path shapes (/p/, /reel/, watch?v=, /status/) and treat
   // everything else as "already a direct media url", so these went to ffprobe verbatim. ffprobe read

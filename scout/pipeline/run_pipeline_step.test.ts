@@ -3,7 +3,7 @@ import { PipelineStepError, runPipelineStep } from './run_pipeline_step.ts';
 
 {
   let warned = false;
-  assert.throws(
+  await assert.rejects(
     () =>
       runPipelineStep(
         { label: 'trace_source', required: true },
@@ -21,7 +21,7 @@ import { PipelineStepError, runPipelineStep } from './run_pipeline_step.ts';
   assert.equal(warned, false);
 }
 
-assert.throws(
+await assert.rejects(
   () =>
     runPipelineStep(
       {
@@ -40,7 +40,7 @@ assert.throws(
   (error: unknown) => error instanceof PipelineStepError && error.step === 'build_footage',
 );
 
-assert.throws(
+await assert.rejects(
   () =>
     runPipelineStep(
       { label: 'trace_source', required: true },
@@ -65,7 +65,7 @@ assert.throws(
 // nothing of its own, so without this the operator sees the same bare
 // "Required pipeline step failed" as a genuine crash — the failure that cost a
 // live acceptance run two 15-minute debugging cycles.
-assert.throws(
+await assert.rejects(
   () =>
     runPipelineStep(
       { label: 'build_footage', required: true },
@@ -87,7 +87,7 @@ assert.throws(
 
 {
   let warning = '';
-  const ok = runPipelineStep(
+  const ok = await runPipelineStep(
     { label: 'comments', required: false },
     {
       execute: () => {
@@ -104,7 +104,7 @@ assert.throws(
 
 {
   let calls = 0;
-  const ok = runPipelineStep(
+  const ok = await runPipelineStep(
     { label: 'validate', required: true },
     {
       execute: () => {
@@ -118,3 +118,80 @@ assert.throws(
   assert.equal(ok, true);
   assert.equal(calls, 1);
 }
+
+{
+  let completed = false;
+  const ok = await runPipelineStep(
+    { label: 'async-stage', required: true },
+    {
+      execute: async () => {
+        await Promise.resolve();
+        completed = true;
+      },
+      warn: () => {
+        throw new Error('must not warn');
+      },
+    },
+  );
+  assert.equal(ok, true);
+  assert.equal(completed, true);
+}
+
+// FIX 3: a plain in-process Error (the only kind of throw possible now that stages run in-process,
+// not as subprocesses) must keep its real message and stack through the wrapper -- not fall through
+// to the generic "subprocess failed" text, which erases all operator diagnostics.
+{
+  const original = new Error('content-set validation failed: main.url missing');
+  await assert.rejects(
+    () =>
+      runPipelineStep(
+        { label: 'validate', required: true },
+        {
+          execute: () => {
+            throw original;
+          },
+          warn: () => {},
+        },
+      ),
+    (error: unknown) =>
+      error instanceof PipelineStepError &&
+      error.message.includes('content-set validation failed: main.url missing') &&
+      error.cause instanceof Error &&
+      error.cause.message === original.message &&
+      error.cause.stack === original.stack,
+  );
+}
+
+// FIX 2: a hung stage must be bounded by timeoutMs, not hang the pipeline forever. Optional steps
+// warn-and-continue like any other failure; required steps throw like any other failure.
+{
+  let warning = '';
+  const ok = await runPipelineStep(
+    { label: 'topic_dossier', required: false, timeoutMs: 20 },
+    {
+      execute: () => new Promise<void>(() => {}), // never resolves
+      warn: (message) => {
+        warning = message;
+      },
+    },
+  );
+  assert.equal(ok, false);
+  assert.match(warning, /topic_dossier.*optional.*continue/i);
+}
+
+await assert.rejects(
+  () =>
+    runPipelineStep(
+      { label: 'build_footage', required: true, timeoutMs: 20 },
+      {
+        execute: () => new Promise<void>(() => {}), // never resolves
+        warn: () => {
+          throw new Error('required timeout must not warn-and-continue');
+        },
+      },
+    ),
+  (error: unknown) =>
+    error instanceof PipelineStepError && /timed out after 20ms/.test(error.message),
+);
+
+console.log('run_pipeline_step.test.ts OK');

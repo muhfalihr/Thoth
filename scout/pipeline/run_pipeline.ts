@@ -1,83 +1,59 @@
 // run_pipeline.ts — one command: a chosen topic URL → a complete, validated Thoth content-set.
 //
 // Chains the whole scout enrich flow that was previously run by hand:
-//   seed (auto-fetch caption) → trace_source (resolve real source / keyword-find main)
+//   seed (auto-inspect via AcquisitionService) → trace_source (resolve real source / keyword-find main)
 //   → extract_figures (tokoh) → build_footage (objek→footage, gated) → collect_comments (multi-sumber)
 //   → validate.
 //
 //   bun run_pipeline.ts <topic_url> [--out file.json] [--title "..."] [--desc "..."]
 //                        [--per 2] [--max 4] [--cap 12] [--no-comments]
 //
-// <topic_url> = the post/reel the topic was discovered from (e.g. an IG reel). Caption is auto-fetched
-// (TikTok/YouTube oEmbed; IG via og:description) unless --title/--desc are given. Needs the relevant
-// platform tabs attached (IG caption fetch + comment scraping + Threads/crop steps).
+// <topic_url> = the post/reel the topic was discovered from (e.g. an IG reel). Caption/media shape are
+// inspected once via the shared AcquisitionService (context.service.inspectPost) unless --title/--desc
+// are given. Every stage below runs in-process against the SAME AcquisitionRunContext, so a URL is
+// never navigated to twice across the whole pipeline run.
 
 import fs from 'node:fs';
-import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { run } from '../lib/cdp.ts';
-import { tiktokOembed, youtubeOembed } from '../lib/verify.ts';
-import { igPostOg } from '../scrapers/ig_profile.ts';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import { runPipelineStep } from './run_pipeline_step.ts';
+import type { AcquisitionRunContext } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+import type { ContentSet, MainVideo } from '../lib/types.ts';
+import { runTraceSource, type TraceSourceOptions } from './trace_source.ts';
+import { runCollectComments, type CollectCommentsOptions } from './collect_comments.ts';
+import { runTopicDossier } from '../enrich/topic_dossier.ts';
+import { runBuildFootage, type BuildFootageOptions } from './build_footage.ts';
+import { runExtractFigures } from './extract_figures.ts';
+import { runValidateContentSet } from './validate_content_set.ts';
 
-const args = process.argv.slice(2);
-const getFlag = (n, d) => {
-  const i = args.indexOf(n);
-  return i >= 0 ? args[i + 1] : d;
-};
-const URL = args.find(
-  (a, i) =>
-    !a.startsWith('--') &&
-    !['--out', '--title', '--desc', '--per', '--max', '--cap'].includes(args[i - 1]),
-);
-const OUT = getFlag('--out', 'thoth_content_set.json');
-const TITLE = getFlag('--title', '');
-const DESC = getFlag('--desc', '');
-const PER = getFlag('--per', '2');
-const MAX = getFlag('--max', '4');
-const CAP = getFlag('--cap', '12');
-const NO_COMMENTS = args.includes('--no-comments');
-if (!URL) {
-  console.log(
-    'Usage: bun run_pipeline.ts <topic_url> [--out f.json] [--title][--desc] [--per 2][--max 4][--cap 12] [--no-comments]',
-  );
-  process.exit(1);
+type FileStageOptions = { file: string };
+
+const DEFAULT_MODEL =
+  process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
+
+export interface RunPipelineOptions {
+  url: string;
+  out: string;
+  title?: string;
+  desc?: string;
+  per?: number;
+  max?: number;
+  cap?: number;
+  noComments: boolean;
 }
 
-const here = (s) => path.join(import.meta.dirname, s);
-const platformOf = (u) =>
-  /tiktok\.com/.test(u)
-    ? 'tiktok'
-    : /youtube\.com|youtu\.be/.test(u)
-      ? 'youtube'
-      : /instagram\.com/.test(u)
-        ? 'instagram'
-        : /(?:x|twitter)\.com/.test(u)
-          ? 'twitter'
-          : /facebook\.com/.test(u)
-            ? 'facebook'
-            : /threads\.(com|net)/.test(u)
-              ? 'threads'
-              : 'web';
-
-// Best-effort caption fetch when --desc not supplied.
-async function fetchCaption(url, platform) {
-  try {
-    if (platform === 'tiktok') {
-      const m = await tiktokOembed(url);
-      return (m && m.title) || '';
-    }
-    if (platform === 'youtube') {
-      const m = await youtubeOembed(url);
-      return (m && m.title) || '';
-    }
-    if (platform === 'instagram') {
-      return (await igPostOg(url)).text;
-    }
-  } catch (e) {}
-  return '';
+export interface RunPipelineDeps {
+  createContext(): Promise<AcquisitionRunContext>;
+  inspectSeed(url: string, context: AcquisitionRunContext): Promise<Partial<MainVideo>>;
+  writeSeed(file: string, seed: ContentSet): Promise<void>;
+  traceSource(options: TraceSourceOptions, context: AcquisitionRunContext): Promise<void>;
+  collectComments(options: CollectCommentsOptions, context: AcquisitionRunContext): Promise<void>;
+  topicDossier(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
+  buildFootage(options: BuildFootageOptions, context: AcquisitionRunContext): Promise<void>;
+  extractFigures(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
+  validate(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
+  summarize(file: string): Promise<void>;
 }
 
 const STEP_TIMEOUT_MS = 600_000;
@@ -93,93 +69,163 @@ const FOOTAGE_TIMEOUT_MS = 5_400_000;
 // a live search, so the 10 min default SIGTERM'd it mid-evaluation right after its first accept.
 const TRACE_SOURCE_TIMEOUT_MS = 1_800_000;
 
-// Required safety steps abort the command; optional enrichment may degrade gracefully.
-function step(label, script, scriptArgs, options: { required: boolean; timeoutMs?: number }) {
+// Required safety steps abort the run; optional enrichment may degrade gracefully — same policy the
+// old subprocess-based `step()` used, just wrapping an in-process call instead of execFileSync.
+function runStage(
+  label: string,
+  required: boolean,
+  execute: () => Promise<void>,
+  timeoutMs: number = STEP_TIMEOUT_MS,
+): Promise<boolean> {
   ui.stage(label);
   return runPipelineStep(
-    { label, required: options.required },
-    {
-      execute: () =>
-        execFileSync(process.execPath, [here(script), ...scriptArgs], {
-          stdio: 'inherit',
-          timeout: options.timeoutMs ?? STEP_TIMEOUT_MS,
-        }),
-      warn: (message) => console.log(ui.amber(`  ${ui.WARN} ${message}`)),
-    },
+    { label, required, timeoutMs },
+    { execute, warn: (message) => console.log(ui.amber(`  ${ui.WARN} ${message}`)) },
   );
 }
 
-run(async () => {
-  const platform = platformOf(URL);
-  const file = outPath(OUT);
+export async function runPipelineWithDeps(
+  options: RunPipelineOptions,
+  deps: RunPipelineDeps,
+): Promise<void> {
+  const { url, out: file, noComments } = options;
+  const context = await deps.createContext();
 
-  ui.stage('RUN PIPELINE  →  ' + file);
-  console.log(ui.dim(`topic: [${platform}] ${URL}`));
-
-  // 1) Seed content-set (main + caption).
-  const desc = DESC || (await fetchCaption(URL, platform));
-  console.log(`caption: ${(desc || '(kosong)').slice(0, 90)}`);
-  const seed = {
+  // 1) Seed content-set (main + caption/shape from a single inspect).
+  const seedFields = await deps.inspectSeed(url, context);
+  const desc = options.desc || seedFields.description || '';
+  const seed: ContentSet = {
     main: {
-      url: URL,
-      platform,
-      title: TITLE || desc.slice(0, 120),
+      url,
+      platform: seedFields.platform || '',
+      title: options.title || desc.slice(0, 120),
       description: desc,
-      is_video: true,
+      is_video: seedFields.is_video ?? true,
       duration_sec: 0,
       profile: { name: '', handle: '', followers: '', avatar_url: '' },
     },
     footage: [],
     comments: [],
   };
-  fs.writeFileSync(file, JSON.stringify(seed, null, 2), 'utf8');
+  console.log(`caption: ${(desc || '(kosong)').slice(0, 90)}`);
+  await deps.writeSeed(file, seed);
 
-  // 2-6) Chain the enrich steps. collect_comments runs BEFORE build_footage so subject/object extraction
-  // can mine the comments too (names/brands often surface there). extract_figures runs AFTER build_footage
-  // so it can also read footage descriptions — named subjects (e.g. "Sara Wijayanto", "MVP Pictures")
-  // often surface there even when the topic/main caption is just a teaser.
-  step('trace_source (sumber/main)', 'trace_source.ts', [file], {
-    required: true,
-    timeoutMs: TRACE_SOURCE_TIMEOUT_MS,
-  });
-  if (!NO_COMMENTS)
-    step('collect_comments (multi-sumber)', 'collect_comments.ts', [
-      file,
-      '--cap',
-      CAP,
-      '--extra',
-      URL,
-    ], { required: false });
-  // topic_dossier SEBELUM build_footage: search_queries-nya men-drive pencarian footage.
-  // Best-effort; bila gagal, build_footage fallback ke footageObjects.
-  if (!NO_COMMENTS)
-    step('topic_dossier (enrich topik + query footage)', '../enrich/topic_dossier.ts', [file], {
-      required: false,
-    });
-  step(
-    'build_footage (dossier→footage)',
-    'build_footage.ts',
-    [file, '--per', PER, '--max', MAX],
-    { required: true, timeoutMs: FOOTAGE_TIMEOUT_MS },
+  // 2-6) Chain the enrich steps, all sharing `context`. collect_comments runs BEFORE build_footage so
+  // subject/object extraction can mine the comments too. extract_figures runs AFTER build_footage so it
+  // can also read footage descriptions. Every step is awaited: they run strictly in order and each one
+  // reads the file the previous step wrote.
+  await runStage(
+    'trace_source (sumber/main)',
+    true,
+    () =>
+      deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
+    TRACE_SOURCE_TIMEOUT_MS,
   );
-  step('extract_figures (tokoh — main + footage)', 'extract_figures.ts', [file], {
-    required: false,
+
+  if (!noComments) {
+    await runStage('collect_comments (multi-sumber)', false, () =>
+      deps.collectComments(
+        { file, perSource: 6, cap: options.cap ?? 12, maxSources: 4, extra: [url] },
+        context,
+      ),
+    );
+    // topic_dossier SEBELUM build_footage: search_queries-nya men-drive pencarian footage.
+    await runStage('topic_dossier (enrich topik + query footage)', false, () =>
+      deps.topicDossier({ file }, context),
+    );
+  }
+
+  await runStage(
+    'build_footage (dossier→footage)',
+    true,
+    () =>
+      deps.buildFootage(
+        { file, objects: null, per: options.per ?? 2, max: options.max ?? 4, noCrop: false, profile: null },
+        context,
+      ),
+    FOOTAGE_TIMEOUT_MS,
+  );
+
+  await runStage('extract_figures (tokoh — main + footage)', false, () =>
+    deps.extractFigures({ file }, context),
+  );
+
+  await runStage('validate', true, () => deps.validate({ file }, context));
+
+  await deps.summarize(file);
+}
+
+// Production deps: real AcquisitionService + the actual stage implementations.
+const realDeps: RunPipelineDeps = {
+  createContext: () => createStandaloneAcquisitionContext(),
+  inspectSeed: async (url, context) => {
+    // ponytail: intents registered here (not in runPipelineWithDeps) so the shared orchestrator stays
+    // acquisition-agnostic and testable with a bare `{service:{}}` fake context.
+    for (const intent of ['inspect', 'comments', 'media', 'social-card'] as const) {
+      context.service.registerIntent(url, intent);
+    }
+    const record = await context.service.inspectPost(url);
+    return { platform: record.platform, description: record.text || '', is_video: true };
+  },
+  writeSeed: async (file, seed) => {
+    fs.writeFileSync(file, JSON.stringify(seed, null, 2), 'utf8');
+  },
+  traceSource: (options, context) => runTraceSource(options, context),
+  collectComments: (options, context) => runCollectComments(options, context),
+  topicDossier: (options, context) => runTopicDossier(options, context),
+  buildFootage: (options, context) => runBuildFootage(options, context),
+  extractFigures: (options, context) => runExtractFigures(options, context),
+  validate: async (options, context) => {
+    const ok = await runValidateContentSet(options, context);
+    if (!ok) throw new Error('content-set validation failed');
+  },
+  summarize: async (file) => {
+    try {
+      const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+      ui.stage('RINGKASAN');
+      console.log(`MAIN     : [${s.main.platform}] ${s.main.url}`);
+      console.log(
+        `FIGURES  : ${(s.figures || []).map((f) => f.name + '[' + f.type + ']').join(', ') || '(none)'}`,
+      );
+      console.log(
+        `FOOTAGE  : ${(s.footage || []).length} (${(s.footage || []).filter((f) => f.is_video).length} video / ${(s.footage || []).filter((f) => !f.is_video).length} card)`,
+      );
+      console.log(`COMMENTS : ${(s.comments || []).length}`);
+      console.log(`\n📄 ${file}`);
+    } catch (e) {}
+  },
+};
+
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  const getFlag = (n: string, d: string) => {
+    const i = args.indexOf(n);
+    return i >= 0 ? args[i + 1] : d;
+  };
+  const url = args.find(
+    (a, i) =>
+      !a.startsWith('--') &&
+      !['--out', '--title', '--desc', '--per', '--max', '--cap'].includes(args[i - 1]),
+  );
+  if (!url) {
+    console.log(
+      'Usage: bun run_pipeline.ts <topic_url> [--out f.json] [--title][--desc] [--per 2][--max 4][--cap 12] [--no-comments]',
+    );
+    process.exit(1);
+  }
+  const options: RunPipelineOptions = {
+    url,
+    out: outPath(getFlag('--out', 'thoth_content_set.json') as string),
+    title: getFlag('--title', ''),
+    desc: getFlag('--desc', ''),
+    per: parseInt(getFlag('--per', '2') as string, 10),
+    max: parseInt(getFlag('--max', '4') as string, 10),
+    cap: parseInt(getFlag('--cap', '12') as string, 10),
+    noComments: args.includes('--no-comments'),
+  };
+  runAcquisitionCli(async () => {
+    ui.stage('RUN PIPELINE  →  ' + options.out);
+    console.log(ui.dim(`topic: ${options.url}`));
+    await runPipelineWithDeps(options, realDeps);
   });
-
-  // 6) Validate + summary.
-  step('validate', 'validate_content_set.ts', [file], { required: true });
-
-  try {
-    const s = JSON.parse(fs.readFileSync(file, 'utf8'));
-    ui.stage('RINGKASAN');
-    console.log(`MAIN     : [${s.main.platform}] ${s.main.url}`);
-    console.log(
-      `FIGURES  : ${(s.figures || []).map((f) => f.name + '[' + f.type + ']').join(', ') || '(none)'}`,
-    );
-    console.log(
-      `FOOTAGE  : ${(s.footage || []).length} (${(s.footage || []).filter((f) => f.is_video).length} video / ${(s.footage || []).filter((f) => !f.is_video).length} card)`,
-    );
-    console.log(`COMMENTS : ${(s.comments || []).length}`);
-    console.log(`\n📄 ${file}`);
-  } catch (e) {}
-});
+}

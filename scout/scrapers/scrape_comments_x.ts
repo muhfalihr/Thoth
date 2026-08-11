@@ -40,34 +40,45 @@ const EXTRACT_JS = `(() => {
   return JSON.stringify(out);
 })()`;
 
-const { url, out, max } = parseArgs(process.argv.slice(2));
-if (!url) {
-  console.log('Usage: bun scrape_comments_x.ts <tweet_url> [out.json] [--max N]');
-  process.exit(1);
-}
+// Scroll to lazy-load more replies. Exported alongside ensureLoaded (Task 15 review fix) so
+// pipeline/collect_comments.ts can reuse the exact same wait/scroll through
+// AcquisitionService.browse() instead of duplicating it.
+const SCROLL_JS = 'window.scrollBy(0, 1400)';
+const ensureLoaded = (client: import('../lib/cdp.ts').CdpClient) =>
+  pollCount(client, COUNT_JS, 8, 1000);
 
-const id = (url.match(/status\/(\d+)/) || [, ''])[1];
-const user = (url.match(/(?:x|twitter)\.com\/([^/?#]+)/) || [, 'user'])[1];
+export { EXTRACT_JS, COUNT_JS, SCROLL_JS, ensureLoaded };
 
-run(() =>
-  scrapeComments({
-    url,
-    platform: 'twitter',
-    label: 'X/Twitter',
-    match: ['x.com', 'twitter.com'],
-    idToken: id,
-    ensureLoaded: (client) => pollCount(client, COUNT_JS, 8, 1000),
-    extractJs: EXTRACT_JS,
-    scrollJs: 'window.scrollBy(0, 1400)',
-    buildMain: (u) => ({
-      url: u,
+if (import.meta.main) {
+  const { url, out, max } = parseArgs(process.argv.slice(2));
+  if (!url) {
+    console.log('Usage: bun scrape_comments_x.ts <tweet_url> [out.json] [--max N]');
+    process.exit(1);
+  }
+
+  const id = (url.match(/status\/(\d+)/) || [, ''])[1];
+  const user = (url.match(/(?:x|twitter)\.com\/([^/?#]+)/) || [, 'user'])[1];
+
+  run(() =>
+    scrapeComments({
+      url,
       platform: 'twitter',
-      title: `X @${user} #${id}`,
-      is_video: false,
-      duration_sec: 0,
-      profile: { name: user, handle: user, followers: '', avatar_url: '' },
+      label: 'X/Twitter',
+      match: ['x.com', 'twitter.com'],
+      idToken: id,
+      ensureLoaded,
+      extractJs: EXTRACT_JS,
+      scrollJs: SCROLL_JS,
+      buildMain: (u) => ({
+        url: u,
+        platform: 'twitter',
+        title: `X @${user} #${id}`,
+        is_video: false,
+        duration_sec: 0,
+        profile: { name: user, handle: user, followers: '', avatar_url: '' },
+      }),
+      max: max || 12,
+      out: out || 'thoth_content_set.json',
     }),
-    max: max || 12,
-    out: out || 'thoth_content_set.json',
-  }),
-);
+  );
+}

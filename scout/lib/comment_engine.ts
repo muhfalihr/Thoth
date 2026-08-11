@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { connect, sleep } from './cdp.ts';
+import type { CdpClient } from './cdp.ts';
 import { normalizeLikes } from './comments.ts';
 import { finalizeCommentContentSet } from './comment_content.ts';
 import { CROPS_DIR, outPath } from './paths.ts';
@@ -21,15 +22,37 @@ import { okCrop } from './crop_guard.ts';
 
 const PAD = 6; // CSS px padding around each comment crop
 
+// Reusable multi-source merge (Task 15): NOT CLI-only — this operates on already-collected
+// comment records (from the kernel's AcquisitionService.collectComments(), one call per source),
+// independent of the DOM/CDP scraping above. Used by pipeline/collect_comments.ts to fold several
+// sources' comments into one deduped, likes-ranked, capped list before any screenshot is taken.
+export const dedupeKey = (c: { author?: string; text?: string }) =>
+  `${(c.author || '').toLowerCase()}|${(c.text || '').trim().slice(0, 60).toLowerCase()}`;
+
+export function dedupeAndRankComments<
+  T extends { author?: string; text?: string; likes?: number },
+>(comments: T[], cap: number): T[] {
+  const merged: T[] = [];
+  const seen = new Set<string>();
+  for (const c of comments) {
+    const key = dedupeKey(c);
+    if (!c.text || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(c);
+  }
+  merged.sort((a, b) => (b.likes || 0) - (a.likes || 0));
+  return merged.slice(0, cap);
+}
+
 // "[Sticker]"/"[Stiker]" (and the like) carry no text for narration grounding.
-const isStickerOnly = (t) => /^\[\s*sti?c?ker\s*\]$/i.test((t || '').trim());
+const isStickerOnly = (t: string) => /^\[\s*sti?c?ker\s*\]$/i.test((t || '').trim());
 
 // Link-first promo "comments" — a news/brand account dropping its article link (e.g.
 // "http://\nKLIKSUMUT.COM | MEDAN – …") are promo, not audience reactions. Skip them.
-const isLinkSpam = (t) => /^https?:\/\//i.test((t || '').trim());
+const isLinkSpam = (t: string) => /^https?:\/\//i.test((t || '').trim());
 
 // Poll an in-page count expression until > 0 (or tries exhausted).
-async function pollCount(client, countJs, tries = 8, interval = 1000) {
+async function pollCount(client: CdpClient, countJs: string, tries = 8, interval = 1000) {
   for (let t = 0; t < tries; t++) {
     const n = await client.evaluate(countJs);
     if (n > 0) return n;
@@ -38,55 +61,35 @@ async function pollCount(client, countJs, tries = 8, interval = 1000) {
   return 0;
 }
 
-async function scrapeComments(opts) {
-  const {
-    url,
-    platform,
-    match, // domain substring (or array) for connect() to pick the tab
-    requireMatch = true, // error if that tab isn't attached (don't drive the wrong site)
-    idToken = '', // if current href already contains this, skip navigation
-    ensureLoaded, // async (client) => count ; opens panel / first wait
-    extractJs, // string IIFE → JSON array, tags data-clip-idx on crop element
-    scrollJs, // optional string evaluated a few times to lazy-load more
-    scrollRounds = 4,
-    buildMain, // (url) => main object
-    max = 12,
-    out = 'thoth_content_set.json',
-    pad = PAD,
-    skipSticker = true,
-    label = platform,
-    commentsOnly = process.argv.includes('--comments-only'),
-  } = opts;
+export interface ScrapeCommentsOnPageOptions {
+  ensureLoaded: (client: CdpClient) => Promise<number>; // opens panel / first wait, returns loaded count
+  extractJs: string; // string IIFE → JSON array, tags data-clip-idx on crop element
+  scrollJs?: string; // optional string evaluated to lazy-load more
+  max?: number;
+  pad?: number;
+  skipSticker?: boolean;
+}
 
-  if (!fs.existsSync(CROPS_DIR)) fs.mkdirSync(CROPS_DIR, { recursive: true });
-  const OUT_JSON = outPath(out);
+export interface ScrapedComment {
+  id: string;
+  author: string;
+  text: string;
+  likes: number;
+  avatar_url: string;
+  image_path?: string;
+}
 
-  console.log(ui.rule());
-  console.log(`  Scrape Comments (DOM/CDP) — ${label}`);
-  console.log(ui.rule());
-  console.log('URL:', url);
-
-  const client = await connect({ match, requireMatch });
-
-  // Many SPAs only mount the detail view (and its comments) when the tab is focused; a
-  // backgrounded relay tab renders just a shell. Force focus before navigating.
-  try {
-    await client.cmd('Page.bringToFront');
-  } catch (e) {}
-  try {
-    await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true });
-  } catch (e) {}
-
-  const cur = await client.evaluate('window.location.href');
-  if (
-    !cur ||
-    (idToken
-      ? !cur.includes(idToken)
-      : !cur.includes(url.replace(/^https?:\/\//, '').split('?')[0]))
-  ) {
-    console.log('Navigasi ke target...');
-    await client.navigate(url, 6000);
-  }
+// The client-taking core of scrapeComments() below, pulled out (review fix, Task 15) so
+// pipeline code holding an ALREADY-connected, ALREADY-navigated CdpClient
+// (AcquisitionService.browse()) can reuse the exact same extraction + isStickerOnly/isLinkSpam
+// filtering + per-comment data-clip-idx crop pass, instead of falling back to one shared
+// post-level social card for every comment. Does NOT connect, close, navigate, or write a
+// content-set file — scrapeComments() below still owns that CLI-only lifecycle.
+export async function scrapeCommentsOnPage(
+  client: CdpClient,
+  opts: ScrapeCommentsOnPageOptions,
+): Promise<ScrapedComment[]> {
+  const { ensureLoaded, extractJs, scrollJs, max = 12, pad = PAD, skipSticker = true } = opts;
 
   console.log('[1/3] Tunggu komentar render...');
   const count = await ensureLoaded(client);
@@ -96,15 +99,13 @@ async function scrapeComments(opts) {
         `${ui.WARN}  Tidak ada elemen komentar. Pastikan tab login (jika perlu) & post punya komentar.`,
       ),
     );
-    client.close();
-    return { comments: [], outJson: OUT_JSON };
+    return [];
   }
 
   console.log('[2/3] Ekstrak + crop progresif (anti-virtualisasi)...');
-  const dpr = (await client.evaluate('window.devicePixelRatio')) || 1;
   const scroll = scrollJs || 'window.scrollBy(0, 800)';
-  const results = [];
-  const seen = new Set();
+  const results: ScrapedComment[] = [];
+  const seen = new Set<string>();
   let stickerCount = 0,
     stagnant = 0,
     outIdx = 0;
@@ -116,7 +117,7 @@ async function scrapeComments(opts) {
   // (document) coords + captureBeyondViewport:true — plain viewport+fromSurface returns a BLACK
   // clip on wide/virtualised layouts (e.g. YouTube watch).
   while (results.length < max && stagnant < 8) {
-    let batch = [];
+    let batch: any[] = [];
     try {
       batch = JSON.parse((await client.evaluate(extractJs)) || '[]');
     } catch (e) {}
@@ -168,14 +169,14 @@ async function scrapeComments(opts) {
       // else (e.g. the post caption) → a crop of the WRONG content. Guard: require the comment's text
       // to appear in the element's current innerText; if not, skip the crop (keep the correct
       // author/text → Thoth draws the synthetic card) instead of pasting a mismatched screenshot.
-      const norm = (s) =>
+      const norm = (s: string) =>
         (s || '')
           .toLowerCase()
           .replace(/[^a-z0-9 ]+/g, ' ')
           .replace(/\s+/g, ' ')
           .trim();
       const want = norm(text).slice(0, 24);
-      const contentMatches = (r) => want.length < 8 || norm(r && r.txt).includes(want);
+      const contentMatches = (r: any) => want.length < 8 || norm(r && r.txt).includes(want);
 
       let rect = await measure();
       if (!rect || rect.w <= 30 || rect.h <= 12) continue; // recycled before we reached it → retry next batch
@@ -183,6 +184,7 @@ async function scrapeComments(opts) {
         seen.add(key);
         progressed = true;
         results.push({
+          id: key,
           author: c.author || 'anon',
           text,
           likes: normalizeLikes(c.likes_raw),
@@ -200,7 +202,8 @@ async function scrapeComments(opts) {
       progressed = true;
       const likes = normalizeLikes(c.likes_raw);
       const safe = (c.author || `c${outIdx}`).replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 20);
-      const entry = {
+      const entry: ScrapedComment = {
+        id: key,
         author: c.author || 'anon',
         text,
         likes,
@@ -233,7 +236,7 @@ async function scrapeComments(opts) {
           console.log(
             `  #${outIdx + 1} @${entry.author} (${likes}❤) → ${path.basename(file)} (${(buf.length / 1024).toFixed(1)} KB)`,
           );
-        } catch (e) {
+        } catch (e: any) {
           console.log(`  #${outIdx + 1} @${entry.author}: crop gagal (${e.message.slice(0, 50)})`);
           break;
         }
@@ -253,11 +256,75 @@ async function scrapeComments(opts) {
     }
   }
   if (stickerCount) console.log(`  (${stickerCount} sticker-only di-skip)`);
+  return results;
+}
+
+async function scrapeComments(opts: any) {
+  const {
+    url,
+    platform,
+    match, // domain substring (or array) for connect() to pick the tab
+    requireMatch = true, // error if that tab isn't attached (don't drive the wrong site)
+    idToken = '', // if current href already contains this, skip navigation
+    ensureLoaded, // async (client) => count ; opens panel / first wait
+    extractJs, // string IIFE → JSON array, tags data-clip-idx on crop element
+    scrollJs, // optional string evaluated a few times to lazy-load more
+    buildMain, // (url) => main object
+    max = 12,
+    out = 'thoth_content_set.json',
+    pad = PAD,
+    skipSticker = true,
+    label = platform,
+    commentsOnly = process.argv.includes('--comments-only'),
+  } = opts;
+
+  if (!fs.existsSync(CROPS_DIR)) fs.mkdirSync(CROPS_DIR, { recursive: true });
+  const OUT_JSON = outPath(out);
+
+  console.log(ui.rule());
+  console.log(`  Scrape Comments (DOM/CDP) — ${label}`);
+  console.log(ui.rule());
+  console.log('URL:', url);
+
+  const client = await connect({ match, requireMatch });
+
+  // Many SPAs only mount the detail view (and its comments) when the tab is focused; a
+  // backgrounded relay tab renders just a shell. Force focus before navigating.
+  try {
+    await client.cmd('Page.bringToFront');
+  } catch (e) {}
+  try {
+    await client.cmd('Emulation.setFocusEmulationEnabled', { enabled: true });
+  } catch (e) {}
+
+  const cur = await client.evaluate('window.location.href');
+  if (
+    !cur ||
+    (idToken
+      ? !cur.includes(idToken)
+      : !cur.includes(url.replace(/^https?:\/\//, '').split('?')[0]))
+  ) {
+    console.log('Navigasi ke target...');
+    await client.navigate(url, 6000);
+  }
+
+  const results = await scrapeCommentsOnPage(client, {
+    ensureLoaded,
+    extractJs,
+    scrollJs,
+    max,
+    pad,
+    skipSticker,
+  });
   client.close();
+
+  if (!results.length) {
+    return { comments: [], outJson: OUT_JSON };
+  }
 
   // Build/merge the content-set (single object). If OUT_JSON already holds a set for the
   // same main.url, refresh only its comments (keep main/footage from content-sourcing).
-  let contentSet = { main: buildMain(url), footage: [], comments: results };
+  let contentSet: any = { main: buildMain(url), footage: [], comments: results };
   if (fs.existsSync(OUT_JSON)) {
     try {
       const prev = JSON.parse(fs.readFileSync(OUT_JSON, 'utf8'));
@@ -303,4 +370,4 @@ function parseArgs(argv: string[]) {
   };
 }
 
-export { scrapeComments, pollCount, parseArgs, isStickerOnly, sleep };
+export { scrapeComments, pollCount, parseArgs, isStickerOnly, isLinkSpam, sleep };
