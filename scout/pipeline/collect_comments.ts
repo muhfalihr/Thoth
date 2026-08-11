@@ -258,9 +258,20 @@ export async function runCollectComments(
   // Register intents before any source is visited: 'comments' so the adapter knows this visit
   // is for comment collection, 'social-card' so any adapter that can stash a card screenshot
   // during that SAME visit does so (avoids a second navigation when capture() runs below).
+  // Per-source try/catch, NOT one around the loop: registerIntent() throws once a URL's visit has
+  // started, and the seed URL is always among `sources` (buildCommentSources passes it through as
+  // `extra`) after run_pipeline's inspectSeed already navigated it on IG/X/FB/Reddit. Letting that
+  // throw escape would abort the whole stage and lose comments from EVERY source, silently —
+  // runStage() has this one as required:false. An already-visited URL keeps whatever intents the
+  // earlier caller registered, which for the seed is all four.
   for (const source of sources) {
-    context.service.registerIntent(source.url, 'comments');
-    context.service.registerIntent(source.url, 'social-card');
+    for (const intent of ['comments', 'social-card'] as const) {
+      try {
+        context.service.registerIntent(source.url, intent);
+      } catch {
+        // visit already started for this URL — its intents are already fixed
+      }
+    }
   }
 
   const comments = await collectNormalizedComments(sources, {
