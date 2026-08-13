@@ -54,8 +54,23 @@ pub fn resolve_contained(root: &Path, relative: &Path) -> io::Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Atomically publishes a temporary sibling without replacing an existing artifact.
+fn publish_immutable(temporary: &Path, destination: &Path) -> io::Result<()> {
+    match fs::hard_link(temporary, destination) {
+        Ok(()) => {
+            fs::remove_file(temporary)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination_exists",
+        )),
+        Err(error) => Err(error),
+    }
+}
+
 /// Imports an immutable source using a hardlink when possible, with a copy
-/// fallback. The completed artifact becomes visible only through its final rename.
+/// fallback. The completed artifact becomes visible only after an atomic no-replace publish.
 pub fn import_file(source: &Path, destination: &Path) -> io::Result<()> {
     let source = fs::canonicalize(source)?;
     let parent = destination
@@ -67,13 +82,6 @@ pub fn import_file(source: &Path, destination: &Path) -> io::Result<()> {
         .file_name()
         .ok_or_else(|| invalid_path("destination has no filename"))?;
     let destination = parent.join(filename);
-    if destination.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "destination_exists",
-        ));
-    }
-
     let temporary = parent.join(format!(
         ".{}.{}.tmp",
         filename.to_string_lossy(),
@@ -85,7 +93,7 @@ pub fn import_file(source: &Path, destination: &Path) -> io::Result<()> {
             fs::copy(&source, &temporary)?;
         }
     }
-    if let Err(error) = fs::rename(&temporary, &destination) {
+    if let Err(error) = publish_immutable(&temporary, &destination) {
         let _ = fs::remove_file(&temporary);
         return Err(error);
     }
@@ -94,11 +102,47 @@ pub fn import_file(source: &Path, destination: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_contained;
+    use std::fs;
     use std::path::Path;
+
+    use super::{import_file, publish_immutable, resolve_contained};
 
     #[test]
     fn rejects_remote_artifact_paths_before_filesystem_access() {
         assert!(resolve_contained(Path::new("job"), Path::new("https://cdn.test/a.mp4")).is_err());
+    }
+
+    #[test]
+    fn immutable_publish_never_replaces_an_existing_destination() {
+        let root =
+            std::env::temp_dir().join(format!("main-footage-publish-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let temporary = root.join("cut.tmp");
+        let destination = root.join("cuts/cut.mp4");
+        fs::write(&temporary, b"new bytes").unwrap();
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(&destination, b"existing bytes").unwrap();
+
+        assert!(publish_immutable(&temporary, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing bytes");
+        assert_eq!(fs::read(&temporary).unwrap(), b"new bytes");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn import_file_publishes_complete_source_bytes() {
+        let root =
+            std::env::temp_dir().join(format!("main-footage-import-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.mp4");
+        let destination = root.join("cuts/v001/cut.mp4");
+        fs::write(&source, b"complete immutable source bytes").unwrap();
+
+        import_file(&source, &destination).unwrap();
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"complete immutable source bytes"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

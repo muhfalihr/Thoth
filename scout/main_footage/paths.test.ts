@@ -16,6 +16,21 @@ test('rejects escaped and remote artifact paths', () => {
   }
 });
 
+test('rejects a not-yet-created artifact through an external symlink', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-root-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-outside-'));
+  try {
+    fs.symlinkSync(outside, path.join(root, 'linked-outside'), 'junction');
+    assert.throws(
+      () => resolveContained(root, 'linked-outside/future-cut.mp4'),
+      /path_outside_root/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test('atomically publishes a new file without overwriting a destination', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-publish-'));
   try {

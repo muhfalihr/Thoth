@@ -26,6 +26,18 @@ export function resolveContained(root: string, relative: string): string {
   if (resolved !== resolvedRoot && !resolved.startsWith(prefix)) {
     throw new Error('path_outside_root');
   }
+  const canonicalRoot = fs.realpathSync.native(resolvedRoot);
+  let existingAncestor = resolved;
+  while (!fs.existsSync(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) throw new Error('path_outside_root');
+    existingAncestor = parent;
+  }
+  const canonicalAncestor = fs.realpathSync.native(existingAncestor);
+  const canonicalPrefix = canonicalRoot + path.sep;
+  if (canonicalAncestor !== canonicalRoot && !canonicalAncestor.startsWith(canonicalPrefix)) {
+    throw new Error('path_outside_root');
+  }
   return resolved;
 }
 
