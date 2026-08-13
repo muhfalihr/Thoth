@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "post": {
+    "id": "post-123",
+    "canonical_url": "https://www.instagram.com/reel/post-123/",
+    "platform": "instagram"
+  },
+  "analysis_identity": "analysis-2026-08-14",
+  "created_at": "2026-08-14T12:00:00Z",
+  "sources": [
+    {
+      "id": "source-0",
+      "media_index": 0,
+      "path": "sources/source-0.mp4",
+      "checksum": "sha256:source0",
+      "technical": {
+        "container": "mp4",
+        "video_codec": "h264",
+        "duration_sec": 12.5,
+        "width": 1080,
+        "height": 1920,
+        "has_audio": true
+      }
+    }
+  ],
+  "ignored": [
+    {
+      "id": "photo-1",
+      "media_index": 1,
+      "code": "photo_slide_ignored"
+    }
+  ],
+  "unavailable": [],
+  "scene_indexes": [
+    {
+      "source_id": "source-0",
+      "path": "indexes/source-0.json",
+      "checksum": "sha256:index0",
+      "planning_mode": "vision",
+      "scenes": [
+        {
+          "id": "scene-0",
+          "start_sec": 0,
+          "end_sec": 4,
+          "representative_frame": "frames/source-0-000.jpg",
+          "transcript_evidence": "A person addresses the camera.",
+          "vision_description": "A person in a studio.",
+          "embedding_path": "embeddings/source-0-000.json",
+          "visual_metrics": {
+            "motion_score": 0.2,
+            "brightness": 0.6,
+            "scene_change_score": 0.1
+          }
+        }
+      ]
+    }
+  ]
+}

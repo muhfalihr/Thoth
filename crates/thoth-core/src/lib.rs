@@ -27,6 +27,7 @@ pub mod util;
 pub mod log_style;
 pub mod brand;
 pub mod worker;
+pub mod main_footage;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -208,6 +209,7 @@ async fn download_ffmpeg_with_progress() -> Result<()> {
 
     Ok(())
 }
+
 
 fn extract_zip(archive_path: &str, dest_dir: &str) -> Result<()> {
     let file = std::fs::File::open(archive_path)?;

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "audio_path": "narration/v001/audio.mp3",
+  "audio_checksum": "sha256:narration",
+  "duration_sec": 4,
+  "words": [
+    { "text": "Hello", "start_sec": 0, "end_sec": 0.5 },
+    { "text": "world", "start_sec": 0.5, "end_sec": 1 }
+  ]
+}

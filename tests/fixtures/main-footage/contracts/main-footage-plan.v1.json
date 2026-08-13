@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "source_package_path": "sources/source-package.v1.json",
+  "narration_timeline_path": "narration/v001/timeline.json",
+  "source_package_fingerprint": "sha256:package",
+  "narration_fingerprint": "sha256:narration",
+  "main_coverage_target": 0.6,
+  "timeline": [
+    {
+      "id": "cut-001",
+      "source_id": "source-0",
+      "source_path": "sources/source-0.mp4",
+      "cut_path": "cuts/v001/cut-001.mp4",
+      "checksum": "sha256:cut-001",
+      "source_start_sec": 0,
+      "source_end_sec": 4,
+      "output_start_sec": 0,
+      "output_end_sec": 4,
+      "match_level": "exact",
+      "reuse_count": 0,
+      "transition": { "kind": "match_cut", "duration_ms": 120 },
+      "handles": { "before_ms": 120, "after_ms": 120 }
+    }
+  ],
+  "diagnostics": {
+    "planning_mode": "vision",
+    "candidate_count": 1,
+    "warnings": []
+  },
+  "summary": {
+    "main_coverage_sec": 4,
+    "main_coverage_ratio": 1,
+    "total_duration_sec": 4,
+    "selected_cut_count": 1
+  },
+  "warnings": []
+}
