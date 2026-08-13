@@ -1,7 +1,7 @@
 # Forced URL Narration-Planned Main Footage — Design
 
 **Date:** 2026-08-14
-**Status:** Approved design, pending written-spec review
+**Status:** Approved
 **Scope:** Explicit per-run use of every usable video in an input social post as a durable, narration-planned main-footage pool
 
 ## Summary
