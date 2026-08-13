@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { test } from 'bun:test';
 import {
+  decodeMainFootageDescriptor,
   decodeMainFootagePlan,
   decodeNarrationTimeline,
   decodeSourcePackage,
@@ -15,13 +15,13 @@ function fixture(name: string): unknown {
   return JSON.parse(readFileSync(path.join(fixtures, name), 'utf8'));
 }
 
-test('decodes the shared version-one fixtures', () => {
+{
   assert.equal(decodeSourcePackage(fixture('source-package.v1.json')).sources[0]?.id, 'source-0');
   assert.equal(decodeNarrationTimeline(fixture('narration-timeline.v1.json')).words.length, 2);
   assert.equal(decodeMainFootagePlan(fixture('main-footage-plan.v1.json')).timeline.length, 1);
-});
+}
 
-test('rejects unknown schemas and invalid contract values', () => {
+{
   assert.throws(() => decodeMainFootagePlan({ schema_version: 2 }), /unsupported schema_version/);
   assert.throws(
     () => decodeMainFootagePlan({ ...fixture('main-footage-plan.v1.json') as object, main_coverage_target: 0.59 }),
@@ -38,9 +38,39 @@ test('rejects unknown schemas and invalid contract values', () => {
     ] }),
     /duplicate source id/,
   );
-});
+}
 
-test('canonical fingerprints ignore object key order but not array order', () => {
+{
+  assert.deepEqual(
+    decodeMainFootageDescriptor({
+      mode: 'forced_url_pool',
+      package_manifest: 'packages/source-package.json',
+      coverage_target: 0.6,
+    }),
+    {
+      mode: 'forced_url_pool',
+      package_manifest: 'packages/source-package.json',
+      coverage_target: 0.6,
+    },
+  );
+  assert.throws(
+    () => decodeMainFootageDescriptor({
+      mode: 'forced', package_manifest: 'packages/source-package.json', coverage_target: 0.6,
+    }),
+    /mode is invalid/,
+  );
+  assert.throws(
+    () => decodeMainFootageDescriptor({
+      mode: 'forced_url_pool',
+      package_manifest: 'packages/source-package.json',
+      coverage_target: 0.6,
+      source_package_path: 'sources.json',
+    }),
+    /unexpected main_footage field/,
+  );
+}
+
+{
   assert.equal(fingerprintCanonical({ b: 2, a: 1 }), fingerprintCanonical({ a: 1, b: 2 }));
   assert.notEqual(fingerprintCanonical({ a: [1, 2] }), fingerprintCanonical({ a: [2, 1] }));
-});
+}

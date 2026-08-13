@@ -5,7 +5,7 @@ export const MAIN_FOOTAGE_SCHEMA_VERSION = 1 as const;
 export type TransitionKind = 'match_cut' | 'cross_dissolve' | 'fade_through_black';
 export type MatchLevel = 'exact' | 'topic_only';
 export type PlanningMode = 'vision' | 'degraded';
-export type MainFootageMode = 'forced';
+export type MainFootageMode = 'forced_url_pool';
 
 export type MainFootageErrorCode =
   | 'forced_main_no_usable_video'
@@ -157,11 +157,8 @@ export interface MainFootagePlanV1 {
 
 export interface MainFootageDescriptor {
   mode: MainFootageMode;
-  use_input_as_main: boolean;
-  source_package_path: string;
-  narration_timeline_path: string;
-  plan_path?: string;
-  main_coverage_target: number;
+  package_manifest: string;
+  coverage_target: number;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -203,6 +200,12 @@ function range(input: JsonRecord, start: string, end: string, name: string): voi
   const from = number(input[start], start, 0);
   const to = number(input[end], end, 0);
   if (to <= from) throw new Error(`${name} has an invalid time range`);
+}
+
+function coverageTarget(value: unknown, name: string): number {
+  const result = number(value, name, 0.6);
+  if (result > 1) throw new Error(`${name} must be between 0.60 and 1.00`);
+  return result;
 }
 
 function unique(values: readonly string[], name: string): void {
@@ -301,6 +304,20 @@ export function decodeSourcePackage(input: unknown): SourcePackageV1 {
     ignored,
     unavailable,
     scene_indexes,
+  };
+}
+
+export function decodeMainFootageDescriptor(input: unknown): MainFootageDescriptor {
+  const value = record(input, 'main_footage');
+  for (const key of Object.keys(value)) {
+    if (!['mode', 'package_manifest', 'coverage_target'].includes(key)) {
+      throw new Error(`unexpected main_footage field: ${key}`);
+    }
+  }
+  return {
+    mode: enumValue(value.mode, 'mode', ['forced_url_pool']),
+    package_manifest: artifact(value.package_manifest, 'package_manifest'),
+    coverage_target: coverageTarget(value.coverage_target, 'coverage_target'),
   };
 }
 

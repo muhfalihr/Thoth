@@ -11,13 +11,37 @@
 // Exit 0 = safe to hand off (errors=0). Exit 1 = has errors → fix before thoth run.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { lintContentSet } from '../lib/validate.ts';
+import { OUTPUT_DIR } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+import { decodeMainFootageDescriptor, decodeSourcePackage } from '../main_footage/contracts.ts';
+import { resolveContained } from '../main_footage/paths.ts';
+import type { ContentSet } from '../lib/types.ts';
 
 export interface FileStageOptions {
   file: string;
+}
+
+export function validateMainFootageDescriptor(
+  contentSetPath: string,
+  set: ContentSet,
+  scoutOutputRoot: string,
+) {
+  if (set.main_footage === undefined) return undefined;
+  try {
+    const descriptor = decodeMainFootageDescriptor(set.main_footage);
+    const packagePath = resolveContained(path.dirname(path.resolve(contentSetPath)), descriptor.package_manifest);
+    const packagePathFromOutput = path.relative(scoutOutputRoot, packagePath).split(path.sep).join('/');
+    resolveContained(scoutOutputRoot, packagePathFromOutput);
+    const sourcePackage = decodeSourcePackage(JSON.parse(fs.readFileSync(packagePath, 'utf8')));
+    if (sourcePackage.post.canonical_url !== set.main.url) throw new Error('canonical_url_mismatch');
+    return sourcePackage;
+  } catch {
+    throw new Error('source_package_invalid');
+  }
 }
 
 // Returns true when the content-set is safe to hand off (errors=0). Throws only on a
@@ -34,6 +58,8 @@ export async function runValidateContentSet(
   } catch (e) {
     throw new Error(`JSON tidak valid: ${e.message}`);
   }
+
+  validateMainFootageDescriptor(file, data, OUTPUT_DIR);
 
   const { errors, warnings, info, ok } = lintContentSet(data);
 

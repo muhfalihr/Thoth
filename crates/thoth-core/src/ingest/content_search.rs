@@ -325,6 +325,8 @@ pub struct Dossier {
 pub struct ContentSet {
     pub main: MainVideo,
     #[serde(default)]
+    pub main_footage: Option<crate::main_footage::MainFootageDescriptor>,
+    #[serde(default)]
     pub footage: Vec<ContentResult>,
     /// Real viral comments for the reaction-beat comment cards.
     #[serde(default)]
@@ -349,6 +351,8 @@ pub struct ContentSet {
 pub struct LoadedSet {
     /// The main video URL to download + clip (Stage 1 ingest).
     pub main_url: String,
+    /// Optional planned-main discriminator. Callers select planned behavior only when present.
+    pub main_footage: Option<crate::main_footage::MainFootageDescriptor>,
     /// Title of the main post (for narration grounding via `content_context.json`).
     pub main_title: String,
     /// Platform caption/description of the main post (narration grounding).
@@ -397,6 +401,7 @@ pub fn load_content_set(path: &Path) -> anyhow::Result<LoadedSet> {
     }
     Ok(LoadedSet {
         main_url: set.main.url,
+        main_footage: set.main_footage,
         main_title: set.main.title,
         main_description: set.main.description,
         footage: set.footage,
@@ -633,6 +638,40 @@ mod tests {
         assert_eq!(set.footage[0].platform, "youtube");
         assert!(set.profile.is_none());
         assert!(set.comments.is_empty());
+    }
+
+    #[test]
+    fn legacy_set_has_no_planned_main_footage() {
+        let mut legacy_fixture = tempfile_like();
+        legacy_fixture
+            .write_all(br#"{ "main": { "url": "https://youtu.be/abc" } }"#)
+            .unwrap();
+        assert!(load_content_set(legacy_fixture.path())
+            .unwrap()
+            .main_footage
+            .is_none());
+    }
+
+    #[test]
+    fn forced_descriptor_selects_only_forced_url_pool() {
+        let mut forced_fixture = tempfile_like();
+        forced_fixture
+            .write_all(
+                br#"{
+                    "main": { "url": "https://www.instagram.com/reel/post-123/" },
+                    "main_footage": {
+                        "mode": "forced_url_pool",
+                        "package_manifest": "packages/source-package.json",
+                        "coverage_target": 0.6
+                    }
+                }"#,
+            )
+            .unwrap();
+        let loaded = load_content_set(forced_fixture.path()).unwrap();
+        assert_eq!(
+            loaded.main_footage.unwrap().mode,
+            crate::main_footage::MainFootageMode::ForcedUrlPool
+        );
     }
 
     #[test]

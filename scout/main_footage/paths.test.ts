@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'bun:test';
 import { atomicPublish, nextVersion, resolveContained } from './paths.ts';
 
-test('rejects escaped and remote artifact paths', () => {
+{
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-paths-'));
   try {
     assert.throws(() => resolveContained(root, '../escape.mp4'), /path_outside_root/);
@@ -14,9 +13,9 @@ test('rejects escaped and remote artifact paths', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
-});
+}
 
-test('rejects a not-yet-created artifact through an external symlink', () => {
+{
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-root-'));
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-outside-'));
   try {
@@ -29,9 +28,9 @@ test('rejects a not-yet-created artifact through an external symlink', () => {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
   }
-});
+}
 
-test('atomically publishes a new file without overwriting a destination', () => {
+{
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-publish-'));
   try {
     const first = path.join(root, 'first.tmp');
@@ -47,9 +46,9 @@ test('atomically publishes a new file without overwriting a destination', () => 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
-});
+}
 
-test('allocates monotonically increasing three-digit versions', () => {
+{
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'main-footage-versions-'));
   try {
     fs.mkdirSync(path.join(root, 'v001'));
@@ -59,4 +58,4 @@ test('allocates monotonically increasing three-digit versions', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
-});
+}

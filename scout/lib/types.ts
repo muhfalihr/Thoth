@@ -4,6 +4,7 @@
 // aman (forward-compat); field yang tak dikenal Rust diabaikan.
 
 import type { PersistedOcrFields } from './ocr_contract.ts';
+import type { MainFootageDescriptor } from '../main_footage/contracts.ts';
 
 export interface ProfileInfo {
   username?: string;
@@ -80,6 +81,7 @@ export interface Figure {
 
 export interface ContentSet {
   main: MainVideo;
+  main_footage?: MainFootageDescriptor;
   footage: ContentResult[];
   comments: CommentInfo[];
   figures?: Figure[];

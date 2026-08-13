@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DEFAULT_OCR_MODEL, OCR_ANALYZER_VERSION } from './ocr_contract.ts';
 import type { ContentSet } from './types.ts';
 import { lintContentSet } from './validate.ts';
+import { validateMainFootageDescriptor } from '../pipeline/validate_content_set.ts';
 
 const analyzed = (
   outcome: 'clean' | 'cover' | 'subtitle' = 'clean',
@@ -37,6 +38,99 @@ const videoSet = (): ContentSet => ({
 });
 
 const errorText = (set: ContentSet) => lintContentSet(set).errors.join('\n');
+
+const forcedPostUrl = 'https://www.instagram.com/reel/post-123/';
+
+function writeSourcePackage(packagePath: string, canonicalUrl = forcedPostUrl): void {
+  fs.mkdirSync(path.dirname(packagePath), { recursive: true });
+  fs.writeFileSync(packagePath, JSON.stringify({
+    schema_version: 1,
+    post: { id: 'post-123', canonical_url: canonicalUrl, platform: 'instagram' },
+    analysis_identity: 'analysis-2026-08-14',
+    created_at: '2026-08-14T12:00:00Z',
+    sources: [{
+      id: 'source-0', media_index: 0, path: 'sources/source-0.mp4', checksum: 'sha256:source0',
+      technical: { container: 'mp4', video_codec: 'h264', duration_sec: 12.5, width: 1080, height: 1920, has_audio: true },
+    }],
+    ignored: [], unavailable: [], scene_indexes: [],
+  }));
+}
+
+function forcedSet(packageManifest: string): ContentSet {
+  return {
+    ...videoSet(),
+    main: { ...videoSet().main, url: forcedPostUrl },
+    main_footage: {
+      mode: 'forced_url_pool',
+      package_manifest: packageManifest,
+      coverage_target: 0.6,
+    },
+  };
+}
+
+{
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-forced-set-'));
+  const outputRoot = path.join(tempDir, 'scout', 'output');
+  const forcedFixturePath = path.join(outputRoot, 'sets', 'forced.json');
+  const packagePath = path.join(outputRoot, 'sets', 'source-package.json');
+  fs.mkdirSync(path.dirname(forcedFixturePath), { recursive: true });
+  fs.writeFileSync(forcedFixturePath, '{}');
+  writeSourcePackage(packagePath);
+  try {
+    const packageManifest = validateMainFootageDescriptor(
+      forcedFixturePath,
+      forcedSet('source-package.json'),
+      outputRoot,
+    );
+    assert.equal(packageManifest?.schema_version, 1);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-forced-set-'));
+  const outputRoot = path.join(tempDir, 'scout', 'output');
+  const escapedFixturePath = path.join(outputRoot, 'sets', 'escaped.json');
+  const escapedPackagePath = path.join(tempDir, 'escaped', 'source-package.json');
+  fs.mkdirSync(path.dirname(escapedFixturePath), { recursive: true });
+  fs.writeFileSync(escapedFixturePath, '{}');
+  writeSourcePackage(escapedPackagePath);
+  try {
+    assert.throws(
+      () => validateMainFootageDescriptor(
+        escapedFixturePath,
+        forcedSet('../../escaped/source-package.json'),
+        outputRoot,
+      ),
+      /source_package_invalid/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-forced-set-'));
+  const outputRoot = path.join(tempDir, 'scout', 'output');
+  const contentSetPath = path.join(outputRoot, 'sets', 'mismatched.json');
+  const packagePath = path.join(outputRoot, 'sets', 'source-package.json');
+  fs.mkdirSync(path.dirname(contentSetPath), { recursive: true });
+  fs.writeFileSync(contentSetPath, '{}');
+  writeSourcePackage(packagePath, 'https://www.instagram.com/reel/different/');
+  try {
+    assert.throws(
+      () => validateMainFootageDescriptor(
+        contentSetPath,
+        forcedSet('source-package.json'),
+        outputRoot,
+      ),
+      /source_package_invalid/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
 
 {
   const set = videoSet();

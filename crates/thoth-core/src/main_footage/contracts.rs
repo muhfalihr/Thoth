@@ -312,7 +312,7 @@ pub fn fingerprint_canonical(value: &Value) -> Result<String, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MainFootageMode {
-    Forced,
+    ForcedUrlPool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -687,14 +687,10 @@ pub struct MainFootagePlanV1 {
 #[serde(deny_unknown_fields)]
 pub struct MainFootageDescriptor {
     pub mode: MainFootageMode,
-    pub use_input_as_main: bool,
     #[serde(deserialize_with = "deserialize_artifact_path")]
-    pub source_package_path: String,
-    #[serde(deserialize_with = "deserialize_artifact_path")]
-    pub narration_timeline_path: String,
-    #[serde(default, deserialize_with = "deserialize_optional_artifact_path")]
-    pub plan_path: Option<String>,
-    pub main_coverage_target: f64,
+    pub package_manifest: String,
+    #[serde(deserialize_with = "deserialize_coverage_target")]
+    pub coverage_target: f64,
 }
 
 #[cfg(test)]
@@ -703,7 +699,10 @@ mod tests {
 
     use serde_json::{json, Value};
 
-    use super::{fingerprint_canonical, MainFootagePlanV1, NarrationTimelineV1, SourcePackageV1};
+    use super::{
+        fingerprint_canonical, MainFootageDescriptor, MainFootageMode, MainFootagePlanV1,
+        NarrationTimelineV1, SourcePackageV1,
+    };
     use crate::main_footage::paths::resolve_contained;
 
     #[test]
@@ -719,6 +718,24 @@ mod tests {
     #[test]
     fn unknown_schema_versions_are_rejected_during_deserialization() {
         assert!(serde_json::from_str::<MainFootagePlanV1>(r#"{"schema_version":2}"#).is_err());
+    }
+
+    #[test]
+    fn descriptor_accepts_only_forced_url_pool_contract() {
+        let descriptor: MainFootageDescriptor = serde_json::from_value(json!({
+            "mode": "forced_url_pool",
+            "package_manifest": "packages/source-package.json",
+            "coverage_target": 0.6
+        }))
+        .unwrap();
+        assert_eq!(descriptor.mode, MainFootageMode::ForcedUrlPool);
+        assert!(serde_json::from_value::<MainFootageDescriptor>(json!({
+            "mode": "forced",
+            "source_package_path": "sources.json",
+            "narration_timeline_path": "narration.json",
+            "main_coverage_target": 0.6
+        }))
+        .is_err());
     }
 
     fn source_fixture() -> Value {
