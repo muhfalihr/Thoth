@@ -6,7 +6,7 @@ import { OUTPUT_DIR } from '../lib/paths.ts';
 import type { LocalAsset, MediaAsset, PostRecord } from '../acquisition/types.ts';
 import type { MainFootageDescriptor, SourcePackageV1, SourceTechnicalMetadata } from './contracts.ts';
 import { MAIN_FOOTAGE_SCHEMA_VERSION } from './contracts.ts';
-import { atomicPublish, nextVersion } from './paths.ts';
+import { atomicPublish, nextVersion, resolveContained } from './paths.ts';
 
 export interface SourcePackageInput {
   post: PostRecord;
@@ -93,7 +93,8 @@ export async function buildSourcePackage(
   const { post, contentSetPath, coverageTarget } = input;
   const outputRoot = path.resolve(deps.scoutOutputRoot || OUTPUT_DIR);
   const id = packageId(post);
-  const packagesRoot = path.join(outputRoot, 'main-footage');
+  fs.mkdirSync(outputRoot, { recursive: true });
+  const packagesRoot = resolveContained(outputRoot, 'main-footage');
   const packageRoot = reservePackageRoot(packagesRoot);
   const sourcesRoot = path.join(packageRoot, 'sources');
   const tempRoot = path.join(packageRoot, '.tmp');

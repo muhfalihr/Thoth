@@ -49,18 +49,29 @@ export interface FootageAdmissionDeps {
   isRelevant(text: string, query: string): boolean;
   isMain(url: string, text: string): boolean;
   looksReaction(text: string): boolean;
+  excludedMediaIds?: ReadonlySet<string>;
   materialize(asset: MediaAsset): Promise<LocalAsset>;
 }
 
 export type FootageAdmissionResult =
   | { status: 'accepted'; entry: Record<string, unknown> }
-  | { status: 'rejected'; reason: 'main' | 'irrelevant' | 'reaction' | 'no-media' };
+  | { status: 'rejected'; reason: 'main' | 'forced-media' | 'irrelevant' | 'reaction' | 'no-media' };
+
+function containsExcludedMedia(
+  post: Pick<PostRecord, 'media'>,
+  excludedMediaIds: ReadonlySet<string> | undefined,
+): boolean {
+  return Boolean(excludedMediaIds?.size && post.media.some((asset) => excludedMediaIds.has(asset.id)));
+}
 
 export async function admitAndMaterializeFootage(
   post: PostRecord,
   deps: FootageAdmissionDeps,
 ): Promise<FootageAdmissionResult> {
   const text = post.text || '';
+  if (containsExcludedMedia(post, deps.excludedMediaIds)) {
+    return { status: 'rejected', reason: 'forced-media' };
+  }
   if (deps.isMain(post.canonical_url, text)) return { status: 'rejected', reason: 'main' };
   if (deps.looksReaction(text)) return { status: 'rejected', reason: 'reaction' };
   if (!deps.isRelevant(text, deps.query)) return { status: 'rejected', reason: 'irrelevant' };
@@ -304,6 +315,9 @@ export async function runBuildFootage(
   const set = JSON.parse(fs.readFileSync(file, 'utf8'));
   set.footage = set.footage || [];
   const main = set.main || {};
+  const excludedMediaIds = options.excludedMediaIds?.length
+    ? new Set(options.excludedMediaIds)
+    : undefined;
 
   // OPSI A — main = carousel IG (/p/) multi-video → footage = slide-slide carousel itu SAJA (skip cari
   // eksternal). Slide-2..N dari post yang SAMA = liputan multi-angle kreator: dijamin satu event/topik,
@@ -437,6 +451,10 @@ export async function runBuildFootage(
       for (const r of ranked) {
         if (added >= per + 1) break;
         if (r.url === main.url || have.has(r.url)) continue;
+        if (excludedMediaIds) {
+          const inspected = await context.service.inspectPost(r.url).catch(() => null);
+          if (inspected && containsExcludedMedia(inspected, excludedMediaIds)) continue;
+        }
         if (useSim) {
           if (r.sim < REL_MIN) continue;
         } else {
@@ -562,6 +580,10 @@ export async function runBuildFootage(
         let description = '';
         if (e.platform === 'tiktok' || e.platform === 'youtube') {
           const record = await context.service.inspectPost(e.url).catch(() => null);
+          if (record && containsExcludedMedia(record, excludedMediaIds)) {
+            dropped++;
+            return false;
+          }
           description = record?.text || '';
         }
         if (sameAsMain(e.url, description)) {
@@ -628,6 +650,10 @@ export async function runBuildFootage(
         try {
           const inspected = await context.service.inspectPost(e.url);
           const text = inspected.text || '';
+          if (containsExcludedMedia(inspected, excludedMediaIds)) {
+            dropped++;
+            return false;
+          }
           if (sameAsMain(e.url, text) || looksReaction(text)) {
             if (looksReaction(text)) dropReact++;
             else dropped++;
@@ -786,6 +812,7 @@ export async function runBuildFootage(
               isRelevant: () => true, // LOOSE admit (existing behavior) — story-gate below drops off-topic
               isMain: (url, text) => sameAsMain(url, text),
               looksReaction,
+              excludedMediaIds,
               materialize: (asset) => context.service.materialize(asset, 'footage'),
             });
             if (outcome.status === 'error') {

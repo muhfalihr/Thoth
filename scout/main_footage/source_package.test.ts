@@ -126,6 +126,29 @@ try {
     }
   }
 
+  const redirectedOutputRoot = path.join(root, 'redirected-scout-output');
+  const outsidePackageRoot = path.join(root, 'outside-package-root');
+  fs.mkdirSync(redirectedOutputRoot, { recursive: true });
+  fs.mkdirSync(outsidePackageRoot, { recursive: true });
+  fs.symlinkSync(outsidePackageRoot, path.join(redirectedOutputRoot, 'main-footage'), 'junction');
+  let redirectedMaterialized = 0;
+  await assert.rejects(
+    () => buildSourcePackage(
+      { post: post([video(9)]), contentSetPath, coverageTarget: 0.60 },
+      {
+        scoutOutputRoot: redirectedOutputRoot,
+        materialize: async () => {
+          redirectedMaterialized += 1;
+          return { path: writeDownload('redirected.mp4'), kind: 'video', source: 'direct-http', bytes: acceptedBytes.length };
+        },
+        probe: async () => technical,
+      },
+    ),
+    /path_outside_root/,
+  );
+  assert.equal(redirectedMaterialized, 0, 'containment must fail before materialization');
+  assert.deepEqual(fs.readdirSync(outsidePackageRoot), [], 'no package artifact may be written through a junction');
+
   console.log('ok source_package');
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

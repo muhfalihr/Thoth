@@ -60,6 +60,40 @@ if (accepted.status === 'accepted') {
   assert.equal(accepted.entry.image_path, '/tmp/footage-2.jpg');
 }
 
+let excludedMaterialized = 0;
+for (const [index, kind] of ['image', 'video'].entries()) {
+  const excluded = await admitAndMaterializeFootage(
+    {
+      canonical_url: `https://media.example.test/direct-alias-${index}`,
+      platform: 'instagram',
+      post_id: `alias-${index}`,
+      owner_handle: 'owner',
+      text: 'specific event from a URL alias',
+      media: [{
+        id: `forced-post:${index}`,
+        kind,
+        index,
+        canonical_post_url: `https://media.example.test/direct-alias-${index}`,
+        ephemeral_url: `https://cdn.example.test/forced-${index}`,
+      }],
+      outcome: { status: 'resolved', source: 'network', attempts: 1, elapsed_ms: 1 },
+    } as any,
+    {
+      query: 'specific event',
+      isRelevant: () => true,
+      isMain: () => false,
+      looksReaction: () => false,
+      excludedMediaIds: new Set(['forced-post:0', 'forced-post:1']),
+      materialize: async () => {
+        excludedMaterialized += 1;
+        return { path: '/tmp/must-not-exist', kind: kind as any, source: 'direct-http', bytes: 1 };
+      },
+    },
+  );
+  assert.deepEqual(excluded, { status: 'rejected', reason: 'forced-media' });
+}
+assert.equal(excludedMaterialized, 0, 'forced photo/video aliases must be rejected before materialization');
+
 assert.equal(
   shouldSkipForcedCarouselPool({ platform: 'instagram', url: 'https://www.instagram.com/p/forced/' }, ['forced:1']),
   true,
