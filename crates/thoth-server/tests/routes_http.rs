@@ -1662,6 +1662,51 @@ async fn forced_main_rejects_packages_with_invalid_nested_scenes_or_duplicate_so
 }
 
 #[tokio::test]
+async fn forced_main_rejects_matching_empty_or_blank_package_before_enqueue() {
+    for corruption in ["empty_sources", "blank_analysis_identity"] {
+        let (app, tmp) = build_test_app().await;
+        let fixture_root = std::env::current_dir()
+            .unwrap()
+            .join("scout/output")
+            .join(format!("task-3-{}", uuid::Uuid::new_v4()));
+        let content_set = write_forced_main_fixture(&fixture_root);
+        let package_path = fixture_root.join("source-package.json");
+        let mut package: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&package_path).unwrap()).unwrap();
+        if corruption == "empty_sources" {
+            package["sources"] = serde_json::json!([]);
+        } else {
+            package["analysis_identity"] = serde_json::json!(" \t");
+        }
+        std::fs::write(&package_path, serde_json::to_vec_pretty(&package).unwrap()).unwrap();
+        let (project_id, profile_id) =
+            create_profile_for_content_set(app.clone(), &content_set, true).await;
+
+        let response = app
+            .clone()
+            .oneshot(project_api_request(
+                "POST",
+                &format!("/api/projects/{project_id}/jobs"),
+                Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{corruption}"
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "source_package_invalid");
+        let jobs = app.oneshot(list_jobs_request()).await.unwrap();
+        assert_eq!(body_json(jobs).await, serde_json::json!([]));
+        let _ = std::fs::remove_dir_all(fixture_root);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+}
+
+#[tokio::test]
 async fn forced_main_legacy_route_requires_explicit_narration_enablement() {
     for params in [serde_json::json!({}), serde_json::json!({ "narration_enabled": false })] {
         let (app, tmp) = build_test_app().await;

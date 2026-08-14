@@ -66,6 +66,59 @@ where
     })
 }
 
+fn deserialize_non_blank<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.trim().is_empty() {
+        return Err(serde::de::Error::custom("value must not be blank"));
+    }
+    Ok(value)
+}
+
+fn validate_sha256_identity(value: &str) -> Result<(), &'static str> {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        return Err("value must be a SHA-256 identity");
+    };
+    if digest.is_empty() || digest.chars().any(char::is_whitespace) {
+        return Err("value must be a SHA-256 identity");
+    }
+    Ok(())
+}
+
+fn deserialize_sha256_identity<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    validate_sha256_identity(&value).map_err(serde::de::Error::custom)?;
+    Ok(value)
+}
+
+fn deserialize_optional_sha256_identity<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)?.map_or(Ok(None), |value| {
+        validate_sha256_identity(&value).map_err(serde::de::Error::custom)?;
+        Ok(Some(value))
+    })
+}
+
+fn deserialize_positive_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(serde::de::Error::custom("value must be greater than zero"));
+    }
+    Ok(value)
+}
+
 fn deserialize_nonnegative_finite<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
@@ -110,6 +163,11 @@ where
     D: Deserializer<'de>,
 {
     let sources = Vec::<SourceVideoV1>::deserialize(deserializer)?;
+    if sources.is_empty() {
+        return Err(serde::de::Error::custom(
+            "source package must contain at least one source",
+        ));
+    }
     unique_ids(
         sources.iter().map(|source| source.id.as_str()),
         "duplicate source id",
@@ -370,11 +428,15 @@ pub enum OutcomeCode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceTechnicalMetadata {
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub container: String,
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub video_codec: String,
     #[serde(deserialize_with = "deserialize_nonnegative_finite")]
     pub duration_sec: f64,
+    #[serde(deserialize_with = "deserialize_positive_u32")]
     pub width: u32,
+    #[serde(deserialize_with = "deserialize_positive_u32")]
     pub height: u32,
     pub has_audio: bool,
 }
@@ -382,10 +444,12 @@ pub struct SourceTechnicalMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceVideoV1 {
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub id: String,
     pub media_index: u32,
     #[serde(deserialize_with = "deserialize_artifact_path")]
     pub path: String,
+    #[serde(deserialize_with = "deserialize_sha256_identity")]
     pub checksum: String,
     pub technical: SourceTechnicalMetadata,
 }
@@ -393,6 +457,7 @@ pub struct SourceVideoV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceOutcomeV1 {
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub id: String,
     pub media_index: u32,
     pub code: OutcomeCode,
@@ -428,6 +493,7 @@ pub struct SceneEvidenceV1 {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SceneEvidenceWire {
+    #[serde(deserialize_with = "deserialize_non_blank")]
     id: String,
     start_sec: f64,
     end_sec: f64,
@@ -467,9 +533,11 @@ impl TryFrom<SceneEvidenceWire> for SceneEvidenceV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneIndexV1 {
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub source_id: String,
     #[serde(deserialize_with = "deserialize_artifact_path")]
     pub path: String,
+    #[serde(deserialize_with = "deserialize_sha256_identity")]
     pub checksum: String,
     pub planning_mode: PlanningMode,
     #[serde(deserialize_with = "deserialize_unique_scenes")]
@@ -479,8 +547,11 @@ pub struct SceneIndexV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourcePostV1 {
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub id: String,
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub canonical_url: String,
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub platform: String,
 }
 
@@ -490,8 +561,10 @@ pub struct SourcePackageV1 {
     #[serde(deserialize_with = "deserialize_schema_version")]
     pub schema_version: u8,
     pub post: SourcePostV1,
+    #[serde(deserialize_with = "deserialize_non_blank")]
     pub analysis_identity: String,
     pub created_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_sha256_identity")]
     pub fingerprint: Option<String>,
     #[serde(deserialize_with = "deserialize_unique_sources")]
     pub sources: Vec<SourceVideoV1>,
@@ -780,6 +853,88 @@ mod tests {
             .unwrap()
             .push(duplicate);
         assert!(serde_json::from_value::<SourcePackageV1>(duplicate_scene_ids).is_err());
+    }
+
+    #[test]
+    fn source_packages_require_at_least_one_usable_source() {
+        let mut empty_sources = source_fixture();
+        empty_sources["sources"] = json!([]);
+
+        assert!(serde_json::from_value::<SourcePackageV1>(empty_sources).is_err());
+    }
+
+    #[test]
+    fn source_packages_reject_blank_package_identities() {
+        for pointer in [
+            "/post/id",
+            "/post/canonical_url",
+            "/post/platform",
+            "/analysis_identity",
+        ] {
+            let mut package = source_fixture();
+            *package.pointer_mut(pointer).unwrap() = json!(" \t");
+            assert!(
+                serde_json::from_value::<SourcePackageV1>(package).is_err(),
+                "accepted blank {pointer}"
+            );
+        }
+
+        let mut blank_fingerprint = source_fixture();
+        blank_fingerprint["fingerprint"] = json!(" ");
+        assert!(serde_json::from_value::<SourcePackageV1>(blank_fingerprint).is_err());
+    }
+
+    #[test]
+    fn source_packages_reject_blank_source_and_scene_identities() {
+        for pointer in [
+            "/sources/0/id",
+            "/sources/0/checksum",
+            "/sources/0/technical/container",
+            "/sources/0/technical/video_codec",
+            "/ignored/0/id",
+            "/scene_indexes/0/source_id",
+            "/scene_indexes/0/checksum",
+            "/scene_indexes/0/planning_mode",
+            "/scene_indexes/0/scenes/0/id",
+        ] {
+            let mut package = source_fixture();
+            *package.pointer_mut(pointer).unwrap() = json!(" \t");
+            assert!(
+                serde_json::from_value::<SourcePackageV1>(package).is_err(),
+                "accepted blank {pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_packages_require_sha256_identities() {
+        for pointer in ["/sources/0/checksum", "/scene_indexes/0/checksum"] {
+            let mut package = source_fixture();
+            *package.pointer_mut(pointer).unwrap() = json!("md5:not-sha256");
+            assert!(
+                serde_json::from_value::<SourcePackageV1>(package).is_err(),
+                "accepted non-SHA-256 {pointer}"
+            );
+        }
+
+        let mut package = source_fixture();
+        package["fingerprint"] = json!("md5:not-sha256");
+        assert!(serde_json::from_value::<SourcePackageV1>(package).is_err());
+    }
+
+    #[test]
+    fn source_packages_require_nonzero_source_dimensions() {
+        for pointer in [
+            "/sources/0/technical/width",
+            "/sources/0/technical/height",
+        ] {
+            let mut package = source_fixture();
+            *package.pointer_mut(pointer).unwrap() = json!(0);
+            assert!(
+                serde_json::from_value::<SourcePackageV1>(package).is_err(),
+                "accepted zero {pointer}"
+            );
+        }
     }
 
     #[test]
