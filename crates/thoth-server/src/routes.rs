@@ -1009,6 +1009,14 @@ pub async fn scout_run(
             Json(serde_json::json!({ "error": "url required" })),
         );
     }
+    if let Some(coverage) = req.main_coverage_target {
+        if !coverage.is_finite() || !(0.60..=1.00).contains(&coverage) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid_main_coverage_target" })),
+            );
+        }
+    }
     // Remember where this run writes its content-set BEFORE spawning.
     let cs = scout::resolve_content_set(req.out.as_deref());
     let args = scout::build_scout_args(ScoutKind::Run, None, Some(&req), None);

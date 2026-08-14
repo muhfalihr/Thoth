@@ -4,6 +4,7 @@ import "./test-setup";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
+import userEvent from "@testing-library/user-event";
 import { Discovery } from "./components/Discovery";
 import { createProfileJob, getEffectiveSettings, migrateConfigToml, scoutRun, updateProfile } from "./api";
 
@@ -148,4 +149,30 @@ test("Discovery forced-main checkbox starts unchecked on each mount and is not s
   }) as HTMLInputElement;
   expect(remountedCheckbox.checked).toBe(false);
   expect(localStorage.getItem("use_input_as_main")).toBeNull();
+});
+
+test("Discovery resets forced-main selection after a successful run", async () => {
+  stub({ ok: true }, 202);
+  const user = userEvent.setup();
+  let view!: ReturnType<typeof render>;
+  await act(async () => {
+    view = render(createElement(Discovery));
+  });
+  const url = view.getByLabelText("topic url");
+  const checkbox = view.getByRole("checkbox", {
+    name: /Use URL media as main footage/,
+  }) as HTMLInputElement;
+  await user.type(url, "https://www.instagram.com/p/ABC/");
+  await user.click(checkbox);
+  expect(checkbox.checked).toBe(true);
+
+  await user.click(view.getByRole("button", { name: "Run pipeline" }));
+  const firstRun = calls.find((call) => call.url === "/api/scout/run");
+  expect(JSON.parse(String(firstRun?.init?.body))).toMatchObject({ use_input_as_main: true });
+  expect(checkbox.checked).toBe(false);
+
+  calls = [];
+  await user.click(view.getByRole("button", { name: "Run pipeline" }));
+  const secondRun = calls.find((call) => call.url === "/api/scout/run");
+  expect(JSON.parse(String(secondRun?.init?.body))).toMatchObject({ use_input_as_main: false });
 });

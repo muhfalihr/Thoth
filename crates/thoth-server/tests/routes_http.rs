@@ -1136,6 +1136,47 @@ async fn scout_run_missing_url_is_400() {
 }
 
 #[tokio::test]
+async fn scout_run_rejects_invalid_main_coverage_before_starting() {
+    let (app, tmp) = build_test_app().await;
+    for target in ["0.59", "1.01", "1e999"] {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/scout/run")
+                    .header("authorization", "Bearer test-key")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"url":"https://www.instagram.com/p/ABC/","main_coverage_target":{target}}}"#,
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(res.status(), StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY),
+            "{target}: {}",
+            res.status(),
+        );
+    }
+    let status = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/scout/status")
+                .header("authorization", "Bearer test-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(status.into_body(), 1 << 20).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["run"].is_null(), "invalid target started Scout: {json}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
 async fn scout_cancel_when_idle_is_409() {
     let (app, tmp) = build_test_app().await;
     let res = app

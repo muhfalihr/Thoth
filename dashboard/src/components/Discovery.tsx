@@ -191,7 +191,10 @@ export function Discovery() {
               </label>
               <Button size="sm" disabled={running || url.trim() === ""} onClick={() =>
                 scoutRun({ url: url.trim(), per: num(per), max: num(max), cap: num(cap),
-                  no_comments: noComments, use_input_as_main: useInputAsMain }).then(ack("run"))}>
+                  no_comments: noComments, use_input_as_main: useInputAsMain }).then((result) => {
+                    ack("run")(result);
+                    if (result.ok) setUseInputAsMain(false);
+                  })}>
                 Run pipeline
               </Button>
             </CardContent>
