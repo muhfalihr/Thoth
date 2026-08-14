@@ -18,6 +18,37 @@ export function assertArtifactPath(relative: string): void {
   }
 }
 
+/**
+ * A Content Set can be outside Scout output, so its package descriptor may need
+ * lexical `..` segments. This deliberately does not establish containment: callers
+ * must resolve it with resolveDescriptorManifest(), which does that against output.
+ */
+export function assertDescriptorManifestPath(relative: string): void {
+  if (
+    !relative
+    || path.isAbsolute(relative)
+    || path.win32.isAbsolute(relative)
+    || REMOTE_SCHEME.test(relative)
+    || relative.includes('\\')
+  ) {
+    throw new Error('artifact_path_must_be_relative');
+  }
+}
+
+export function resolveDescriptorManifest(
+  contentSetPath: string,
+  manifest: string,
+  scoutOutputRoot: string,
+): string {
+  assertDescriptorManifestPath(manifest);
+  const resolved = path.resolve(path.dirname(path.resolve(contentSetPath)), manifest);
+  const outputRoot = path.resolve(scoutOutputRoot);
+  const relativeToOutput = path.relative(outputRoot, resolved).split(path.sep).join('/');
+  // Convert back to the strict package-root-relative form before resolving so
+  // canonical ancestor/symlink validation remains centralized in resolveContained.
+  return resolveContained(outputRoot, relativeToOutput);
+}
+
 export function resolveContained(root: string, relative: string): string {
   assertArtifactPath(relative);
   const resolvedRoot = path.resolve(root);

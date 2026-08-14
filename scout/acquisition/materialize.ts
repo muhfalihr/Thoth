@@ -64,7 +64,9 @@ export class Materializer {
     for (const source of chain) {
       const result = await this.tryOne(source, asset, assetHash);
       attempts += result.attempts;
-      if (result.local) return result.local;
+      if (result.local) {
+        return { ...result.local, attempts, elapsed_ms: clock() - startedAt };
+      }
     }
 
     throw new AcquisitionError('media materialization failed', {

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { assertArtifactPath } from './paths.ts';
+import { assertArtifactPath, assertDescriptorManifestPath } from './paths.ts';
+import type { AcquisitionSource } from '../acquisition/types.ts';
 
 export const MAIN_FOOTAGE_SCHEMA_VERSION = 1 as const;
 export type TransitionKind = 'match_cut' | 'cross_dissolve' | 'fade_through_black';
@@ -38,7 +39,9 @@ export interface SourceVideoV1 {
   media_index: number;
   path: string;
   checksum: string;
+  bytes?: number;
   technical: SourceTechnicalMetadata;
+  acquisition?: { source: AcquisitionSource; attempts: number; elapsed_ms: number };
 }
 
 export interface SourceOutcomeV1 {
@@ -196,6 +199,12 @@ function artifact(value: unknown, name: string): string {
   return result;
 }
 
+function descriptorManifest(value: unknown, name: string): string {
+  const result = string(value, name);
+  assertDescriptorManifestPath(result);
+  return result;
+}
+
 function range(input: JsonRecord, start: string, end: string, name: string): void {
   const from = number(input[start], start, 0);
   const to = number(input[end], end, 0);
@@ -250,6 +259,7 @@ export function decodeSourcePackage(input: unknown): SourcePackageV1 {
       media_index: number(source.media_index, `sources[${index}].media_index`, 0),
       path: artifact(source.path, `sources[${index}].path`),
       checksum: string(source.checksum, `sources[${index}].checksum`),
+      ...(source.bytes === undefined ? {} : { bytes: number(source.bytes, `sources[${index}].bytes`, 0) }),
       technical: {
         container: string(technical.container, 'technical.container'),
         video_codec: string(technical.video_codec, 'technical.video_codec'),
@@ -258,6 +268,18 @@ export function decodeSourcePackage(input: unknown): SourcePackageV1 {
         height: number(technical.height, 'technical.height', 1),
         has_audio: typeof technical.has_audio === 'boolean' ? technical.has_audio : (() => { throw new Error('technical.has_audio must be boolean'); })(),
       },
+      ...(source.acquisition === undefined ? {} : (() => {
+        const acquisition = record(source.acquisition, `sources[${index}].acquisition`);
+        return {
+          acquisition: {
+            source: enumValue(acquisition.source, `sources[${index}].acquisition.source`, [
+              'cache', 'network', 'public-metadata', 'gallery-dl', 'yt-dlp', 'direct-http', 'dom',
+            ]),
+            attempts: number(acquisition.attempts, `sources[${index}].acquisition.attempts`, 1),
+            elapsed_ms: number(acquisition.elapsed_ms, `sources[${index}].acquisition.elapsed_ms`, 0),
+          },
+        };
+      })()),
     };
   });
   const ignored = array(value.ignored, 'ignored').map((item, index) => outcome(item, `ignored[${index}]`));
@@ -316,7 +338,7 @@ export function decodeMainFootageDescriptor(input: unknown): MainFootageDescript
   }
   return {
     mode: enumValue(value.mode, 'mode', ['forced_url_pool']),
-    package_manifest: artifact(value.package_manifest, 'package_manifest'),
+    package_manifest: descriptorManifest(value.package_manifest, 'package_manifest'),
     coverage_target: coverageTarget(value.coverage_target, 'coverage_target'),
   };
 }

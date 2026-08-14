@@ -11,14 +11,13 @@
 // Exit 0 = safe to hand off (errors=0). Exit 1 = has errors → fix before thoth run.
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { lintContentSet } from '../lib/validate.ts';
 import { OUTPUT_DIR } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 import { decodeMainFootageDescriptor, decodeSourcePackage } from '../main_footage/contracts.ts';
-import { resolveContained } from '../main_footage/paths.ts';
+import { resolveDescriptorManifest } from '../main_footage/paths.ts';
 import type { ContentSet } from '../lib/types.ts';
 
 export interface FileStageOptions {
@@ -33,9 +32,7 @@ export function validateMainFootageDescriptor(
   if (set.main_footage === undefined) return undefined;
   try {
     const descriptor = decodeMainFootageDescriptor(set.main_footage);
-    const packagePath = resolveContained(path.dirname(path.resolve(contentSetPath)), descriptor.package_manifest);
-    const packagePathFromOutput = path.relative(scoutOutputRoot, packagePath).split(path.sep).join('/');
-    resolveContained(scoutOutputRoot, packagePathFromOutput);
+    const packagePath = resolveDescriptorManifest(contentSetPath, descriptor.package_manifest, scoutOutputRoot);
     const sourcePackage = decodeSourcePackage(JSON.parse(fs.readFileSync(packagePath, 'utf8')));
     if (sourcePackage.post.canonical_url !== set.main.url) throw new Error('canonical_url_mismatch');
     return sourcePackage;

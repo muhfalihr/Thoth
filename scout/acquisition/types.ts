@@ -95,6 +95,9 @@ export interface LocalAsset {
   kind: 'image' | 'video' | 'social-card';
   source: AcquisitionSource;
   bytes: number;
+  /** Materializer chain telemetry; safe to persist in package manifests. */
+  attempts?: number;
+  elapsed_ms?: number;
 }
 
 export interface CommentLimits {

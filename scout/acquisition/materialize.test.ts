@@ -28,6 +28,8 @@ try {
     'footage',
   );
   assert.equal(local.source, 'gallery-dl');
+  assert.equal(local.attempts, 1);
+  assert.ok(typeof local.elapsed_ms === 'number' && local.elapsed_ms >= 0);
   assert.equal(calls[0].executable, 'gallery-dl');
   assert.deepEqual(calls[0].args.slice(-3), ['--range', '1', 'https://www.instagram.com/p/ABC/']);
   assert.ok(fs.existsSync(local.path));
@@ -52,6 +54,7 @@ try {
     'footage',
   );
   assert.equal(direct.source, 'direct-http');
+  assert.equal(direct.attempts, 2);
   assert.ok(fs.existsSync(direct.path));
   console.log('ok acquisition_materialize');
 

@@ -19,6 +19,9 @@ await runPipelineWithDeps(
       contexts.add(received);
       return { title: 'caption', description: 'caption', platform: 'instagram', is_video: true };
     },
+    packageForcedMain: async () => {
+      throw new Error('legacy runs must not package forced main footage');
+    },
     writeSeed: async () => {},
     traceSource: async (_options, received) => {
       stages.push('trace');
@@ -49,6 +52,70 @@ await runPipelineWithDeps(
 );
 assert.deepEqual(stages, ['trace', 'comments', 'dossier', 'footage', 'figures', 'validate']);
 assert.equal(contexts.size, 1);
+
+const forcedStages: string[] = [];
+const forcedContext = { runId: 'forced-test', service: {} } as any;
+let forcedInspectCalls = 0;
+let forcedPackageCalls = 0;
+const previousFfmpeg = process.env.THOTH_FFMPEG;
+const previousFfprobe = process.env.THOTH_FFPROBE;
+process.env.THOTH_FFMPEG = process.execPath;
+process.env.THOTH_FFPROBE = process.execPath;
+try {
+  await runPipelineWithDeps(
+    {
+      url: 'https://www.instagram.com/p/FORCED/',
+      out: 'set.json',
+      noComments: true,
+      useInputAsMain: true,
+      mainCoverageTarget: 0.75,
+    },
+    {
+      createContext: async () => forcedContext,
+      inspectSeed: async () => {
+        forcedInspectCalls += 1;
+        return {
+          title: 'caption', description: 'caption', platform: 'instagram', is_video: true,
+          post: {
+            canonical_url: 'https://www.instagram.com/p/FORCED/', platform: 'instagram', post_id: 'FORCED',
+            owner_handle: 'owner', text: 'caption', media: [],
+            outcome: { status: 'resolved', source: 'network', attempts: 1, elapsed_ms: 1 },
+          },
+        };
+      },
+      packageForcedMain: async (input, received) => {
+        forcedPackageCalls += 1;
+        assert.equal(received, forcedContext);
+        assert.equal(input.post.post_id, 'FORCED');
+        return {
+          descriptor: { mode: 'forced_url_pool', package_manifest: 'main-footage/package.json', coverage_target: 0.75 },
+          excludedMediaIds: ['FORCED:0'],
+        };
+      },
+      writeSeed: async (_file, seed) => {
+        assert.equal(seed.main_footage?.mode, 'forced_url_pool');
+      },
+      traceSource: async () => forcedStages.push('trace'),
+      collectComments: async () => forcedStages.push('comments'),
+      topicDossier: async () => forcedStages.push('dossier'),
+      buildFootage: async (options) => {
+        forcedStages.push('footage');
+        assert.deepEqual(options.excludedMediaIds, ['FORCED:0']);
+      },
+      extractFigures: async () => forcedStages.push('figures'),
+      validate: async () => forcedStages.push('validate'),
+      summarize: async () => {},
+    } as any,
+  );
+} finally {
+  if (previousFfmpeg === undefined) delete process.env.THOTH_FFMPEG;
+  else process.env.THOTH_FFMPEG = previousFfmpeg;
+  if (previousFfprobe === undefined) delete process.env.THOTH_FFPROBE;
+  else process.env.THOTH_FFPROBE = previousFfprobe;
+}
+assert.deepEqual(forcedStages, ['footage', 'figures', 'validate']);
+assert.equal(forcedInspectCalls, 1);
+assert.equal(forcedPackageCalls, 1);
 
 const parsedDefault = parseRunPipelineOptions(['https://www.instagram.com/p/ABC/']);
 assert.equal(parsedDefault.useInputAsMain, false);

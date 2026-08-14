@@ -106,6 +106,8 @@ export interface BuildFootageOptions {
   max: number;
   noCrop: boolean;
   profile: string | null;
+  /** Media already packaged as authoritative forced-main footage. */
+  excludedMediaIds?: string[];
 }
 
 export function parseBuildFootageArgs(argv: string[]): BuildFootageOptions {
@@ -282,6 +284,18 @@ async function pushSlides(set, postUrl, slides, plat, query, description): Promi
   return { added, mediaDropped };
 }
 
+/** The forced package is authoritative, so never re-derive its carousel as b-roll. */
+export function shouldSkipForcedCarouselPool(
+  main: { platform?: string; url?: string },
+  excludedMediaIds: readonly string[] | undefined,
+): boolean {
+  return Boolean(
+    excludedMediaIds?.length
+    && /instagram/i.test(main.platform || '')
+    && /\/p\//.test(main.url || ''),
+  );
+}
+
 export async function runBuildFootage(
   options: BuildFootageOptions,
   context: AcquisitionRunContext,
@@ -296,7 +310,7 @@ export async function runBuildFootage(
   // jadi tak perlu similarity gate / pencarian eksternal (sumber footage off-topik & inkonsisten). Slide
   // #1 = main (ingest pakai --no-playlist → ambil item pertama) → dibuang dari footage. <2 video → pool
   // kekecilan → jatuh ke alur build-footage biasa di bawah.
-  if (/instagram/i.test(main.platform || '') && /\/p\//.test(main.url || '')) {
+  if (!shouldSkipForcedCarouselPool(main, options.excludedMediaIds) && /instagram/i.test(main.platform || '') && /\/p\//.test(main.url || '')) {
     const allSlides = igCarouselSlides(main.url, 10);
     if (allSlides.filter((s) => s.kind === 'video').length >= 2) {
       console.log(ui.rule());

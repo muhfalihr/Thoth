@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { admitAndMaterializeFootage } from './build_footage.ts';
+import { admitAndMaterializeFootage, shouldSkipForcedCarouselPool } from './build_footage.ts';
 
 let materialized = 0;
 const rejected = await admitAndMaterializeFootage(
@@ -59,5 +59,16 @@ assert.equal(acceptedMaterialized, 1);
 if (accepted.status === 'accepted') {
   assert.equal(accepted.entry.image_path, '/tmp/footage-2.jpg');
 }
+
+assert.equal(
+  shouldSkipForcedCarouselPool({ platform: 'instagram', url: 'https://www.instagram.com/p/forced/' }, ['forced:1']),
+  true,
+  'authoritative forced media must not return as carousel enrichment',
+);
+assert.equal(
+  shouldSkipForcedCarouselPool({ platform: 'instagram', url: 'https://www.instagram.com/p/legacy/' }, []),
+  false,
+  'legacy carousel behavior remains available',
+);
 
 console.log('ok build_footage_acquisition');

@@ -15,13 +15,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { outPath } from '../lib/paths.ts';
+import { OUTPUT_DIR, outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import { runPipelineStep } from './run_pipeline_step.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 import { canonicalizeUrl } from '../acquisition/url.ts';
 import type { ContentSet, MainVideo } from '../lib/types.ts';
+import type { PostRecord } from '../acquisition/types.ts';
+import { buildSourcePackage, probeSourceVideo, type SourcePackageResult } from '../main_footage/source_package.ts';
 import { runTraceSource, type TraceSourceOptions } from './trace_source.ts';
 import { runCollectComments, type CollectCommentsOptions } from './collect_comments.ts';
 import { runTopicDossier } from '../enrich/topic_dossier.ts';
@@ -49,7 +51,11 @@ export interface RunPipelineOptions {
 
 export interface RunPipelineDeps {
   createContext(): Promise<AcquisitionRunContext>;
-  inspectSeed(url: string, context: AcquisitionRunContext): Promise<Partial<MainVideo>>;
+  inspectSeed(url: string, context: AcquisitionRunContext): Promise<Partial<MainVideo> & { post?: PostRecord }>;
+  packageForcedMain?(
+    input: { post: PostRecord; contentSetPath: string; coverageTarget: number },
+    context: AcquisitionRunContext,
+  ): Promise<Pick<SourcePackageResult, 'descriptor' | 'excludedMediaIds'>>;
   writeSeed(file: string, seed: ContentSet): Promise<void>;
   traceSource(options: TraceSourceOptions, context: AcquisitionRunContext): Promise<void>;
   collectComments(options: CollectCommentsOptions, context: AcquisitionRunContext): Promise<void>;
@@ -181,6 +187,21 @@ export async function runPipelineWithDeps(
     footage: [],
     comments: [],
   };
+  let excludedMediaIds: string[] | undefined;
+  if (options.useInputAsMain) {
+    if (!seedFields.post) throw codedError('forced_main_no_usable_video');
+    const packageForcedMain = deps.packageForcedMain || ((input, acquisitionContext) => buildSourcePackage(input, {
+      materialize: (asset) => acquisitionContext.service.materialize(asset, 'main'),
+      probe: probeSourceVideo,
+      scoutOutputRoot: OUTPUT_DIR,
+    }));
+    const packaged = await packageForcedMain(
+      { post: seedFields.post, contentSetPath: file, coverageTarget: options.mainCoverageTarget },
+      context,
+    );
+    seed.main_footage = packaged.descriptor;
+    excludedMediaIds = packaged.excludedMediaIds;
+  }
   console.log(`caption: ${(desc || '(kosong)').slice(0, 90)}`);
   await deps.writeSeed(file, seed);
 
@@ -188,13 +209,15 @@ export async function runPipelineWithDeps(
   // subject/object extraction can mine the comments too. extract_figures runs AFTER build_footage so it
   // can also read footage descriptions. Every step is awaited: they run strictly in order and each one
   // reads the file the previous step wrote.
-  await runStage(
-    'trace_source (sumber/main)',
-    true,
-    () =>
-      deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
-    TRACE_SOURCE_TIMEOUT_MS,
-  );
+  if (!options.useInputAsMain) {
+    await runStage(
+      'trace_source (sumber/main)',
+      true,
+      () =>
+        deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
+      TRACE_SOURCE_TIMEOUT_MS,
+    );
+  }
 
   if (!noComments) {
     await runStage('collect_comments (multi-sumber)', false, () =>
@@ -214,7 +237,10 @@ export async function runPipelineWithDeps(
     true,
     () =>
       deps.buildFootage(
-        { file, objects: null, per: options.per ?? 2, max: options.max ?? 4, noCrop: false, profile: null },
+        {
+          file, objects: null, per: options.per ?? 2, max: options.max ?? 4, noCrop: false, profile: null,
+          excludedMediaIds,
+        },
         context,
       ),
     FOOTAGE_TIMEOUT_MS,
@@ -239,7 +265,7 @@ const realDeps: RunPipelineDeps = {
       context.service.registerIntent(url, intent);
     }
     const record = await context.service.inspectPost(url);
-    return { platform: record.platform, description: record.text || '', is_video: true };
+    return { platform: record.platform, description: record.text || '', is_video: true, post: record };
   },
   writeSeed: async (file, seed) => {
     fs.writeFileSync(file, JSON.stringify(seed, null, 2), 'utf8');

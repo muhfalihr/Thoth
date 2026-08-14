@@ -91,6 +91,77 @@ function forcedSet(packageManifest: string): ContentSet {
 {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-forced-set-'));
   const outputRoot = path.join(tempDir, 'scout', 'output');
+  const contentSetPath = path.join(tempDir, 'external-content-set', 'forced.json');
+  fs.mkdirSync(path.dirname(contentSetPath), { recursive: true });
+  fs.mkdirSync(outputRoot, { recursive: true });
+  fs.writeFileSync(contentSetPath, '{}');
+  try {
+    for (const invalidManifest of [
+      '',
+      path.join(outputRoot, 'main-footage', 'package.json'),
+      'https://cdn.example.test/package.json',
+      'main-footage\\package.json',
+    ]) {
+      assert.throws(
+        () => validateMainFootageDescriptor(
+          contentSetPath,
+          forcedSet(invalidManifest),
+          outputRoot,
+        ),
+        /source_package_invalid/,
+      );
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-forced-set-'));
+  const outputRoot = path.join(tempDir, 'scout', 'output');
+  const outsideRoot = path.join(tempDir, 'outside');
+  const contentSetPath = path.join(tempDir, 'external-content-set', 'forced.json');
+  const outsidePackagePath = path.join(outsideRoot, 'package.json');
+  fs.mkdirSync(path.dirname(contentSetPath), { recursive: true });
+  fs.mkdirSync(outputRoot, { recursive: true });
+  fs.writeFileSync(contentSetPath, '{}');
+  writeSourcePackage(outsidePackagePath);
+  fs.symlinkSync(outsideRoot, path.join(outputRoot, 'linked-outside'), 'junction');
+  try {
+    const linkedPackagePath = path.join(outputRoot, 'linked-outside', 'package.json');
+    const manifest = path.relative(path.dirname(contentSetPath), linkedPackagePath).split(path.sep).join('/');
+    assert.throws(
+      () => validateMainFootageDescriptor(contentSetPath, forcedSet(manifest), outputRoot),
+      /source_package_invalid/,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-forced-set-'));
+  const outputRoot = path.join(tempDir, 'scout', 'output');
+  const contentSetPath = path.join(tempDir, 'external-content-set', 'forced.json');
+  const packagePath = path.join(outputRoot, 'main-footage', 'source-1', 'package.json');
+  fs.mkdirSync(path.dirname(contentSetPath), { recursive: true });
+  fs.writeFileSync(contentSetPath, '{}');
+  writeSourcePackage(packagePath);
+  try {
+    const manifest = path.relative(path.dirname(contentSetPath), packagePath).split(path.sep).join('/');
+    assert.ok(manifest.startsWith('../'));
+    assert.equal(
+      validateMainFootageDescriptor(contentSetPath, forcedSet(manifest), outputRoot)?.schema_version,
+      1,
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-forced-set-'));
+  const outputRoot = path.join(tempDir, 'scout', 'output');
   const escapedFixturePath = path.join(outputRoot, 'sets', 'escaped.json');
   const escapedPackagePath = path.join(tempDir, 'escaped', 'source-package.json');
   fs.mkdirSync(path.dirname(escapedFixturePath), { recursive: true });
