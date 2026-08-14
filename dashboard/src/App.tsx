@@ -16,9 +16,12 @@ export default function App() {
   const [view, setView] = useState<"runs" | "profiles" | "discovery" | "contentset">("runs");
   // Sub-project D: one-shot content-set path handed from the Content-Set view to
   // RunForm (cleared by RunForm.onConsumed once consumed on mount).
-  const [pendingContentSet, setPendingContentSet] = useState<string | null>(null);
-  const handleSendToRender = (path: string) => {
-    setPendingContentSet(path);
+  const [pendingContentSet, setPendingContentSet] = useState<{
+    path: string;
+    forced: boolean;
+  } | null>(null);
+  const handleSendToRender = (path: string, forced: boolean) => {
+    setPendingContentSet({ path, forced });
     setView("runs");
   };
 
@@ -68,7 +71,8 @@ export default function App() {
           <RunForm
             projectId={projectId}
             onCreated={setSelectedJobId}
-            initialContentSet={pendingContentSet ?? undefined}
+            initialContentSet={pendingContentSet?.path}
+            initialContentSetForced={pendingContentSet?.forced}
             onConsumed={() => setPendingContentSet(null)}
           />
           <div className="flex min-h-0 flex-1 gap-3 p-3">

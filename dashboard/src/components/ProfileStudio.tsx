@@ -33,7 +33,7 @@ import { cn } from "@/lib/utils";
 // brand-new profile is valid the moment it's created (the server validates it).
 const DEFAULT_SETTINGS: ProfileSettings = {
   schema_version: 1,
-  narration: { language: null },
+  narration: { enabled: true, language: null },
   visual_edit: {
     layout: "vertical",
     clip_style: "fade",
@@ -285,6 +285,19 @@ export function ProfileStudio({
             </div>
 
             <Fieldset legend="Narration">
+              <Field label="Narrator mode" htmlFor="nar-enabled">
+                <input
+                  id="nar-enabled"
+                  type="checkbox"
+                  checked={s.narration.enabled}
+                  onChange={(e) =>
+                    patchSettings((n) => {
+                      n.narration.enabled = e.target.checked;
+                    })
+                  }
+                  className="size-4 accent-primary"
+                />
+              </Field>
               <Field label="Language" htmlFor="nar-lang">
                 <Input
                   id="nar-lang"

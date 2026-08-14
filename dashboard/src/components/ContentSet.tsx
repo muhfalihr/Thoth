@@ -23,7 +23,11 @@ type Comment = { author?: string; text?: string; likes?: number; image_path?: st
 type Figure = { name?: string; kind?: string; role?: string; description?: string };
 type Reference = { term?: string; kind?: string; summary?: string };
 
-export function ContentSet({ onSendToRender }: { onSendToRender: (path: string) => void }) {
+export function ContentSet({
+  onSendToRender,
+}: {
+  onSendToRender: (path: string, forced: boolean) => void;
+}) {
   const [data, setData] = useState<ContentSetData | null>(null);
   const [content, setContent] = useState<any | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -146,7 +150,7 @@ export function ContentSet({ onSendToRender }: { onSendToRender: (path: string) 
     // `data.path` is the canonical content-set path; a save never changes it
     // (save() re-fetches the same file), so reading it from the pre-save
     // closure is safe. Revisit if a future path-picker lets save() relocate it.
-    onSendToRender(data.path);
+    onSendToRender(data.path, content.main_footage?.mode === "forced_url_pool");
   };
 
   const logLines: LogLine[] = lines.map((l) => ({

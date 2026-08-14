@@ -31,11 +31,13 @@ export function RunForm({
   projectId,
   onCreated,
   initialContentSet,
+  initialContentSetForced = false,
   onConsumed,
 }: {
   projectId: string;
   onCreated: (jobId: string) => void;
   initialContentSet?: string;
+  initialContentSetForced?: boolean;
   onConsumed?: () => void;
 }) {
   const [profiles, setProfiles] = useState<ProfileRecord[]>([]);
@@ -52,6 +54,7 @@ export function RunForm({
   const [layout, setLayout] = useState("");
   const [clipStyle, setClipStyle] = useState("");
   const [language, setLanguage] = useState("");
+  const [narratorMode, setNarratorMode] = useState("");
   const [social, setSocial] = useState("");
   const [maxClips, setMaxClips] = useState("");
   const [bgmVolume, setBgmVolume] = useState("");
@@ -95,6 +98,7 @@ export function RunForm({
     if (s(layout)) o.visual_edit_layout = s(layout);
     if (s(clipStyle)) o.visual_edit_clip_style = s(clipStyle);
     if (s(language)) o.narration_language = s(language);
+    if (narratorMode) o.narration_enabled = narratorMode === "enabled";
     if (s(social)) o.visual_edit_social = s(social);
     if (n(maxClips) !== undefined) o.analysis_max_clips = n(maxClips);
     if (n(bgmVolume) !== undefined) o.visual_edit_bgm_volume = n(bgmVolume);
@@ -116,6 +120,14 @@ export function RunForm({
       setError("provide a URL or content-set (this profile has no saved source)");
       return;
     }
+    const effectiveNarrationEnabled = narratorMode
+      ? narratorMode === "enabled"
+      : (selected?.settings.narration.enabled ?? true);
+    const isForcedHandoff = initialContentSetForced && contentSet === initialContentSet;
+    if (isForcedHandoff && !effectiveNarrationEnabled) {
+      setError("Narrator mode is required for URL main footage.");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -127,7 +139,12 @@ export function RunForm({
       setContentSet("");
       onCreated(job_id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "failed to start run");
+      const message = err instanceof Error ? err.message : "failed to start run";
+      setError(
+        message.includes("forced_main_narration_required")
+          ? "Narrator mode is required for URL main footage."
+          : message,
+      );
     } finally {
       setSubmitting(false);
     }
@@ -208,6 +225,10 @@ export function RunForm({
             ["clip-style", clipStyle || v.visual_edit.clip_style],
             ["max-clips", String(maxClips || v.analysis.max_clips)],
             ["language", language || v.narration.language || "auto"],
+            [
+              "narrator",
+              narratorMode || (v.narration.enabled ? "enabled" : "disabled"),
+            ],
           ] as const).map(([k, val]) => (
             <span key={k} className="rounded bg-secondary px-1.5 py-0.5 font-mono">
               {k} <b className="text-foreground">{val}</b>
@@ -222,6 +243,13 @@ export function RunForm({
           {enumField("ov-model", "model", model, setModel, WHISPER_MODELS)}
           {enumField("ov-layout", "Layout", layout, setLayout, LAYOUTS)}
           {enumField("ov-clip-style", "clip-style", clipStyle, setClipStyle, CLIP_STYLES)}
+          {enumField(
+            "ov-narrator-mode",
+            "Narrator mode",
+            narratorMode,
+            setNarratorMode,
+            ["enabled", "disabled"],
+          )}
           {textField("ov-max-clips", "max-clips", maxClips, setMaxClips, "3", "number")}
           {textField("ov-language", "language", language, setLanguage, "id")}
           {textField("ov-social", "social", social, setSocial, "@acct")}

@@ -1,4 +1,9 @@
-use std::{convert::Infallible, time::Duration};
+use std::{
+    convert::Infallible,
+    fs,
+    path::{Component, Path as FsPath, PathBuf},
+    time::Duration,
+};
 
 use axum::{
     extract::{Path, Query, State, rejection::JsonRejection},
@@ -13,8 +18,8 @@ use crate::auth::AppState;
 use crate::scout::{self, DiscoverReq, RunReq, ScoutKind, ValidateReq};
 use thoth_jobs::{
     CancelRequestOutcome, EnqueueRequest, JobRecord, JobSpec, JobStore, ProfileRecord,
-    ProfileSettings, ResourceError, RunOverrides, resolve_settings, validate_job_spec,
-    validate_settings,
+    ProfileSettings, ResolvedSettings, ResourceError, RunOverrides, resolve_settings,
+    validate_job_spec, validate_settings,
 };
 
 #[derive(Deserialize)]
@@ -136,6 +141,195 @@ fn validation_error_response(error: anyhow::Error) -> Response {
     resource_error_response(ResourceError::Validation {
         message: error.to_string(),
     })
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MainFootageDescriptor {
+    mode: MainFootageMode,
+    package_manifest: String,
+    coverage_target: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MainFootageMode {
+    ForcedUrlPool,
+}
+
+#[derive(Debug)]
+struct ValidationError {
+    code: &'static str,
+}
+
+impl ValidationError {
+    fn source_package_invalid() -> Self {
+        Self {
+            code: "source_package_invalid",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourcePackageV1 {
+    schema_version: u8,
+    post: SourcePostV1,
+    analysis_identity: String,
+    created_at: Option<String>,
+    fingerprint: Option<String>,
+    sources: Vec<SourceVideoV1>,
+    ignored: Vec<serde_json::Value>,
+    unavailable: Vec<serde_json::Value>,
+    scene_indexes: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourcePostV1 {
+    id: String,
+    canonical_url: String,
+    platform: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceVideoV1 {
+    id: String,
+    media_index: u32,
+    path: String,
+    checksum: String,
+    technical: SourceTechnicalMetadata,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceTechnicalMetadata {
+    container: String,
+    video_codec: String,
+    duration_sec: f64,
+    width: u32,
+    height: u32,
+    has_audio: bool,
+}
+
+fn coded_validation(status: StatusCode, code: &'static str) -> Response {
+    (status, Json(serde_json::json!({ "error": { "code": code } }))).into_response()
+}
+
+fn canonical_scout_output_root() -> Result<PathBuf, ValidationError> {
+    let cwd = std::env::current_dir().map_err(|_| ValidationError::source_package_invalid())?;
+    fs::canonicalize(cwd.join(scout::SCOUT_OUTPUT_DIR))
+        .map_err(|_| ValidationError::source_package_invalid())
+}
+
+fn validate_artifact_path(path: &str) -> Result<(), ValidationError> {
+    let path_value = FsPath::new(path);
+    let remote = path.split_once("://").is_some_and(|(scheme, rest)| {
+        !scheme.is_empty()
+            && scheme.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+            })
+            && !rest.is_empty()
+    });
+    if path.is_empty()
+        || path_value.is_absolute()
+        || remote
+        || path.contains('\\')
+        || path_value
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ValidationError::source_package_invalid());
+    }
+    Ok(())
+}
+
+fn inspect_main_footage_descriptor(
+    content_set_path: &FsPath,
+    scout_output_root: &FsPath,
+) -> Result<Option<MainFootageDescriptor>, ValidationError> {
+    let bytes = fs::read(content_set_path).map_err(|_| ValidationError::source_package_invalid())?;
+    let content_set: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| ValidationError::source_package_invalid())?;
+    let Some(descriptor_value) = content_set.get("main_footage") else {
+        return Ok(None);
+    };
+    let descriptor: MainFootageDescriptor = serde_json::from_value(descriptor_value.clone())
+        .map_err(|_| ValidationError::source_package_invalid())?;
+    validate_artifact_path(&descriptor.package_manifest)?;
+    if !descriptor.coverage_target.is_finite()
+        || !(0.60..=1.00).contains(&descriptor.coverage_target)
+    {
+        return Err(ValidationError::source_package_invalid());
+    }
+
+    let content_set_parent = content_set_path
+        .parent()
+        .ok_or_else(ValidationError::source_package_invalid)?;
+    let package_path = fs::canonicalize(content_set_parent.join(&descriptor.package_manifest))
+        .map_err(|_| ValidationError::source_package_invalid())?;
+    if !package_path.starts_with(scout_output_root) {
+        return Err(ValidationError::source_package_invalid());
+    }
+
+    let source_package: SourcePackageV1 = serde_json::from_slice(
+        &fs::read(package_path).map_err(|_| ValidationError::source_package_invalid())?,
+    )
+    .map_err(|_| ValidationError::source_package_invalid())?;
+    let main_url = content_set
+        .get("main")
+        .and_then(|main| main.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(ValidationError::source_package_invalid)?;
+    if source_package.schema_version != 1
+        || source_package.post.canonical_url != main_url
+        || source_package.post.id.trim().is_empty()
+        || source_package.post.platform.trim().is_empty()
+        || source_package.analysis_identity.trim().is_empty()
+        || source_package.sources.is_empty()
+    {
+        return Err(ValidationError::source_package_invalid());
+    }
+    for source in &source_package.sources {
+        validate_artifact_path(&source.path)?;
+        if source.id.trim().is_empty()
+            || source.checksum.trim().is_empty()
+            || source.technical.container.trim().is_empty()
+            || source.technical.video_codec.trim().is_empty()
+            || !source.technical.duration_sec.is_finite()
+            || source.technical.duration_sec < 0.0
+            || source.technical.width == 0
+            || source.technical.height == 0
+        {
+            return Err(ValidationError::source_package_invalid());
+        }
+        let _ = (source.media_index, source.technical.has_audio);
+    }
+    let _ = (
+        descriptor.mode,
+        source_package.created_at,
+        source_package.fingerprint,
+        source_package.ignored,
+        source_package.unavailable,
+        source_package.scene_indexes,
+    );
+    Ok(Some(descriptor))
+}
+
+fn validate_forced_main_profile(
+    content_set_path: &FsPath,
+    resolved_settings: &ResolvedSettings,
+    scout_output_root: &FsPath,
+) -> Result<(), ValidationError> {
+    if inspect_main_footage_descriptor(content_set_path, scout_output_root)?.is_some()
+        && !resolved_settings.narration.enabled
+    {
+        return Err(ValidationError {
+            code: "forced_main_narration_required",
+        });
+    }
+    Ok(())
 }
 
 async fn scoped_profile(
@@ -416,6 +610,32 @@ pub async fn create_job(
         )
             .into_response();
     }
+    if let Some(content_set) = spec.content_set.as_deref() {
+        let scout_root = match canonical_scout_output_root() {
+            Ok(root) => root,
+            Err(error) => {
+                return coded_validation(StatusCode::UNPROCESSABLE_ENTITY, error.code);
+            }
+        };
+        match inspect_main_footage_descriptor(FsPath::new(content_set), &scout_root) {
+            Ok(Some(_))
+                if spec
+                    .params
+                    .get("narration_enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true) =>
+            {
+                return coded_validation(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "forced_main_narration_required",
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return coded_validation(StatusCode::UNPROCESSABLE_ENTITY, error.code);
+            }
+        }
+    }
 
     // The worker creates the output dir when it actually runs the job; the
     // server only records intent. output_dir is `output_root/<job_id>` so the
@@ -485,6 +705,18 @@ pub async fn create_project_job(
         Ok(resolved) => resolved,
         Err(error) => return validation_error_response(error),
     };
+
+    if let Some(content_set) = resolved.ingest_source.content_set.as_deref() {
+        let scout_root = match canonical_scout_output_root() {
+            Ok(root) => root,
+            Err(error) => {
+                return coded_validation(StatusCode::UNPROCESSABLE_ENTITY, error.code);
+            }
+        };
+        if let Err(error) = validate_forced_main_profile(content_set, &resolved, &scout_root) {
+            return coded_validation(StatusCode::UNPROCESSABLE_ENTITY, error.code);
+        }
+    }
 
     let job_id = uuid::Uuid::new_v4().to_string();
     let output_dir = state.home.project_outputs(&project_id).join(&job_id);

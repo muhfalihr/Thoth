@@ -100,10 +100,25 @@ const LAYOUTS: &[&str] = &["vertical", "horizontal", "square"];
 const CLIP_STYLES: &[&str] = &["fade", "flash", "zoom", "smooth", "none"];
 
 /// Safe narration defaults that can be stored in a project profile.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+fn default_narration_enabled() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NarrationSettings {
+    #[serde(default = "default_narration_enabled")]
+    pub enabled: bool,
     pub language: Option<String>,
+}
+
+impl Default for NarrationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            language: None,
+        }
+    }
 }
 
 /// Existing visual and edit CLI knobs.
@@ -207,6 +222,7 @@ impl Default for ProfileSettings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunOverrides {
+    pub narration_enabled: Option<bool>,
     pub narration_language: Option<Option<String>>,
     pub visual_edit_layout: Option<String>,
     pub visual_edit_clip_style: Option<String>,
@@ -266,6 +282,9 @@ pub fn resolve_settings(
 ) -> Result<ResolvedSettings> {
     let mut resolved = ResolvedSettings::from(profile.clone());
 
+    if let Some(value) = overrides.narration_enabled {
+        resolved.narration.enabled = value;
+    }
     if let Some(value) = &overrides.narration_language {
         resolved.narration.language = value.clone();
     }

@@ -45,6 +45,14 @@ test("createProfileJob posts profile_id + real overrides to the project jobs rou
   });
 });
 
+test("createProfileJob surfaces authoritative forced-main error codes", async () => {
+  stub({ error: { code: "forced_main_narration_required" } }, 422);
+
+  await expect(
+    createProfileJob("p1", { profile_id: "prof-1", overrides: {} }),
+  ).rejects.toThrow("createProfileJob: forced_main_narration_required");
+});
+
 test("getEffectiveSettings gets the job effective-settings route", async () => {
   stub({ settings: { schema_version: 1 } });
 

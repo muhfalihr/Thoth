@@ -62,6 +62,22 @@ test("creating a profile posts the typed name + settings via createProfile", asy
   expect(onProfileChanged).toHaveBeenCalled();
 });
 
+test("narrator mode defaults enabled and is persisted when disabled", async () => {
+  const user = userEvent.setup();
+  const { ProfileStudio } = await import("./ProfileStudio");
+  render(<ProfileStudio projectId="p1" onProfileChanged={() => {}} />);
+
+  await user.click(await screen.findByRole("button", { name: /new profile/i }));
+  const narrator = screen.getByLabelText("Narrator mode") as HTMLInputElement;
+  expect(narrator.checked).toBe(true);
+  await user.click(narrator);
+  await user.type(screen.getByLabelText("Profile name"), "Silent legacy run");
+  await user.click(screen.getByRole("button", { name: /save profile/i }));
+
+  const [, body] = createProfile.mock.calls[0] as [string, Record<string, any>];
+  expect(body.settings.narration.enabled).toBe(false);
+});
+
 test("validate is disabled while creating an unsaved profile", async () => {
   const user = userEvent.setup();
   const { ProfileStudio } = await import("./ProfileStudio");

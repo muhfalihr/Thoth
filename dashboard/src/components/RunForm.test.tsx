@@ -12,7 +12,7 @@ const P1_PROFILE = {
   credential_ref: null,
   settings: {
     schema_version: 1,
-    narration: { language: null },
+    narration: { enabled: true, language: null },
     visual_edit: {
       layout: "vertical",
       clip_style: "fade",
@@ -36,6 +36,14 @@ const P1_PROFILE = {
 const P1_NO_SOURCE = {
   ...P1_PROFILE,
   settings: { ...P1_PROFILE.settings, ingest_source: { source: null, content_set: null } },
+};
+
+const P1_NARRATION_DISABLED = {
+  ...P1_NO_SOURCE,
+  settings: {
+    ...P1_NO_SOURCE.settings,
+    narration: { ...P1_NO_SOURCE.settings.narration, enabled: false },
+  },
 };
 
 let profileList: unknown[] = [P1_PROFILE];
@@ -101,4 +109,95 @@ test("run with no source (profile has none, no URL/content-set) shows an error a
 
   expect(createProfileJob).not.toHaveBeenCalled();
   expect(await screen.findByText(/provide a URL or content-set/i)).toBeDefined();
+});
+
+test("forced handoff with effective narrator mode disabled is rejected locally", async () => {
+  profileList = [P1_NARRATION_DISABLED];
+  const user = userEvent.setup();
+  const { RunForm } = await import("./RunForm");
+  render(
+    <RunForm
+      projectId="p1"
+      onCreated={() => {}}
+      initialContentSet="scout/output/forced.json"
+      initialContentSetForced
+    />,
+  );
+  await screen.findByText("Default");
+
+  await user.click(screen.getByRole("button", { name: /^run$/i }));
+
+  expect(createProfileJob).not.toHaveBeenCalled();
+  expect(
+    await screen.findByText("Narrator mode is required for URL main footage."),
+  ).toBeDefined();
+});
+
+test("forced handoff respects a one-off narrator disable override", async () => {
+  profileList = [P1_NO_SOURCE];
+  const user = userEvent.setup();
+  const { RunForm } = await import("./RunForm");
+  render(
+    <RunForm
+      projectId="p1"
+      onCreated={() => {}}
+      initialContentSet="scout/output/forced.json"
+      initialContentSetForced
+    />,
+  );
+  await screen.findByText("Default");
+  await user.click(screen.getByRole("button", { name: /overrides for this run/i }));
+  await user.click(screen.getByLabelText("Narrator mode"));
+  await user.click(await screen.findByRole("option", { name: "disabled" }));
+
+  await user.click(screen.getByRole("button", { name: /^run$/i }));
+
+  expect(createProfileJob).not.toHaveBeenCalled();
+  expect(
+    await screen.findByText("Narrator mode is required for URL main footage."),
+  ).toBeDefined();
+});
+
+test("forced handoff can enable narrator mode for one run", async () => {
+  profileList = [P1_NARRATION_DISABLED];
+  const user = userEvent.setup();
+  const { RunForm } = await import("./RunForm");
+  render(
+    <RunForm
+      projectId="p1"
+      onCreated={() => {}}
+      initialContentSet="scout/output/forced.json"
+      initialContentSetForced
+    />,
+  );
+  await screen.findByText("Default");
+  await user.click(screen.getByRole("button", { name: /overrides for this run/i }));
+  await user.click(screen.getByLabelText("Narrator mode"));
+  await user.click(await screen.findByRole("option", { name: "enabled" }));
+
+  await user.click(screen.getByRole("button", { name: /^run$/i }));
+
+  expect(createProfileJob).toHaveBeenCalledTimes(1);
+  expect(createProfileJob.mock.calls[0][1].overrides).toEqual({
+    narration_enabled: true,
+    ingest_source_content_set: "scout/output/forced.json",
+  });
+});
+
+test("manual content-set paths map the authoritative narration error", async () => {
+  profileList = [P1_NARRATION_DISABLED];
+  createProfileJob.mockImplementationOnce(async () => {
+    throw new Error("createProfileJob: forced_main_narration_required");
+  });
+  const user = userEvent.setup();
+  const { RunForm } = await import("./RunForm");
+  render(<RunForm projectId="p1" onCreated={() => {}} />);
+  await screen.findByText("Default");
+  await user.type(screen.getByLabelText(/content-set path/i), "scout/output/manual.json");
+
+  await user.click(screen.getByRole("button", { name: /^run$/i }));
+
+  expect(
+    await screen.findByText("Narrator mode is required for URL main footage."),
+  ).toBeDefined();
 });

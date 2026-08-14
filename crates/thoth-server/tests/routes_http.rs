@@ -1406,6 +1406,253 @@ async fn project_api_json(
     body_json(response).await
 }
 
+fn write_forced_main_fixture(root: &std::path::Path) -> PathBuf {
+    std::fs::create_dir_all(root).unwrap();
+    let post_url = "https://www.instagram.com/reel/post-123/";
+    std::fs::write(
+        root.join("source-package.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "post": {
+                "id": "post-123",
+                "canonical_url": post_url,
+                "platform": "instagram"
+            },
+            "analysis_identity": "analysis-2026-08-14",
+            "created_at": "2026-08-14T12:00:00Z",
+            "fingerprint": null,
+            "sources": [{
+                "id": "source-0",
+                "media_index": 0,
+                "path": "sources/source-0.mp4",
+                "checksum": "sha256:source0",
+                "technical": {
+                    "container": "mp4",
+                    "video_codec": "h264",
+                    "duration_sec": 12.5,
+                    "width": 1080,
+                    "height": 1920,
+                    "has_audio": true
+                }
+            }],
+            "ignored": [],
+            "unavailable": [],
+            "scene_indexes": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let content_set = root.join("content-set.json");
+    std::fs::write(
+        &content_set,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "main": { "url": post_url },
+            "main_footage": {
+                "mode": "forced_url_pool",
+                "package_manifest": "source-package.json",
+                "coverage_target": 0.60
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    content_set
+}
+
+async fn create_profile_for_content_set(
+    app: axum::Router,
+    content_set: &std::path::Path,
+    narration_enabled: bool,
+) -> (String, String) {
+    let project = project_api_json(
+        app.clone(),
+        "POST",
+        "/api/projects",
+        Some(serde_json::json!({ "name": format!("P-{}", uuid::Uuid::new_v4()) })),
+        StatusCode::CREATED,
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_owned();
+    let profile = project_api_json(
+        app,
+        "POST",
+        &format!("/api/projects/{project_id}/profiles"),
+        Some(serde_json::json!({
+            "name": "Default",
+            "settings": {
+                "narration": { "enabled": narration_enabled },
+                "ingest_source": { "content_set": content_set }
+            }
+        })),
+        StatusCode::CREATED,
+    )
+    .await;
+    (project_id, profile["id"].as_str().unwrap().to_owned())
+}
+
+#[tokio::test]
+async fn forced_main_profile_requires_narration_before_job_or_output_creation() {
+    let (app, tmp) = build_test_app().await;
+    let fixture_root = std::env::current_dir()
+        .unwrap()
+        .join("scout/output")
+        .join(format!("task-3-{}", uuid::Uuid::new_v4()));
+    let content_set = write_forced_main_fixture(&fixture_root);
+    let (project_id, profile_id) =
+        create_profile_for_content_set(app.clone(), &content_set, false).await;
+    let store = thoth_jobs::JobStore::connect(test_db_path(&tmp).to_str().unwrap())
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(project_api_request(
+            "POST",
+            &format!("/api/projects/{project_id}/jobs"),
+            Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "forced_main_narration_required");
+    assert!(store.list().await.unwrap().is_empty());
+    assert!(
+        std::fs::read_dir(test_home(&tmp).project_outputs(&project_id))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    let _ = std::fs::remove_dir_all(fixture_root);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn forced_main_profile_with_narration_enabled_enqueues() {
+    let (app, tmp) = build_test_app().await;
+    let fixture_root = std::env::current_dir()
+        .unwrap()
+        .join("scout/output")
+        .join(format!("task-3-{}", uuid::Uuid::new_v4()));
+    let content_set = write_forced_main_fixture(&fixture_root);
+    let (project_id, profile_id) =
+        create_profile_for_content_set(app.clone(), &content_set, true).await;
+
+    let created = project_api_json(
+        app,
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+
+    assert!(created["job_id"].is_string());
+    let _ = std::fs::remove_dir_all(fixture_root);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn forced_main_gate_does_not_reject_legacy_sets_with_narration_disabled() {
+    let (app, tmp) = build_test_app().await;
+    let content_set = tmp.join("legacy-content-set.json");
+    std::fs::write(
+        &content_set,
+        r#"{ "main": { "url": "https://x.test/legacy" } }"#,
+    )
+    .unwrap();
+    let (project_id, profile_id) =
+        create_profile_for_content_set(app.clone(), &content_set, false).await;
+
+    let created = project_api_json(
+        app,
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+
+    assert!(created["job_id"].is_string());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn forced_main_package_outside_scout_output_is_rejected() {
+    let (app, tmp) = build_test_app().await;
+    let content_set = write_forced_main_fixture(&tmp.join("outside-scout-output"));
+    let (project_id, profile_id) =
+        create_profile_for_content_set(app.clone(), &content_set, true).await;
+
+    let response = app
+        .oneshot(project_api_request(
+            "POST",
+            &format!("/api/projects/{project_id}/jobs"),
+            Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(response).await;
+    assert_eq!(body["error"]["code"], "source_package_invalid");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn forced_main_legacy_route_requires_explicit_narration_enablement() {
+    for params in [serde_json::json!({}), serde_json::json!({ "narration_enabled": false })] {
+        let (app, tmp) = build_test_app().await;
+        let fixture_root = std::env::current_dir()
+            .unwrap()
+            .join("scout/output")
+            .join(format!("task-3-{}", uuid::Uuid::new_v4()));
+        let content_set = write_forced_main_fixture(&fixture_root);
+
+        let response = app
+            .clone()
+            .oneshot(create_job_request(serde_json::json!({
+                "command": "run",
+                "content_set": content_set,
+                "params": params
+            })))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "forced_main_narration_required");
+        let jobs = app.oneshot(list_jobs_request()).await.unwrap();
+        let jobs = body_json(jobs).await;
+        assert_eq!(jobs, serde_json::json!([]));
+        let _ = std::fs::remove_dir_all(fixture_root);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+}
+
+#[tokio::test]
+async fn forced_main_legacy_route_enqueues_with_explicit_narration_enablement() {
+    let (app, tmp) = build_test_app().await;
+    let fixture_root = std::env::current_dir()
+        .unwrap()
+        .join("scout/output")
+        .join(format!("task-3-{}", uuid::Uuid::new_v4()));
+    let content_set = write_forced_main_fixture(&fixture_root);
+
+    let response = app
+        .oneshot(create_job_request(serde_json::json!({
+            "command": "run",
+            "content_set": content_set,
+            "params": { "narration_enabled": true }
+        })))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let _ = std::fs::remove_dir_all(fixture_root);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
 #[tokio::test]
 async fn project_resources_require_bearer_authentication() {
     let (app, tmp) = build_test_app().await;

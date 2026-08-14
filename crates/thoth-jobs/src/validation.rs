@@ -99,6 +99,7 @@ pub fn validate_job_spec(spec: &JobSpec) -> Result<(), JobValidationError> {
             "bgm_volume" => validate_bgm_volume(value)?,
             "headline_dur" => validate_headline_duration(value)?,
             "keywords" | "extra_args" => validate_string_array(key, value)?,
+            "narration_enabled" => validate_boolean(key, value)?,
             _ => unreachable!("known parameter was checked above"),
         }
     }
@@ -107,7 +108,18 @@ pub fn validate_job_spec(spec: &JobSpec) -> Result<(), JobValidationError> {
 }
 
 fn is_known_parameter(key: &str) -> bool {
-    scalar_param_flag(key).is_some() || matches!(key, "keywords" | "extra_args")
+    scalar_param_flag(key).is_some()
+        || matches!(key, "keywords" | "extra_args" | "narration_enabled")
+}
+
+fn validate_boolean(
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), JobValidationError> {
+    value
+        .as_bool()
+        .map(|_| ())
+        .ok_or_else(|| invalid_parameter(key, "must be a boolean"))
 }
 
 fn is_non_blank(value: &str) -> bool {
@@ -350,6 +362,29 @@ mod tests {
             json!({ "z_unknown": true, "a_unknown": true }),
         );
         assert_error(&request, "params.a_unknown", "unknown_parameter");
+    }
+
+    #[test]
+    fn narration_enabled_accepts_only_booleans() {
+        for value in [json!(true), json!(false)] {
+            let request = spec(
+                Some("https://x.test"),
+                None,
+                json!({ "narration_enabled": value }),
+            );
+            assert_eq!(validate_job_spec(&request), Ok(()));
+        }
+
+        let request = spec(
+            Some("https://x.test"),
+            None,
+            json!({ "narration_enabled": "true" }),
+        );
+        assert_error(
+            &request,
+            "params.narration_enabled",
+            "invalid_parameter",
+        );
     }
 
     #[test]

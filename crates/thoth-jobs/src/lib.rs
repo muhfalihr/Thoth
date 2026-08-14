@@ -36,6 +36,33 @@ mod profiles_tests {
     }
 
     #[test]
+    fn missing_narration_enabled_defaults_true_for_existing_profiles() {
+        let settings = serde_json::from_value::<ProfileSettings>(json!({
+            "narration": { "language": "id" }
+        }))
+        .unwrap();
+
+        assert!(settings.narration.enabled);
+        assert_eq!(settings.narration.language.as_deref(), Some("id"));
+    }
+
+    #[test]
+    fn run_override_can_disable_narration_without_mutating_profile() {
+        let root = std::env::temp_dir().join(format!("thoth-profile-{}", uuid::Uuid::new_v4()));
+        let home = ThothHome::for_test(&root);
+        let profile = ProfileSettings::default();
+        let overrides = RunOverrides {
+            narration_enabled: Some(false),
+            ..RunOverrides::default()
+        };
+
+        let resolved = resolve_settings(&profile, &overrides, &home).unwrap();
+
+        assert!(!resolved.narration.enabled);
+        assert!(profile.narration.enabled);
+    }
+
+    #[test]
     fn snapshot_has_reference_not_secret_value() {
         let snapshot =
             redacted_settings_json(&ResolvedSettings::default(), Some("openai-production"));

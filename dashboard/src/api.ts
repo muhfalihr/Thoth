@@ -101,6 +101,7 @@ export async function getManifest(id: string): Promise<Manifest> {
 // Per-run knobs the dashboard sends in JobSpec.params. Mirrors the flag mapping
 // in crates/thoth-core/src/worker/mod.rs::push_params — keep in sync by hand.
 export type RunParams = {
+  narration_enabled?: boolean;
   provider?: string;
   model?: string;
   max_clips?: number;
@@ -285,7 +286,7 @@ export type ProjectRecord = {
 
 export type ProfileSettings = {
   schema_version: number;
-  narration: { language: string | null };
+  narration: { enabled: boolean; language: string | null };
   visual_edit: {
     layout: string;
     clip_style: string;
@@ -333,6 +334,7 @@ export type ProfileRevision = {
  * concrete value overrides. Callers should omit, never send `null`. Field names
  * mirror `RunOverrides` in profiles.rs exactly. */
 export type RunOverrides = {
+  narration_enabled?: boolean;
   narration_language?: string | null;
   visual_edit_layout?: string;
   visual_edit_clip_style?: string;
@@ -381,7 +383,11 @@ async function ok<T>(r: Response, label: string): Promise<T> {
     // instead of a bare status code, so callers show WHY a request failed.
     const body = await r.json().catch(() => null);
     // Server uses two envelopes: {error:{...,message}} and {error:"code", message}.
-    const detail = body?.error?.message ?? body?.message ?? body?.error ?? r.status;
+    const detail = body?.error?.message
+      ?? body?.error?.code
+      ?? body?.message
+      ?? body?.error
+      ?? r.status;
     throw new Error(`${label}: ${detail}`);
   }
   return r.json() as Promise<T>;
