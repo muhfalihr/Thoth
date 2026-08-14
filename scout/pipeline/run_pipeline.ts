@@ -14,11 +14,13 @@
 // never navigated to twice across the whole pipeline run.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { outPath } from '../lib/paths.ts';
 import { ui } from '../lib/ui.ts';
 import { runPipelineStep } from './run_pipeline_step.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
+import { canonicalizeUrl } from '../acquisition/url.ts';
 import type { ContentSet, MainVideo } from '../lib/types.ts';
 import { runTraceSource, type TraceSourceOptions } from './trace_source.ts';
 import { runCollectComments, type CollectCommentsOptions } from './collect_comments.ts';
@@ -41,6 +43,8 @@ export interface RunPipelineOptions {
   max?: number;
   cap?: number;
   noComments: boolean;
+  useInputAsMain: boolean;
+  mainCoverageTarget: number;
 }
 
 export interface RunPipelineDeps {
@@ -69,6 +73,74 @@ const FOOTAGE_TIMEOUT_MS = 5_400_000;
 // a live search, so the 10 min default SIGTERM'd it mid-evaluation right after its first accept.
 const TRACE_SOURCE_TIMEOUT_MS = 1_800_000;
 
+type CodedError = Error & { code: string };
+
+function codedError(code: string): CodedError {
+  return Object.assign(new Error(code), { code });
+}
+
+function assertMainCoverageTarget(coverage: number): void {
+  if (!Number.isFinite(coverage) || coverage < 0.60 || coverage > 1.00) {
+    throw codedError('invalid_main_coverage_target');
+  }
+}
+
+function preflightForcedMain(url: string, outputFile: string): string {
+  let normalizedUrl: string;
+  try {
+    normalizedUrl = canonicalizeUrl(url);
+    const parsed = new URL(normalizedUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('unsupported');
+  } catch {
+    throw codedError('unsupported_url');
+  }
+
+  try {
+    fs.accessSync(path.dirname(outputFile), fs.constants.W_OK);
+  } catch {
+    throw codedError('output_parent_not_writable');
+  }
+
+  const ffmpeg = process.env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
+  const ffprobe = process.env.THOTH_FFPROBE || path.join(path.dirname(ffmpeg), 'ffprobe.exe');
+  try {
+    fs.accessSync(ffmpeg, fs.constants.X_OK);
+  } catch {
+    throw codedError('ffmpeg_missing');
+  }
+  try {
+    fs.accessSync(ffprobe, fs.constants.X_OK);
+  } catch {
+    throw codedError('ffprobe_missing');
+  }
+  return normalizedUrl;
+}
+
+export function parseRunPipelineOptions(args: string[]): RunPipelineOptions {
+  const getFlag = (name: string, defaultValue?: string) => {
+    const index = args.indexOf(name);
+    return index >= 0 ? args[index + 1] : defaultValue;
+  };
+  const valueFlags = ['--out', '--title', '--desc', '--per', '--max', '--cap', '--main-coverage-target'];
+  const url = args.find((arg, index) => !arg.startsWith('--') && !valueFlags.includes(args[index - 1]));
+  if (!url) throw codedError('url_required');
+
+  const coverage = Number(getFlag('--main-coverage-target', '0.60'));
+  assertMainCoverageTarget(coverage);
+  return {
+    url,
+    out: outPath(getFlag('--out', 'thoth_content_set.json') as string),
+    title: getFlag('--title', ''),
+    desc: getFlag('--desc', ''),
+    per: parseInt(getFlag('--per', '2') as string, 10),
+    max: parseInt(getFlag('--max', '4') as string, 10),
+    cap: parseInt(getFlag('--cap', '12') as string, 10),
+    noComments: args.includes('--no-comments'),
+    useInputAsMain: args.includes('--use-input-as-main'),
+    mainCoverageTarget: coverage,
+  };
+}
+
 // Required safety steps abort the run; optional enrichment may degrade gracefully — same policy the
 // old subprocess-based `step()` used, just wrapping an in-process call instead of execFileSync.
 function runStage(
@@ -88,7 +160,9 @@ export async function runPipelineWithDeps(
   options: RunPipelineOptions,
   deps: RunPipelineDeps,
 ): Promise<void> {
-  const { url, out: file, noComments } = options;
+  assertMainCoverageTarget(options.mainCoverageTarget);
+  const { out: file, noComments } = options;
+  const url = options.useInputAsMain ? preflightForcedMain(options.url, file) : options.url;
   const context = await deps.createContext();
 
   // 1) Seed content-set (main + caption/shape from a single inspect).
@@ -198,32 +272,8 @@ const realDeps: RunPipelineDeps = {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const getFlag = (n: string, d: string) => {
-    const i = args.indexOf(n);
-    return i >= 0 ? args[i + 1] : d;
-  };
-  const url = args.find(
-    (a, i) =>
-      !a.startsWith('--') &&
-      !['--out', '--title', '--desc', '--per', '--max', '--cap'].includes(args[i - 1]),
-  );
-  if (!url) {
-    console.log(
-      'Usage: bun run_pipeline.ts <topic_url> [--out f.json] [--title][--desc] [--per 2][--max 4][--cap 12] [--no-comments]',
-    );
-    process.exit(1);
-  }
-  const options: RunPipelineOptions = {
-    url,
-    out: outPath(getFlag('--out', 'thoth_content_set.json') as string),
-    title: getFlag('--title', ''),
-    desc: getFlag('--desc', ''),
-    per: parseInt(getFlag('--per', '2') as string, 10),
-    max: parseInt(getFlag('--max', '4') as string, 10),
-    cap: parseInt(getFlag('--cap', '12') as string, 10),
-    noComments: args.includes('--no-comments'),
-  };
   runAcquisitionCli(async () => {
+    const options = parseRunPipelineOptions(args);
     ui.stage('RUN PIPELINE  →  ' + options.out);
     console.log(ui.dim(`topic: ${options.url}`));
     await runPipelineWithDeps(options, realDeps);

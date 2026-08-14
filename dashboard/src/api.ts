@@ -160,6 +160,8 @@ export type ScoutRunBody = {
   max?: number;
   cap?: number;
   no_comments?: boolean;
+  use_input_as_main?: boolean;
+  main_coverage_target?: number;
 };
 
 /** 202 -> {ok:true}; 409 (busy) / 400 -> {ok:false,status}. */
@@ -182,8 +184,13 @@ export function scoutStartBrowser(): Promise<ScoutAck> {
 export function scoutDiscover(body: ScoutDiscoverBody): Promise<ScoutAck> {
   return scoutPost("/api/scout/discover", body);
 }
-export function scoutRun(body: ScoutRunBody): Promise<ScoutAck> {
-  return scoutPost("/api/scout/run", body);
+export function scoutRun({ main_coverage_target, ...body }: ScoutRunBody): Promise<ScoutAck> {
+  return scoutPost("/api/scout/run", {
+    ...body,
+    ...(main_coverage_target !== undefined && main_coverage_target !== 0.60
+      ? { main_coverage_target }
+      : {}),
+  });
 }
 export function scoutValidate(set: string): Promise<ScoutAck> {
   return scoutPost("/api/scout/validate", { set });

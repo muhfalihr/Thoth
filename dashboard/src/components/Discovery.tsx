@@ -24,6 +24,7 @@ export function Discovery() {
   const [max, setMax] = useState("");
   const [cap, setCap] = useState("");
   const [noComments, setNoComments] = useState(false);
+  const [useInputAsMain, setUseInputAsMain] = useState(false);
   const [contentSet, setContentSet] = useState<{ path: string; exists: boolean } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
@@ -173,9 +174,24 @@ export function Discovery() {
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" className="accent-primary" checked={noComments} onChange={(e) => setNoComments(e.target.checked)} /> no-comments
               </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1 accent-primary"
+                  checked={useInputAsMain}
+                  onChange={(e) => setUseInputAsMain(e.target.checked)}
+                />
+                <span>
+                  Use URL media as main footage
+                  <span className="block text-xs text-muted-foreground">
+                    Download every video from this post, ignore photos, and build narration-aligned cuts.
+                  </span>
+                  <span className="block text-xs text-muted-foreground">Narrator mode is required.</span>
+                </span>
+              </label>
               <Button size="sm" disabled={running || url.trim() === ""} onClick={() =>
                 scoutRun({ url: url.trim(), per: num(per), max: num(max), cap: num(cap),
-                  no_comments: noComments }).then(ack("run"))}>
+                  no_comments: noComments, use_input_as_main: useInputAsMain }).then(ack("run"))}>
                 Run pipeline
               </Button>
             </CardContent>

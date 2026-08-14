@@ -21,7 +21,10 @@ const CMDS: Record<string, [string, string]> = {
     'discovery topik akun IG kurator (--max-per --hours --include --tiktok)',
   ],
   trending: ['pipeline/discover_tiktok_trending.ts', 'trending TikTok Studio (--max --region)'],
-  run: ['pipeline/run_pipeline.ts', '<url> → content-set lengkap (--out --per --max --cap)'],
+  run: [
+    'pipeline/run_pipeline.ts',
+    '<url> → content-set lengkap (--out --per --max --cap --use-input-as-main --main-coverage-target)',
+  ],
   comments: [
     'pipeline/collect_comments.ts',
     '<set.json> komentar multi-sumber (--extra <url> --cap)',

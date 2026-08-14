@@ -48,6 +48,8 @@ pub struct RunReq {
     #[serde(default)] pub max: Option<u32>,
     #[serde(default)] pub cap: Option<u32>,
     #[serde(default)] pub no_comments: bool,
+    #[serde(default)] pub use_input_as_main: bool,
+    #[serde(default)] pub main_coverage_target: Option<f64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -160,6 +162,8 @@ pub fn build_scout_args(
                 push_opt(&mut a, "--max", &r.max);
                 push_opt(&mut a, "--cap", &r.cap);
                 if r.no_comments { a.push("--no-comments".into()); }
+                if r.use_input_as_main { a.push("--use-input-as-main".into()); }
+                push_opt(&mut a, "--main-coverage-target", &r.main_coverage_target);
             }
             a
         }
@@ -350,10 +354,28 @@ mod tests {
     #[test]
     fn args_run_url_and_flags() {
         let r = RunReq { url: "https://x/1".into(), out: Some("s.json".into()),
-            per: Some(2), max: Some(4), cap: Some(12), no_comments: true };
+            per: Some(2), max: Some(4), cap: Some(12), no_comments: true,
+            use_input_as_main: false, main_coverage_target: None };
         assert_eq!(build_scout_args(ScoutKind::Run, None, Some(&r), None),
             vec!["run", "https://x/1", "--out", "s.json", "--per", "2",
                  "--max", "4", "--cap", "12", "--no-comments"]);
+    }
+
+    #[test]
+    fn args_run_forced_main_flags_are_opt_in() {
+        let default = RunReq { url: "https://x/1".into(), ..Default::default() };
+        assert_eq!(build_scout_args(ScoutKind::Run, None, Some(&default), None),
+                   vec!["run", "https://x/1"]);
+
+        let forced = RunReq {
+            url: "https://x/1".into(),
+            use_input_as_main: true,
+            main_coverage_target: Some(0.75),
+            ..Default::default()
+        };
+        assert_eq!(build_scout_args(ScoutKind::Run, None, Some(&forced), None),
+                   vec!["run", "https://x/1", "--use-input-as-main",
+                        "--main-coverage-target", "0.75"]);
     }
 
     #[test]

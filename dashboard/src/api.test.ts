@@ -1,7 +1,11 @@
 /// <reference types="bun-types" />
 
+import "./test-setup";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { createProfileJob, getEffectiveSettings, migrateConfigToml, updateProfile } from "./api";
+import { act, cleanup, render } from "@testing-library/react";
+import { createElement } from "react";
+import { Discovery } from "./components/Discovery";
+import { createProfileJob, getEffectiveSettings, migrateConfigToml, scoutRun, updateProfile } from "./api";
 
 const realFetch = globalThis.fetch;
 let calls: { url: string; init?: RequestInit }[] = [];
@@ -23,6 +27,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   globalThis.fetch = realFetch;
+  cleanup();
+  localStorage.removeItem("use_input_as_main");
 });
 
 test("createProfileJob posts profile_id + real overrides to the project jobs route", async () => {
@@ -88,4 +94,58 @@ test("migrateConfigToml posts to the migration route and returns the report", as
   expect(calls[0].url).toBe("/api/migrations/config-toml");
   expect(calls[0].init?.method).toBe("POST");
   expect(report).toEqual({ imported: true, warnings: ["dropped: bgm_vibe"] });
+});
+
+test("scoutRun omits forced-main fields for the legacy request and default target", async () => {
+  stub({ ok: true }, 202);
+
+  await scoutRun({
+    url: "https://www.instagram.com/p/ABC/",
+    main_coverage_target: 0.60,
+  });
+
+  expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+    url: "https://www.instagram.com/p/ABC/",
+  });
+});
+
+test("scoutRun maps forced-main fields only when explicitly selected", async () => {
+  stub({ ok: true }, 202);
+
+  await scoutRun({
+    url: "https://www.instagram.com/p/ABC/",
+    use_input_as_main: true,
+    main_coverage_target: 0.75,
+  });
+
+  expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+    url: "https://www.instagram.com/p/ABC/",
+    use_input_as_main: true,
+    main_coverage_target: 0.75,
+  });
+});
+
+test("Discovery forced-main checkbox starts unchecked on each mount and is not stored", async () => {
+  globalThis.fetch = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+  let first!: ReturnType<typeof render>;
+  await act(async () => {
+    first = render(createElement(Discovery));
+  });
+  const firstCheckbox = first.getByRole("checkbox", {
+    name: /Use URL media as main footage/,
+  }) as HTMLInputElement;
+  expect(firstCheckbox.checked).toBe(false);
+  await act(async () => {
+    first.unmount();
+  });
+
+  let remounted!: ReturnType<typeof render>;
+  await act(async () => {
+    remounted = render(createElement(Discovery));
+  });
+  const remountedCheckbox = remounted.getByRole("checkbox", {
+    name: /Use URL media as main footage/,
+  }) as HTMLInputElement;
+  expect(remountedCheckbox.checked).toBe(false);
+  expect(localStorage.getItem("use_input_as_main")).toBeNull();
 });
