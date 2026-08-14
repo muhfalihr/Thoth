@@ -1600,6 +1600,68 @@ async fn forced_main_package_outside_scout_output_is_rejected() {
 }
 
 #[tokio::test]
+async fn forced_main_rejects_packages_with_invalid_nested_scenes_or_duplicate_sources() {
+    for corruption in ["invalid_scene", "duplicate_source"] {
+        let (app, tmp) = build_test_app().await;
+        let fixture_root = std::env::current_dir()
+            .unwrap()
+            .join("scout/output")
+            .join(format!("task-3-{}", uuid::Uuid::new_v4()));
+        let content_set = write_forced_main_fixture(&fixture_root);
+        let package_path = fixture_root.join("source-package.json");
+        let mut package: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&package_path).unwrap()).unwrap();
+        if corruption == "invalid_scene" {
+            package["scene_indexes"] = serde_json::json!([{
+                "source_id": "source-0",
+                "path": "indexes/source-0.json",
+                "checksum": "sha256:index0",
+                "planning_mode": "vision",
+                "scenes": [{
+                    "id": "scene-0",
+                    "start_sec": 0.0,
+                    "end_sec": 0.0,
+                    "representative_frame": "frames/scene-0.jpg",
+                    "transcript_evidence": "evidence",
+                    "vision_description": null,
+                    "embedding_path": null,
+                    "visual_metrics": {
+                        "motion_score": 0.5,
+                        "brightness": 0.5,
+                        "scene_change_score": 0.5
+                    }
+                }]
+            }]);
+        } else {
+            let duplicate = package["sources"][0].clone();
+            package["sources"].as_array_mut().unwrap().push(duplicate);
+        }
+        std::fs::write(&package_path, serde_json::to_vec_pretty(&package).unwrap()).unwrap();
+        let (project_id, profile_id) =
+            create_profile_for_content_set(app.clone(), &content_set, true).await;
+
+        let response = app
+            .oneshot(project_api_request(
+                "POST",
+                &format!("/api/projects/{project_id}/jobs"),
+                Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{corruption}"
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "source_package_invalid");
+        let _ = std::fs::remove_dir_all(fixture_root);
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+}
+
+#[tokio::test]
 async fn forced_main_legacy_route_requires_explicit_narration_enablement() {
     for params in [serde_json::json!({}), serde_json::json!({ "narration_enabled": false })] {
         let (app, tmp) = build_test_app().await;

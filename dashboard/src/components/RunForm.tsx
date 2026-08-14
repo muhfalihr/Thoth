@@ -44,6 +44,7 @@ export function RunForm({
   const [profileId, setProfileId] = useState("");
   const [url, setUrl] = useState("");
   const [contentSet, setContentSet] = useState("");
+  const [forcedHandoffContentSet, setForcedHandoffContentSet] = useState<string | null>(null);
   const [showOverrides, setShowOverrides] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +80,7 @@ export function RunForm({
   useEffect(() => {
     if (initialContentSet) {
       setContentSet(initialContentSet);
+      setForcedHandoffContentSet(initialContentSetForced ? initialContentSet : null);
       onConsumed?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -123,7 +125,7 @@ export function RunForm({
     const effectiveNarrationEnabled = narratorMode
       ? narratorMode === "enabled"
       : (selected?.settings.narration.enabled ?? true);
-    const isForcedHandoff = initialContentSetForced && contentSet === initialContentSet;
+    const isForcedHandoff = forcedHandoffContentSet === contentSet;
     if (isForcedHandoff && !effectiveNarrationEnabled) {
       setError("Narrator mode is required for URL main footage.");
       return;
@@ -137,6 +139,7 @@ export function RunForm({
       });
       setUrl("");
       setContentSet("");
+      setForcedHandoffContentSet(null);
       onCreated(job_id);
     } catch (err) {
       const message = err instanceof Error ? err.message : "failed to start run";

@@ -133,6 +133,29 @@ test("forced handoff with effective narrator mode disabled is rejected locally",
   ).toBeDefined();
 });
 
+test("forced handoff remains trusted after parent clears the consumed props", async () => {
+  profileList = [P1_NARRATION_DISABLED];
+  const user = userEvent.setup();
+  const { RunForm } = await import("./RunForm");
+  const view = render(
+    <RunForm
+      projectId="p1"
+      onCreated={() => {}}
+      initialContentSet="scout/output/forced.json"
+      initialContentSetForced
+    />,
+  );
+  await screen.findByText("Default");
+
+  view.rerender(<RunForm projectId="p1" onCreated={() => {}} />);
+  await user.click(screen.getByRole("button", { name: /^run$/i }));
+
+  expect(createProfileJob).not.toHaveBeenCalled();
+  expect(
+    await screen.findByText("Narrator mode is required for URL main footage."),
+  ).toBeDefined();
+});
+
 test("forced handoff respects a one-off narrator disable override", async () => {
   profileList = [P1_NO_SOURCE];
   const user = userEvent.setup();

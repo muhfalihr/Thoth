@@ -1,7 +1,7 @@
 use std::{
     convert::Infallible,
     fs,
-    path::{Component, Path as FsPath, PathBuf},
+    path::{Path as FsPath, PathBuf},
     time::Duration,
 };
 
@@ -21,6 +21,7 @@ use thoth_jobs::{
     ProfileSettings, ResolvedSettings, ResourceError, RunOverrides, resolve_settings,
     validate_job_spec, validate_settings,
 };
+use thoth_types::main_footage::{MainFootageDescriptor, SourcePackageV1};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -143,20 +144,6 @@ fn validation_error_response(error: anyhow::Error) -> Response {
     })
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MainFootageDescriptor {
-    mode: MainFootageMode,
-    package_manifest: String,
-    coverage_target: f64,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum MainFootageMode {
-    ForcedUrlPool,
-}
-
 #[derive(Debug)]
 struct ValidationError {
     code: &'static str,
@@ -170,49 +157,6 @@ impl ValidationError {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourcePackageV1 {
-    schema_version: u8,
-    post: SourcePostV1,
-    analysis_identity: String,
-    created_at: Option<String>,
-    fingerprint: Option<String>,
-    sources: Vec<SourceVideoV1>,
-    ignored: Vec<serde_json::Value>,
-    unavailable: Vec<serde_json::Value>,
-    scene_indexes: Vec<serde_json::Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourcePostV1 {
-    id: String,
-    canonical_url: String,
-    platform: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceVideoV1 {
-    id: String,
-    media_index: u32,
-    path: String,
-    checksum: String,
-    technical: SourceTechnicalMetadata,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceTechnicalMetadata {
-    container: String,
-    video_codec: String,
-    duration_sec: f64,
-    width: u32,
-    height: u32,
-    has_audio: bool,
-}
-
 fn coded_validation(status: StatusCode, code: &'static str) -> Response {
     (status, Json(serde_json::json!({ "error": { "code": code } }))).into_response()
 }
@@ -221,28 +165,6 @@ fn canonical_scout_output_root() -> Result<PathBuf, ValidationError> {
     let cwd = std::env::current_dir().map_err(|_| ValidationError::source_package_invalid())?;
     fs::canonicalize(cwd.join(scout::SCOUT_OUTPUT_DIR))
         .map_err(|_| ValidationError::source_package_invalid())
-}
-
-fn validate_artifact_path(path: &str) -> Result<(), ValidationError> {
-    let path_value = FsPath::new(path);
-    let remote = path.split_once("://").is_some_and(|(scheme, rest)| {
-        !scheme.is_empty()
-            && scheme.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
-            })
-            && !rest.is_empty()
-    });
-    if path.is_empty()
-        || path_value.is_absolute()
-        || remote
-        || path.contains('\\')
-        || path_value
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(ValidationError::source_package_invalid());
-    }
-    Ok(())
 }
 
 fn inspect_main_footage_descriptor(
@@ -257,12 +179,6 @@ fn inspect_main_footage_descriptor(
     };
     let descriptor: MainFootageDescriptor = serde_json::from_value(descriptor_value.clone())
         .map_err(|_| ValidationError::source_package_invalid())?;
-    validate_artifact_path(&descriptor.package_manifest)?;
-    if !descriptor.coverage_target.is_finite()
-        || !(0.60..=1.00).contains(&descriptor.coverage_target)
-    {
-        return Err(ValidationError::source_package_invalid());
-    }
 
     let content_set_parent = content_set_path
         .parent()
@@ -282,38 +198,9 @@ fn inspect_main_footage_descriptor(
         .and_then(|main| main.get("url"))
         .and_then(serde_json::Value::as_str)
         .ok_or_else(ValidationError::source_package_invalid)?;
-    if source_package.schema_version != 1
-        || source_package.post.canonical_url != main_url
-        || source_package.post.id.trim().is_empty()
-        || source_package.post.platform.trim().is_empty()
-        || source_package.analysis_identity.trim().is_empty()
-        || source_package.sources.is_empty()
-    {
+    if source_package.post.canonical_url != main_url {
         return Err(ValidationError::source_package_invalid());
     }
-    for source in &source_package.sources {
-        validate_artifact_path(&source.path)?;
-        if source.id.trim().is_empty()
-            || source.checksum.trim().is_empty()
-            || source.technical.container.trim().is_empty()
-            || source.technical.video_codec.trim().is_empty()
-            || !source.technical.duration_sec.is_finite()
-            || source.technical.duration_sec < 0.0
-            || source.technical.width == 0
-            || source.technical.height == 0
-        {
-            return Err(ValidationError::source_package_invalid());
-        }
-        let _ = (source.media_index, source.technical.has_audio);
-    }
-    let _ = (
-        descriptor.mode,
-        source_package.created_at,
-        source_package.fingerprint,
-        source_package.ignored,
-        source_package.unavailable,
-        source_package.scene_indexes,
-    );
     Ok(Some(descriptor))
 }
 

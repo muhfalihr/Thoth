@@ -17,6 +17,7 @@ path = "src/main.rs"
 # job types + SQLite. It and the worker are independent peers that meet solely
 # in the SQLite/WAL job database (see docs/…/worker-queue-sqlite-design.md).
 thoth-jobs   = { path = "../thoth-jobs" }
+thoth-types  = { path = "../thoth-types" }
 sqlx         = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tokio        = { version = "1", features = ["full"] }
 axum         = "0.7"
