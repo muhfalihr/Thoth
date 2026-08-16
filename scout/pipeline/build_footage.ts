@@ -64,6 +64,36 @@ function containsExcludedMedia(
   return Boolean(excludedMediaIds?.size && post.media.some((asset) => excludedMediaIds.has(asset.id)));
 }
 
+export type EnrichmentIdentityDecision =
+  | { status: 'accepted'; post: PostRecord | null }
+  | { status: 'rejected'; reason: 'forced-media' };
+
+/**
+ * Forced enrichment must prove a candidate is not one of the packaged source assets. A candidate
+ * has "no stable media identity" when inspectPost throws OR resolves with zero media assets —
+ * either way there is nothing to compare against excludedMediaIds, so forced mode fails closed
+ * (rejects) rather than falling through to tolerant admission. Legacy runs (excludedMediaIds
+ * absent/empty) keep the original tolerant fall-through unchanged.
+ */
+export async function inspectEnrichmentIdentity(
+  url: string,
+  excludedMediaIds: ReadonlySet<string> | undefined,
+  inspectPost: (url: string) => Promise<PostRecord>,
+): Promise<EnrichmentIdentityDecision> {
+  const forced = Boolean(excludedMediaIds?.size);
+  try {
+    const post = await inspectPost(url);
+    if (forced && post.media.length === 0) {
+      return { status: 'rejected', reason: 'forced-media' };
+    }
+    return containsExcludedMedia(post, excludedMediaIds)
+      ? { status: 'rejected', reason: 'forced-media' }
+      : { status: 'accepted', post };
+  } catch {
+    return forced ? { status: 'rejected', reason: 'forced-media' } : { status: 'accepted', post: null };
+  }
+}
+
 export async function admitAndMaterializeFootage(
   post: PostRecord,
   deps: FootageAdmissionDeps,
@@ -452,8 +482,12 @@ export async function runBuildFootage(
         if (added >= per + 1) break;
         if (r.url === main.url || have.has(r.url)) continue;
         if (excludedMediaIds) {
-          const inspected = await context.service.inspectPost(r.url).catch(() => null);
-          if (inspected && containsExcludedMedia(inspected, excludedMediaIds)) continue;
+          const identity = await inspectEnrichmentIdentity(
+            r.url,
+            excludedMediaIds,
+            (url) => context.service.inspectPost(url),
+          );
+          if (identity.status === 'rejected') continue;
         }
         if (useSim) {
           if (r.sim < REL_MIN) continue;
@@ -579,12 +613,16 @@ export async function runBuildFootage(
         // the analogous metadata fetch — neither does a CDP navigation.
         let description = '';
         if (e.platform === 'tiktok' || e.platform === 'youtube') {
-          const record = await context.service.inspectPost(e.url).catch(() => null);
-          if (record && containsExcludedMedia(record, excludedMediaIds)) {
+          const identity = await inspectEnrichmentIdentity(
+            e.url,
+            excludedMediaIds,
+            (url) => context.service.inspectPost(url),
+          );
+          if (identity.status === 'rejected') {
             dropped++;
             return false;
           }
-          description = record?.text || '';
+          description = identity.post?.text || '';
         }
         if (sameAsMain(e.url, description)) {
           dropped++;
@@ -646,14 +684,20 @@ export async function runBuildFootage(
         // Gate on the post's OWN text (service.inspectPost — cheap, 6h-cached, no screenshot)
         // BEFORE cropPost's CDP screenshot capture, so a candidate that is main/reaction/off-topic
         // never triggers that capture at all. Falls back to the legacy crop-first gate below when
-        // inspect is unsupported/fails for this platform/url, so recall never regresses.
-        try {
-          const inspected = await context.service.inspectPost(e.url);
+        // Legacy runs still fall through when inspection is unavailable. Forced runs fail closed:
+        // without a stable media identity, this candidate cannot be proven distinct from the package.
+        const identity = await inspectEnrichmentIdentity(
+          e.url,
+          excludedMediaIds,
+          (url) => context.service.inspectPost(url),
+        );
+        if (identity.status === 'rejected') {
+          dropped++;
+          return false;
+        }
+        if (identity.post) {
+          const inspected = identity.post;
           const text = inspected.text || '';
-          if (containsExcludedMedia(inspected, excludedMediaIds)) {
-            dropped++;
-            return false;
-          }
           if (sameAsMain(e.url, text) || looksReaction(text)) {
             if (looksReaction(text)) dropReact++;
             else dropped++;
@@ -663,8 +707,6 @@ export async function runBuildFootage(
             dropped++;
             return false;
           }
-        } catch (inspectErr) {
-          // inspect unsupported/failed → defer entirely to the post-crop gate below (unchanged).
         }
         // IG posts can be a carousel mixing PHOTO + VIDEO slides → capture up to 5 slides; cropPost marks
         // each as {kind:'photo',image_path} or {kind:'video',index}.
@@ -799,12 +841,13 @@ export async function runBuildFootage(
           // the attachment directly (direct-http/gallery-dl). Only a gated-through text-only tweet
           // ('no-media' — no attachment to fetch, but still wanted as a screenshotted "card") falls
           // through to the legacy cropPost path, and only AFTER admission, never before.
-          let inspected = null;
-          try {
-            inspected = await context.service.inspectPost(e.url);
-          } catch (inspectErr) {
-            inspected = null;
-          }
+          const identity = await inspectEnrichmentIdentity(
+            e.url,
+            excludedMediaIds,
+            (url) => context.service.inspectPost(url),
+          );
+          if (identity.status === 'rejected') continue;
+          const inspected = identity.post;
           if (inspected) {
             if (looksSpam(inspected.text || '')) continue;
             const outcome = await admitAndMaterializeFootageTolerant(inspected, {

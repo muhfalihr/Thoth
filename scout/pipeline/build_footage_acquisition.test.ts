@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { admitAndMaterializeFootage, shouldSkipForcedCarouselPool } from './build_footage.ts';
+import {
+  admitAndMaterializeFootage,
+  inspectEnrichmentIdentity,
+  shouldSkipForcedCarouselPool,
+} from './build_footage.ts';
 
 let materialized = 0;
 const rejected = await admitAndMaterializeFootage(
@@ -93,6 +97,46 @@ for (const [index, kind] of ['image', 'video'].entries()) {
   assert.deepEqual(excluded, { status: 'rejected', reason: 'forced-media' });
 }
 assert.equal(excludedMaterialized, 0, 'forced photo/video aliases must be rejected before materialization');
+
+for (const candidatePath of ['profile', 'tiktok-youtube', 'generic-post-crop', 'twitter-screenshot']) {
+  let inspectCalls = 0;
+  const decision = await inspectEnrichmentIdentity(
+    `https://alias.example.test/${candidatePath}`,
+    new Set(['forced-post:0']),
+    async () => {
+      inspectCalls += 1;
+      throw new Error('identity unavailable');
+    },
+  );
+  assert.deepEqual(
+    decision,
+    { status: 'rejected', reason: 'forced-media' },
+    `${candidatePath} must fail closed before its materialization/crop/screenshot path`,
+  );
+  assert.equal(inspectCalls, 1);
+}
+
+const legacyUnverified = await inspectEnrichmentIdentity(
+  'https://alias.example.test/legacy',
+  undefined,
+  async () => { throw new Error('identity unavailable'); },
+);
+assert.deepEqual(legacyUnverified, { status: 'accepted', post: null });
+
+const forcedWithoutMediaIdentity = await inspectEnrichmentIdentity(
+  'https://alias.example.test/empty-media',
+  new Set(['forced-post:0']),
+  async () => ({
+    canonical_url: 'https://alias.example.test/empty-media',
+    platform: 'twitter',
+    post_id: 'alias-without-media',
+    owner_handle: 'owner',
+    text: 'text-only inspection result',
+    media: [],
+    outcome: { status: 'resolved', source: 'network', attempts: 1, elapsed_ms: 1 },
+  } as any),
+);
+assert.deepEqual(forcedWithoutMediaIdentity, { status: 'rejected', reason: 'forced-media' });
 
 assert.equal(
   shouldSkipForcedCarouselPool({ platform: 'instagram', url: 'https://www.instagram.com/p/forced/' }, ['forced:1']),
