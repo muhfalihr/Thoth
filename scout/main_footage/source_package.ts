@@ -1,12 +1,18 @@
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { OUTPUT_DIR } from '../lib/paths.ts';
 import type { LocalAsset, MediaAsset, PostRecord } from '../acquisition/types.ts';
-import type { MainFootageDescriptor, SourcePackageV1, SourceTechnicalMetadata } from './contracts.ts';
-import { MAIN_FOOTAGE_SCHEMA_VERSION } from './contracts.ts';
+import { OUTPUT_DIR } from '../lib/paths.ts';
+import type {
+  MainFootageDescriptor,
+  SourcePackageV1,
+  SourceTechnicalMetadata,
+} from './contracts.ts';
+import { fingerprintCanonical, MAIN_FOOTAGE_SCHEMA_VERSION } from './contracts.ts';
 import { atomicPublish, nextVersion, resolveContained } from './paths.ts';
+import type { SceneIndexDeps } from './scene_index.ts';
+import { defaultSceneIndexDeps, indexSource } from './scene_index.ts';
 
 export interface SourcePackageInput {
   post: PostRecord;
@@ -14,7 +20,7 @@ export interface SourcePackageInput {
   coverageTarget: number;
 }
 
-export interface SourcePackageDeps {
+export interface SourcePackageDeps extends Partial<SceneIndexDeps> {
   materialize(asset: MediaAsset): Promise<LocalAsset>;
   probe(file: string): Promise<SourceTechnicalMetadata>;
   scoutOutputRoot?: string;
@@ -26,12 +32,18 @@ export interface SourcePackageResult {
   package: SourcePackageV1;
   packagePath: string;
   packageJson: string;
-  summary: { usable_video_count: number; ignored_photo_count: number; unavailable_video_count: number };
+  summary: {
+    usable_video_count: number;
+    ignored_photo_count: number;
+    unavailable_video_count: number;
+  };
   excludedMediaIds: string[];
 }
 
 function forcedError(): Error {
-  return Object.assign(new Error('forced_main_no_usable_video'), { code: 'forced_main_no_usable_video' });
+  return Object.assign(new Error('forced_main_no_usable_video'), {
+    code: 'forced_main_no_usable_video',
+  });
 }
 
 function stableId(value: string): string {
@@ -70,7 +82,10 @@ function reservePackageRoot(packagesRoot: string): string {
 }
 
 function relativeManifest(contentSetPath: string, packagePath: string): string {
-  return path.relative(path.dirname(path.resolve(contentSetPath)), packagePath).split(path.sep).join('/');
+  return path
+    .relative(path.dirname(path.resolve(contentSetPath)), packagePath)
+    .split(path.sep)
+    .join('/');
 }
 
 function copyToTemp(original: string, temp: string): void {
@@ -101,7 +116,11 @@ export async function buildSourcePackage(
   const packagePath = path.join(packageRoot, 'package.json');
   const ignored = post.media
     .filter((asset) => asset.kind === 'image')
-    .map((asset) => ({ id: asset.id, media_index: asset.index, code: 'photo_slide_ignored' as const }));
+    .map((asset) => ({
+      id: asset.id,
+      media_index: asset.index,
+      code: 'photo_slide_ignored' as const,
+    }));
   const unavailable: SourcePackageV1['unavailable'] = [];
   const sources: SourcePackageV1['sources'] = [];
 
@@ -142,11 +161,31 @@ export async function buildSourcePackage(
   }
 
   if (!sources.length) {
-    try { fs.rmSync(packageRoot, { recursive: true, force: true }); } catch {}
+    try {
+      fs.rmSync(packageRoot, { recursive: true, force: true });
+    } catch {}
     throw forcedError();
   }
 
-  const packageData: SourcePackageV1 = {
+  // Scene indexing happens before the manifest is ever written: package.json is only
+  // published once every accepted source has a scene index, so a cancellation mid-loop
+  // leaves published source/index checkpoints behind without a final, inconsistent manifest.
+  const defaults = defaultSceneIndexDeps();
+  const sceneDeps: SceneIndexDeps = {
+    analyzerIdentity: deps.analyzerIdentity ?? defaults.analyzerIdentity,
+    detectScenes: deps.detectScenes ?? defaults.detectScenes,
+    extractFrames: deps.extractFrames ?? defaults.extractFrames,
+    transcribe: deps.transcribe ?? defaults.transcribe,
+    describeWithVision: deps.describeWithVision ?? defaults.describeWithVision,
+    embed: deps.embed ?? defaults.embed,
+    measureVisuals: deps.measureVisuals ?? defaults.measureVisuals,
+  };
+  const scene_indexes: SourcePackageV1['scene_indexes'] = [];
+  for (const sourceEntry of sources) {
+    scene_indexes.push(await indexSource(sourceEntry, packageRoot, sceneDeps));
+  }
+
+  const packageDataWithoutFingerprint: SourcePackageV1 = {
     schema_version: MAIN_FOOTAGE_SCHEMA_VERSION,
     post: { id: post.post_id, canonical_url: post.canonical_url, platform: post.platform },
     analysis_identity: `forced-url-pool:${id}`,
@@ -154,7 +193,11 @@ export async function buildSourcePackage(
     sources,
     ignored,
     unavailable,
-    scene_indexes: [],
+    scene_indexes,
+  };
+  const packageData: SourcePackageV1 = {
+    ...packageDataWithoutFingerprint,
+    fingerprint: fingerprintCanonical(packageDataWithoutFingerprint),
   };
   const packageJson = JSON.stringify(packageData, null, 2);
   const manifestTemp = path.join(tempRoot, 'package.json.tmp');
@@ -162,7 +205,9 @@ export async function buildSourcePackage(
     fs.writeFileSync(manifestTemp, packageJson, 'utf8');
     atomicPublish(manifestTemp, packagePath);
   } catch (error) {
-    try { fs.rmSync(packageRoot, { recursive: true, force: true }); } catch {}
+    try {
+      fs.rmSync(packageRoot, { recursive: true, force: true });
+    } catch {}
     throw error;
   }
 
@@ -185,15 +230,28 @@ export async function buildSourcePackage(
 }
 
 export async function probeSourceVideo(file: string): Promise<SourceTechnicalMetadata> {
-  const ffprobe = process.env.THOTH_FFPROBE || path.join(import.meta.dirname, '..', '..', 'ffprobe.exe');
+  const ffprobe =
+    process.env.THOTH_FFPROBE || path.join(import.meta.dirname, '..', '..', 'ffprobe.exe');
   const stdout = execFileSync(
     ffprobe,
-    ['-v', 'error', '-show_entries', 'format=format_name,duration:stream=codec_type,codec_name,width,height', '-of', 'json', file],
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=format_name,duration:stream=codec_type,codec_name,width,height',
+      '-of',
+      'json',
+      file,
+    ],
     { encoding: 'utf8', timeout: 30_000 },
   );
-  const result = JSON.parse(stdout) as { format?: { format_name?: string; duration?: string }; streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number }> };
+  const result = JSON.parse(stdout) as {
+    format?: { format_name?: string; duration?: string };
+    streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number }>;
+  };
   const video = result.streams?.find((stream) => stream.codec_type === 'video');
-  if (!video?.codec_name || !video.width || !video.height) throw new Error('ffprobe_missing_video_stream');
+  if (!video?.codec_name || !video.width || !video.height)
+    throw new Error('ffprobe_missing_video_stream');
   const duration = Number(result.format?.duration);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('ffprobe_invalid_duration');
   return {
