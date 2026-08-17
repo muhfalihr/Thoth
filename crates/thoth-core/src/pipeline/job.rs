@@ -98,6 +98,41 @@ impl JobContext {
         self.narration_dir().join("narration_words.json")
     }
 
+    // ── Forced URL main footage (job-owned source package) ─────────────────────
+
+    /// Root of the job's own copy of the forced main-footage source package.
+    /// Everything under it is immutable and addressed by slash-separated paths
+    /// relative to this root, so the job never depends on Scout's directory.
+    pub fn main_footage_dir(&self) -> PathBuf {
+        self.root().join("main-footage")
+    }
+
+    /// Job-owned `SourcePackageV1` manifest — written last, after every artifact
+    /// it declares has been imported and verified.
+    pub fn source_package_manifest(&self) -> PathBuf {
+        self.main_footage_dir().join("source-package.json")
+    }
+
+    /// Imported per-source scene indexes (mirrors Scout's generation layout).
+    pub fn scene_index_dir(&self) -> PathBuf {
+        self.main_footage_dir().join("scene-index")
+    }
+
+    /// Narration-aligned cut plans.
+    pub fn plans_dir(&self) -> PathBuf {
+        self.main_footage_dir().join("plans")
+    }
+
+    /// Materialized cut segments, published under immutable `vNNN` generations.
+    pub fn cuts_dir(&self) -> PathBuf {
+        self.main_footage_dir().join("cuts")
+    }
+
+    /// Narration beat timeline the cut planner allocates against.
+    pub fn narration_timeline(&self) -> PathBuf {
+        self.narration_dir().join("timeline.json")
+    }
+
     pub fn state_path(&self) -> PathBuf {
         self.root().join("state.json")
     }
@@ -185,5 +220,23 @@ mod tests {
         assert_eq!(ctx.transcribe_dir(), base_dir.join("transcribe"));
         assert_eq!(ctx.analyze_dir(), base_dir.join("analyze"));
         assert_eq!(ctx.clips_dir(), base_dir.join("clips"));
+    }
+
+    #[test]
+    fn main_footage_paths_stay_under_one_job_owned_root() {
+        let base_dir = temp_base();
+        let ctx = JobContext::new_flat("test_job_main_footage".to_string(), base_dir).unwrap();
+
+        let root = ctx.main_footage_dir();
+        assert_eq!(root, ctx.root().join("main-footage"));
+        for path in [
+            ctx.source_package_manifest(),
+            ctx.scene_index_dir(),
+            ctx.plans_dir(),
+            ctx.cuts_dir(),
+        ] {
+            assert!(path.starts_with(&root), "{} escaped {}", path.display(), root.display());
+        }
+        assert_eq!(ctx.narration_timeline(), ctx.narration_dir().join("timeline.json"));
     }
 }
