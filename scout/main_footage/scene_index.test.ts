@@ -337,6 +337,89 @@ try {
     );
   }
 
+  // --- I4b: each of the five checksummed content fields is independently load-bearing -------
+  // Builds one real index, then tampers with exactly ONE field in the persisted index.json
+  // (leaving the stored `checksum` untouched, i.e. now stale) and re-runs indexSource with
+  // the same source + analyzer identity. If that field is actually part of the checksum
+  // input, the on-disk value no longer matches the recomputed checksum, the generation is
+  // rejected as untrustworthy, and a rebuild happens (detectScenes is called again). If the
+  // field were silently dropped from the checksum, the tampered generation would pass
+  // verification and be served as a cache hit instead (detectScenes never called again) —
+  // exactly the stale-cache failure mode the checksum exists to prevent.
+  {
+    const checksumFieldCases: Array<{
+      label: string;
+      mutate: (parsed: { planning_mode: string; scenes: any[] }) => void;
+    }> = [
+      {
+        label: 'planning_mode',
+        mutate: (parsed) => {
+          parsed.planning_mode = parsed.planning_mode === 'vision' ? 'degraded' : 'vision';
+        },
+      },
+      {
+        label: 'scene boundaries',
+        mutate: (parsed) => {
+          parsed.scenes[0].end_sec = parsed.scenes[0].end_sec + 1;
+        },
+      },
+      {
+        label: 'transcript_evidence',
+        mutate: (parsed) => {
+          parsed.scenes[0].transcript_evidence = 'tampered transcript text';
+        },
+      },
+      {
+        label: 'vision_description',
+        mutate: (parsed) => {
+          parsed.scenes[0].vision_description = 'tampered vision description text';
+        },
+      },
+      {
+        label: 'visual_metrics',
+        mutate: (parsed) => {
+          parsed.scenes[0].visual_metrics = {
+            ...parsed.scenes[0].visual_metrics,
+            motion_score: parsed.scenes[0].visual_metrics.motion_score + 0.5,
+          };
+        },
+      },
+    ];
+
+    for (const { label, mutate } of checksumFieldCases) {
+      const source = makeSource({ id: `source-checksum-field-${label.replace(/\s+/g, '-')}` });
+      fs.mkdirSync(path.dirname(path.join(packageRoot, source.path)), { recursive: true });
+      fs.writeFileSync(path.join(packageRoot, source.path), sourceBytes);
+      const analyzerIdentity = `checksum-field-${label.replace(/\s+/g, '-')}@1`;
+
+      const { deps: buildDeps } = makeDeps({ analyzerIdentity });
+      const first = await indexSource(source, packageRoot, buildDeps, 'caption');
+      assert.equal(first.planning_mode, 'vision', `${label}: baseline must not be degraded`);
+      assert.ok(
+        first.scenes[0]!.vision_description,
+        `${label}: baseline scene must carry a vision description to tamper with`,
+      );
+
+      const indexPath = path.join(packageRoot, first.path);
+      const parsed = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+      mutate(parsed);
+      fs.writeFileSync(indexPath, JSON.stringify(parsed, null, 2));
+
+      const { deps: rerunDeps, calls: rerunCalls } = makeDeps({ analyzerIdentity });
+      const second = await indexSource(source, packageRoot, rerunDeps, 'caption');
+      assert.equal(
+        rerunCalls.detectScenes,
+        1,
+        `${label}: a tampered ${label} field must invalidate the cache and force a rebuild`,
+      );
+      assert.notEqual(
+        second.path,
+        first.path,
+        `${label}: an invalidated cache must publish a fresh generation, not reuse the tampered one`,
+      );
+    }
+  }
+
   // --- I3 + C1: a damaged declared artifact invalidates the cache AND rebuilds successfully --
   {
     const source = makeSource({ id: 'source-repair' });
