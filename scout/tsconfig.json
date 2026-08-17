@@ -27,7 +27,8 @@
     "scrapers/**/*.ts",
     "pipeline/**/*.ts",
     "enrich/**/*.ts",
-    "acquisition/**/*.ts"
+    "acquisition/**/*.ts",
+    "main_footage/**/*.ts"
   ],
   "exclude": ["node_modules", "deprecated", "output"]
 }

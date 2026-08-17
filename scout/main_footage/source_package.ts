@@ -12,7 +12,7 @@ import type {
 import { fingerprintCanonical, MAIN_FOOTAGE_SCHEMA_VERSION } from './contracts.ts';
 import { atomicPublish, nextVersion, resolveContained } from './paths.ts';
 import type { SceneIndexDeps } from './scene_index.ts';
-import { defaultSceneIndexDeps, indexSource } from './scene_index.ts';
+import { defaultSceneIndexDeps, indexSource, withVisionBudget } from './scene_index.ts';
 
 export interface SourcePackageInput {
   post: PostRecord;
@@ -181,8 +181,36 @@ export async function buildSourcePackage(
     measureVisuals: deps.measureVisuals ?? defaults.measureVisuals,
   };
   const scene_indexes: SourcePackageV1['scene_indexes'] = [];
+  const indexed: SourcePackageV1['sources'] = [];
+  const budgeted = withVisionBudget(sceneDeps);
   for (const sourceEntry of sources) {
-    scene_indexes.push(await indexSource(sourceEntry, packageRoot, sceneDeps));
+    try {
+      scene_indexes.push(
+        await indexSource(sourceEntry, packageRoot, budgeted.deps, post.text ?? ''),
+      );
+      indexed.push(sourceEntry);
+    } catch {
+      // Ruling K: one unindexable source is skipped like an unavailable one; the rest of
+      // the package still publishes. A source with no scene index is dropped from the
+      // manifest entirely — carrying it would promise downstream planning candidates
+      // that do not exist.
+      const asset = videos.find((candidate) => candidate.index === sourceEntry.media_index);
+      unavailable.push({
+        id: asset?.id ?? sourceEntry.id,
+        media_index: sourceEntry.media_index,
+        code: 'source_video_skipped',
+      });
+    }
+  }
+  budgeted.report();
+  sources.splice(0, sources.length, ...indexed);
+
+  // Fail closed: a manifest with an empty `scene_indexes` looks valid but is unplannable.
+  if (!sources.length) {
+    try {
+      fs.rmSync(packageRoot, { recursive: true, force: true });
+    } catch {}
+    throw forcedError();
   }
 
   const packageDataWithoutFingerprint: SourcePackageV1 = {

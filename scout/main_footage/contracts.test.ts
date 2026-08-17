@@ -9,7 +9,7 @@ import {
   fingerprintCanonical,
 } from './contracts.ts';
 
-const fixtures = path.resolve(import.meta.dir, '../../tests/fixtures/main-footage/contracts');
+const fixtures = path.resolve(import.meta.dirname, '../../tests/fixtures/main-footage/contracts');
 
 function fixture(name: string): unknown {
   return JSON.parse(readFileSync(path.join(fixtures, name), 'utf8'));

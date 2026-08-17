@@ -10,7 +10,7 @@
 //
 // Vision failure degrades ONE index's `planning_mode` to 'degraded' — it never drops
 // the source. Every other analysis step still runs (transcript, embedding, visual metrics).
-import { spawnSync } from 'node:child_process';
+import { type SpawnSyncReturns, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,14 +20,15 @@ import { novitaKey } from '../lib/env.ts';
 import { fetchJsonWithTimeout } from '../lib/subtitle_vision.ts';
 import type {
   MainFootageWarningCode,
+  PlanningMode,
   SceneEvidenceV1,
   SceneIndexV1,
   SourceTechnicalMetadata,
   SourceVideoV1,
   VisualMetricsV1,
 } from './contracts.ts';
-import { decodeSourcePackage } from './contracts.ts';
-import { atomicPublish, resolveContained } from './paths.ts';
+import { decodeSourcePackage, fingerprintCanonical } from './contracts.ts';
+import { atomicPublish, nextVersion, resolveContained } from './paths.ts';
 
 /** Candidate boundaries closer together than this are folded into one scene. */
 export const SCENE_MERGE_TOLERANCE_SEC = 1.0;
@@ -84,7 +85,7 @@ function fileChecksum(file: string): string {
  * Out-of-range candidates are dropped; remaining ones are deduped/sorted; any gap
  * shorter than SCENE_MERGE_TOLERANCE_SEC is merged into its predecessor (a trailing
  * short gap instead replaces the previous boundary so the final scene still ends
- * exactly at `duration`).
+ * exactly at `duration`). A source shorter than the tolerance still spans one scene.
  */
 function mergeBoundaries(raw: readonly number[], duration: number): number[] {
   const interior = Array.from(
@@ -101,7 +102,9 @@ function mergeBoundaries(raw: readonly number[], duration: number): number[] {
     }
     merged.push(candidate);
   }
-  return merged;
+  // A source shorter than the tolerance collapses to a single boundary — never publish an
+  // index with zero scenes; the whole source is one scene.
+  return merged.length < 2 ? [0, duration] : merged;
 }
 
 /** Writes `bytes` at `relPath` (package-root-relative) via temp-plus-atomic-rename. */
@@ -120,81 +123,163 @@ function publishArtifact(
 }
 
 /**
- * A content fingerprint of the whole index: the source checksum plus, for every
- * scene, its representative frame's bytes and (if present) its embedding's bytes.
- * Recomputing this against what is actually on disk is the cache-validity check —
- * any declared artifact that is missing or has changed makes it mismatch.
+ * Every artifact a scene declares, in a stable order. The start/end frames are real
+ * published artifacts at deterministic siblings of `representative_frame`; they are not
+ * named by the typed contract but they are still declared evidence, so the cache check
+ * must cover them (deleting one has to invalidate the index).
+ */
+function sceneArtifactPaths(scene: SceneEvidenceV1): string[] {
+  const mid = scene.representative_frame;
+  const artifacts = [
+    mid.replace(/-mid\.jpg$/, '-start.jpg'),
+    mid,
+    mid.replace(/-mid\.jpg$/, '-end.jpg'),
+  ];
+  if (scene.embedding_path) artifacts.push(scene.embedding_path);
+  return artifacts;
+}
+
+/**
+ * A content fingerprint of the whole index: the source checksum, the planning mode, and
+ * every scene's full canonical content (boundaries, transcript evidence, vision text,
+ * metrics) plus the on-disk bytes of *every* artifact it declares. Recomputing this
+ * against what is actually on disk is the cache-validity check — a missing, changed, or
+ * semantically different artifact all make it mismatch.
  */
 function computeIndexChecksum(
   source: SourceVideoV1,
   packageRoot: string,
+  planningMode: PlanningMode,
   scenes: readonly SceneEvidenceV1[],
 ): string {
-  const hash = createHash('sha256');
-  hash.update(source.checksum);
-  for (const scene of scenes) {
-    hash.update(`|${scene.id}:`);
-    hash.update(fileChecksum(resolveContained(packageRoot, scene.representative_frame)));
-    if (scene.embedding_path) {
-      hash.update(':');
-      hash.update(fileChecksum(resolveContained(packageRoot, scene.embedding_path)));
-    }
-  }
-  return `sha256:${hash.digest('hex')}`;
+  return fingerprintCanonical({
+    source_checksum: source.checksum,
+    planning_mode: planningMode,
+    scenes: scenes.map((scene) => ({
+      id: scene.id,
+      start_sec: scene.start_sec,
+      end_sec: scene.end_sec,
+      transcript_evidence: scene.transcript_evidence,
+      vision_description: scene.vision_description ?? null,
+      visual_metrics: scene.visual_metrics,
+      // Artifact *bytes*, not artifact paths: a rebuild lands in a fresh generation
+      // directory, and hashing the path would make every rebuild differ trivially while
+      // hiding a real content change behind it. Reading each one is also the existence
+      // check — a missing declared artifact throws and invalidates the generation.
+      artifacts: sceneArtifactPaths(scene).map((relative) =>
+        fileChecksum(resolveContained(packageRoot, relative)),
+      ),
+    })),
+  });
 }
 
+/** Published generations under one cache key, newest first. */
+function generations(packageRoot: string, relCacheDir: string): string[] {
+  let abs: string;
+  try {
+    abs = resolveContained(packageRoot, relCacheDir);
+  } catch {
+    return [];
+  }
+  if (!fs.existsSync(abs)) return [];
+  return fs
+    .readdirSync(abs, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^v\d{3,}$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)));
+}
+
+/**
+ * Claims a fresh, never-before-published generation directory under the cache key. A
+ * rebuild therefore never overwrites or deletes the generation it is replacing —
+ * published artifacts stay immutable even when the previous one is damaged.
+ */
+function reserveGeneration(packageRoot: string, relCacheDir: string): string {
+  const absCacheDir = resolveContained(packageRoot, relCacheDir);
+  fs.mkdirSync(absCacheDir, { recursive: true });
+  let version = Number(nextVersion(absCacheDir).slice(1));
+  for (;;) {
+    const relative = path.posix.join(relCacheDir, `v${String(version).padStart(3, '0')}`);
+    try {
+      fs.mkdirSync(resolveContained(packageRoot, relative));
+      return relative;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      version += 1;
+    }
+  }
+}
+
+/** Newest generation under this cache key whose every declared artifact still verifies. */
 function readCachedIndex(
   source: SourceVideoV1,
   packageRoot: string,
-  relIndexPath: string,
+  relCacheDir: string,
 ): SceneIndexV1 | null {
-  let abs: string;
-  try {
-    abs = resolveContained(packageRoot, relIndexPath);
-  } catch {
-    return null;
+  for (const generation of generations(packageRoot, relCacheDir)) {
+    const relIndexPath = path.posix.join(relCacheDir, generation, 'index.json');
+    let abs: string;
+    try {
+      abs = resolveContained(packageRoot, relIndexPath);
+    } catch {
+      continue;
+    }
+    if (!fs.existsSync(abs)) continue;
+    let parsed: SceneIndexV1;
+    try {
+      parsed = JSON.parse(fs.readFileSync(abs, 'utf8')) as SceneIndexV1;
+    } catch {
+      continue;
+    }
+    const index: SceneIndexV1 = {
+      source_id: parsed.source_id,
+      path: parsed.path,
+      checksum: parsed.checksum,
+      planning_mode: parsed.planning_mode,
+      scenes: parsed.scenes,
+    };
+    try {
+      if (
+        computeIndexChecksum(source, packageRoot, index.planning_mode, index.scenes) ===
+        index.checksum
+      ) {
+        return index;
+      }
+    } catch {
+      // A declared artifact is missing or unreadable — this generation cannot be trusted.
+    }
   }
-  if (!fs.existsSync(abs)) return null;
-  let parsed: SceneIndexV1;
-  try {
-    parsed = JSON.parse(fs.readFileSync(abs, 'utf8')) as SceneIndexV1;
-  } catch {
-    return null;
-  }
-  const index: SceneIndexV1 = {
-    source_id: parsed.source_id,
-    path: parsed.path,
-    checksum: parsed.checksum,
-    planning_mode: parsed.planning_mode,
-    scenes: parsed.scenes,
-  };
-  try {
-    if (computeIndexChecksum(source, packageRoot, index.scenes) !== index.checksum) return null;
-  } catch {
-    // A declared artifact is missing or unreadable — the cache cannot be trusted.
-    return null;
-  }
-  return index;
+  return null;
 }
 
 /**
  * Indexes one already-published, immutable source video into natural scenes.
  * Reruns with the same source checksum + analyzer identity reuse the prior result
- * (verified against on-disk artifact checksums, not just path existence) without
- * calling any analysis port. A different checksum or identity resolves to a
- * different, never-before-published path, so a rebuild never overwrites anything.
+ * (verified against the on-disk bytes of every declared artifact, not just path
+ * existence) without calling any analysis port. When that verification fails the
+ * rebuild claims a *fresh* generation directory under the same cache key, so a
+ * published artifact is never overwritten or deleted.
+ *
+ * `caption` is the source-level caption/title text. It is the last-resort embedding
+ * evidence: a scene with no vision description and no overlapping transcript is
+ * unrankable downstream, i.e. functionally discarded, which the degrade-don't-discard
+ * constraint forbids.
  */
 export async function indexSource(
   source: SourceVideoV1,
   packageRoot: string,
   deps: SceneIndexDeps,
+  caption = '',
 ): Promise<SceneIndexV1> {
   const cacheKey = shortHash(`${source.checksum}|${deps.analyzerIdentity}`);
-  const relDir = path.posix.join('scene-index', source.id, cacheKey);
-  const relIndexPath = path.posix.join(relDir, 'index.json');
+  const relCacheDir = path.posix.join('scene-index', source.id, cacheKey);
 
-  const cached = readCachedIndex(source, packageRoot, relIndexPath);
+  const cached = readCachedIndex(source, packageRoot, relCacheDir);
   if (cached) return cached;
+
+  const relDir = reserveGeneration(packageRoot, relCacheDir);
+  const relIndexPath = path.posix.join(relDir, 'index.json');
+  const captionEvidence = caption.trim();
 
   const sourcePath = resolveContained(packageRoot, source.path);
   const tempRoot = path.join(packageRoot, '.tmp');
@@ -253,16 +338,31 @@ export async function indexSource(
     const transcriptEvidence = overlapping || '(no speech detected)';
 
     let visionDescription: string | undefined;
-    let visionTopic = '';
+    let visionEvidence = '';
     try {
       const vision = await deps.describeWithVision(midFrame);
       visionDescription = JSON.stringify(vision);
-      visionTopic = vision.topic ?? '';
+      visionEvidence = [
+        vision.subject,
+        vision.action,
+        vision.setting,
+        vision.composition,
+        vision.motion,
+        vision.topic,
+      ]
+        .map((part) => (part ?? '').trim())
+        .filter(Boolean)
+        .join(' ');
     } catch {
       degraded = true;
     }
 
-    const embedInput = [overlapping, visionTopic].filter(Boolean).join(' ').trim();
+    // Fixed order: vision description, then overlapping transcript, then the source-level
+    // caption. Only an entirely empty evidence set may leave a scene without an embedding.
+    const embedInput = [visionEvidence, overlapping, captionEvidence]
+      .filter(Boolean)
+      .join(' ')
+      .trim();
     let embeddingPath: string | undefined;
     if (embedInput) {
       const vector = await deps.embed(embedInput);
@@ -291,7 +391,7 @@ export async function indexSource(
   const index: SceneIndexV1 = {
     source_id: source.id,
     path: relIndexPath,
-    checksum: computeIndexChecksum(source, packageRoot, scenes),
+    checksum: computeIndexChecksum(source, packageRoot, degraded ? 'degraded' : 'vision', scenes),
     planning_mode: degraded ? 'degraded' : 'vision',
     scenes,
   };
@@ -320,11 +420,17 @@ export async function indexPackage(
   const pkg = decodeSourcePackage(raw);
   const scene_indexes: SceneIndexV1[] = [];
   const warnings: MainFootageWarningCode[] = [];
+  const budgeted = withVisionBudget(deps);
   for (const source of pkg.sources) {
-    const index = await indexSource(source, packageRoot, deps);
-    scene_indexes.push(index);
-    if (index.planning_mode === 'degraded') warnings.push('vision_degraded');
+    try {
+      const index = await indexSource(source, packageRoot, budgeted.deps);
+      scene_indexes.push(index);
+      if (index.planning_mode === 'degraded') warnings.push('vision_degraded');
+    } catch {
+      warnings.push('source_video_skipped');
+    }
   }
+  budgeted.report();
   return { scene_indexes, warnings };
 }
 
@@ -337,16 +443,30 @@ function ffmpegBin(): string {
   return process.env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
 }
 
+/**
+ * A non-zero (or absent) ffmpeg exit status is an indexing failure, never "no result".
+ * Swallowing it turns a missing binary into a plausible-looking one-scene index, which
+ * is worse than no index at all: the manifest looks valid and the feature is silently off.
+ */
+function ffmpegOrThrow<T>(result: SpawnSyncReturns<T>, what: string): SpawnSyncReturns<T> {
+  if (result.error) throw new Error(`ffmpeg_${what}_spawn_failed`);
+  if (result.status !== 0) throw new Error(`ffmpeg_${what}_exit_${result.status ?? 'signal'}`);
+  return result;
+}
+
 // ponytail: a single fixed scene-score threshold (0.4, ffmpeg's own common default)
 // stands in for a tuned/adaptive detector; revisit if false boundaries show up in practice.
 export async function detectScenesWithFfmpeg(
   sourcePath: string,
   _technical: SourceTechnicalMetadata,
 ): Promise<number[]> {
-  const result = spawnSync(
-    ffmpegBin(),
-    ['-i', sourcePath, '-filter:v', "select='gt(scene,0.4)',showinfo", '-f', 'null', '-'],
-    { encoding: 'utf8', timeout: 60_000 },
+  const result = ffmpegOrThrow(
+    spawnSync(
+      ffmpegBin(),
+      ['-i', sourcePath, '-filter:v', "select='gt(scene,0.4)',showinfo", '-f', 'null', '-'],
+      { encoding: 'utf8', timeout: 60_000 },
+    ),
+    'scene_detect',
   );
   const text = result.stderr || '';
   return [...text.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number(m[1]));
@@ -359,11 +479,15 @@ export async function extractFramesWithFfmpeg(
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-scene-frame-'));
   return atSeconds.map((t, i) => {
     const out = path.join(dir, `frame-${i}.jpg`);
-    spawnSync(
-      ffmpegBin(),
-      ['-y', '-ss', String(Math.max(0, t)), '-i', sourcePath, '-frames:v', '1', '-q:v', '4', out],
-      { timeout: 30_000 },
+    ffmpegOrThrow(
+      spawnSync(
+        ffmpegBin(),
+        ['-y', '-ss', String(Math.max(0, t)), '-i', sourcePath, '-frames:v', '1', '-q:v', '4', out],
+        { timeout: 30_000 },
+      ),
+      'extract_frame',
     );
+    if (!fs.existsSync(out)) throw new Error('ffmpeg_extract_frame_missing_output');
     return out;
   });
 }
@@ -431,18 +555,21 @@ export async function embedSceneEvidence(text: string): Promise<number[] | null>
 }
 
 function signalstatsYavg(imagePath: string): number {
-  const result = spawnSync(
-    ffmpegBin(),
-    [
-      '-i',
-      imagePath,
-      '-vf',
-      'signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-',
-      '-f',
-      'null',
-      '-',
-    ],
-    { encoding: 'utf8', timeout: 20_000 },
+  const result = ffmpegOrThrow(
+    spawnSync(
+      ffmpegBin(),
+      [
+        '-i',
+        imagePath,
+        '-vf',
+        'signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-',
+        '-f',
+        'null',
+        '-',
+      ],
+      { encoding: 'utf8', timeout: 20_000 },
+    ),
+    'signalstats',
   );
   const match =
     /YAVG=([\d.]+)/.exec(result.stdout || '') || /YAVG=([\d.]+)/.exec(result.stderr || '');
@@ -463,21 +590,22 @@ export async function measureVisualsWithFfmpeg(
   if (startFrame && endFrame) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-scene-diff-'));
     const diff = path.join(dir, 'diff.jpg');
-    spawnSync(
-      ffmpegBin(),
-      [
-        '-y',
-        '-i',
-        startFrame,
-        '-i',
-        endFrame,
-        '-filter_complex',
-        'blend=all_mode=difference',
-        diff,
-      ],
-      {
-        timeout: 20_000,
-      },
+    ffmpegOrThrow(
+      spawnSync(
+        ffmpegBin(),
+        [
+          '-y',
+          '-i',
+          startFrame,
+          '-i',
+          endFrame,
+          '-filter_complex',
+          'blend=all_mode=difference',
+          diff,
+        ],
+        { timeout: 20_000 },
+      ),
+      'frame_diff',
     );
     motion = fs.existsSync(diff) ? signalstatsYavg(diff) : 0;
     try {
@@ -489,6 +617,38 @@ export async function measureVisualsWithFfmpeg(
     motion_score: clamped(motion),
     brightness: clamped(brightness),
     scene_change_score: clamped(motion),
+  };
+}
+
+/**
+ * Vision is one serial network call per scene per source, so an unbounded package can
+ * spend tens of minutes on it. This caps the whole package and makes the spend visible.
+ * ponytail: one flat per-package cap, no concurrency — raise it or parallelize only if
+ * real packages start hitting it.
+ */
+export const VISION_CALLS_PER_PACKAGE = 40;
+
+/**
+ * Bounds and reports the Vision spend of one package. Vision stays enabled/disabled by the
+ * switch scout already has — `THOTH_NOVITA_API_KEY`, which `describeSceneWithVision`
+ * rejects on when absent — and a cap-exceeded scene throws exactly like an unavailable
+ * one, so `indexSource` degrades it (`vision_degraded`) instead of failing the package.
+ */
+export function withVisionBudget(
+  deps: SceneIndexDeps,
+  budget = VISION_CALLS_PER_PACKAGE,
+): { deps: SceneIndexDeps; report(): void } {
+  let used = 0;
+  return {
+    deps: {
+      ...deps,
+      describeWithVision: async (framePath: string) => {
+        if (used >= budget) throw new Error('vision_budget_exhausted');
+        used += 1;
+        return deps.describeWithVision(framePath);
+      },
+    },
+    report: () => console.warn(`[main-footage] vision calls: ${used}/${budget}`),
   };
 }
 

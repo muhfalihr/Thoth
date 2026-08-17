@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fingerprintCanonical } from './contracts.ts';
 import { buildSourcePackage } from './source_package.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-source-package-'));
@@ -24,7 +25,7 @@ const video = (index: number) => ({
   canonical_post_url: 'https://www.instagram.com/p/post-1/',
   ephemeral_url: `https://cdn.example.test/video-${index}?ephemeral_url=secret`,
 });
-const post = (media: ReturnType<typeof photo>[]) => ({
+const post = (media: (ReturnType<typeof photo> | ReturnType<typeof video>)[]) => ({
   canonical_url: 'https://www.instagram.com/p/post-1/',
   platform: 'instagram' as const,
   post_id: 'post-1',
@@ -104,6 +105,29 @@ try {
     result.package.sources.map((source) => source.id),
   );
   assert.match(result.package.fingerprint, /^sha256:[0-9a-f]{64}$/);
+  // Ruling A, behaviorally: the published fingerprint really is the fingerprint of the
+  // published content *including* the scene indexes — a format regex cannot show this.
+  assert.equal(
+    fingerprintCanonical(result.package),
+    result.package.fingerprint,
+    'the published fingerprint must reproduce from the published package content',
+  );
+  assert.notEqual(
+    fingerprintCanonical({ ...result.package, scene_indexes: [] }),
+    result.package.fingerprint,
+    'a fingerprint computed over an empty scene-index list must differ from the real one',
+  );
+  assert.notEqual(
+    fingerprintCanonical({
+      ...result.package,
+      scene_indexes: result.package.scene_indexes.map((index) => ({
+        ...index,
+        checksum: `sha256:${'a'.repeat(64)}`,
+      })),
+    }),
+    result.package.fingerprint,
+    'differing scene-index content must produce a different package fingerprint',
+  );
   assert.deepEqual(
     result.package.sources.map((source) => source.media_index),
     [1],
@@ -238,6 +262,82 @@ try {
     [],
     'no package artifact may be written through a junction',
   );
+
+  // --- Ruling K: one failing scene index skips that source; the package still publishes ------
+  {
+    const isolated = await buildSourcePackage(
+      { post: post([video(1), video(3)]), contentSetPath, coverageTarget: 0.6 },
+      {
+        ...fakeSceneDeps,
+        scoutOutputRoot,
+        detectScenes: async (sourcePath: string) => {
+          if (sourcePath.includes('source-post-1-3')) throw new Error('ffmpeg_scene_detect_failed');
+          return [];
+        },
+        materialize: async () => ({
+          path: writeDownload(`isolated-${Math.random()}.mp4`),
+          kind: 'video' as const,
+          source: 'direct-http' as const,
+          bytes: acceptedBytes.length,
+        }),
+        probe: async () => technical,
+        now: () => 100,
+      },
+    );
+    assert.deepEqual(
+      isolated.package.sources.map((source) => source.media_index),
+      [1],
+      'a source whose index throws is dropped from the manifest, not carried without an index',
+    );
+    assert.equal(isolated.package.scene_indexes.length, isolated.package.sources.length);
+    assert.ok(
+      isolated.package.unavailable.some(
+        (entry) => entry.media_index === 3 && entry.code === 'source_video_skipped',
+      ),
+      'an indexing failure is reported with the stable source_video_skipped code',
+    );
+    assert.equal(isolated.summary.usable_video_count, 1);
+  }
+
+  // --- Ruling K: zero indexed sources fails closed and publishes nothing ---------------------
+  {
+    const packagesRoot = path.join(scoutOutputRoot, 'main-footage');
+    const manifestsBefore = fs.existsSync(packagesRoot)
+      ? fs
+          .readdirSync(packagesRoot)
+          .filter((folder) => fs.existsSync(path.join(packagesRoot, folder, 'package.json')))
+      : [];
+    await assert.rejects(
+      () =>
+        buildSourcePackage(
+          { post: post([video(1)]), contentSetPath, coverageTarget: 0.6 },
+          {
+            ...fakeSceneDeps,
+            scoutOutputRoot,
+            detectScenes: async () => {
+              throw new Error('ffmpeg_scene_detect_failed');
+            },
+            materialize: async () => ({
+              path: writeDownload(`all-index-fail-${Math.random()}.mp4`),
+              kind: 'video' as const,
+              source: 'direct-http' as const,
+              bytes: acceptedBytes.length,
+            }),
+            probe: async () => technical,
+            now: () => 100,
+          },
+        ),
+      { message: 'forced_main_no_usable_video' },
+    );
+    const manifestsAfter = fs
+      .readdirSync(packagesRoot)
+      .filter((folder) => fs.existsSync(path.join(packagesRoot, folder, 'package.json')));
+    assert.deepEqual(
+      manifestsAfter,
+      manifestsBefore,
+      'a package with zero scene indexes must never be published',
+    );
+  }
 
   console.log('ok source_package');
 } finally {

@@ -5,7 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import type { SourceVideoV1 } from './contracts.ts';
 import type { SceneIndexDeps, TranscriptSegment, VisionDescription } from './scene_index.ts';
-import { indexSource, SCENE_MERGE_TOLERANCE_SEC } from './scene_index.ts';
+import {
+  detectScenesWithFfmpeg,
+  extractFramesWithFfmpeg,
+  indexSource,
+  SCENE_MERGE_TOLERANCE_SEC,
+  withVisionBudget,
+} from './scene_index.ts';
 
 const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-scene-index-'));
 const sourceBytes = Buffer.from('immutable published source bytes');
@@ -35,6 +41,14 @@ function makeFrame(label: string, tag: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-scene-frame-fixture-'));
   const file = path.join(dir, `${label}.jpg`);
   fs.writeFileSync(file, Buffer.from(`frame:${tag}:${label}:${Math.random()}`));
+  return file;
+}
+
+/** Byte-identical across runs for the same label — lets two indexes differ only in content. */
+function makeFixedFrame(label: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-scene-frame-fixed-'));
+  const file = path.join(dir, `${label}.jpg`);
+  fs.writeFileSync(file, Buffer.from(`fixed-frame:${label}`));
   return file;
 }
 
@@ -187,7 +201,7 @@ try {
         throw new Error('vision_unavailable');
       },
     });
-    const index = await indexSource(source, packageRoot, deps);
+    const index = await indexSource(source, packageRoot, deps, 'caption dari postingan asli');
     assert.equal(
       index.planning_mode,
       'degraded',
@@ -205,9 +219,182 @@ try {
         'local visual metrics (luminance/color/sharpness/optical-flow proxy) still persist',
       );
     }
-    // At least the scene overlapping real transcript text still gets an evidence embedding
-    // even though its Vision topic is unavailable.
-    assert.ok(index.scenes.some((scene) => scene.embedding_path));
+    // Ruling J: EVERY scene keeps an embedding when Vision is down — a scene without one is
+    // unrankable downstream, i.e. functionally discarded. `some` would pass on one lucky scene.
+    assert.ok(
+      index.scenes.every((scene) => scene.embedding_path),
+      'every degraded scene must still carry an embedding',
+    );
+  }
+
+  // --- Ruling J: embedding evidence is vision + transcript + caption, in that fixed order ----
+  {
+    const source = makeSource();
+    const embedInputs: string[] = [];
+    const { deps } = makeDeps({
+      analyzerIdentity: 'embed-order-analyzer@1',
+      detectScenes: async () => [10],
+      embed: async (text) => {
+        embedInputs.push(text);
+        return [text.length];
+      },
+    });
+    await indexSource(source, packageRoot, deps, 'caption asli');
+    assert.equal(
+      embedInputs[0],
+      'street vendor pushing a cart urban sidewalk medium shot slow walk street vendor economics' +
+        ' pedagang buah keliling caption asli',
+      'embedding input concatenates vision, then overlapping transcript, then source caption',
+    );
+  }
+
+  // --- Ruling J: caption alone keeps every scene embeddable when Vision AND transcript are gone
+  {
+    const source = makeSource();
+    const { deps } = makeDeps({
+      analyzerIdentity: 'caption-only-analyzer@1',
+      transcribe: async () => [],
+      describeWithVision: async () => {
+        throw new Error('vision_unavailable');
+      },
+    });
+    const index = await indexSource(source, packageRoot, deps, 'judul dan caption postingan');
+    assert.equal(index.planning_mode, 'degraded');
+    assert.ok(
+      index.scenes.length > 0 && index.scenes.every((scene) => scene.embedding_path),
+      'the source-level caption alone must keep every scene embeddable',
+    );
+  }
+
+  // --- Ruling J: only an entirely empty evidence set may omit the embedding ------------------
+  {
+    const source = makeSource();
+    const { deps } = makeDeps({
+      analyzerIdentity: 'no-evidence-analyzer@1',
+      transcribe: async () => [],
+      describeWithVision: async () => {
+        throw new Error('vision_unavailable');
+      },
+    });
+    const index = await indexSource(source, packageRoot, deps, '');
+    assert.equal(index.planning_mode, 'degraded');
+    assert.ok(
+      index.scenes.every((scene) => scene.embedding_path === undefined),
+      'with no vision, no transcript and no caption there is nothing to embed',
+    );
+  }
+
+  // --- M10: a source shorter than the merge tolerance still yields one whole-source scene ----
+  {
+    const source = makeSource({
+      id: 'source-tiny',
+      technical: { ...makeSource().technical, duration_sec: 0.5 },
+    });
+    fs.mkdirSync(path.dirname(path.join(packageRoot, source.path)), { recursive: true });
+    const { deps } = makeDeps({
+      analyzerIdentity: 'tiny-analyzer@1',
+      detectScenes: async () => [],
+    });
+    const index = await indexSource(source, packageRoot, deps, 'caption');
+    assert.deepEqual(
+      index.scenes.map((scene) => [scene.start_sec, scene.end_sec]),
+      [[0, 0.5]],
+      'a sub-tolerance source spans one scene, never zero',
+    );
+  }
+
+  // --- I4: the index checksum covers planning_mode and vision text, not just frame bytes -----
+  {
+    const source = makeSource({ id: 'source-checksum' });
+    fs.mkdirSync(path.dirname(path.join(packageRoot, source.path)), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, source.path), sourceBytes);
+    const fixedFrames = {
+      detectScenes: async () => [10],
+      extractFrames: async (_source: string, atSeconds: number[]) =>
+        atSeconds.map((t) => makeFixedFrame(`t${t}`)),
+      transcribe: async () => [],
+      embed: async () => null,
+    };
+    const { deps: visionDeps } = makeDeps({
+      analyzerIdentity: 'checksum-vision@1',
+      ...fixedFrames,
+    });
+    const { deps: degradedDeps } = makeDeps({
+      analyzerIdentity: 'checksum-degraded@1',
+      ...fixedFrames,
+      describeWithVision: async () => {
+        throw new Error('vision_unavailable');
+      },
+    });
+    const visionIndex = await indexSource(source, packageRoot, visionDeps, '');
+    const degradedIndex = await indexSource(source, packageRoot, degradedDeps, '');
+    assert.equal(visionIndex.planning_mode, 'vision');
+    assert.equal(degradedIndex.planning_mode, 'degraded');
+    assert.notEqual(
+      visionIndex.checksum,
+      degradedIndex.checksum,
+      'identical frame bytes must not hash identically across a vision/degraded difference',
+    );
+  }
+
+  // --- I3 + C1: a damaged declared artifact invalidates the cache AND rebuilds successfully --
+  {
+    const source = makeSource({ id: 'source-repair' });
+    fs.mkdirSync(path.dirname(path.join(packageRoot, source.path)), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, source.path), sourceBytes);
+
+    // (a) deleting a start frame — a declared artifact the typed contract does not name —
+    //     must invalidate the cache.
+    const { deps: firstDeps, calls: firstCalls } = makeDeps({
+      analyzerIdentity: 'repair-analyzer@1',
+    });
+    const first = await indexSource(source, packageRoot, firstDeps, 'caption');
+    assert.equal(firstCalls.detectScenes, 1);
+    const startFrame = path.join(
+      packageRoot,
+      first.scenes[0]!.representative_frame.replace('-mid.jpg', '-start.jpg'),
+    );
+    assert.ok(fs.existsSync(startFrame));
+    fs.rmSync(startFrame);
+
+    const { deps: repairDeps, calls: repairCalls } = makeDeps({
+      analyzerIdentity: 'repair-analyzer@1',
+    });
+    const repaired = await indexSource(source, packageRoot, repairDeps, 'caption');
+    assert.equal(
+      repairCalls.detectScenes,
+      1,
+      'a missing declared artifact must force a rebuild, not serve a cache hit',
+    );
+    assert.notEqual(
+      repaired.path,
+      first.path,
+      'a rebuild publishes to a fresh path; published artifacts stay immutable',
+    );
+    assert.ok(
+      fs.existsSync(
+        path.join(
+          packageRoot,
+          repaired.scenes[0]!.representative_frame.replace('-mid.jpg', '-start.jpg'),
+        ),
+      ),
+      'the rebuilt generation has every declared artifact on disk',
+    );
+
+    // (b) tampering with a mid frame must also rebuild rather than throw destination_exists.
+    const midFrame = path.join(packageRoot, repaired.scenes[0]!.representative_frame);
+    fs.writeFileSync(midFrame, Buffer.from('tampered bytes'));
+    const { deps: tamperDeps, calls: tamperCalls } = makeDeps({
+      analyzerIdentity: 'repair-analyzer@1',
+    });
+    const rebuilt = await indexSource(source, packageRoot, tamperDeps, 'caption');
+    assert.equal(tamperCalls.detectScenes, 1, 'a tampered artifact must force a rebuild');
+    assert.notEqual(rebuilt.path, repaired.path);
+    assert.deepEqual(
+      fs.readFileSync(midFrame),
+      Buffer.from('tampered bytes'),
+      'the rebuild must never overwrite or delete the previously published generation',
+    );
   }
 
   // --- unchanged fingerprint reuses the index; changed bytes or analyzer identity rebuilds it
@@ -234,7 +421,7 @@ try {
 
     const rebuiltBytesSource = makeSource({
       id: 'source-cache',
-      checksum: 'sha256:0000000000000000000000000000000000000000000000000000000000ff',
+      checksum: `sha256:${'0'.repeat(62)}ff`,
     });
     const { deps: depsForBytes, calls: callsForBytes } = makeDeps({
       analyzerIdentity: 'cache-analyzer@1',
@@ -247,6 +434,61 @@ try {
     });
     await indexSource(source, packageRoot, depsForIdentity);
     assert.equal(callsForIdentity.detectScenes, 1, 'a changed analyzer identity forces a rebuild');
+  }
+
+  // --- I6: a failing ffmpeg is an indexing failure, never "no scenes" ------------------------
+  {
+    const previous = process.env.THOTH_FFMPEG;
+    process.env.THOTH_FFMPEG = path.join(packageRoot, 'no-such-ffmpeg-binary.exe');
+    try {
+      await assert.rejects(
+        () => detectScenesWithFfmpeg(sourcePath, makeSource().technical),
+        /ffmpeg_scene_detect_/,
+        'a missing/failing ffmpeg must not be reported as zero boundaries (one whole-video scene)',
+      );
+      await assert.rejects(
+        () => extractFramesWithFfmpeg(sourcePath, [0]),
+        /ffmpeg_extract_frame_/,
+        'a missing/failing ffmpeg must not return frame paths that were never written',
+      );
+    } finally {
+      if (previous === undefined) delete process.env.THOTH_FFMPEG;
+      else process.env.THOTH_FFMPEG = previous;
+    }
+  }
+
+  // --- I7: Vision spend is capped per package and a cap-exceeded scene degrades, not fails ---
+  {
+    const source = makeSource({ id: 'source-budget' });
+    fs.mkdirSync(path.dirname(path.join(packageRoot, source.path)), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, source.path), sourceBytes);
+    const { deps } = makeDeps({
+      analyzerIdentity: 'budget-analyzer@1',
+      detectScenes: async () => [10],
+    });
+    let visionCalls = 0;
+    const budgeted = withVisionBudget(
+      {
+        ...deps,
+        describeWithVision: async () => {
+          visionCalls += 1;
+          return vision;
+        },
+      },
+      1,
+    );
+    const index = await indexSource(source, packageRoot, budgeted.deps, 'caption');
+    assert.equal(visionCalls, 1, 'the budget caps the underlying Vision calls');
+    assert.equal(index.scenes.length, 2);
+    assert.equal(
+      index.planning_mode,
+      'degraded',
+      'exceeding the Vision budget degrades the index rather than failing it',
+    );
+    assert.ok(
+      index.scenes.every((scene) => scene.embedding_path),
+      'a budget-degraded scene still carries an embedding',
+    );
   }
 
   console.log('ok scene_index');
