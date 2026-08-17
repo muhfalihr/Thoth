@@ -6,8 +6,8 @@ use std::fmt;
 
 pub use contracts::{
     fingerprint_canonical, MainFootageDescriptor, MainFootageErrorCode, MainFootageMode,
-    MainFootagePlanV1, MainFootageWarningCode, NarrationTimelineV1, PlanningMode, SourcePackageV1,
-    TransitionKind,
+    MainFootagePlanV1, MainFootageWarningCode, NarrationBeatV1, NarrationTimelineV1,
+    NarrationWordV1, PlanningMode, SourcePackageV1, TransitionKind,
 };
 pub use import::{import_package, ImportedSourcePackage};
 pub use paths::{import_file, resolve_contained, write_immutable};

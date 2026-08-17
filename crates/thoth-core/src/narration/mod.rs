@@ -8,6 +8,8 @@
 //!
 //! Voice: ElevenLabs `with-timestamps` (natural, exact timing) → Edge TTS fallback.
 
+pub mod timeline;
+
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;

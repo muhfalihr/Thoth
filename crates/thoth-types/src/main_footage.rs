@@ -609,6 +609,69 @@ impl TryFrom<NarrationWordWire> for NarrationWordV1 {
     }
 }
 
+/// One contiguous narration span the cut planner allocates footage against.
+/// Beats are derived from `words`, so they are deliberately excluded from the
+/// timeline fingerprint — see `fingerprint_projection`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "NarrationBeatWire")]
+pub struct NarrationBeatV1 {
+    pub id: String,
+    pub start_sec: f64,
+    pub end_sec: f64,
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NarrationBeatWire {
+    #[serde(deserialize_with = "deserialize_non_blank")]
+    id: String,
+    start_sec: f64,
+    end_sec: f64,
+    text: String,
+}
+
+impl TryFrom<NarrationBeatWire> for NarrationBeatV1 {
+    type Error = &'static str;
+
+    fn try_from(value: NarrationBeatWire) -> Result<Self, Self::Error> {
+        if !value.start_sec.is_finite()
+            || !value.end_sec.is_finite()
+            || value.start_sec < 0.0
+            || value.end_sec <= value.start_sec
+        {
+            return Err("beat has an invalid time range");
+        }
+        Ok(Self {
+            id: value.id,
+            start_sec: value.start_sec,
+            end_sec: value.end_sec,
+            text: value.text,
+        })
+    }
+}
+
+fn deserialize_contiguous_beats<'de, D>(deserializer: D) -> Result<Vec<NarrationBeatV1>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let beats = Vec::<NarrationBeatV1>::deserialize(deserializer)?;
+    unique_ids(beats.iter().map(|beat| beat.id.as_str()), "duplicate beat id")
+        .map_err(serde::de::Error::custom)?;
+    if let Some(first) = beats.first() {
+        if first.start_sec != 0.0 {
+            return Err(serde::de::Error::custom("beats must start at 0"));
+        }
+    }
+    if beats
+        .windows(2)
+        .any(|pair| pair[0].end_sec != pair[1].start_sec)
+    {
+        return Err(serde::de::Error::custom("beats must be contiguous"));
+    }
+    Ok(beats)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NarrationTimelineV1 {
@@ -620,6 +683,9 @@ pub struct NarrationTimelineV1 {
     #[serde(deserialize_with = "deserialize_nonnegative_finite")]
     pub duration_sec: f64,
     pub words: Vec<NarrationWordV1>,
+    /// Derived beat segmentation. Absent in a words-only timeline.
+    #[serde(default, deserialize_with = "deserialize_contiguous_beats")]
+    pub beats: Vec<NarrationBeatV1>,
     pub created_at: Option<String>,
     pub fingerprint: Option<String>,
 }
