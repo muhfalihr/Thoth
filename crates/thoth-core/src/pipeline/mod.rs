@@ -228,6 +228,7 @@ impl<'a> PipelineRunner<'a> {
                 &planned.descriptor,
                 &job,
                 &planned.scout_output_root,
+                self.execution,
             )?),
             None => None,
         };
@@ -1351,6 +1352,7 @@ mod forced_main_footage_tests {
             &descriptor(),
             &job,
             &fixture.scout_root,
+            &JobExecutionContext::new(),
         )
         .unwrap();
         (job, imported)
