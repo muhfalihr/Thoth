@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict';
-import type { CandidateDeps, CandidatePolicy, PlannerRanking } from './candidates.ts';
-import { buildBeatCandidates, candidateId, MAX_REASON_CHARS } from './candidates.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type {
+  CandidateDeps,
+  CandidatePolicy,
+  PlannerRanking,
+  ShortlistEntry,
+} from './candidates.ts';
+import {
+  buildBeatCandidates,
+  candidateId,
+  fileEmbeddingLoader,
+  MAX_REASON_CHARS,
+} from './candidates.ts';
 import type { NarrationBeatV1, SceneEvidenceV1, SceneIndexV1 } from './contracts.ts';
 
 const cases: Array<[string, () => Promise<void>]> = [];
@@ -413,6 +426,91 @@ testCase('candidate scores are deterministic and bounded', async () => {
   assert.deepEqual(first, second);
   assert.equal(first[0]?.embedding_score, 1);
   assert.equal(first[0]?.visual_quality_score, 1);
+});
+
+/** Real package root on disk: fileEmbeddingLoader is the one dep that must touch the FS. */
+async function withPackageRoot(
+  run: (root: string, outside: string) => Promise<void>,
+): Promise<void> {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'candidates-'));
+  const root = path.join(base, 'package');
+  fs.mkdirSync(root);
+  try {
+    await run(root, base);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+}
+
+testCase('the file embedding loader refuses a path outside the package root', async () => {
+  await withPackageRoot(async (root, outside) => {
+    // A well-formed vector: a null result can only mean the read never happened.
+    fs.writeFileSync(path.join(outside, 'outside.json'), '[1, 0]');
+    const load = fileEmbeddingLoader(root);
+    assert.equal(await load(scene('scene-0001', { embedding_path: '../outside.json' })), null);
+  });
+});
+
+testCase('the file embedding loader rejects malformed vectors', async () => {
+  await withPackageRoot(async (root) => {
+    const load = fileEmbeddingLoader(root);
+    const malformed: Array<[string, string]> = [
+      ['object.json', '{"0": 1}'],
+      ['mixed.json', '[1, "x"]'],
+      ['infinite.json', '[1, 1e999]'],
+    ];
+    for (const [name, body] of malformed) {
+      fs.writeFileSync(path.join(root, name), body);
+      assert.equal(await load(scene('scene-0001', { embedding_path: name })), null, name);
+    }
+  });
+});
+
+testCase('the file embedding loader returns the published vector', async () => {
+  await withPackageRoot(async (root) => {
+    fs.mkdirSync(path.join(root, 'embeddings'));
+    fs.writeFileSync(path.join(root, 'embeddings', 'scene-0001.json'), '[1, 0, -0.5]');
+    const load = fileEmbeddingLoader(root);
+    assert.deepEqual(
+      await load(scene('scene-0001', { embedding_path: 'embeddings/scene-0001.json' })),
+      [1, 0, -0.5],
+    );
+  });
+});
+
+testCase('the planner sees only the shortlist projection', async () => {
+  const scenes = [
+    index('source-1', [
+      scene('scene-0001', {
+        start_sec: 137,
+        end_sec: 149,
+        vision_description: vision('excavator slab close up'),
+      }),
+    ]),
+  ];
+  const seen: ShortlistEntry[][] = [];
+  const deps = makeDeps({
+    rankShortlist: async (_beat, shortlist) => {
+      seen.push(shortlist);
+      return [];
+    },
+  });
+  await buildBeatCandidates(beat, scenes, policy, deps);
+  assert.equal(seen.length, 1, 'the planner must be called once');
+  assert.equal(seen[0]?.length, 1);
+  for (const entry of seen[0] ?? []) {
+    assert.deepEqual(Object.keys(entry).sort(), [
+      'candidate_id',
+      'embedding_score',
+      'evidence',
+      'match_level',
+      'visual_quality_score',
+    ]);
+  }
+  const wire = JSON.stringify(seen[0]);
+  assert.ok(!wire.includes('frames/'), `frame paths must not reach the planner: ${wire}`);
+  assert.ok(!wire.includes('137'), `scene timecodes must not reach the planner: ${wire}`);
+  assert.ok(!wire.includes('149'), `scene timecodes must not reach the planner: ${wire}`);
 });
 
 for (const [name, run] of cases) {

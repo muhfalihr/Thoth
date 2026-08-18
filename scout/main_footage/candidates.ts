@@ -345,7 +345,7 @@ export function fileEmbeddingLoader(packageRoot: string): CandidateDeps['loadEmb
       const parsed = JSON.parse(
         fs.readFileSync(resolveContained(packageRoot, scene.embedding_path), 'utf8'),
       );
-      return Array.isArray(parsed) && parsed.every((n) => typeof n === 'number') ? parsed : null;
+      return Array.isArray(parsed) && parsed.every((n) => Number.isFinite(n)) ? parsed : null;
     } catch {
       return null;
     }
