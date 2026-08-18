@@ -74,3 +74,39 @@ function fixture(name: string): unknown {
   assert.equal(fingerprintCanonical({ b: 2, a: 1 }), fingerprintCanonical({ a: 1, b: 2 }));
   assert.notEqual(fingerprintCanonical({ a: [1, 2] }), fingerprintCanonical({ a: [2, 1] }));
 }
+
+// Narration beats mirror crates/thoth-types/src/main_footage.rs: contiguous, unique ids,
+// starting at 0, and deliberately excluded from the narration fingerprint projection.
+{
+  const base = fixture('narration-timeline.v1.json') as Record<string, unknown>;
+  const beats = [
+    { id: 'beat-1', start_sec: 0, end_sec: 0.5, text: 'Hello' },
+    { id: 'beat-2', start_sec: 0.5, end_sec: 1, text: 'world' },
+  ];
+
+  const decoded = decodeNarrationTimeline({ ...base, beats });
+  assert.deepEqual(decoded.beats, beats);
+  assert.equal(decodeNarrationTimeline(base).beats, undefined);
+  assert.equal(
+    fingerprintCanonical({ ...base, beats }),
+    fingerprintCanonical(base),
+    'beats must not change the narration fingerprint',
+  );
+
+  assert.throws(
+    () => decodeNarrationTimeline({ ...base, beats: [beats[0], { ...beats[1], id: 'beat-1' }] }),
+    /duplicate beat id/,
+  );
+  assert.throws(
+    () => decodeNarrationTimeline({ ...base, beats: [{ ...beats[0], start_sec: 0.1 }] }),
+    /beats must start at 0/,
+  );
+  assert.throws(
+    () => decodeNarrationTimeline({ ...base, beats: [beats[0], { ...beats[1], start_sec: 0.7 }] }),
+    /beats must be contiguous/,
+  );
+  assert.throws(
+    () => decodeNarrationTimeline({ ...base, beats: [{ ...beats[0], end_sec: 0 }] }),
+    /beat has an invalid time range/,
+  );
+}

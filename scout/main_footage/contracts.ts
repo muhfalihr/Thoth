@@ -94,12 +94,26 @@ export interface NarrationWordV1 {
   end_sec: number;
 }
 
+/**
+ * One contiguous narration span the cut planner allocates footage against.
+ * Mirrors `NarrationBeatV1` in crates/thoth-types/src/main_footage.rs. Beats are derived
+ * from `words`, so they are deliberately excluded from the timeline fingerprint.
+ */
+export interface NarrationBeatV1 {
+  id: string;
+  start_sec: number;
+  end_sec: number;
+  text: string;
+}
+
 export interface NarrationTimelineV1 {
   schema_version: typeof MAIN_FOOTAGE_SCHEMA_VERSION;
   audio_path: string;
   audio_checksum: string;
   duration_sec: number;
   words: NarrationWordV1[];
+  /** Derived beat segmentation. Absent in a words-only timeline. */
+  beats?: NarrationBeatV1[];
   created_at?: string;
   fingerprint?: string;
 }
@@ -343,6 +357,27 @@ export function decodeMainFootageDescriptor(input: unknown): MainFootageDescript
   };
 }
 
+function decodeBeats(input: unknown): NarrationBeatV1[] {
+  const beats = array(input, 'beats').map((item, index) => {
+    const beat = record(item, `beats[${index}]`);
+    const start_sec = number(beat.start_sec, `beats[${index}].start_sec`, 0);
+    const end_sec = number(beat.end_sec, `beats[${index}].end_sec`, 0);
+    if (end_sec <= start_sec) throw new Error('beat has an invalid time range');
+    return {
+      id: string(beat.id, `beats[${index}].id`),
+      start_sec,
+      end_sec,
+      text: typeof beat.text === 'string' ? beat.text : (() => { throw new Error('beat.text must be a string'); })(),
+    };
+  });
+  unique(beats.map((beat) => beat.id), 'beat id');
+  if (beats.length && beats[0]!.start_sec !== 0) throw new Error('beats must start at 0');
+  for (let i = 1; i < beats.length; i += 1) {
+    if (beats[i - 1]!.end_sec !== beats[i]!.start_sec) throw new Error('beats must be contiguous');
+  }
+  return beats;
+}
+
 export function decodeNarrationTimeline(input: unknown): NarrationTimelineV1 {
   const value = record(input, 'narration timeline');
   schema(value);
@@ -359,6 +394,7 @@ export function decodeNarrationTimeline(input: unknown): NarrationTimelineV1 {
     audio_checksum: string(value.audio_checksum, 'audio_checksum'),
     duration_sec: duration,
     words,
+    ...(value.beats === undefined ? {} : { beats: decodeBeats(value.beats) }),
     ...(value.created_at === undefined ? {} : { created_at: string(value.created_at, 'created_at') }),
     ...(value.fingerprint === undefined ? {} : { fingerprint: string(value.fingerprint, 'fingerprint') }),
   };
