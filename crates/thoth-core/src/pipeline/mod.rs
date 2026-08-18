@@ -92,10 +92,52 @@ fn preflight_edit_ocr(base_dir: &Path, expected_source_fingerprint: &str) -> Res
     crate::edit::enrichment::preflight_ocr(base_dir)
 }
 
+/// The forced main footage a Content Set declared. Its presence is what makes a
+/// run "forced": the job imports its own copy of Scout's source package, cuts from
+/// those local files instead of downloading `main.url`, and narration stops being
+/// best-effort because the cut planner allocates against its beats.
+#[derive(Debug, Clone)]
+pub struct PlannedMainInput {
+    /// The Content Set that declared the package; the manifest is resolved
+    /// relative to its directory.
+    pub content_set_path: std::path::PathBuf,
+    pub descriptor: thoth_types::main_footage::MainFootageDescriptor,
+    /// Scout's publish root. The manifest must resolve inside it.
+    pub scout_output_root: std::path::PathBuf,
+}
+
+/// The imported source Stage 1 ingests for a forced run — a local file inside the
+/// job, never a URL, so nothing is downloaded and nothing is re-encoded here.
+/// Sources keep Scout's media order, so the lowest `media_index` is the main post.
+fn forced_ingest_source(
+    imported: &crate::main_footage::ImportedSourcePackage,
+) -> Result<String> {
+    let source = imported
+        .package
+        .sources
+        .iter()
+        .min_by_key(|source| source.media_index)
+        .ok_or_else(|| {
+            crate::main_footage::MainFootageError::new(
+                thoth_types::main_footage::MainFootageErrorCode::SourcePackageInvalid,
+                "package_declares_no_usable_source",
+            )
+        })?;
+    let path = crate::main_footage::resolve_contained(&imported.root, Path::new(&source.path))
+        .map_err(|_| {
+            crate::main_footage::MainFootageError::new(
+                thoth_types::main_footage::MainFootageErrorCode::SourcePackageInvalid,
+                "imported_source_outside_job_root",
+            )
+        })?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 pub struct PipelineRunner<'a> {
     config: &'a AppConfig,
     execution: &'a JobExecutionContext,
     main_is_video: bool,
+    planned_main: Option<PlannedMainInput>,
 }
 
 impl<'a> PipelineRunner<'a> {
@@ -104,11 +146,17 @@ impl<'a> PipelineRunner<'a> {
             config,
             execution,
             main_is_video: true,
+            planned_main: None,
         }
     }
 
     pub fn with_main_is_video(mut self, main_is_video: bool) -> Self {
         self.main_is_video = main_is_video;
+        self
+    }
+
+    pub fn with_planned_main(mut self, planned_main: PlannedMainInput) -> Self {
+        self.planned_main = Some(planned_main);
         self
     }
 
@@ -146,6 +194,25 @@ impl<'a> PipelineRunner<'a> {
         } else {
             PipelineState::new(job_id.clone(), url.to_owned())
         };
+
+        // ── Forced main footage: take a job-owned copy of Scout's package ──────
+        // Everything downstream reads the job's own immutable copies, so the run
+        // no longer depends on Scout's directory — and Stage 1 ingests one of those
+        // local files instead of downloading `main.url`.
+        let planned_package = match &self.planned_main {
+            Some(planned) => Some(crate::main_footage::import_package(
+                &planned.content_set_path,
+                &planned.descriptor,
+                &job,
+                &planned.scout_output_root,
+            )?),
+            None => None,
+        };
+        let ingest_url = match &planned_package {
+            Some(imported) => forced_ingest_source(imported)?,
+            None => url.to_string(),
+        };
+        let url = ingest_url.as_str();
 
         // ── Stage 1: Ingest ──────────────────────────────────────────────
         self.execution.check_cancelled()?;
@@ -313,14 +380,45 @@ impl<'a> PipelineRunner<'a> {
         // ── Stage 5.5: Narration  (narrator-driven spine) ────────────────
         // Generate ONE continuous narrator voiceover (+ word timings) that the
         // edit builds the video around. Best-effort: never fails the pipeline.
+        // A forced main-footage run is cut against narration beats, so a runtime
+        // config with the narrator disabled cannot produce anything to plan against.
+        if self.planned_main.is_some() {
+            crate::main_footage::require_narration_enabled(self.config.narration.enabled)?;
+        }
         if self.config.narration.enabled && !job.narration_mp3().exists() {
             self.execution.check_cancelled()?;
             stage_header(5, 6, "Narration  (narrator voiceover)");
             match self.generate_narration(&job, provider).await {
-                Ok(()) => {}
-                Err(e) => warn!("Narration failed — continuing without narrator: {e}"),
+                Ok(narration) => {
+                    // Forced main footage is cut against narration beats, so the
+                    // timeline is published as part of the narration stage.
+                    if self.planned_main.is_some() {
+                        let timeline = crate::narration::timeline::build_narration_timeline(
+                            &narration,
+                            crate::narration::timeline::BeatPolicy::default(),
+                        )?;
+                        crate::narration::timeline::write_narration_timeline(&job, &timeline)?;
+                    }
+                }
+                Err(e) => {
+                    warn!("Narration failed — continuing without narrator: {e}");
+                    if let Some(fatal) =
+                        crate::main_footage::narration_failure(self.planned_main.is_some())
+                    {
+                        return Err(fatal.into());
+                    }
+                }
             }
             self.execution.check_cancelled()?;
+        }
+        // A rerun that already had `narration.mp3` skips the stage above; a forced
+        // run still needs the beat timeline, so refuse rather than plan blindly.
+        if self.planned_main.is_some() && !job.narration_timeline().exists() {
+            return Err(crate::main_footage::MainFootageError::new(
+                crate::main_footage::MainFootageErrorCode::ForcedMainNarrationRequired,
+                "narration_timeline_missing",
+            )
+            .into());
         }
 
         // ── Stage 6: Edit ────────────────────────────────────────────────
@@ -384,12 +482,17 @@ impl<'a> PipelineRunner<'a> {
 
     /// Generate the narrator voiceover spine: read the event transcript, ask the
     /// LLM for one continuous commentator script, synthesize it (timed), and save
-    /// `narration.mp3` + `narration_words.json`. Best-effort.
-    async fn generate_narration(
+    /// `narration.mp3` + `narration_words.json`.
+    ///
+    /// Returns the produced `Narration` so callers that need the voiceover's word
+    /// timings (the forced main-footage path builds a beat timeline from them) do
+    /// not have to re-read or re-synthesize anything. Legacy callers ignore it and
+    /// keep treating a failure as best-effort.
+    pub async fn generate_narration(
         &self,
         job: &JobContext,
         provider: &LlmProviderName,
-    ) -> Result<()> {
+    ) -> Result<crate::narration::Narration> {
         use crate::transcribe::model::Transcript;
 
         let raw = tokio::fs::read_to_string(job.transcript_path())
@@ -596,7 +699,7 @@ impl<'a> PipelineRunner<'a> {
         // Persist the full narration script so the structure verifier
         // (scripts/narration/verify_narration_structure.py) can check it against the corpus.
         let _ = std::fs::write(job.narration_dir().join("narration.txt"), &narr.text);
-        Ok(())
+        Ok(narr)
     }
 
     /// Retrieve proven narration structures from the `narration_structures` Supabase

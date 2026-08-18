@@ -47,9 +47,60 @@ impl fmt::Display for MainFootageError {
 
 impl std::error::Error for MainFootageError {}
 
+/// Forced main-footage runs allocate footage against narration beats, so a
+/// runtime config with the narrator switched off cannot produce a plan at all.
+/// Legacy runs are unaffected — this is only consulted on the forced path.
+pub fn require_narration_enabled(narration_enabled: bool) -> Result<(), MainFootageError> {
+    if narration_enabled {
+        Ok(())
+    } else {
+        Err(MainFootageError::new(
+            MainFootageErrorCode::ForcedMainNarrationRequired,
+            "narration_disabled_in_runtime_config",
+        ))
+    }
+}
+
+/// What a failed narration stage means for this run: nothing in legacy mode,
+/// where the pipeline logs a warning and continues without a narrator, and a
+/// terminal `narration_generation_failed` in forced mode. The underlying error
+/// is deliberately not carried into `detail` — it can hold a raw model response.
+pub fn narration_failure(forced: bool) -> Option<MainFootageError> {
+    forced.then(|| {
+        MainFootageError::new(
+            MainFootageErrorCode::NarrationGenerationFailed,
+            "narration_stage_failed",
+        )
+    })
+}
+
 #[cfg(test)]
 mod reexport_tests {
-    use super::{MainFootageError, MainFootageErrorCode};
+    use super::{narration_failure, require_narration_enabled, MainFootageError, MainFootageErrorCode};
+
+    /// A forced run has nothing for the cut planner to allocate against without
+    /// narration beats, so a disabled narrator is a hard stop. Legacy runs are
+    /// free to disable it — this gate is only consulted on the forced path.
+    #[test]
+    fn forced_mode_requires_narration_to_be_enabled() {
+        assert!(require_narration_enabled(true).is_ok());
+        assert_eq!(
+            require_narration_enabled(false).unwrap_err().code,
+            MainFootageErrorCode::ForcedMainNarrationRequired
+        );
+    }
+
+    /// Pins the split the brief asks for: the legacy pipeline keeps its
+    /// best-effort warning and continues without a narrator, while the same
+    /// failure ends a forced run.
+    #[test]
+    fn legacy_narration_failure_continues_but_forced_is_terminal() {
+        assert!(narration_failure(false).is_none());
+        assert_eq!(
+            narration_failure(true).unwrap().code,
+            MainFootageErrorCode::NarrationGenerationFailed
+        );
+    }
 
     #[test]
     fn core_reexports_the_leaf_main_footage_contract() {

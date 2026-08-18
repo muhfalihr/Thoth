@@ -829,6 +829,7 @@ pub async fn run_once(
             // Content discovery is handled upstream by scout. Thoth accepts
             // either a direct --url (single-video default) or an scout content
             // set via --content (main video + footage pool). It does not search.
+            let mut planned_main: Option<pipeline::PlannedMainInput> = None;
             let (resolved_url, main_is_video): (String, bool) = if let Some(ref u) = args.url {
                 clear_direct_url_enrichment(&args.output_dir)?;
                 (u.clone(), true)
@@ -987,8 +988,36 @@ pub async fn run_once(
                 // cropped post image into a short still→video so the pipeline runs (ingest local-file
                 // branch → silent transcript → analyze whole-clip → narration grounding → edit). Guard
                 // on image_path presence (scout only crops non-video) so a video main never misfires.
+                // FORCED MAIN FOOTAGE: scout published a source package for this set.
+                // The job imports its own copies and cuts from those local files, so
+                // `main.url` is neither resolved, synthesized, nor downloaded. The
+                // sidecars written above (title/description, comments, profile,
+                // dossier) still apply — only the Stage 1 clip source changes.
+                if let Some(descriptor) = set.main_footage.as_ref().filter(|d| {
+                    d.mode == thoth_types::main_footage::MainFootageMode::ForcedUrlPool
+                }) {
+                    // A forced run is cut against narration beats; without a
+                    // narrator there is nothing for the planner to allocate.
+                    main_footage::require_narration_enabled(config.narration.enabled)?;
+                    planned_main = Some(pipeline::PlannedMainInput {
+                        content_set_path: content_path.clone(),
+                        descriptor: descriptor.clone(),
+                        scout_output_root: std::path::PathBuf::from(
+                            main_footage::import::SCOUT_OUTPUT_DIR,
+                        ),
+                    });
+                    tracing::info!(
+                        "🎬 forced main footage: cutting from the published source package \
+                         (coverage target {:.2}) — main.url is not downloaded",
+                        descriptor.coverage_target
+                    );
+                }
+
                 let main_img = set.main_image_path.trim().to_string();
-                let resolved = if !set.main_is_video && !main_img.is_empty() && std::path::Path::new(&main_img).exists() {
+                let resolved = if planned_main.is_some() {
+                    // Ingest resolves the clip from the imported package instead.
+                    String::new()
+                } else if !set.main_is_video && !main_img.is_empty() && std::path::Path::new(&main_img).exists() {
                     let (sw, sh) = match args.layout {
                         cli::OutputLayout::Horizontal => (1920u32, 1080u32),
                         cli::OutputLayout::Square => (1080u32, 1080u32),
@@ -1021,8 +1050,11 @@ pub async fn run_once(
                 );
             };
 
-            let runner =
+            let mut runner =
                 PipelineRunner::new(&config, execution).with_main_is_video(main_is_video);
+            if let Some(planned) = planned_main {
+                runner = runner.with_planned_main(planned);
+            }
             let _clips = runner
                 .run(
                     &resolved_url,
