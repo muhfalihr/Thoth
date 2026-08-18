@@ -12,6 +12,7 @@ import {
   buildBeatCandidates,
   candidateId,
   fileEmbeddingLoader,
+  MAX_EVIDENCE_CHARS,
   MAX_REASON_CHARS,
 } from './candidates.ts';
 import type { NarrationBeatV1, SceneEvidenceV1, SceneIndexV1 } from './contracts.ts';

@@ -15,6 +15,13 @@ import { resolveContained } from './paths.ts';
 /** Longest editorial reason persisted for a candidate. */
 export const MAX_REASON_CHARS = 200;
 
+/**
+ * Longest evidence string handed to the planner. Deliberately separate from
+ * MAX_REASON_CHARS: 200 chars cuts a vision_description + transcript_evidence pair off
+ * mid-thought (vision joins first, so transcript evidence is what disappears).
+ */
+export const MAX_EVIDENCE_CHARS = 600;
+
 /** Sentinel scene_index.ts writes when a scene overlaps no transcript segment. */
 const NO_SPEECH = '(no speech detected)';
 
@@ -62,6 +69,11 @@ export interface CandidateDeps {
 }
 
 export function candidateId(sourceId: string, sceneId: string): string {
+  // A `:` in either half would make "a:b"+"c" and "a"+"b:c" the same id, and the planner
+  // reference would silently attach to the wrong entry. Fail closed instead.
+  if (sourceId.includes(':') || sceneId.includes(':')) {
+    throw new Error('source and scene ids must not contain ":"');
+  }
   return `${sourceId}:${sceneId}`;
 }
 
@@ -125,10 +137,14 @@ function sceneEvidenceText(scene: SceneEvidenceV1): string {
   if (scene.vision_description) {
     let described = scene.vision_description;
     try {
-      const parsed = JSON.parse(scene.vision_description) as Record<string, unknown>;
-      described = Object.values(parsed)
-        .filter((value): value is string => typeof value === 'string')
-        .join(' ');
+      const parsed: unknown = JSON.parse(scene.vision_description);
+      // A JSON *primitive* ("2024", "\"a caption\"") parses fine but Object.values would
+      // yield nothing or single characters, dropping the scene's only evidence.
+      if (typeof parsed === 'object' && parsed !== null) {
+        described = Object.values(parsed)
+          .filter((value): value is string => typeof value === 'string')
+          .join(' ');
+      }
     } catch {
       // Not JSON — keep the raw description as evidence.
     }
@@ -171,7 +187,7 @@ function cosine(a: readonly number[], b: readonly number[]): number {
 }
 
 /** Bounded plain text. Raw provider payloads never reach an artifact through here. */
-export function normalizeReason(value: unknown): string {
+export function normalizeReason(value: unknown, limit = MAX_REASON_CHARS): string {
   if (typeof value !== 'string') return '';
   return (
     value
@@ -180,7 +196,7 @@ export function normalizeReason(value: unknown): string {
       .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, MAX_REASON_CHARS)
+      .slice(0, limit)
       .trim()
   );
 }
@@ -309,7 +325,7 @@ export async function buildBeatCandidates(
           beat,
           shortlist.map((entry) => ({
             candidate_id: entry.candidate_id,
-            evidence: normalizeReason(entry.evidence),
+            evidence: normalizeReason(entry.evidence, MAX_EVIDENCE_CHARS),
             match_level: entry.match_level,
             embedding_score: entry.embedding_score,
             visual_quality_score: entry.visual_quality_score,

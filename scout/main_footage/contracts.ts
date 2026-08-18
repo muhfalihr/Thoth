@@ -190,6 +190,12 @@ function string(value: unknown, name: string): string {
   return value;
 }
 
+/** Like `string`, but accepts the empty string — Rust's `String` allows it. */
+function looseString(value: unknown, name: string): string {
+  if (typeof value !== 'string') throw new Error(`${name} must be a string`);
+  return value;
+}
+
 function number(value: unknown, name: string, minimum?: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || (minimum !== undefined && value < minimum)) {
     throw new Error(`${name} must be a finite number`);
@@ -367,7 +373,7 @@ function decodeBeats(input: unknown): NarrationBeatV1[] {
       id: string(beat.id, `beats[${index}].id`),
       start_sec,
       end_sec,
-      text: typeof beat.text === 'string' ? beat.text : (() => { throw new Error('beat.text must be a string'); })(),
+      text: looseString(beat.text, 'beat.text'),
     };
   });
   unique(beats.map((beat) => beat.id), 'beat id');
