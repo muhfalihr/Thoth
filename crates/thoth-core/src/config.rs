@@ -1704,6 +1704,10 @@ impl AppConfig {
             .set_default("ffmpeg.cq_value", 23)?
             .set_default("ffmpeg.preset", "p4")?
             .set_default("ffmpeg.audio_bitrate", "192k")?
+            // Every other `gpu.*` field carries a serde default, but without one
+            // key the `[gpu]` table itself is absent and deserialization fails
+            // whenever `config.toml` is missing.
+            .set_default("gpu.enabled", false)?
             .set_default("output.default_dir", "./output")?
             .set_default("output.default_layout", "vertical")?
             .set_default("ingest.ytdlp_path", "yt-dlp")?

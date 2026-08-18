@@ -133,6 +133,19 @@ fn forced_ingest_source(
     Ok(path.to_string_lossy().to_string())
 }
 
+/// What Stage 1 actually ingests. A forced run resolves a job-owned local file
+/// from the imported package — `main.url` never reaches the ingest service — while
+/// a legacy run keeps the caller's URL untouched.
+fn resolve_ingest_input(
+    planned: Option<&crate::main_footage::ImportedSourcePackage>,
+    url: &str,
+) -> Result<String> {
+    match planned {
+        Some(imported) => forced_ingest_source(imported),
+        None => Ok(url.to_string()),
+    }
+}
+
 pub struct PipelineRunner<'a> {
     config: &'a AppConfig,
     execution: &'a JobExecutionContext,
@@ -158,6 +171,16 @@ impl<'a> PipelineRunner<'a> {
     pub fn with_planned_main(mut self, planned_main: PlannedMainInput) -> Self {
         self.planned_main = Some(planned_main);
         self
+    }
+
+    /// Stage 5.5's forced precondition. A forced run is cut against narration
+    /// beats, so a runtime config with the narrator switched off has nothing for
+    /// the planner to allocate against. Legacy runs pass through untouched.
+    fn forced_narration_gate(&self) -> Result<()> {
+        if self.planned_main.is_some() {
+            crate::main_footage::require_narration_enabled(self.config.narration.enabled)?;
+        }
+        Ok(())
     }
 
     pub async fn run(
@@ -208,10 +231,7 @@ impl<'a> PipelineRunner<'a> {
             )?),
             None => None,
         };
-        let ingest_url = match &planned_package {
-            Some(imported) => forced_ingest_source(imported)?,
-            None => url.to_string(),
-        };
+        let ingest_url = resolve_ingest_input(planned_package.as_ref(), url)?;
         let url = ingest_url.as_str();
 
         // ── Stage 1: Ingest ──────────────────────────────────────────────
@@ -382,9 +402,7 @@ impl<'a> PipelineRunner<'a> {
         // edit builds the video around. Best-effort: never fails the pipeline.
         // A forced main-footage run is cut against narration beats, so a runtime
         // config with the narrator disabled cannot produce anything to plan against.
-        if self.planned_main.is_some() {
-            crate::main_footage::require_narration_enabled(self.config.narration.enabled)?;
-        }
+        self.forced_narration_gate()?;
         if self.config.narration.enabled && !job.narration_mp3().exists() {
             self.execution.check_cancelled()?;
             stage_header(5, 6, "Narration  (narrator voiceover)");
@@ -1177,5 +1195,283 @@ mod ocr_pipeline_tests {
             std::env::temp_dir().join(format!("thoth-pipeline-ocr-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+}
+
+/// Behavioural coverage for the forced main-footage branch of `PipelineRunner`
+/// (brief steps 6 and 7). These drive the real decision points offline: the
+/// Stage-1 input the runner resolves, and the narration gate it applies.
+///
+/// `PipelineRunner::run` itself cannot be driven end to end in a unit test —
+/// Stage 1 shells out to `ffprobe`/`ffmpeg`, Stage 2 loads a CUDA Whisper model,
+/// and Stage 3 calls a remote LLM. The seams below are the closest reachable
+/// ones: `resolve_ingest_input` is the exact expression `run` assigns its
+/// Stage-1 `url` from, and `forced_narration_gate` is the exact call `run` makes
+/// before Stage 5.5.
+#[cfg(test)]
+mod forced_main_footage_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+
+    use super::{resolve_ingest_input, PipelineRunner, PlannedMainInput};
+    use crate::execution::JobExecutionContext;
+    use crate::main_footage::{
+        ImportedSourcePackage, MainFootageDescriptor, MainFootageError, MainFootageErrorCode,
+    };
+    use crate::pipeline::job::JobContext;
+
+    /// The URL a forced Content Set carries. It must never become the Stage-1
+    /// ingest input — that is the whole point of forced main footage.
+    const MAIN_URL: &str = "https://www.instagram.com/reel/post-123/";
+
+    struct Fixture {
+        scout_root: PathBuf,
+        content_set: PathBuf,
+        job_base: PathBuf,
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        let mut hash = Sha256::new();
+        hash.update(bytes);
+        format!("sha256:{:x}", hash.finalize())
+    }
+
+    fn write(path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    /// A Scout package with two sources published out of media order, so the
+    /// lowest `media_index` is not simply the first array element.
+    fn fixture() -> Fixture {
+        let base = std::env::temp_dir().join(format!("mf-forced-{}", uuid::Uuid::new_v4()));
+        let scout_root = base.join("scout/output");
+        let package_dir = scout_root.join("main-footage/post-123");
+        let job_base = base.join("job");
+        fs::create_dir_all(&job_base).unwrap();
+
+        let mut sources = Vec::new();
+        let mut indexes = Vec::new();
+        // Deliberately reversed: media_index 1 is declared before media_index 0.
+        for media_index in [1u32, 0u32] {
+            let bytes = format!("source {media_index} bytes").into_bytes();
+            let relative = format!("sources/source-{media_index}.mp4");
+            write(&package_dir.join(&relative), &bytes);
+
+            let index_relative =
+                format!("scene-index/source-{media_index}/cache-a/v002/index.json");
+            let index_bytes =
+                format!(r#"{{"scenes":[{{"id":"scene-{media_index}"}}]}}"#).into_bytes();
+            write(&package_dir.join(&index_relative), &index_bytes);
+            let frame_relative =
+                format!("scene-index/source-{media_index}/cache-a/v002/frame-000.jpg");
+            write(&package_dir.join(&frame_relative), b"frame bytes");
+
+            sources.push(json!({
+                "id": format!("source-{media_index}"),
+                "media_index": media_index,
+                "path": relative,
+                "checksum": digest(&bytes),
+                "technical": {
+                    "container": "mp4",
+                    "video_codec": "h264",
+                    "duration_sec": 12.5,
+                    "width": 1080,
+                    "height": 1920,
+                    "has_audio": true
+                }
+            }));
+            indexes.push(json!({
+                "source_id": format!("source-{media_index}"),
+                "path": index_relative,
+                "checksum": digest(&index_bytes),
+                "planning_mode": "vision",
+                "scenes": [{
+                    "id": format!("scene-{media_index}"),
+                    "start_sec": 0,
+                    "end_sec": 4,
+                    "representative_frame": frame_relative,
+                    "transcript_evidence": "A person addresses the camera.",
+                    "vision_description": "A person in a studio.",
+                    "visual_metrics": {
+                        "motion_score": 0.2,
+                        "brightness": 0.6,
+                        "scene_change_score": 0.1
+                    }
+                }]
+            }));
+        }
+
+        let package = json!({
+            "schema_version": 1,
+            "post": {
+                "id": "post-123",
+                "canonical_url": MAIN_URL,
+                "platform": "instagram"
+            },
+            "analysis_identity": "analysis-2026-08-14",
+            "created_at": "2026-08-14T12:00:00Z",
+            "sources": sources,
+            "ignored": [],
+            "unavailable": [],
+            "scene_indexes": indexes
+        });
+        write(
+            &package_dir.join("source-package.json"),
+            serde_json::to_string_pretty(&package).unwrap().as_bytes(),
+        );
+
+        let content_set = scout_root.join("thoth_content_set.json");
+        write(&content_set, b"{}");
+
+        Fixture {
+            scout_root,
+            content_set,
+            job_base,
+        }
+    }
+
+    fn descriptor() -> MainFootageDescriptor {
+        serde_json::from_value(json!({
+            "mode": "forced_url_pool",
+            "package_manifest": "main-footage/post-123/source-package.json",
+            "coverage_target": 0.6
+        }))
+        .unwrap()
+    }
+
+    /// Runs the real import the forced branch performs before Stage 1.
+    fn import(fixture: &Fixture) -> (JobContext, ImportedSourcePackage) {
+        let job = JobContext::new_flat("forced".into(), fixture.job_base.clone()).unwrap();
+        let imported = crate::main_footage::import_package(
+            &fixture.content_set,
+            &descriptor(),
+            &job,
+            &fixture.scout_root,
+        )
+        .unwrap();
+        (job, imported)
+    }
+
+    fn code(error: &anyhow::Error) -> MainFootageErrorCode {
+        error
+            .downcast_ref::<MainFootageError>()
+            .unwrap_or_else(|| panic!("expected a MainFootageError, got: {error:#}"))
+            .code
+    }
+
+    /// Scout publishes sources in discovery order, not media order. The Stage-1
+    /// clip is the post's own first medium, so selection must be by
+    /// `media_index` — not by array position.
+    #[test]
+    fn the_forced_stage_one_input_is_the_lowest_media_index_source() {
+        let fixture = fixture();
+        let (_job, imported) = import(&fixture);
+        assert_eq!(imported.package.sources[0].media_index, 1, "fixture ordering");
+
+        let resolved = resolve_ingest_input(Some(&imported), MAIN_URL).unwrap();
+
+        assert!(
+            resolved.ends_with("source-0.mp4"),
+            "forced ingest took {resolved} instead of the lowest media_index source"
+        );
+    }
+
+    /// The load-bearing guarantee of brief step 6: whatever the Content Set's
+    /// `main.url` says, Stage 1 receives a job-owned local file. Asserted on the
+    /// resolved input itself, including the exact predicate `IngestService::run`
+    /// uses to choose its local-file branch over yt-dlp.
+    #[test]
+    fn the_forced_stage_one_input_is_a_job_owned_file_and_never_main_url() {
+        let fixture = fixture();
+        let (job, imported) = import(&fixture);
+
+        let resolved = resolve_ingest_input(Some(&imported), MAIN_URL).unwrap();
+        let resolved_path = Path::new(&resolved);
+
+        assert_ne!(resolved, MAIN_URL);
+        // `IngestService::run` takes its local-file branch on exactly this test.
+        assert!(!resolved.starts_with("http://") && !resolved.starts_with("https://"));
+        assert!(resolved_path.is_file(), "{resolved} is not an existing file");
+        assert!(
+            resolved_path.starts_with(fs::canonicalize(job.main_footage_dir()).unwrap()),
+            "{resolved} escaped the job's main-footage root"
+        );
+        // And it really is the imported copy, not a link back into Scout.
+        assert!(!resolved_path.starts_with(&fixture.scout_root));
+    }
+
+    /// Legacy sets keep resolving and ingesting their own `main_url`.
+    #[test]
+    fn the_legacy_stage_one_input_is_the_callers_url_unchanged() {
+        assert_eq!(resolve_ingest_input(None, MAIN_URL).unwrap(), MAIN_URL);
+    }
+
+    /// A package whose declared source path leaves the job root is rejected
+    /// rather than silently ingested from outside the job.
+    ///
+    /// `SourceVideoV1`'s deserializer already refuses such a path, so these
+    /// values are written onto the decoded struct directly — the containment
+    /// check in `forced_ingest_source` is the second of the two locks, and this
+    /// pins that it is actually closed.
+    #[test]
+    fn a_forced_source_outside_the_job_root_is_rejected() {
+        let fixture = fixture();
+        let (_job, imported) = import(&fixture);
+
+        for escape in ["../escape.mp4", "sources/../../escape.mp4"] {
+            let mut escaping = imported.clone();
+            escaping.package.sources[0].path = escape.to_string();
+            escaping.package.sources[0].media_index = 0;
+
+            let error = resolve_ingest_input(Some(&escaping), MAIN_URL)
+                .expect_err("a source outside the job root must not be ingested");
+            assert_eq!(code(&error), MainFootageErrorCode::SourcePackageInvalid);
+        }
+    }
+
+    fn planned_main(fixture: &Fixture) -> PlannedMainInput {
+        PlannedMainInput {
+            content_set_path: fixture.content_set.clone(),
+            descriptor: descriptor(),
+            scout_output_root: fixture.scout_root.clone(),
+        }
+    }
+
+    /// Brief step 7 through the runner that enforces it: a forced run with the
+    /// narrator switched off in the effective runtime config stops with
+    /// `forced_main_narration_required`, while the identical legacy runner
+    /// continues (narration stays best-effort there).
+    #[test]
+    fn a_forced_runner_with_narration_disabled_fails_the_narration_gate() {
+        let fixture = fixture();
+        let execution = JobExecutionContext::new();
+        let mut config = crate::config::AppConfig::load().expect("runtime config");
+        config.narration.enabled = false;
+
+        let legacy = PipelineRunner::new(&config, &execution);
+        legacy
+            .forced_narration_gate()
+            .expect("legacy runs keep best-effort narration");
+
+        let forced =
+            PipelineRunner::new(&config, &execution).with_planned_main(planned_main(&fixture));
+        let error = forced
+            .forced_narration_gate()
+            .expect_err("a forced run cannot plan without narration beats");
+        assert_eq!(
+            code(&error),
+            MainFootageErrorCode::ForcedMainNarrationRequired
+        );
+
+        config.narration.enabled = true;
+        let forced =
+            PipelineRunner::new(&config, &execution).with_planned_main(planned_main(&fixture));
+        forced
+            .forced_narration_gate()
+            .expect("an enabled narrator satisfies the forced gate");
     }
 }
