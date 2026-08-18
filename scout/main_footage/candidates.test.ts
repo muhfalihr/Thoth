@@ -316,6 +316,14 @@ testCase('malformed planner output falls back to deterministic order', async () 
     async () => {
       throw new Error('planner exploded');
     },
+    // One bad entry poisons the whole ranking — the guard rejects, it does not skip.
+    // Were it `continue`, the surviving scene-0002 reference would order this
+    // ['scene-0002', 'scene-0001'] instead.
+    async () =>
+      [
+        { candidate_id: candidateId('source-1', 'scene-0002') },
+        { nope: true },
+      ] as unknown as PlannerRanking[],
   ]) {
     const ranked = await buildBeatCandidates(
       beat,
@@ -328,6 +336,26 @@ testCase('malformed planner output falls back to deterministic order', async () 
       ['scene-0001', 'scene-0002'],
     );
   }
+
+  // Same partial reference, this time well-formed: it IS honoured, and the candidate the
+  // planner never named is appended rather than dropped.
+  const partial = await buildBeatCandidates(
+    beat,
+    scenes,
+    policy,
+    makeDeps(
+      { rankShortlist: async () => [{ candidate_id: candidateId('source-1', 'scene-0002') }] },
+      embeddings,
+    ),
+  );
+  assert.deepEqual(
+    partial.map((candidate) => candidate.scene_id),
+    ['scene-0002', 'scene-0001'],
+  );
+  assert.deepEqual(
+    partial.map((candidate) => candidate.planner_rank),
+    [1, 2],
+  );
 });
 
 testCase('planner cannot invent timecodes, paths, or sources', async () => {
