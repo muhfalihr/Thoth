@@ -6,7 +6,7 @@ use std::{future::Future, path::Path};
 
 use anyhow::{Context, Result};
 use futures_util::stream::{self, StreamExt};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use crate::util::progress::{stage_header, elapsed_secs};
 use crate::brand;
 use uuid::Uuid;
@@ -146,6 +146,21 @@ fn resolve_ingest_input(
     }
 }
 
+/// Whether the clip Stage 1 ingested is a real video, which is what the OCR
+/// preflight branches on. A forced run cuts a package source — a video by
+/// contract — so the Content Set's `main_is_video` (a fact about the *post*,
+/// false for an image post that still carries videos) does not apply. Legacy
+/// runs keep the caller's declaration.
+fn stage_one_is_video(
+    planned: Option<&crate::main_footage::ImportedSourcePackage>,
+    declared: bool,
+) -> bool {
+    match planned {
+        Some(imported) => !imported.package.sources.is_empty(),
+        None => declared,
+    }
+}
+
 pub struct PipelineRunner<'a> {
     config: &'a AppConfig,
     execution: &'a JobExecutionContext,
@@ -179,6 +194,23 @@ impl<'a> PipelineRunner<'a> {
     fn forced_narration_gate(&self) -> Result<()> {
         if self.planned_main.is_some() {
             crate::main_footage::require_narration_enabled(self.config.narration.enabled)?;
+        }
+        Ok(())
+    }
+
+    /// Stage 6's forced precondition. A rerun that already has `narration.mp3`
+    /// skips the narration stage entirely, so the beat timeline it should have
+    /// published may be absent — refuse rather than plan blindly against beats
+    /// that do not exist. The narrator is enabled here (the gate above proved
+    /// it) and what is missing is its *output*, so this is a generation failure,
+    /// not an unmet precondition.
+    fn forced_timeline_gate(&self, job: &JobContext) -> Result<()> {
+        if self.planned_main.is_some() && !job.narration_timeline().exists() {
+            return Err(crate::main_footage::MainFootageError::new(
+                crate::main_footage::MainFootageErrorCode::NarrationGenerationFailed,
+                "narration_timeline_missing",
+            )
+            .into());
         }
         Ok(())
     }
@@ -233,6 +265,11 @@ impl<'a> PipelineRunner<'a> {
             None => None,
         };
         let ingest_url = resolve_ingest_input(planned_package.as_ref(), url)?;
+        // `set.main_is_video` describes the *post*, and is false for an image post
+        // that nonetheless carries videos. On the forced path Stage 1 ingests a
+        // package source — a video by contract — so the OCR branch must follow the
+        // clip that was actually ingested, not the post it came from.
+        let main_is_video = stage_one_is_video(planned_package.as_ref(), self.main_is_video);
         let url = ingest_url.as_str();
 
         // ── Stage 1: Ingest ──────────────────────────────────────────────
@@ -261,7 +298,7 @@ impl<'a> PipelineRunner<'a> {
 
         // ── Stage 2: OCR ────────────────────────────────────────────────
         self.execution.check_cancelled()?;
-        let ran_ocr_gate = run_main_ocr_if_video(self.main_is_video, || async {
+        let ran_ocr_gate = run_main_ocr_if_video(main_is_video, || async {
         let source_fingerprint =
             ocr::source_fingerprint(&video_path).context("local OCR stage failed")?;
         let expected_model = configured_ocr_model();
@@ -388,7 +425,7 @@ impl<'a> PipelineRunner<'a> {
             info!("Stage 5/6: Enrich — skipped (already complete)");
         }
         self.execution.check_cancelled()?;
-        if self.main_is_video {
+        if main_is_video {
             let current_source_fingerprint =
                 ocr::source_fingerprint(&video_path).context("main OCR preflight failed")?;
             preflight_edit_ocr(&job.base_dir, &current_source_fingerprint)
@@ -420,25 +457,22 @@ impl<'a> PipelineRunner<'a> {
                     }
                 }
                 Err(e) => {
-                    warn!("Narration failed — continuing without narrator: {e}");
+                    // The raw error can carry a model response body, which the
+                    // typed error deliberately withholds — keep it out of the
+                    // operator-facing line and off the wire.
+                    debug!(error = %e, "narration stage failed");
                     if let Some(fatal) =
                         crate::main_footage::narration_failure(self.planned_main.is_some())
                     {
+                        // A forced run has no legacy fallback: nothing continues.
                         return Err(fatal.into());
                     }
+                    warn!("Narration failed — continuing without narrator");
                 }
             }
             self.execution.check_cancelled()?;
         }
-        // A rerun that already had `narration.mp3` skips the stage above; a forced
-        // run still needs the beat timeline, so refuse rather than plan blindly.
-        if self.planned_main.is_some() && !job.narration_timeline().exists() {
-            return Err(crate::main_footage::MainFootageError::new(
-                crate::main_footage::MainFootageErrorCode::ForcedMainNarrationRequired,
-                "narration_timeline_missing",
-            )
-            .into());
-        }
+        self.forced_timeline_gate(&job)?;
 
         // ── Stage 6: Edit ────────────────────────────────────────────────
         self.execution.check_cancelled()?;
@@ -1217,7 +1251,7 @@ mod forced_main_footage_tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    use super::{resolve_ingest_input, PipelineRunner, PlannedMainInput};
+    use super::{resolve_ingest_input, stage_one_is_video, PipelineRunner, PlannedMainInput};
     use crate::execution::JobExecutionContext;
     use crate::main_footage::{
         ImportedSourcePackage, MainFootageDescriptor, MainFootageError, MainFootageErrorCode,
@@ -1475,5 +1509,63 @@ mod forced_main_footage_tests {
         forced
             .forced_narration_gate()
             .expect("an enabled narrator satisfies the forced gate");
+    }
+
+    /// A rerun with `narration.mp3` already on disk skips the narration stage,
+    /// so the beat timeline can be missing while the narrator is perfectly well
+    /// enabled. That is the narrator's *output* missing, not its precondition —
+    /// `forced_main_narration_required` would send an operator to check a config
+    /// switch that is already on.
+    #[test]
+    fn a_forced_rerun_without_a_beat_timeline_is_a_narration_generation_failure() {
+        let fixture = fixture();
+        let (job, _imported) = import(&fixture);
+        let execution = JobExecutionContext::new();
+        let config = crate::config::AppConfig::load().expect("runtime config");
+        assert!(
+            !job.narration_timeline().exists(),
+            "fixture must start without a timeline"
+        );
+
+        let legacy = PipelineRunner::new(&config, &execution);
+        legacy
+            .forced_timeline_gate(&job)
+            .expect("legacy runs never need a beat timeline");
+
+        let forced =
+            PipelineRunner::new(&config, &execution).with_planned_main(planned_main(&fixture));
+        let error = forced
+            .forced_timeline_gate(&job)
+            .expect_err("a forced run cannot plan without beats");
+        assert_eq!(
+            code(&error),
+            MainFootageErrorCode::NarrationGenerationFailed
+        );
+
+        std::fs::create_dir_all(job.narration_timeline().parent().unwrap()).unwrap();
+        std::fs::write(job.narration_timeline(), b"{}").unwrap();
+        forced
+            .forced_timeline_gate(&job)
+            .expect("a published timeline satisfies the forced gate");
+    }
+
+    /// `main_is_video` is a fact about the *post*: an image post that carries
+    /// videos declares `false`. On the forced path Stage 1 ingests a package
+    /// source — a video by contract — so the OCR preflight must branch on the
+    /// clip that was actually ingested, or a forced run with a real video clip
+    /// takes the footage-only preflight.
+    #[test]
+    fn the_forced_ocr_branch_follows_the_ingested_clip_not_the_post() {
+        let fixture = fixture();
+        let (_job, imported) = import(&fixture);
+        assert!(!imported.package.sources.is_empty());
+
+        assert!(
+            stage_one_is_video(Some(&imported), false),
+            "a forced run cutting a package source is a video run"
+        );
+        // Legacy runs are unchanged: the caller's declaration passes straight through.
+        assert!(!stage_one_is_video(None, false));
+        assert!(stage_one_is_video(None, true));
     }
 }

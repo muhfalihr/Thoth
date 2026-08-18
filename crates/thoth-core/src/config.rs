@@ -49,6 +49,32 @@ pub struct AppConfig {
     /// Narrator-driven video: one TTS narration becomes the audio spine + pacing.
     #[serde(default)]
     pub narration: NarrationConfig,
+    /// Scout hand-off: where Scout publishes content sets and source packages.
+    #[serde(default)]
+    pub scout: ScoutConfig,
+}
+
+/// Scout's hand-off directory. Everything a job may import — content sets,
+/// comment crops, forced-main source packages — must live under this root, and
+/// the forced-main import refuses a package published anywhere else. Relative
+/// values resolve against the working directory, so a `thoth run` launched
+/// outside the repo needs this set to an absolute path.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ScoutConfig {
+    #[serde(default = "default_scout_output_dir")]
+    pub output_dir: PathBuf,
+}
+
+fn default_scout_output_dir() -> PathBuf {
+    PathBuf::from("scout/output")
+}
+
+impl Default for ScoutConfig {
+    fn default() -> Self {
+        Self {
+            output_dir: default_scout_output_dir(),
+        }
+    }
 }
 
 /// Narrator-driven mode. A single continuous narrator script (gossip-commentator
@@ -1808,7 +1834,28 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::MontageConfig;
+    use super::{AppConfig, MontageConfig, ScoutConfig};
+    use std::path::PathBuf;
+
+    /// The forced-main import refuses any package published outside this root, so
+    /// it has to be configurable: a `thoth run` launched from outside the repo
+    /// cannot reach a CWD-relative `scout/output`. Absent config it keeps the
+    /// repo-root default, so existing installs are unaffected.
+    #[test]
+    fn the_scout_output_root_is_configurable_and_defaults_to_the_repo_layout() {
+        assert_eq!(
+            ScoutConfig::default().output_dir,
+            PathBuf::from("scout/output")
+        );
+        assert_eq!(
+            AppConfig::load().expect("runtime config").scout.output_dir,
+            PathBuf::from("scout/output")
+        );
+
+        let configured: ScoutConfig =
+            serde_json::from_str(r#"{ "output_dir": "D:/scout-handoff" }"#).unwrap();
+        assert_eq!(configured.output_dir, PathBuf::from("D:/scout-handoff"));
+    }
 
     // The `[animelorian]` section and its old field names were renamed to
     // `[montage]` / `intercut*`. serde aliases keep pre-rename config.toml files

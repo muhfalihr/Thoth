@@ -1002,9 +1002,7 @@ pub async fn run_once(
                     planned_main = Some(pipeline::PlannedMainInput {
                         content_set_path: content_path.clone(),
                         descriptor: descriptor.clone(),
-                        scout_output_root: std::path::PathBuf::from(
-                            main_footage::import::SCOUT_OUTPUT_DIR,
-                        ),
+                        scout_output_root: config.scout.output_dir.clone(),
                     });
                     tracing::info!(
                         "🎬 forced main footage: cutting from the published source package \

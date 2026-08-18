@@ -20,11 +20,6 @@ use crate::main_footage::{
 };
 use crate::pipeline::job::JobContext;
 
-/// Scout's package hand-off directory, relative to the process working dir.
-/// Mirrors `thoth-server`'s `scout::SCOUT_OUTPUT_DIR`; thoth-core cannot depend
-/// on the server crate (the dependency runs the other way).
-pub const SCOUT_OUTPUT_DIR: &str = "scout/output";
-
 /// A forced source package the job now owns outright.
 #[derive(Debug, Clone)]
 pub struct ImportedSourcePackage {
@@ -381,10 +376,19 @@ mod tests {
         }
 
         assert!(imported.manifest_path.exists());
+        // The job's manifest must not point back at Scout's tree — the whole
+        // point of the import is that the job can be replayed after Scout's
+        // output is gone. Checked against the fixture's *absolute* Scout root,
+        // since every contract path is relative and would never contain it by
+        // accident.
         let manifest = fs::read_to_string(&imported.manifest_path).unwrap();
+        // Compared with separators normalised, so a leak cannot hide behind a
+        // JSON-escaped backslash or a `\\?\` verbatim prefix.
+        let manifest_paths = manifest.replace("\\\\", "/").replace('\\', "/");
+        let scout_root = fixture.scout_root.to_string_lossy().replace('\\', "/");
         assert!(
-            !manifest.contains("scout"),
-            "job manifest retained a Scout path: {manifest}"
+            !manifest_paths.contains(scout_root.as_str()),
+            "job manifest retained the Scout root {scout_root}: {manifest}"
         );
         assert_eq!(imported.package.fingerprint.as_deref(), Some(imported.fingerprint.as_str()));
     }

@@ -131,13 +131,9 @@ pub fn build_narration_timeline(
 
     let groups = group_words(&words, policy);
     let mut beats: Vec<NarrationBeatV1> = Vec::with_capacity(groups.len());
-    for (position, (from, to)) in groups.iter().copied().enumerate() {
+    for (from, to) in groups.iter().copied() {
         let start_sec = beats.last().map_or(0.0, |beat: &NarrationBeatV1| beat.end_sec);
-        let end_sec = if position + 1 == groups.len() {
-            duration_sec
-        } else {
-            words[to - 1].end_sec
-        };
+        let end_sec = words[to - 1].end_sec;
         let text = words[from..to]
             .iter()
             .map(|word| word.text.as_str())
@@ -160,9 +156,15 @@ pub fn build_narration_timeline(
             text,
         });
     }
-    if beats.is_empty() {
-        return Err(failed("narration_produced_no_beats"));
-    }
+    // Beats must cover `[0, duration_sec]`. Every beat ends on a word boundary,
+    // and the audio runs past the last word (trailing silence, or a
+    // `duration_secs` longer than the timings), so the tail is extended here —
+    // one place, after any degenerate group has folded into its predecessor and
+    // could otherwise have left the timeline short.
+    let last = beats
+        .last_mut()
+        .ok_or_else(|| failed("narration_produced_no_beats"))?;
+    last.end_sec = duration_sec;
 
     let audio_path = narration
         .mp3
@@ -295,6 +297,30 @@ mod tests {
             .windows(2)
             .all(|w| w[0].end_sec == w[1].start_sec));
         assert_eq!(timeline.beats.last().unwrap().end_sec, timeline.duration_sec);
+    }
+
+    /// The audio keeps running after the final word — trailing silence, or a
+    /// `duration_secs` longer than the timings. Beats must still cover
+    /// `[0, duration_sec]`; a timeline that stops at the last word leaves the
+    /// planner allocating against a narration shorter than the one it cuts to.
+    #[test]
+    fn the_last_beat_covers_the_audio_that_runs_past_the_final_word() {
+        let mut narration = narration_fixture();
+        let spoken_end = narration.words.last().unwrap().end_ms as f64 / 1000.0;
+        narration.duration_secs = spoken_end + 3.0;
+
+        let timeline = build_narration_timeline(&narration, BeatPolicy::default()).unwrap();
+        assert_eq!(timeline.duration_sec, spoken_end + 3.0);
+        assert_eq!(
+            timeline.beats.last().unwrap().end_sec,
+            timeline.duration_sec,
+            "the last beat stops before the narration does"
+        );
+        assert_eq!(timeline.beats[0].start_sec, 0.0);
+        assert!(timeline
+            .beats
+            .windows(2)
+            .all(|w| w[0].end_sec == w[1].start_sec));
     }
 
     #[test]
