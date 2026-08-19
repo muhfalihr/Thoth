@@ -162,14 +162,23 @@ function toExternalEntry(candidate: ExternalCandidate): Entry | null {
   };
 }
 
-/** Match tier, planner rank, similarity, local quality, then the stable candidate key. */
-function byRank(a: Entry, b: Entry): number {
+/**
+ * Match tier, planner rank, similarity, local quality, lower reuse, then the stable identity.
+ *
+ * `reuseDelta` is `uses(a) - uses(b)`; callers that do not track reuse pass nothing. It sits
+ * fifth exactly as the brief orders it, so a twice-used exact scene still outranks a
+ * once-used topic-only one. `key` alone is `source_id:scene_id`, which two shortlist entries
+ * can share, so the source range breaks that tie before it can fall back to input order.
+ */
+function byRank(a: Entry, b: Entry, reuseDelta = 0): number {
   if (a.match_level !== b.match_level) return a.match_level === 'exact' ? -1 : 1;
   if (a.planner_rank !== b.planner_rank) return a.planner_rank - b.planner_rank;
   if (a.embedding_score !== b.embedding_score) return b.embedding_score - a.embedding_score;
   if (a.visual_quality_score !== b.visual_quality_score) {
     return b.visual_quality_score - a.visual_quality_score;
   }
+  if (reuseDelta !== 0) return reuseDelta;
+  if (a.source_in_sec !== b.source_in_sec) return a.source_in_sec - b.source_in_sec;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
 
@@ -261,14 +270,16 @@ function pickSlot(
   ctx: SlotContext,
 ): Choice | null {
   const freshFirst = (entries: readonly Entry[]): Entry[] =>
-    [...entries].sort((a, b) => useCount(ctx, a.key) - useCount(ctx, b.key) || byRank(a, b));
+    [...entries].sort((a, b) => byRank(a, b, useCount(ctx, a.key) - useCount(ctx, b.key)));
   const tiers: Array<{ entries: Entry[]; fresh: boolean; exact: boolean; budgeted: boolean }> = [
     { entries: freshFirst(mains), fresh: true, exact: true, budgeted: false },
     { entries: freshFirst(externals), fresh: true, exact: false, budgeted: true },
     { entries: freshFirst(mains), fresh: true, exact: false, budgeted: false },
     { entries: freshFirst(externals), fresh: false, exact: false, budgeted: true },
     { entries: freshFirst(mains), fresh: false, exact: false, budgeted: false },
-    { entries: freshFirst(externals), fresh: false, exact: false, budgeted: false },
+    // No unbudgeted external tier: it could only fire once every main is spent, and by then
+    // the external total already breaks the coverage target, which `validate` rejects without
+    // a beat id. Returning null here fails with the beat id instead.
   ];
   for (const tier of tiers) {
     for (const entry of tier.entries) {
@@ -503,8 +514,11 @@ export function reallocateBeat(
 
   const banned = new Set<string>([failedItem.candidate_key]);
   const ctx: SlotContext = {
-    uses: new Map([...banned].map((key) => [key, 1] as const)),
+    // Banned keys are dropped from `mains` outright below, so seeding them here would never
+    // be consulted; only the survivors' own reuse counts matter.
+    uses: new Map(),
     ledger: new Map(),
+    // A replan allocates from main candidates only, so no external budget is ever spent.
     externalBudgetSec: 0,
   };
   for (const item of survivors) {
