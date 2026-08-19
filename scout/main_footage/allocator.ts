@@ -218,9 +218,14 @@ interface Choice {
 }
 
 interface SlotContext {
-  usedKeys: Set<string>;
+  /** How many times each candidate has already been placed. Drives the reuse ordering. */
+  uses: Map<string, number>;
   ledger: Ledger;
   externalBudgetSec: number;
+}
+
+function useCount(ctx: SlotContext, key: string): number {
+  return ctx.uses.get(key) ?? 0;
 }
 
 function tryEntry(
@@ -256,10 +261,7 @@ function pickSlot(
   ctx: SlotContext,
 ): Choice | null {
   const freshFirst = (entries: readonly Entry[]): Entry[] =>
-    [...entries].sort((a, b) => {
-      const used = (ctx.ledger.get(a.key)?.length ?? 0) - (ctx.ledger.get(b.key)?.length ?? 0);
-      return used || byRank(a, b);
-    });
+    [...entries].sort((a, b) => useCount(ctx, a.key) - useCount(ctx, b.key) || byRank(a, b));
   const tiers: Array<{ entries: Entry[]; fresh: boolean; exact: boolean; budgeted: boolean }> = [
     { entries: freshFirst(mains), fresh: true, exact: true, budgeted: false },
     { entries: freshFirst(externals), fresh: true, exact: false, budgeted: true },
@@ -271,7 +273,7 @@ function pickSlot(
   for (const tier of tiers) {
     for (const entry of tier.entries) {
       if (tier.exact && entry.match_level !== 'exact') continue;
-      if (tier.fresh && ctx.usedKeys.has(entry.key)) continue;
+      if (tier.fresh && useCount(ctx, entry.key) > 0) continue;
       const choice = tryEntry(entry, cursor, remaining, ctx);
       if (!choice) continue;
       if (tier.budgeted && choice.duration > ctx.externalBudgetSec + EPS) continue;
@@ -289,7 +291,7 @@ function commit(
   end: number,
   ctx: SlotContext,
 ): AllocatedItemV1 {
-  ctx.usedKeys.add(choice.entry.key);
+  ctx.uses.set(choice.entry.key, useCount(ctx, choice.entry.key) + 1);
   noteUse(ctx.ledger, choice.range_key, cursor);
   if (choice.entry.kind === 'external_cut') ctx.externalBudgetSec -= choice.duration;
   return {
@@ -439,7 +441,7 @@ export function allocateTimeline(input: AllocationInput): AllocationResult {
 
   const totalSec = input.beats.reduce((sum, beat) => sum + (beat.end_sec - beat.start_sec), 0);
   const ctx: SlotContext = {
-    usedKeys: new Set(),
+    uses: new Map(),
     ledger: new Map(),
     // External b-roll may never eat into the reserved main share.
     externalBudgetSec: Math.max(0, totalSec * (1 - target)),
@@ -503,12 +505,12 @@ export function reallocateBeat(
 
   const banned = new Set<string>([failedItem.candidate_key]);
   const ctx: SlotContext = {
-    usedKeys: new Set(banned),
+    uses: new Map([...banned].map((key) => [key, 1] as const)),
     ledger: new Map(),
     externalBudgetSec: 0,
   };
   for (const item of survivors) {
-    ctx.usedKeys.add(item.candidate_key);
+    ctx.uses.set(item.candidate_key, useCount(ctx, item.candidate_key) + 1);
     noteUse(
       ctx.ledger,
       rangeKey(item.source_id, item.source_in_sec, item.source_out_sec),

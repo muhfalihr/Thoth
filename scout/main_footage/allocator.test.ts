@@ -348,6 +348,77 @@ testCase('a long beat splits into 1.5-6 second cuts at natural bounds', async ()
   );
 });
 
+testCase('no single cut may exceed the maximum cut length', async () => {
+  // Both scenes are long enough to swallow the whole beat, so only the cut ceiling can
+  // stop this beat from becoming one 10-second stare.
+  const result = allocateTimeline(
+    input([beat('beat-1', 0, 10)], {
+      'beat-1': [
+        cand('beat-1', 'source-1', 'scene-a', {
+          planner_rank: 1,
+          source_in_sec: 0,
+          source_out_sec: 20,
+        }),
+        cand('beat-1', 'source-1', 'scene-b', {
+          planner_rank: 2,
+          source_in_sec: 30,
+          source_out_sec: 50,
+        }),
+      ],
+    }),
+  );
+  assert.equal(result.error, undefined, JSON.stringify(result.error));
+  assert.ok(result.timeline.length > 1, 'one long scene must not stretch across the whole beat');
+  for (const item of result.timeline) {
+    assert.ok(
+      durationOf(item) <= MAX_CUT_SEC + EPS,
+      `cut duration ${durationOf(item)} exceeded ${MAX_CUT_SEC}`,
+    );
+  }
+  assert.deepEqual(
+    result.timeline.map((item) => [item.timeline_start_sec, item.timeline_end_sec]),
+    [
+      [0, 6],
+      [6, 10],
+    ],
+  );
+});
+
+testCase('a beat that would leave a sub-minimum tail is rebalanced', async () => {
+  // 7s against a 6s ceiling naively leaves a 1s stub. The split must borrow from the first
+  // cut instead of emitting a flicker.
+  const result = allocateTimeline(
+    input([beat('beat-1', 0, 7)], {
+      'beat-1': [
+        cand('beat-1', 'source-1', 'scene-a', {
+          planner_rank: 1,
+          source_in_sec: 0,
+          source_out_sec: 20,
+        }),
+        cand('beat-1', 'source-1', 'scene-b', {
+          planner_rank: 2,
+          source_in_sec: 30,
+          source_out_sec: 50,
+        }),
+      ],
+    }),
+  );
+  assert.equal(result.error, undefined, JSON.stringify(result.error));
+  for (const item of result.timeline) {
+    assert.ok(
+      durationOf(item) >= MIN_CUT_SEC - EPS,
+      `cut duration ${durationOf(item)} is below ${MIN_CUT_SEC}`,
+    );
+  }
+  assert.deepEqual(
+    result.timeline.map((item) => [item.timeline_start_sec, item.timeline_end_sec]),
+    [
+      [0, 5.5],
+      [5.5, 7],
+    ],
+  );
+});
+
 testCase('off-topic, empty, and broken candidates are excluded', async () => {
   const good = cand('beat-1', 'source-9', 'scene-good', { source_in_sec: 5, source_out_sec: 11 });
   const result = allocateTimeline(
