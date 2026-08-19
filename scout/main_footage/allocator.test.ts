@@ -257,6 +257,19 @@ testCase('a remote external candidate is never eligible in planned mode', async 
     );
     assert.equal(result.coverage.actual, 1, 'main candidates cover the slot instead');
   }
+  // A ':' in the id would forge a second field into the source key, so it is rejected too.
+  const forgedId = allocateTimeline(
+    input(beats, candidates, {
+      coverageTarget: 0.6,
+      externals: [external('beat-1', 'a:b')],
+    }),
+  );
+  assert.equal(forgedId.error, undefined, JSON.stringify(forgedId.error));
+  assert.equal(
+    forgedId.timeline.filter((item) => item.asset_kind === 'external_cut').length,
+    0,
+    'an external id containing ":" must never mint a source key',
+  );
   const accepted = allocateTimeline(
     input(beats, candidates, {
       coverageTarget: 0.6,
@@ -686,7 +699,9 @@ testCase('off-topic, empty, and broken candidates are excluded', async () => {
 });
 
 testCase('output is stable regardless of input iteration order', async () => {
-  const beats = [beat('beat-1', 0, 3), beat('beat-2', 3, 7), beat('beat-3', 7, 10)];
+  // beat-1 ends at a boundary that only survives float addition rounded: 0.1 + 0.2.
+  const drift = 0.1 + 0.2;
+  const beats = [beat('beat-1', 0, drift), beat('beat-2', drift, 7), beat('beat-3', 7, 10)];
   const pools: Record<string, RankedCandidate[]> = {
     'beat-1': [
       cand('beat-1', 'source-1', 'scene-a', { planner_rank: 1, source_out_sec: 4 }),
@@ -726,16 +741,31 @@ testCase('output is stable regardless of input iteration order', async () => {
   assert.equal(JSON.stringify(shuffled), JSON.stringify(forward));
   // And re-running the identical input serializes byte-identically.
   assert.equal(JSON.stringify(allocateTimeline(input(beats, pools))), JSON.stringify(forward));
+  // Byte-identical is only worth anything if the bytes are rounded: 0.1 + 0.2 must not leak.
+  assert.equal(
+    JSON.stringify(forward.timeline).includes('0.30000000000000004'),
+    false,
+    'float drift must be rounded out of every emitted boundary',
+  );
 });
 
 testCase('an affected-beat replan leaves every other item unchanged', async () => {
-  const beats = [beat('beat-1', 0, 3), beat('beat-2', 3, 7), beat('beat-3', 7, 10)];
+  const beats = [
+    beat('beat-1', 0, 3),
+    beat('beat-2', 3, 6),
+    beat('beat-3', 6, 9),
+    beat('beat-4', 9, 12),
+    beat('beat-5', 12, 15),
+  ];
   const beat2Pool = [
     cand('beat-2', 'source-2', 'scene-c', { planner_rank: 1, source_in_sec: 0, source_out_sec: 5 }),
-    cand('beat-2', 'source-2', 'scene-d', {
-      planner_rank: 2,
-      source_in_sec: 9,
-      source_out_sec: 14,
+    // Replays beat-3's exact range only three seconds earlier: too close in either direction.
+    cand('beat-2', 'source-3', 'scene-e', { planner_rank: 2, source_in_sec: 0, source_out_sec: 4 }),
+    // Replays beat-5's range nine seconds earlier, which is legal.
+    cand('beat-2', 'source-5', 'scene-f', {
+      planner_rank: 3,
+      source_in_sec: 20,
+      source_out_sec: 24,
     }),
   ];
   const prior = allocateTimeline(
@@ -743,6 +773,8 @@ testCase('an affected-beat replan leaves every other item unchanged', async () =
       'beat-1': [cand('beat-1', 'source-1', 'scene-a', { source_in_sec: 0, source_out_sec: 4 })],
       'beat-2': beat2Pool,
       'beat-3': [cand('beat-3', 'source-3', 'scene-e', { source_in_sec: 0, source_out_sec: 4 })],
+      'beat-4': [cand('beat-4', 'source-4', 'scene-g', { source_in_sec: 0, source_out_sec: 4 })],
+      'beat-5': [cand('beat-5', 'source-5', 'scene-f', { source_in_sec: 20, source_out_sec: 24 })],
     }),
   );
   assert.equal(prior.error, undefined, JSON.stringify(prior.error));
@@ -763,6 +795,16 @@ testCase('an affected-beat replan leaves every other item unchanged', async () =
     replacement[0]?.source_in_sec,
     failed.source_in_sec,
     'the failed candidate range is banned for this plan attempt',
+  );
+  assert.equal(
+    replacement[0]?.source_id,
+    'source-5',
+    'the reuse gap is symmetric: a range placed later in the timeline is just as close',
+  );
+  assert.equal(
+    replacement[0]?.reuse_count,
+    0,
+    'a legal replay placed later on the timeline is not a prior use of this cut',
   );
   // The whole timeline is still gap-free and ordered.
   for (let i = 1; i < replanned.timeline.length; i += 1) {
