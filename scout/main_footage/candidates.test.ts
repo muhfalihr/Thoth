@@ -542,6 +542,57 @@ testCase('the planner sees only the shortlist projection', async () => {
   assert.ok(!wire.includes('149'), `scene timecodes must not reach the planner: ${wire}`);
 });
 
+testCase('the planner evidence budget is not the persisted-reason budget', async () => {
+  // Vision evidence alone overruns MAX_REASON_CHARS, so under the old shared 200-char bound
+  // the transcript half — which joins last — was cut off entirely.
+  const transcript = 'the operator swings the excavator arm over the slab';
+  const scenes = [
+    index('source-1', [
+      scene('scene-0001', {
+        vision_description: vision(`excavator slab ${'construction site machinery '.repeat(12)}`),
+        transcript_evidence: transcript,
+      }),
+    ]),
+  ];
+  const seen: ShortlistEntry[][] = [];
+  await buildBeatCandidates(beat, scenes, policy, {
+    ...makeDeps(),
+    rankShortlist: async (_beat, shortlist) => {
+      seen.push(shortlist);
+      return [];
+    },
+  });
+  const evidence = seen[0]?.[0]?.evidence ?? '';
+  assert.ok(
+    evidence.length > MAX_REASON_CHARS,
+    `outbound evidence must not inherit the reason bound: ${evidence.length}`,
+  );
+  assert.ok(evidence.length <= MAX_EVIDENCE_CHARS, `evidence must still be bounded: ${evidence}`);
+  assert.ok(evidence.includes(transcript), `transcript evidence must survive: ${evidence}`);
+});
+
+testCase('candidateId refuses ids that would collide on the separator', async () => {
+  assert.throws(() => candidateId('a:b', 'c'), /must not contain/);
+  assert.throws(() => candidateId('a', 'b:c'), /must not contain/);
+  assert.equal(candidateId('a', 'b'), 'a:b');
+});
+
+testCase('a vision_description that is a JSON primitive keeps its evidence', async () => {
+  // '"2024"' parses, but Object.values on the primitive yields single characters that the
+  // >=3-char content filter then discards, losing the scene's only vision evidence.
+  const scenes = [
+    index('source-1', [
+      scene('scene-0001', {
+        vision_description: JSON.stringify('excavator lifting a concrete slab'),
+        transcript_evidence: '(no speech detected)',
+      }),
+    ]),
+  ];
+  const ranked = await buildBeatCandidates(beat, scenes, policy, makeDeps());
+  assert.equal(ranked.length, 1, 'the scene must stay eligible on its vision evidence');
+  assert.equal(ranked[0]?.match_level, 'exact');
+});
+
 for (const [name, run] of cases) {
   try {
     await run();

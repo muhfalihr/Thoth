@@ -97,6 +97,14 @@ function fixture(name: string): unknown {
     () => decodeNarrationTimeline({ ...base, beats: [beats[0], { ...beats[1], id: 'beat-1' }] }),
     /duplicate beat id/,
   );
+
+  // beat.text mirrors Rust's `String`: empty is legal, absent or non-string is not.
+  const silent = [beats[0], { ...beats[1], text: '' }];
+  assert.deepEqual(decodeNarrationTimeline({ ...base, beats: silent }).beats, silent);
+  assert.throws(
+    () => decodeNarrationTimeline({ ...base, beats: [beats[0], { ...beats[1], text: 7 }] }),
+    /beat.text must be a string/,
+  );
   assert.throws(
     () => decodeNarrationTimeline({ ...base, beats: [{ ...beats[0], start_sec: 0.1 }] }),
     /beats must start at 0/,
