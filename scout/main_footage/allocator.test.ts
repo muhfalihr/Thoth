@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import type { AllocationInput, ExternalCandidate } from './allocator.ts';
+import type {
+  AllocatedItemV1,
+  AllocationInput,
+  AllocationResult,
+  ExternalCandidate,
+} from './allocator.ts';
 import {
   allocateTimeline,
   MAX_CUT_SEC,
@@ -296,6 +301,70 @@ testCase('an identical range past the eight-second gap is legal and warns', asyn
   assert.equal(last?.reuse_count, 1);
   assert.ok(last!.timeline_start_sec - result.timeline[0]!.timeline_start_sec >= MIN_REUSE_GAP_SEC);
   assert.ok(result.warnings.includes('exact_scene_reused'));
+});
+
+testCase('fresh external b-roll beats reusing an already-placed exact scene', async () => {
+  // beat-3 opens past the reuse gap, so replaying source-1 would be legal here. Reuse is
+  // fallback-only, so the untouched external slot has to win instead.
+  const reused = cand('beat-1', 'source-1', 'scene-a', { source_in_sec: 0, source_out_sec: 4 });
+  const beats = [beat('beat-1', 0, 3), beat('beat-2', 3, 9), beat('beat-3', 9, 12)];
+  const result = allocateTimeline(
+    input(
+      beats,
+      {
+        'beat-1': [reused],
+        'beat-2': [
+          cand('beat-2', 'source-2', 'scene-filler', { source_in_sec: 0, source_out_sec: 8 }),
+        ],
+        'beat-3': [{ ...reused, beat_id: 'beat-3' }],
+      },
+      { externals: [external('beat-3', 'ext-1')] },
+    ),
+  );
+  assert.equal(result.error, undefined, JSON.stringify(result.error));
+  assert.equal(result.timeline.at(-1)?.asset_kind, 'external_cut');
+  assert.equal(result.timeline.at(-1)?.source_id, 'ext-ext-1');
+  assert.ok(!result.warnings.includes('exact_scene_reused'));
+});
+
+testCase('replan revalidates the reuse rule it inherited from the prior plan', async () => {
+  // item-001 and item-003 replay one identical range only six seconds apart. Replacing an
+  // unrelated item must not launder that violation into a fresh "valid" plan.
+  const item = (
+    item_id: string,
+    beat_id: string,
+    start: number,
+    end: number,
+    source_id: string,
+    source_in_sec: number,
+  ): AllocatedItemV1 => ({
+    item_id,
+    beat_id,
+    timeline_start_sec: start,
+    timeline_end_sec: end,
+    asset_kind: 'main_cut',
+    candidate_key: `${source_id}:${item_id}`,
+    source_id,
+    source_in_sec,
+    source_out_sec: source_in_sec + (end - start),
+    match_level: 'exact',
+    reuse_count: 0,
+  });
+  const prior: AllocationResult = {
+    timeline: [
+      item('item-001', 'beat-1', 0, 3, 'source-1', 0),
+      item('item-002', 'beat-2', 3, 6, 'source-2', 0),
+      item('item-003', 'beat-3', 6, 9, 'source-1', 0),
+    ],
+    coverage: { target: 0.6, actual: 1, main_sec: 9, total_sec: 9 },
+    candidate_count: 3,
+    warnings: [],
+  };
+  const replanned = reallocateBeat(prior, 'item-002', [
+    cand('beat-2', 'source-9', 'scene-z', { source_in_sec: 0, source_out_sec: 4 }),
+  ]);
+  assert.equal(replanned.error?.code, 'cut_planning_failed');
+  assert.deepEqual(replanned.timeline, []);
 });
 
 testCase('a long beat splits into 1.5-6 second cuts at natural bounds', async () => {

@@ -424,7 +424,6 @@ export function allocateTimeline(input: AllocationInput): AllocationResult {
       const entry = toMainEntry(beat.id, candidate);
       if (entry) entries.push(entry);
     }
-    entries.sort(byRank);
     candidateCount += entries.length;
     mainsByBeat.set(beat.id, entries);
   }
@@ -437,7 +436,6 @@ export function allocateTimeline(input: AllocationInput): AllocationResult {
     if (bucket) bucket.push(entry);
     else externalsByBeat.set(candidate.beat_id, [entry]);
   }
-  for (const bucket of externalsByBeat.values()) bucket.sort(byRank);
 
   const totalSec = input.beats.reduce((sum, beat) => sum + (beat.end_sec - beat.start_sec), 0);
   const ctx: SlotContext = {
@@ -532,8 +530,7 @@ export function reallocateBeat(
 
   const mains = candidates
     .map((candidate) => toMainEntry(failedItem.beat_id, candidate))
-    .filter((entry): entry is Entry => entry !== null && !banned.has(entry.key))
-    .sort(byRank);
+    .filter((entry): entry is Entry => entry !== null && !banned.has(entry.key));
 
   const replacement = fillWindow(
     failedItem.beat_id,
