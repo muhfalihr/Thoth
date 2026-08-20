@@ -311,14 +311,6 @@ interface ActivePublicationLease {
   expires_at_ms: number;
 }
 
-interface LeaseSnapshot {
-  lease: ActivePublicationLease | null;
-  raw: string;
-  dev: number;
-  ino: number;
-  mtimeMs: number;
-}
-
 export interface ActivePublicationLock {
   release(): void;
 }
@@ -328,9 +320,8 @@ export interface ActivePublicationLockOptions {
   leaseMs?: number;
 }
 
-function sameFile(left: LeaseSnapshot, right: LeaseSnapshot): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
+const ACTIVE_LOCK_ROOT = 'plans/.active-publication-lock';
+const LEASE_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function decodeLease(raw: string): ActivePublicationLease | null {
   try {
@@ -339,7 +330,7 @@ function decodeLease(raw: string): ActivePublicationLease | null {
       !Number.isInteger(value.pid) ||
       (value.pid ?? 0) <= 0 ||
       typeof value.token !== 'string' ||
-      value.token.length === 0 ||
+      !LEASE_TOKEN.test(value.token) ||
       !Number.isFinite(value.expires_at_ms)
     ) {
       return null;
@@ -350,23 +341,12 @@ function decodeLease(raw: string): ActivePublicationLease | null {
   }
 }
 
-function readLeaseSnapshot(file: string): LeaseSnapshot | null {
+function readLease(file: string): ActivePublicationLease {
   try {
-    const before = fs.statSync(file);
-    const raw = fs.readFileSync(file, 'utf8');
-    const after = fs.statSync(file);
-    if (before.dev !== after.dev || before.ino !== after.ino) return null;
-    return {
-      lease: decodeLease(raw),
-      raw,
-      dev: after.dev,
-      ino: after.ino,
-      mtimeMs: after.mtimeMs,
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  }
+    const lease = decodeLease(fs.readFileSync(file, 'utf8'));
+    if (lease) return lease;
+  } catch {}
+  throw new Error('active_plan_lock_invalid');
 }
 
 function pidLiveness(pid: number): 'live' | 'dead' | 'unknown' {
@@ -381,51 +361,57 @@ function pidLiveness(pid: number): 'live' | 'dead' | 'unknown' {
   }
 }
 
-function leaseIsAbandoned(snapshot: LeaseSnapshot, now: number, leaseMs: number): boolean {
-  if (!snapshot.lease) return snapshot.mtimeMs + leaseMs <= now;
-  const liveness = pidLiveness(snapshot.lease.pid);
+function leaseIsAbandoned(lease: ActivePublicationLease, now: number): boolean {
+  const liveness = pidLiveness(lease.pid);
   if (liveness === 'live') return false;
   if (liveness === 'dead') return true;
-  return snapshot.lease.expires_at_ms <= now;
+  return lease.expires_at_ms <= now;
 }
 
-function unlinkObservedLease(
-  jobRoot: string,
-  lockPath: string,
-  observed: LeaseSnapshot,
-  purpose: 'recovery' | 'release',
-): boolean {
-  const witnessPath = resolveContained(
+function lockPath(jobRoot: string, name?: string): string {
+  return resolveContained(
     jobRoot,
-    path.posix.join('plans', `.active-lock-${purpose}-${randomUUID()}`),
+    name ? path.posix.join(ACTIVE_LOCK_ROOT, name) : ACTIVE_LOCK_ROOT,
   );
-  try {
-    fs.linkSync(lockPath, witnessPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-  try {
-    const witness = readLeaseSnapshot(witnessPath);
-    const current = readLeaseSnapshot(lockPath);
-    if (
-      !witness ||
-      !current ||
-      !sameFile(witness, observed) ||
-      !sameFile(current, observed) ||
-      witness.raw !== observed.raw ||
-      current.raw !== observed.raw
-    ) {
-      return false;
-    }
-    fs.unlinkSync(lockPath);
-    return true;
-  } finally {
-    fs.unlinkSync(witnessPath);
+}
+
+function readTail(jobRoot: string): ActivePublicationLease | null {
+  let pointer = lockPath(jobRoot, 'head');
+  if (!fs.existsSync(pointer)) return null;
+  const seen = new Set<string>();
+  for (;;) {
+    const lease = readLease(pointer);
+    if (seen.has(lease.token)) throw new Error('active_plan_lock_invalid');
+    seen.add(lease.token);
+    const next = lockPath(jobRoot, `next-${lease.token}`);
+    if (!fs.existsSync(next)) return lease;
+    pointer = next;
   }
 }
 
-/** Acquires crash-recoverable, job-local ownership of active-plan publication. */
+function leaseWasReleased(jobRoot: string, token: string): boolean {
+  return fs.existsSync(lockPath(jobRoot, `released-${token}`));
+}
+
+function createLease(
+  jobRoot: string,
+  leaseMs: number,
+): {
+  lease: ActivePublicationLease;
+  leasePath: string;
+} {
+  const token = randomUUID();
+  const lease: ActivePublicationLease = {
+    pid: process.pid,
+    token,
+    expires_at_ms: Date.now() + leaseMs,
+  };
+  const leasePath = lockPath(jobRoot, `lease-${token}.json`);
+  fs.writeFileSync(leasePath, JSON.stringify(lease), { flag: 'wx', mode: 0o600 });
+  return { lease, leasePath };
+}
+
+/** Acquires append-only, crash-recoverable ownership of active-plan publication. */
 export function acquireActivePublicationLock(
   jobRoot: string,
   options: ActivePublicationLockOptions = {},
@@ -436,59 +422,54 @@ export function acquireActivePublicationLock(
   }
   const plansRoot = resolveContained(resolvedRoot, 'plans');
   fs.mkdirSync(plansRoot, { recursive: true });
-  const lockPath = resolveContained(resolvedRoot, 'plans/.active.lock');
+  const stateRoot = lockPath(resolvedRoot);
+  fs.mkdirSync(stateRoot, { recursive: true });
+  // Re-resolve after creation so a concurrently substituted junction fails closed.
+  lockPath(resolvedRoot);
   const timeoutMs = options.timeoutMs ?? 5_000;
   const leaseMs = options.leaseMs ?? 30_000;
   const deadline = Date.now() + timeoutMs;
   const waitCell = new Int32Array(new SharedArrayBuffer(4));
 
   for (;;) {
-    const token = randomUUID();
-    const lease: ActivePublicationLease = {
-      pid: process.pid,
-      token,
-      expires_at_ms: Date.now() + leaseMs,
-    };
-    const leasePath = resolveContained(
-      resolvedRoot,
-      path.posix.join('plans', `.active-lock-lease-${token}`),
-    );
-    fs.writeFileSync(leasePath, JSON.stringify(lease), { flag: 'wx', mode: 0o600 });
-    try {
-      fs.linkSync(leasePath, lockPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    } finally {
-      fs.unlinkSync(leasePath);
-    }
-
-    const acquired = readLeaseSnapshot(lockPath);
-    if (acquired?.lease?.token === token) {
-      let released = false;
-      return {
-        release(): void {
-          if (released) return;
-          released = true;
-          const current = readLeaseSnapshot(lockPath);
-          if (
-            current?.lease?.token === token &&
-            sameFile(current, acquired) &&
-            current.raw === acquired.raw
-          ) {
-            unlinkObservedLease(resolvedRoot, lockPath, acquired, 'release');
-          }
-        },
-      };
-    }
-
-    const observed = readLeaseSnapshot(lockPath);
-    if (observed && leaseIsAbandoned(observed, Date.now(), leaseMs)) {
-      if (unlinkObservedLease(resolvedRoot, lockPath, observed, 'recovery')) continue;
-    } else if (!observed) {
+    const tail = readTail(resolvedRoot);
+    if (
+      tail &&
+      !leaseWasReleased(resolvedRoot, tail.token) &&
+      !leaseIsAbandoned(tail, Date.now())
+    ) {
+      if (Date.now() >= deadline) throw new Error('active_plan_lock_timeout');
+      Atomics.wait(waitCell, 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
       continue;
     }
-    if (Date.now() >= deadline) throw new Error('active_plan_lock_timeout');
-    Atomics.wait(waitCell, 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
+
+    const { lease, leasePath } = createLease(resolvedRoot, leaseMs);
+    const ownerLink = tail
+      ? lockPath(resolvedRoot, `next-${tail.token}`)
+      : lockPath(resolvedRoot, 'head');
+    try {
+      fs.linkSync(leasePath, ownerLink);
+    } catch (error) {
+      fs.unlinkSync(leasePath);
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw error;
+    }
+
+    let released = false;
+    return {
+      release(): void {
+        if (released) return;
+        released = true;
+        try {
+          fs.writeFileSync(lockPath(resolvedRoot, `released-${lease.token}`), '', {
+            flag: 'wx',
+            mode: 0o600,
+          });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        }
+      },
+    };
   }
 }
 

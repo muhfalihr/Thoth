@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import type { AllocationResult } from './allocator.ts';
 import type { RankedCandidate } from './candidates.ts';
 import type { SourcePackageV1 } from './contracts.ts';
@@ -627,46 +629,71 @@ try {
   // all hold or concurrent publishers can stall, steal ownership, or write outside the job.
   {
     const abandonedRoot = tempJob();
-    fs.mkdirSync(path.join(abandonedRoot, 'plans'), { recursive: true });
-    const abandonedPath = path.join(abandonedRoot, 'plans', '.active.lock');
+    const abandonedState = path.join(abandonedRoot, 'plans', '.active-publication-lock');
+    fs.mkdirSync(abandonedState, { recursive: true });
+    const abandonedToken = '00000000-0000-4000-8000-000000000001';
+    const abandonedPath = path.join(abandonedState, `lease-${abandonedToken}.json`);
     fs.writeFileSync(
       abandonedPath,
-      JSON.stringify({ pid: 2_147_483_647, token: 'abandoned', expires_at_ms: 0 }),
+      JSON.stringify({ pid: 2_147_483_647, token: abandonedToken, expires_at_ms: 0 }),
     );
+    fs.linkSync(abandonedPath, path.join(abandonedState, 'head'));
     const recovered = acquireActivePublicationLock(abandonedRoot, { timeoutMs: 0 });
-    const recoveredLease = JSON.parse(fs.readFileSync(abandonedPath, 'utf8'));
+    const recoveredLease = JSON.parse(
+      fs.readFileSync(path.join(abandonedState, `next-${abandonedToken}`), 'utf8'),
+    );
     assert.equal(recoveredLease.pid, process.pid);
-    assert.notEqual(recoveredLease.token, 'abandoned');
+    assert.notEqual(recoveredLease.token, abandonedToken);
     recovered.release();
-    assert.ok(!fs.existsSync(abandonedPath));
+    assert.ok(fs.existsSync(abandonedPath), 'dead predecessor remains immutable');
 
     const liveRoot = tempJob();
-    fs.mkdirSync(path.join(liveRoot, 'plans'), { recursive: true });
-    const livePath = path.join(liveRoot, 'plans', '.active.lock');
+    const liveState = path.join(liveRoot, 'plans', '.active-publication-lock');
+    fs.mkdirSync(liveState, { recursive: true });
+    const liveToken = '00000000-0000-4000-8000-000000000002';
+    const livePath = path.join(liveState, `lease-${liveToken}.json`);
     fs.writeFileSync(
       livePath,
-      JSON.stringify({ pid: process.pid, token: 'live-owner', expires_at_ms: 0 }),
+      JSON.stringify({ pid: process.pid, token: liveToken, expires_at_ms: 0 }),
     );
+    fs.linkSync(livePath, path.join(liveState, 'head'));
     assert.throws(
       () => acquireActivePublicationLock(liveRoot, { timeoutMs: 0 }),
       /active_plan_lock_timeout/,
     );
-    assert.equal(JSON.parse(fs.readFileSync(livePath, 'utf8')).token, 'live-owner');
+    assert.equal(JSON.parse(fs.readFileSync(livePath, 'utf8')).token, liveToken);
 
     const replacedRoot = tempJob();
-    const original = acquireActivePublicationLock(replacedRoot, { timeoutMs: 0 });
-    const replacedPath = path.join(replacedRoot, 'plans', '.active.lock');
-    fs.unlinkSync(replacedPath);
+    const predecessor = acquireActivePublicationLock(replacedRoot, { timeoutMs: 0 });
+    const replacedState = path.join(replacedRoot, 'plans', '.active-publication-lock');
+    const foreignToken = '00000000-0000-4000-8000-000000000003';
+    const foreignPath = path.join(replacedState, `lease-${foreignToken}.json`);
     fs.writeFileSync(
-      replacedPath,
+      foreignPath,
       JSON.stringify({
         pid: process.pid,
-        token: 'replacement',
+        token: foreignToken,
         expires_at_ms: Date.now() + 60_000,
       }),
     );
-    original.release();
-    assert.equal(JSON.parse(fs.readFileSync(replacedPath, 'utf8')).token, 'replacement');
+    const predecessorLease = JSON.parse(fs.readFileSync(path.join(replacedState, 'head'), 'utf8'));
+    fs.writeFileSync(path.join(replacedState, `released-${predecessorLease.token}`), '', {
+      flag: 'wx',
+    });
+    const successor = acquireActivePublicationLock(replacedRoot, { timeoutMs: 0 });
+    const successorLease = JSON.parse(
+      fs.readFileSync(path.join(replacedState, `next-${predecessorLease.token}`), 'utf8'),
+    );
+    assert.notEqual(successorLease.token, predecessorLease.token);
+    // Complete the predecessor release after the successor has appended to its single-assignment
+    // next slot; this must not skip or remove the live successor.
+    predecessor.release();
+    assert.throws(
+      () => acquireActivePublicationLock(replacedRoot, { timeoutMs: 0 }),
+      /active_plan_lock_timeout/,
+    );
+    assert.ok(fs.existsSync(foreignPath), 'release cannot delete another unique token');
+    successor.release();
 
     const escapedRoot = tempJob();
     const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-lock-outside-'));
@@ -680,7 +707,108 @@ try {
       () => acquireActivePublicationLock(escapedRoot, { timeoutMs: 0 }),
       /path_outside_root/,
     );
-    assert.ok(!fs.existsSync(path.join(outsideRoot, '.active.lock')));
+    assert.ok(!fs.existsSync(path.join(outsideRoot, '.active-publication-lock')));
+  }
+
+  // Production mutation caught: two stale recoverers that both validate the old inode can
+  // otherwise unlink by canonical pathname in sequence, deleting the first live replacement
+  // and returning two simultaneous owners from the public acquisition seam.
+  {
+    const simultaneousRoot = tempJob();
+    fs.mkdirSync(path.join(simultaneousRoot, 'plans'), { recursive: true });
+    const legacyLockPath = path.join(simultaneousRoot, 'plans', '.active.lock');
+    fs.writeFileSync(
+      legacyLockPath,
+      JSON.stringify({ pid: 2_147_483_647, token: 'stale-race', expires_at_ms: 0 }),
+    );
+    const workerPath = path.join(simultaneousRoot, 'lock-contender.ts');
+    fs.writeFileSync(
+      workerPath,
+      `import fs from 'node:fs';
+import { parentPort, workerData } from 'node:worker_threads';
+
+const state = new Int32Array(workerData.state);
+const originalLink = fs.linkSync.bind(fs);
+const originalUnlink = fs.unlinkSync.bind(fs);
+const waitUntil = (index: number, target: number) => {
+  for (;;) {
+    const current = Atomics.load(state, index);
+    if (current >= target) return;
+    Atomics.wait(state, index, current);
+  }
+};
+fs.linkSync = ((existingPath, newPath) => {
+  originalLink(existingPath, newPath);
+  if (String(newPath).includes('.active-lock-recovery-')) {
+    Atomics.add(state, 1, 1);
+    Atomics.notify(state, 1);
+    waitUntil(1, 2);
+  }
+}) as typeof fs.linkSync;
+fs.unlinkSync = ((targetPath) => {
+  if (String(targetPath) === workerData.legacyLockPath) {
+    Atomics.add(state, 2, 1);
+    Atomics.notify(state, 2);
+    waitUntil(2, 2);
+    if (workerData.id === 1) {
+      waitUntil(3, 1);
+    }
+  }
+  originalUnlink(targetPath);
+}) as typeof fs.unlinkSync;
+
+const { acquireActivePublicationLock } = await import(workerData.moduleUrl);
+Atomics.add(state, 0, 1);
+Atomics.notify(state, 0);
+waitUntil(0, 2);
+try {
+  const lock = acquireActivePublicationLock(workerData.jobRoot, { timeoutMs: 0 });
+  if (workerData.id === 0) {
+    Atomics.store(state, 3, 1);
+    Atomics.notify(state, 3);
+  }
+  parentPort!.postMessage('acquired');
+  waitUntil(4, 1);
+  lock.release();
+} catch (error) {
+  parentPort!.postMessage((error as Error).message);
+}
+`,
+    );
+    const sharedState = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 5);
+    const state = new Int32Array(sharedState);
+    const workers = [0, 1].map(
+      (id) =>
+        new Worker(workerPath, {
+          workerData: {
+            id,
+            jobRoot: simultaneousRoot,
+            legacyLockPath,
+            moduleUrl: pathToFileURL(path.join(import.meta.dirname, 'cuts.ts')).href,
+            state: sharedState,
+          },
+        }),
+    );
+    const outcomes = await Promise.all(
+      workers.map(
+        (worker) =>
+          new Promise<string>((resolve, reject) => {
+            worker.once('message', resolve);
+            worker.once('error', reject);
+          }),
+      ),
+    );
+    assert.throws(
+      () => acquireActivePublicationLock(simultaneousRoot, { timeoutMs: 0 }),
+      /active_plan_lock_timeout/,
+      'a late contender must observe the worker holding the live tail',
+    );
+    Atomics.store(state, 4, 1);
+    Atomics.notify(state, 4, 2);
+    await Promise.all(
+      workers.map((worker) => new Promise((resolve) => worker.once('exit', resolve))),
+    );
+    assert.equal(outcomes.filter((outcome) => outcome === 'acquired').length, 1);
   }
 
   // Production mutation caught: unconditional active rename lets a late v001 completion
