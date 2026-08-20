@@ -635,7 +635,12 @@ try {
     const abandonedPath = path.join(abandonedState, `lease-${abandonedToken}.json`);
     fs.writeFileSync(
       abandonedPath,
-      JSON.stringify({ pid: 2_147_483_647, token: abandonedToken, expires_at_ms: 0 }),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        process_instance_id: 'dead-process-instance',
+        token: abandonedToken,
+        expires_at_ms: 0,
+      }),
     );
     fs.linkSync(abandonedPath, path.join(abandonedState, 'head'));
     const recovered = acquireActivePublicationLock(abandonedRoot, { timeoutMs: 0 });
@@ -654,11 +659,20 @@ try {
     const livePath = path.join(liveState, `lease-${liveToken}.json`);
     fs.writeFileSync(
       livePath,
-      JSON.stringify({ pid: process.pid, token: liveToken, expires_at_ms: 0 }),
+      JSON.stringify({
+        pid: process.pid,
+        process_instance_id: 'current-process-instance',
+        token: liveToken,
+        expires_at_ms: 0,
+      }),
     );
     fs.linkSync(livePath, path.join(liveState, 'head'));
     assert.throws(
-      () => acquireActivePublicationLock(liveRoot, { timeoutMs: 0 }),
+      () =>
+        acquireActivePublicationLock(liveRoot, {
+          timeoutMs: 0,
+          processInstanceId: () => 'current-process-instance',
+        }),
       /active_plan_lock_timeout/,
     );
     assert.equal(JSON.parse(fs.readFileSync(livePath, 'utf8')).token, liveToken);
@@ -710,26 +724,30 @@ try {
     assert.ok(!fs.existsSync(path.join(outsideRoot, '.active-publication-lock')));
   }
 
-  // Production mutation caught: two stale recoverers that both validate the old inode can
-  // otherwise unlink by canonical pathname in sequence, deleting the first live replacement
-  // and returning two simultaneous owners from the public acquisition seam.
+  // Production mutation caught: comparing only the PID treats an unrelated process that reused
+  // a dead owner's PID as the original live owner forever, so no contender can advance the tail.
   {
     const simultaneousRoot = tempJob();
-    fs.mkdirSync(path.join(simultaneousRoot, 'plans'), { recursive: true });
-    const legacyLockPath = path.join(simultaneousRoot, 'plans', '.active.lock');
+    const simultaneousState = path.join(simultaneousRoot, 'plans', '.active-publication-lock');
+    fs.mkdirSync(simultaneousState, { recursive: true });
+    const reusedToken = '00000000-0000-4000-8000-000000000004';
+    const reusedLeasePath = path.join(simultaneousState, `lease-${reusedToken}.json`);
     fs.writeFileSync(
-      legacyLockPath,
-      JSON.stringify({ pid: 2_147_483_647, token: 'stale-race', expires_at_ms: 0 }),
+      reusedLeasePath,
+      JSON.stringify({
+        pid: process.pid,
+        process_instance_id: 'previous-process-instance',
+        token: reusedToken,
+        expires_at_ms: 0,
+      }),
     );
+    fs.linkSync(reusedLeasePath, path.join(simultaneousState, 'head'));
     const workerPath = path.join(simultaneousRoot, 'lock-contender.ts');
     fs.writeFileSync(
       workerPath,
-      `import fs from 'node:fs';
-import { parentPort, workerData } from 'node:worker_threads';
+      `import { parentPort, workerData } from 'node:worker_threads';
 
 const state = new Int32Array(workerData.state);
-const originalLink = fs.linkSync.bind(fs);
-const originalUnlink = fs.unlinkSync.bind(fs);
 const waitUntil = (index: number, target: number) => {
   for (;;) {
     const current = Atomics.load(state, index);
@@ -737,53 +755,32 @@ const waitUntil = (index: number, target: number) => {
     Atomics.wait(state, index, current);
   }
 };
-fs.linkSync = ((existingPath, newPath) => {
-  originalLink(existingPath, newPath);
-  if (String(newPath).includes('.active-lock-recovery-')) {
-    Atomics.add(state, 1, 1);
-    Atomics.notify(state, 1);
-    waitUntil(1, 2);
-  }
-}) as typeof fs.linkSync;
-fs.unlinkSync = ((targetPath) => {
-  if (String(targetPath) === workerData.legacyLockPath) {
-    Atomics.add(state, 2, 1);
-    Atomics.notify(state, 2);
-    waitUntil(2, 2);
-    if (workerData.id === 1) {
-      waitUntil(3, 1);
-    }
-  }
-  originalUnlink(targetPath);
-}) as typeof fs.unlinkSync;
 
 const { acquireActivePublicationLock } = await import(workerData.moduleUrl);
 Atomics.add(state, 0, 1);
 Atomics.notify(state, 0);
 waitUntil(0, 2);
 try {
-  const lock = acquireActivePublicationLock(workerData.jobRoot, { timeoutMs: 0 });
-  if (workerData.id === 0) {
-    Atomics.store(state, 3, 1);
-    Atomics.notify(state, 3);
-  }
+  const lock = acquireActivePublicationLock(workerData.jobRoot, {
+    timeoutMs: 0,
+    processInstanceId: () => workerData.currentProcessInstanceId,
+  });
   parentPort!.postMessage('acquired');
-  waitUntil(4, 1);
+  waitUntil(1, 1);
   lock.release();
 } catch (error) {
   parentPort!.postMessage((error as Error).message);
 }
 `,
     );
-    const sharedState = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 5);
+    const sharedState = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
     const state = new Int32Array(sharedState);
     const workers = [0, 1].map(
-      (id) =>
+      () =>
         new Worker(workerPath, {
           workerData: {
-            id,
             jobRoot: simultaneousRoot,
-            legacyLockPath,
+            currentProcessInstanceId: 'current-process-instance',
             moduleUrl: pathToFileURL(path.join(import.meta.dirname, 'cuts.ts')).href,
             state: sharedState,
           },
@@ -799,12 +796,16 @@ try {
       ),
     );
     assert.throws(
-      () => acquireActivePublicationLock(simultaneousRoot, { timeoutMs: 0 }),
+      () =>
+        acquireActivePublicationLock(simultaneousRoot, {
+          timeoutMs: 0,
+          processInstanceId: () => 'current-process-instance',
+        }),
       /active_plan_lock_timeout/,
       'a late contender must observe the worker holding the live tail',
     );
-    Atomics.store(state, 4, 1);
-    Atomics.notify(state, 4, 2);
+    Atomics.store(state, 1, 1);
+    Atomics.notify(state, 1, 2);
     await Promise.all(
       workers.map((worker) => new Promise((resolve) => worker.once('exit', resolve))),
     );

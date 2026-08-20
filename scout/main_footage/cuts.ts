@@ -1,6 +1,7 @@
 // cuts.ts — immutable, verified publication of allocator decisions.
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { type AllocatedItemV1, type AllocationResult, reallocateBeat } from './allocator.ts';
 import type { RankedCandidate } from './candidates.ts';
@@ -307,6 +308,7 @@ export function verifyMaterializedPlanStructure(plan: MainFootagePlanV1): MainFo
 
 interface ActivePublicationLease {
   pid: number;
+  process_instance_id: string;
   token: string;
   expires_at_ms: number;
 }
@@ -318,10 +320,12 @@ export interface ActivePublicationLock {
 export interface ActivePublicationLockOptions {
   timeoutMs?: number;
   leaseMs?: number;
+  processInstanceId?: (pid: number) => string | null;
 }
 
 const ACTIVE_LOCK_ROOT = 'plans/.active-publication-lock';
 const LEASE_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PROCESS_INSTANCE_ID = /^[a-z0-9][a-z0-9._:-]{0,191}$/i;
 
 function decodeLease(raw: string): ActivePublicationLease | null {
   try {
@@ -329,6 +333,8 @@ function decodeLease(raw: string): ActivePublicationLease | null {
     if (
       !Number.isInteger(value.pid) ||
       (value.pid ?? 0) <= 0 ||
+      typeof value.process_instance_id !== 'string' ||
+      !PROCESS_INSTANCE_ID.test(value.process_instance_id) ||
       typeof value.token !== 'string' ||
       !LEASE_TOKEN.test(value.token) ||
       !Number.isFinite(value.expires_at_ms)
@@ -361,11 +367,147 @@ function pidLiveness(pid: number): 'live' | 'dead' | 'unknown' {
   }
 }
 
-function leaseIsAbandoned(lease: ActivePublicationLease, now: number): boolean {
+interface BunFfiLibrary {
+  symbols: Record<string, (...args: unknown[]) => unknown>;
+  close(): void;
+}
+
+interface BunFfi {
+  FFIType: Record<string, unknown>;
+  dlopen(
+    library: string,
+    symbols: Record<string, { args: unknown[]; returns: unknown }>,
+  ): BunFfiLibrary;
+  ptr(value: ArrayBufferView): unknown;
+}
+
+function loadBunFfi(): BunFfi {
+  return createRequire(import.meta.url)('bun:ffi') as BunFfi;
+}
+
+function linuxProcessInstanceId(pid: number): string | null {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').trim();
+    const commEnd = stat.lastIndexOf(')');
+    if (commEnd < 0) return null;
+    // Fields after the parenthesized command start at field 3 (state); starttime is field 22.
+    const startTicks = stat
+      .slice(commEnd + 1)
+      .trim()
+      .split(/\s+/)[19];
+    const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    if (!startTicks || !/^\d+$/.test(startTicks) || !/^[0-9a-f-]{36}$/i.test(bootId)) {
+      return null;
+    }
+    return `linux:${bootId}:${startTicks}`;
+  } catch {
+    return null;
+  }
+}
+
+function windowsProcessInstanceId(pid: number): string | null {
+  let library: BunFfiLibrary | undefined;
+  let handle: unknown;
+  try {
+    const ffi = loadBunFfi();
+    library = ffi.dlopen('kernel32.dll', {
+      OpenProcess: {
+        args: [ffi.FFIType.u32, ffi.FFIType.u32, ffi.FFIType.u32],
+        returns: ffi.FFIType.ptr,
+      },
+      GetProcessTimes: {
+        args: [ffi.FFIType.ptr, ffi.FFIType.ptr, ffi.FFIType.ptr, ffi.FFIType.ptr, ffi.FFIType.ptr],
+        returns: ffi.FFIType.i32,
+      },
+      CloseHandle: { args: [ffi.FFIType.ptr], returns: ffi.FFIType.i32 },
+    });
+    handle = library.symbols.OpenProcess?.(0x1000, 0, pid);
+    if (handle === null || handle === undefined || handle === 0 || handle === 0n) return null;
+
+    const creation = new Uint32Array(2);
+    const exit = new Uint32Array(2);
+    const kernel = new Uint32Array(2);
+    const user = new Uint32Array(2);
+    const success = library.symbols.GetProcessTimes?.(
+      handle,
+      ffi.ptr(creation),
+      ffi.ptr(exit),
+      ffi.ptr(kernel),
+      ffi.ptr(user),
+    );
+    if (success !== 1) return null;
+    const createdAt = (BigInt(creation[1] ?? 0) << 32n) | BigInt(creation[0] ?? 0);
+    return createdAt > 0n ? `win32:${createdAt.toString(16)}` : null;
+  } catch {
+    return null;
+  } finally {
+    if (handle !== null && handle !== undefined && handle !== 0 && handle !== 0n) {
+      try {
+        library?.symbols.CloseHandle?.(handle);
+      } catch {}
+    }
+    library?.close();
+  }
+}
+
+function darwinProcessInstanceId(pid: number): string | null {
+  let library: BunFfiLibrary | undefined;
+  try {
+    const ffi = loadBunFfi();
+    library = ffi.dlopen('/usr/lib/libproc.dylib', {
+      proc_pidinfo: {
+        args: [ffi.FFIType.i32, ffi.FFIType.i32, ffi.FFIType.u64, ffi.FFIType.ptr, ffi.FFIType.i32],
+        returns: ffi.FFIType.i32,
+      },
+    });
+    const procBsdInfo = new Uint8Array(136);
+    const bytes = library.symbols.proc_pidinfo?.(
+      pid,
+      3,
+      0n,
+      ffi.ptr(procBsdInfo),
+      procBsdInfo.byteLength,
+    );
+    if (typeof bytes !== 'number' || bytes < procBsdInfo.byteLength) return null;
+    const view = new DataView(procBsdInfo.buffer);
+    const seconds = view.getBigUint64(120, true);
+    const microseconds = view.getBigUint64(128, true);
+    return seconds > 0n ? `darwin:${seconds.toString(16)}:${microseconds.toString(16)}` : null;
+  } catch {
+    return null;
+  } finally {
+    library?.close();
+  }
+}
+
+function platformProcessInstanceId(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === 'linux') return linuxProcessInstanceId(pid);
+  if (process.platform === 'win32') return windowsProcessInstanceId(pid);
+  if (process.platform === 'darwin') return darwinProcessInstanceId(pid);
+  return null;
+}
+
+function observedProcessInstanceId(
+  pid: number,
+  reader: (pid: number) => string | null,
+): string | null {
+  try {
+    const instanceId = reader(pid);
+    return instanceId && PROCESS_INSTANCE_ID.test(instanceId) ? instanceId : null;
+  } catch {
+    return null;
+  }
+}
+
+function leaseIsAbandoned(
+  lease: ActivePublicationLease,
+  processInstanceId: (pid: number) => string | null,
+): boolean {
   const liveness = pidLiveness(lease.pid);
-  if (liveness === 'live') return false;
   if (liveness === 'dead') return true;
-  return lease.expires_at_ms <= now;
+  const observed = observedProcessInstanceId(lease.pid, processInstanceId);
+  return observed !== null && observed !== lease.process_instance_id;
 }
 
 function lockPath(jobRoot: string, name?: string): string {
@@ -396,13 +538,17 @@ function leaseWasReleased(jobRoot: string, token: string): boolean {
 function createLease(
   jobRoot: string,
   leaseMs: number,
+  processInstanceId: (pid: number) => string | null,
 ): {
   lease: ActivePublicationLease;
   leasePath: string;
 } {
   const token = randomUUID();
+  const instanceId = observedProcessInstanceId(process.pid, processInstanceId);
+  if (!instanceId) throw new Error('active_plan_lock_identity_unavailable');
   const lease: ActivePublicationLease = {
     pid: process.pid,
+    process_instance_id: instanceId,
     token,
     expires_at_ms: Date.now() + leaseMs,
   };
@@ -428,6 +574,7 @@ export function acquireActivePublicationLock(
   lockPath(resolvedRoot);
   const timeoutMs = options.timeoutMs ?? 5_000;
   const leaseMs = options.leaseMs ?? 30_000;
+  const processInstanceId = options.processInstanceId ?? platformProcessInstanceId;
   const deadline = Date.now() + timeoutMs;
   const waitCell = new Int32Array(new SharedArrayBuffer(4));
 
@@ -436,14 +583,14 @@ export function acquireActivePublicationLock(
     if (
       tail &&
       !leaseWasReleased(resolvedRoot, tail.token) &&
-      !leaseIsAbandoned(tail, Date.now())
+      !leaseIsAbandoned(tail, processInstanceId)
     ) {
       if (Date.now() >= deadline) throw new Error('active_plan_lock_timeout');
       Atomics.wait(waitCell, 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
       continue;
     }
 
-    const { lease, leasePath } = createLease(resolvedRoot, leaseMs);
+    const { lease, leasePath } = createLease(resolvedRoot, leaseMs, processInstanceId);
     const ownerLink = tail
       ? lockPath(resolvedRoot, `next-${tail.token}`)
       : lockPath(resolvedRoot, 'head');
