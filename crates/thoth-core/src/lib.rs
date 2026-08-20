@@ -1048,39 +1048,54 @@ pub async fn run_once(
                 );
             };
 
-            let mut runner =
+            let runner =
                 PipelineRunner::new(&config, execution).with_main_is_video(main_is_video);
-            if let Some(planned) = planned_main {
-                runner = runner.with_planned_main(planned);
-            }
-            let _clips = runner
-                .run(
-                    &resolved_url,
-                    &args.output_dir,
-                    &args.provider,
-                    &args.model,
-                    args.max_clips,
-                    &args.layout,
-                    &args.keywords,
-                    &build_audio_opts(
-                        args.sfx_intro.clone(),
-                        args.bgm.clone(),
-                        args.bgm_volume,
-                        clip_style_from_arg(&args.clip_style),
-                        args.headline_dur,
-                        &args.font_dir,
-                        &args.font_bold,
-                        &args.font_regular,
-                        args.social_icon.clone(),
-                        args.social_icon_size,
-                        args.social_icon_min_size,
-                        args.social_icon_max_size,
-                    ),
-                    &args.social,
-                    args.resume.as_deref(),
-                    &args.style_profile,
-                    args.job_id.as_deref(),
-                )
-                .await?; // footer already printed by PipelineRunner::run (brand::FEATHER summary)
+            let audio_opts = build_audio_opts(
+                args.sfx_intro.clone(),
+                args.bgm.clone(),
+                args.bgm_volume,
+                clip_style_from_arg(&args.clip_style),
+                args.headline_dur,
+                &args.font_dir,
+                &args.font_bold,
+                &args.font_regular,
+                args.social_icon.clone(),
+                args.social_icon_size,
+                args.social_icon_min_size,
+                args.social_icon_max_size,
+            );
+            let _clips = if let Some(planned) = planned_main.as_ref() {
+                runner
+                    .run_planned_main(
+                        planned,
+                        &args.output_dir,
+                        &args.provider,
+                        &args.layout,
+                        &audio_opts,
+                        &args.social,
+                        args.resume.as_deref(),
+                        &args.style_profile,
+                        args.job_id.as_deref(),
+                        &pipeline::DeferredPlannedMainRenderer,
+                    )
+                    .await?
+            } else {
+                runner
+                    .run(
+                        &resolved_url,
+                        &args.output_dir,
+                        &args.provider,
+                        &args.model,
+                        args.max_clips,
+                        &args.layout,
+                        &args.keywords,
+                        &audio_opts,
+                        &args.social,
+                        args.resume.as_deref(),
+                        &args.style_profile,
+                        args.job_id.as_deref(),
+                    )
+                    .await?
+            }; // footer is printed by the selected renderer path
     Ok(())
 }

@@ -5,6 +5,7 @@ pub mod state;
 use std::{future::Future, path::Path};
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use futures_util::stream::{self, StreamExt};
 use tracing::{debug, info, warn};
 use crate::util::progress::{stage_header, elapsed_secs};
@@ -28,7 +29,8 @@ use crate::util::fs::ensure_dir;
 
 use job::JobContext;
 use state::{
-    OcrStageResult, PipelineState, invalidate_for_ocr_rerun, ocr_is_fresh,
+    MainFootageInvalidation, MainFootageStageResult, OcrStageResult, PipelineState,
+    invalidate_for_ocr_rerun, invalidate_main_footage, main_footage_is_fresh, ocr_is_fresh,
 };
 
 /// Pick nested (`JobContext::new`, CLI default) vs flat (`JobContext::new_flat`,
@@ -106,58 +108,514 @@ pub struct PlannedMainInput {
     pub scout_output_root: std::path::PathBuf,
 }
 
-/// The imported source Stage 1 ingests for a forced run — a local file inside the
-/// job, never a URL, so nothing is downloaded and nothing is re-encoded here.
-/// Sources keep Scout's media order, so the lowest `media_index` is the main post.
-fn forced_ingest_source(
-    imported: &crate::main_footage::ImportedSourcePackage,
-) -> Result<String> {
-    let source = imported
-        .package
-        .sources
-        .iter()
-        .min_by_key(|source| source.media_index)
-        .ok_or_else(|| {
-            crate::main_footage::MainFootageError::new(
-                thoth_types::main_footage::MainFootageErrorCode::SourcePackageInvalid,
-                "package_declares_no_usable_source",
-            )
-        })?;
-    let path = crate::main_footage::resolve_contained(&imported.root, Path::new(&source.path))
-        .map_err(|_| {
-            crate::main_footage::MainFootageError::new(
-                thoth_types::main_footage::MainFootageErrorCode::SourcePackageInvalid,
-                "imported_source_outside_job_root",
-            )
-        })?;
-    Ok(path.to_string_lossy().to_string())
+/// Task-12's narrow renderer seam. It exposes only verified job-owned media,
+/// the immutable narration timeline, and render settings; there is deliberately
+/// no URL, HTTP client, ingest service, planner, or downloader capability.
+/// Task 13 supplies the FFmpeg-backed implementation of this port.
+#[async_trait]
+pub trait PlannedMainRenderer: Sync {
+    async fn render(
+        &self,
+        job: &JobContext,
+        plan: &crate::main_footage::VerifiedMainFootagePlan,
+        narration: &crate::main_footage::NarrationTimelineV1,
+        layout: &crate::edit::layout::OutputLayout,
+        audio: &AudioOptions,
+        social_name: &str,
+        style_profile_name: &str,
+        execution: &JobExecutionContext,
+    ) -> Result<crate::edit::service::EditResult>;
 }
 
-/// What Stage 1 actually ingests. A forced run resolves a job-owned local file
-/// from the imported package — `main.url` never reaches the ingest service — while
-/// a legacy run keeps the caller's URL untouched.
-fn resolve_ingest_input(
-    planned: Option<&crate::main_footage::ImportedSourcePackage>,
-    url: &str,
-) -> Result<String> {
-    match planned {
-        Some(imported) => forced_ingest_source(imported),
-        None => Ok(url.to_string()),
+/// Temporary production endpoint until Task 13 binds the real renderer behind
+/// `PlannedMainRenderer`. Keeping the failure behind the port prevents this task
+/// from re-entering legacy edit or adding a downloader fallback.
+pub struct DeferredPlannedMainRenderer;
+
+#[async_trait]
+impl PlannedMainRenderer for DeferredPlannedMainRenderer {
+    async fn render(
+        &self,
+        _job: &JobContext,
+        _plan: &crate::main_footage::VerifiedMainFootagePlan,
+        _narration: &crate::main_footage::NarrationTimelineV1,
+        _layout: &crate::edit::layout::OutputLayout,
+        _audio: &AudioOptions,
+        _social_name: &str,
+        _style_profile_name: &str,
+        _execution: &JobExecutionContext,
+    ) -> Result<crate::edit::service::EditResult> {
+        anyhow::bail!("planned_renderer_unavailable")
     }
 }
 
-/// Whether the clip Stage 1 ingested is a real video, which is what the OCR
-/// preflight branches on. A forced run cuts a package source — a video by
-/// contract — so the Content Set's `main_is_video` (a fact about the *post*,
-/// false for an image post that still carries videos) does not apply. Legacy
-/// runs keep the caller's declaration.
-fn stage_one_is_video(
-    planned: Option<&crate::main_footage::ImportedSourcePackage>,
-    declared: bool,
-) -> bool {
-    match planned {
-        Some(imported) => !imported.package.sources.is_empty(),
-        None => declared,
+/// Injected boundary for the planned-main state machine. Production binds this
+/// to package import, narration, the Task-11 coordinator, and the renderer port;
+/// tests replace only those expensive/external stages while exercising the same
+/// persistence, cancellation, invalidation, error, and ordering code.
+#[async_trait]
+pub(crate) trait PlannedMainStagePort: Sync {
+    type Imported: Send + Sync;
+    type Narration: Send + Sync;
+    type Verified: Send + Sync;
+
+    async fn import_sources(
+        &self,
+        job: &JobContext,
+        planned: &PlannedMainInput,
+        execution: &JobExecutionContext,
+    ) -> Result<Self::Imported>;
+
+    fn source_fingerprint<'b>(&self, imported: &'b Self::Imported) -> &'b str;
+
+    fn validate_scene_index(&self, job: &JobContext, imported: &Self::Imported) -> Result<()>;
+
+    fn load_narration(&self, job: &JobContext) -> Result<Option<Self::Narration>>;
+
+    async fn generate_narration(
+        &self,
+        job: &JobContext,
+        execution: &JobExecutionContext,
+    ) -> Result<Self::Narration>;
+
+    fn narration_fingerprint<'b>(&self, narration: &'b Self::Narration) -> &'b str;
+
+    async fn resume_verified(
+        &self,
+        _job: &JobContext,
+        _planned: &PlannedMainInput,
+        _imported: &Self::Imported,
+        _narration: &Self::Narration,
+        _execution: &JobExecutionContext,
+    ) -> Result<Option<Self::Verified>> {
+        Ok(None)
+    }
+
+    async fn prepare_plan(
+        &self,
+        job: &JobContext,
+        planned: &PlannedMainInput,
+        imported: &Self::Imported,
+        narration: &Self::Narration,
+        execution: &JobExecutionContext,
+    ) -> Result<Self::Verified>;
+
+    fn verified_state(&self, verified: &Self::Verified) -> MainFootageStageResult;
+
+    fn render_settings_fingerprint(&self) -> String;
+
+    async fn render(
+        &self,
+        job: &JobContext,
+        verified: &Self::Verified,
+        narration: &Self::Narration,
+        execution: &JobExecutionContext,
+    ) -> Result<crate::edit::service::EditResult>;
+}
+
+fn planned_error(
+    error: anyhow::Error,
+    code: crate::main_footage::MainFootageErrorCode,
+    detail: &'static str,
+) -> anyhow::Error {
+    if crate::execution::is_cancelled(&error)
+        || error
+            .downcast_ref::<crate::main_footage::MainFootageError>()
+            .is_some()
+    {
+        error
+    } else {
+        crate::main_footage::MainFootageError::new(code, detail).into()
+    }
+}
+
+fn emit_planned_checkpoint(stage: crate::util::progress::MainFootageProgressStage, pct: f32) {
+    let message = match stage {
+        crate::util::progress::MainFootageProgressStage::ImportingSources => {
+            "importing main-footage sources"
+        }
+        crate::util::progress::MainFootageProgressStage::ValidatingSceneIndex => {
+            "validating main-footage scene index"
+        }
+        crate::util::progress::MainFootageProgressStage::GeneratingNarration => {
+            "generating narration timeline"
+        }
+        crate::util::progress::MainFootageProgressStage::PlanningCuts => {
+            "planning main-footage cuts"
+        }
+        crate::util::progress::MainFootageProgressStage::MaterializingCuts => {
+            "materializing main-footage cuts"
+        }
+        crate::util::progress::MainFootageProgressStage::VerifyingPlan => {
+            "verifying main-footage plan"
+        }
+        crate::util::progress::MainFootageProgressStage::Rendering => {
+            "rendering planned main footage"
+        }
+    };
+    crate::util::progress::emit_stage(stage.as_str(), pct, message);
+}
+
+fn rendered_paths(state: &PipelineState) -> Option<Vec<std::path::PathBuf>> {
+    let edit = state.stages.edit.as_ref()?;
+    let paths = edit
+        .output_clips
+        .iter()
+        .map(|clip| clip.path.clone())
+        .collect::<Vec<_>>();
+    (!paths.is_empty() && paths.iter().all(|path| path.is_file())).then_some(paths)
+}
+
+async fn run_planned_main_with<P: PlannedMainStagePort>(
+    job: &JobContext,
+    state: &mut PipelineState,
+    planned: &PlannedMainInput,
+    execution: &JobExecutionContext,
+    port: &P,
+) -> Result<Vec<std::path::PathBuf>> {
+    use crate::main_footage::MainFootageErrorCode;
+    use crate::util::progress::MainFootageProgressStage;
+
+    execution.check_cancelled()?;
+    let imported = port
+        .import_sources(job, planned, execution)
+        .await
+        .map_err(|error| {
+            planned_error(
+                error,
+                MainFootageErrorCode::SourcePackageInvalid,
+                "source_import_failed",
+            )
+        })?;
+    execution.check_cancelled()?;
+    emit_planned_checkpoint(MainFootageProgressStage::ImportingSources, 0.0);
+    let source_fingerprint = port.source_fingerprint(&imported).to_owned();
+    if state
+        .stages
+        .main_footage
+        .as_ref()
+        .is_some_and(|stage| stage.source_package_fingerprint != source_fingerprint)
+    {
+        invalidate_main_footage(state, MainFootageInvalidation::SourceChanged);
+    }
+    state.save(&job.state_path())?;
+    execution.check_cancelled()?;
+
+    port.validate_scene_index(job, &imported).map_err(|error| {
+        planned_error(
+            error,
+            MainFootageErrorCode::SourcePackageInvalid,
+            "scene_index_validation_failed",
+        )
+    })?;
+    execution.check_cancelled()?;
+    emit_planned_checkpoint(MainFootageProgressStage::ValidatingSceneIndex, 0.05);
+    execution.check_cancelled()?;
+
+    let narration = match port.load_narration(job)? {
+        Some(narration) => narration,
+        None => port
+            .generate_narration(job, execution)
+            .await
+            .map_err(|error| {
+                planned_error(
+                    error,
+                    MainFootageErrorCode::NarrationGenerationFailed,
+                    "narration_stage_failed",
+                )
+            })?,
+    };
+    execution.check_cancelled()?;
+    emit_planned_checkpoint(MainFootageProgressStage::GeneratingNarration, 0.1);
+    let narration_fingerprint = port.narration_fingerprint(&narration).to_owned();
+    if state
+        .stages
+        .main_footage
+        .as_ref()
+        .is_some_and(|stage| stage.narration_fingerprint != narration_fingerprint)
+    {
+        invalidate_main_footage(state, MainFootageInvalidation::NarrationChanged);
+    }
+    state.save(&job.state_path())?;
+    execution.check_cancelled()?;
+
+    let render_fingerprint = port.render_settings_fingerprint();
+    if state.stages.main_footage.as_ref().is_some_and(|stage| {
+        stage.render_settings_fingerprint.as_deref() != Some(render_fingerprint.as_str())
+    }) {
+        invalidate_main_footage(state, MainFootageInvalidation::RenderSettingsChanged);
+        state.save(&job.state_path())?;
+        execution.check_cancelled()?;
+    }
+
+    let mut resumed = false;
+    let mut verified = None;
+    if state.stages.main_footage.is_some() {
+        if let Some(candidate) = port
+            .resume_verified(job, planned, &imported, &narration, execution)
+            .await?
+        {
+            let candidate_state = port.verified_state(&candidate);
+            if main_footage_is_fresh(
+                state.stages.main_footage.as_ref(),
+                &candidate_state.source_package_fingerprint,
+                &candidate_state.narration_fingerprint,
+                &candidate_state.plan_fingerprint,
+                &candidate_state.active_version,
+            ) {
+                resumed = true;
+                verified = Some(candidate);
+            }
+        }
+    }
+    let verified = match verified {
+        Some(verified) => {
+            emit_planned_checkpoint(MainFootageProgressStage::PlanningCuts, 0.25);
+            emit_planned_checkpoint(MainFootageProgressStage::MaterializingCuts, 0.55);
+            emit_planned_checkpoint(MainFootageProgressStage::VerifyingPlan, 0.8);
+            verified
+        }
+        None => port
+            .prepare_plan(job, planned, &imported, &narration, execution)
+            .await
+            .map_err(|error| {
+                planned_error(
+                    error,
+                    MainFootageErrorCode::CutPlanningFailed,
+                    "planner_stage_failed",
+                )
+            })?,
+    };
+    execution.check_cancelled()?;
+    let mut verified_state = port.verified_state(&verified);
+    if !main_footage_is_fresh(
+        state.stages.main_footage.as_ref(),
+        &verified_state.source_package_fingerprint,
+        &verified_state.narration_fingerprint,
+        &verified_state.plan_fingerprint,
+        &verified_state.active_version,
+    ) {
+        state.stages.edit = None;
+    }
+    verified_state.render_settings_fingerprint = Some(render_fingerprint);
+    state.stages.main_footage = Some(verified_state);
+    state.save(&job.state_path())?;
+    execution.check_cancelled()?;
+
+    if resumed {
+        if let Some(paths) = rendered_paths(state) {
+            emit_planned_checkpoint(MainFootageProgressStage::Rendering, 1.0);
+            execution.check_cancelled()?;
+            return Ok(paths);
+        }
+    }
+
+    let edit = port.render(job, &verified, &narration, execution).await?;
+    execution.check_cancelled()?;
+    state.stages.edit = Some(edit);
+    state.save(&job.state_path())?;
+    execution.check_cancelled()?;
+    emit_planned_checkpoint(MainFootageProgressStage::Rendering, 1.0);
+    execution.check_cancelled()?;
+    rendered_paths(state).ok_or_else(|| {
+        crate::main_footage::MainFootageError::new(
+            MainFootageErrorCode::PlanVerificationFailed,
+            "planned_render_output_missing",
+        )
+        .into()
+    })
+}
+
+struct ProductionPlannedMainStages<'a, 'b, R> {
+    runner: &'a PipelineRunner<'b>,
+    provider: &'a LlmProviderName,
+    layout: crate::edit::layout::OutputLayout,
+    audio: &'a AudioOptions,
+    social_name: &'a str,
+    style_profile_name: &'a str,
+    renderer: &'a R,
+}
+
+fn timeline_error(detail: &'static str) -> anyhow::Error {
+    crate::main_footage::MainFootageError::new(
+        crate::main_footage::MainFootageErrorCode::NarrationGenerationFailed,
+        detail,
+    )
+    .into()
+}
+
+#[async_trait]
+impl<R: PlannedMainRenderer> PlannedMainStagePort for ProductionPlannedMainStages<'_, '_, R> {
+    type Imported = crate::main_footage::ImportedSourcePackage;
+    type Narration = crate::main_footage::NarrationTimelineV1;
+    type Verified = crate::main_footage::VerifiedMainFootagePlan;
+
+    async fn import_sources(
+        &self,
+        job: &JobContext,
+        planned: &PlannedMainInput,
+        execution: &JobExecutionContext,
+    ) -> Result<Self::Imported> {
+        crate::main_footage::import_package(
+            &planned.content_set_path,
+            &planned.descriptor,
+            job,
+            &planned.scout_output_root,
+            execution,
+        )
+    }
+
+    fn source_fingerprint<'b>(&self, imported: &'b Self::Imported) -> &'b str {
+        &imported.fingerprint
+    }
+
+    fn validate_scene_index(&self, _job: &JobContext, imported: &Self::Imported) -> Result<()> {
+        for index in &imported.package.scene_indexes {
+            let path =
+                crate::main_footage::resolve_contained(&imported.root, Path::new(&index.path))
+                    .map_err(|_| {
+                        crate::main_footage::MainFootageError::new(
+                            crate::main_footage::MainFootageErrorCode::SourcePackageInvalid,
+                            "scene_index_outside_job_root",
+                        )
+                    })?;
+            let bytes = std::fs::read(path).map_err(|_| {
+                crate::main_footage::MainFootageError::new(
+                    crate::main_footage::MainFootageErrorCode::SourcePackageInvalid,
+                    "scene_index_unreadable",
+                )
+            })?;
+            serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|_| {
+                crate::main_footage::MainFootageError::new(
+                    crate::main_footage::MainFootageErrorCode::SourcePackageInvalid,
+                    "scene_index_not_json",
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn load_narration(&self, job: &JobContext) -> Result<Option<Self::Narration>> {
+        let path = job.narration_timeline();
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let timeline: crate::main_footage::NarrationTimelineV1 = serde_json::from_slice(
+            &std::fs::read(path).map_err(|_| timeline_error("narration_timeline_unreadable"))?,
+        )
+        .map_err(|_| timeline_error("narration_timeline_unreadable"))?;
+        let value = serde_json::to_value(&timeline)
+            .map_err(|_| timeline_error("narration_timeline_unreadable"))?;
+        let fingerprint = crate::main_footage::fingerprint_canonical(&value)
+            .map_err(|_| timeline_error("narration_fingerprint_failed"))?;
+        if timeline.fingerprint.as_deref() != Some(fingerprint.as_str()) {
+            return Err(timeline_error("narration_fingerprint_mismatch"));
+        }
+        Ok(Some(timeline))
+    }
+
+    async fn generate_narration(
+        &self,
+        job: &JobContext,
+        _execution: &JobExecutionContext,
+    ) -> Result<Self::Narration> {
+        let narration = self.runner.generate_narration(job, self.provider).await?;
+        let timeline = crate::narration::timeline::build_narration_timeline(
+            &narration,
+            crate::narration::timeline::BeatPolicy::default(),
+        )?;
+        crate::narration::timeline::write_narration_timeline(job, &timeline)?;
+        Ok(timeline)
+    }
+
+    fn narration_fingerprint<'b>(&self, narration: &'b Self::Narration) -> &'b str {
+        narration
+            .fingerprint
+            .as_deref()
+            .expect("validated narration timeline always has a fingerprint")
+    }
+
+    async fn resume_verified(
+        &self,
+        job: &JobContext,
+        planned: &PlannedMainInput,
+        imported: &Self::Imported,
+        narration: &Self::Narration,
+        execution: &JobExecutionContext,
+    ) -> Result<Option<Self::Verified>> {
+        crate::main_footage::MainFootageCoordinator::prepare(
+            job,
+            crate::main_footage::MainFootagePrepareInput {
+                imported,
+                coverage_target: planned.descriptor.coverage_target,
+            },
+            narration,
+            execution,
+        )
+        .await
+        .map(Some)
+    }
+
+    async fn prepare_plan(
+        &self,
+        job: &JobContext,
+        planned: &PlannedMainInput,
+        imported: &Self::Imported,
+        narration: &Self::Narration,
+        execution: &JobExecutionContext,
+    ) -> Result<Self::Verified> {
+        crate::main_footage::MainFootageCoordinator::prepare(
+            job,
+            crate::main_footage::MainFootagePrepareInput {
+                imported,
+                coverage_target: planned.descriptor.coverage_target,
+            },
+            narration,
+            execution,
+        )
+        .await
+    }
+
+    fn verified_state(&self, verified: &Self::Verified) -> MainFootageStageResult {
+        MainFootageStageResult::from_verified(verified)
+    }
+
+    fn render_settings_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hash = Sha256::new();
+        hash.update(format!(
+            "{:?}|{:?}|{}|{}|{}|{}|{}",
+            self.layout,
+            self.audio,
+            self.social_name,
+            self.style_profile_name,
+            self.runner.config.narration.duck_event_vol,
+            self.runner.config.narration.leak_event_vol,
+            self.runner.config.narration.lead_in_secs,
+        ));
+        format!("sha256:{:x}", hash.finalize())
+    }
+
+    async fn render(
+        &self,
+        job: &JobContext,
+        verified: &Self::Verified,
+        narration: &Self::Narration,
+        execution: &JobExecutionContext,
+    ) -> Result<crate::edit::service::EditResult> {
+        self.renderer
+            .render(
+                job,
+                verified,
+                narration,
+                &self.layout,
+                self.audio,
+                self.social_name,
+                self.style_profile_name,
+                execution,
+            )
+            .await
     }
 }
 
@@ -165,7 +623,6 @@ pub struct PipelineRunner<'a> {
     config: &'a AppConfig,
     execution: &'a JobExecutionContext,
     main_is_video: bool,
-    planned_main: Option<PlannedMainInput>,
 }
 
 impl<'a> PipelineRunner<'a> {
@@ -174,7 +631,6 @@ impl<'a> PipelineRunner<'a> {
             config,
             execution,
             main_is_video: true,
-            planned_main: None,
         }
     }
 
@@ -183,36 +639,64 @@ impl<'a> PipelineRunner<'a> {
         self
     }
 
-    pub fn with_planned_main(mut self, planned_main: PlannedMainInput) -> Self {
-        self.planned_main = Some(planned_main);
-        self
-    }
+    /// Execute the forced URL-pool branch without entering the single-main
+    /// ingest/transcribe/analyze/edit chain. Every media input after import is a
+    /// job-owned local artifact; the injected renderer sees only a verified plan.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_planned_main<R: PlannedMainRenderer>(
+        &self,
+        planned: &PlannedMainInput,
+        output_dir: &Path,
+        provider: &LlmProviderName,
+        layout: &CliLayout,
+        audio_opts: &AudioOptions,
+        social_name: &str,
+        resume_id: Option<&str>,
+        style_profile_name: &str,
+        job_id_override: Option<&str>,
+        renderer: &R,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        crate::main_footage::require_narration_enabled(self.config.narration.enabled)?;
+        self.execution.check_cancelled()?;
+        ensure_dir(output_dir)?;
+        let job_id = job_id_override
+            .or(resume_id)
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let job = build_job_context(job_id_override, job_id.clone(), output_dir)
+            .context("failed to create planned job directories")?;
+        let mut state = if job.state_path().is_file() {
+            PipelineState::load(&job.state_path()).context("failed to load pipeline state")?
+        } else {
+            PipelineState::new(job_id, String::new())
+        };
 
-    /// Stage 5.5's forced precondition. A forced run is cut against narration
-    /// beats, so a runtime config with the narrator switched off has nothing for
-    /// the planner to allocate against. Legacy runs pass through untouched.
-    fn forced_narration_gate(&self) -> Result<()> {
-        if self.planned_main.is_some() {
-            crate::main_footage::require_narration_enabled(self.config.narration.enabled)?;
+        // Forced packages can be silent b-roll. Narration grounding comes from
+        // the Content Set sidecars prepared by `run_once`; the transcript input
+        // still exists as a typed empty artifact so generation never falls back
+        // to downloading/transcribing one arbitrary source.
+        if !job.transcript_path().is_file() {
+            let transcript = crate::transcribe::model::Transcript {
+                segments: Vec::new(),
+                duration_ms: 0,
+            };
+            std::fs::write(
+                job.transcript_path(),
+                serde_json::to_vec_pretty(&transcript)?,
+            )?;
         }
-        Ok(())
-    }
+        ensure_dir(&job.narration_dir())?;
 
-    /// Stage 6's forced precondition. A rerun that already has `narration.mp3`
-    /// skips the narration stage entirely, so the beat timeline it should have
-    /// published may be absent — refuse rather than plan blindly against beats
-    /// that do not exist. The narrator is enabled here (the gate above proved
-    /// it) and what is missing is its *output*, so this is a generation failure,
-    /// not an unmet precondition.
-    fn forced_timeline_gate(&self, job: &JobContext) -> Result<()> {
-        if self.planned_main.is_some() && !job.narration_timeline().exists() {
-            return Err(crate::main_footage::MainFootageError::new(
-                crate::main_footage::MainFootageErrorCode::NarrationGenerationFailed,
-                "narration_timeline_missing",
-            )
-            .into());
-        }
-        Ok(())
+        let stages = ProductionPlannedMainStages {
+            runner: self,
+            provider,
+            layout: crate::edit::layout::OutputLayout::from(layout),
+            audio: audio_opts,
+            social_name,
+            style_profile_name,
+            renderer,
+        };
+        run_planned_main_with(&job, &mut state, planned, self.execution, &stages).await
     }
 
     pub async fn run(
@@ -250,27 +734,7 @@ impl<'a> PipelineRunner<'a> {
             PipelineState::new(job_id.clone(), url.to_owned())
         };
 
-        // ── Forced main footage: take a job-owned copy of Scout's package ──────
-        // Everything downstream reads the job's own immutable copies, so the run
-        // no longer depends on Scout's directory — and Stage 1 ingests one of those
-        // local files instead of downloading `main.url`.
-        let planned_package = match &self.planned_main {
-            Some(planned) => Some(crate::main_footage::import_package(
-                &planned.content_set_path,
-                &planned.descriptor,
-                &job,
-                &planned.scout_output_root,
-                self.execution,
-            )?),
-            None => None,
-        };
-        let ingest_url = resolve_ingest_input(planned_package.as_ref(), url)?;
-        // `set.main_is_video` describes the *post*, and is false for an image post
-        // that nonetheless carries videos. On the forced path Stage 1 ingests a
-        // package source — a video by contract — so the OCR branch must follow the
-        // clip that was actually ingested, not the post it came from.
-        let main_is_video = stage_one_is_video(planned_package.as_ref(), self.main_is_video);
-        let url = ingest_url.as_str();
+        let main_is_video = self.main_is_video;
 
         // ── Stage 1: Ingest ──────────────────────────────────────────────
         self.execution.check_cancelled()?;
@@ -438,42 +902,21 @@ impl<'a> PipelineRunner<'a> {
         // ── Stage 5.5: Narration  (narrator-driven spine) ────────────────
         // Generate ONE continuous narrator voiceover (+ word timings) that the
         // edit builds the video around. Best-effort: never fails the pipeline.
-        // A forced main-footage run is cut against narration beats, so a runtime
-        // config with the narrator disabled cannot produce anything to plan against.
-        self.forced_narration_gate()?;
         if self.config.narration.enabled && !job.narration_mp3().exists() {
             self.execution.check_cancelled()?;
             stage_header(5, 6, "Narration  (narrator voiceover)");
             match self.generate_narration(&job, provider).await {
-                Ok(narration) => {
-                    // Forced main footage is cut against narration beats, so the
-                    // timeline is published as part of the narration stage.
-                    if self.planned_main.is_some() {
-                        let timeline = crate::narration::timeline::build_narration_timeline(
-                            &narration,
-                            crate::narration::timeline::BeatPolicy::default(),
-                        )?;
-                        crate::narration::timeline::write_narration_timeline(&job, &timeline)?;
-                    }
-                }
+                Ok(_) => {}
                 Err(e) => {
                     // The raw error can carry a model response body, which the
                     // typed error deliberately withholds — keep it out of the
                     // operator-facing line and off the wire.
                     debug!(error = %e, "narration stage failed");
-                    if let Some(fatal) =
-                        crate::main_footage::narration_failure(self.planned_main.is_some())
-                    {
-                        // A forced run has no legacy fallback: nothing continues.
-                        return Err(fatal.into());
-                    }
                     warn!("Narration failed — continuing without narrator");
                 }
             }
             self.execution.check_cancelled()?;
         }
-        self.forced_timeline_gate(&job)?;
-
         // ── Stage 6: Edit ────────────────────────────────────────────────
         self.execution.check_cancelled()?;
         if state.stages.edit.is_none() {
@@ -1244,328 +1687,599 @@ mod ocr_pipeline_tests {
 /// Stage-1 `url` from, and `forced_narration_gate` is the exact call `run` makes
 /// before Stage 5.5.
 #[cfg(test)]
-mod forced_main_footage_tests {
-    use std::fs;
-    use std::path::{Path, PathBuf};
+mod planned_main_orchestration_tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
 
-    use serde_json::json;
-    use sha2::{Digest, Sha256};
+    use async_trait::async_trait;
 
-    use super::{resolve_ingest_input, stage_one_is_video, PipelineRunner, PlannedMainInput};
+    use super::{PlannedMainInput, PlannedMainStagePort, run_planned_main_with};
+    use crate::edit::service::{ClipOutput, EditResult};
     use crate::execution::JobExecutionContext;
-    use crate::main_footage::{
-        ImportedSourcePackage, MainFootageDescriptor, MainFootageError, MainFootageErrorCode,
-    };
+    use crate::main_footage::{MainFootageError, MainFootageErrorCode, PlanningMode};
     use crate::pipeline::job::JobContext;
+    use crate::pipeline::state::{MainFootageStageResult, PipelineState};
 
-    /// The URL a forced Content Set carries. It must never become the Stage-1
-    /// ingest input — that is the whole point of forced main footage.
-    const MAIN_URL: &str = "https://www.instagram.com/reel/post-123/";
+    static PLANNED_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    struct Fixture {
-        scout_root: PathBuf,
-        content_set: PathBuf,
-        job_base: PathBuf,
+    #[derive(Clone)]
+    struct Artifact {
+        fingerprint: String,
     }
 
-    fn digest(bytes: &[u8]) -> String {
-        let mut hash = Sha256::new();
-        hash.update(bytes);
-        format!("sha256:{:x}", hash.finalize())
+    struct FakeStages {
+        calls: Mutex<Vec<&'static str>>,
+        source_fingerprint: &'static str,
+        narration_fingerprint: &'static str,
+        plan_fingerprint: &'static str,
+        fail: Option<&'static str>,
+        cancel_after_import: bool,
+        reuse_narration: bool,
     }
 
-    fn write(path: &Path, bytes: &[u8]) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
-    }
-
-    /// A Scout package with two sources published out of media order, so the
-    /// lowest `media_index` is not simply the first array element.
-    fn fixture() -> Fixture {
-        let base = std::env::temp_dir().join(format!("mf-forced-{}", uuid::Uuid::new_v4()));
-        let scout_root = base.join("scout/output");
-        let package_dir = scout_root.join("main-footage/post-123");
-        let job_base = base.join("job");
-        fs::create_dir_all(&job_base).unwrap();
-
-        let mut sources = Vec::new();
-        let mut indexes = Vec::new();
-        // Deliberately reversed: media_index 1 is declared before media_index 0.
-        for media_index in [1u32, 0u32] {
-            let bytes = format!("source {media_index} bytes").into_bytes();
-            let relative = format!("sources/source-{media_index}.mp4");
-            write(&package_dir.join(&relative), &bytes);
-
-            let index_relative =
-                format!("scene-index/source-{media_index}/cache-a/v002/index.json");
-            let index_bytes =
-                format!(r#"{{"scenes":[{{"id":"scene-{media_index}"}}]}}"#).into_bytes();
-            write(&package_dir.join(&index_relative), &index_bytes);
-            let frame_relative =
-                format!("scene-index/source-{media_index}/cache-a/v002/frame-000.jpg");
-            write(&package_dir.join(&frame_relative), b"frame bytes");
-
-            sources.push(json!({
-                "id": format!("source-{media_index}"),
-                "media_index": media_index,
-                "path": relative,
-                "checksum": digest(&bytes),
-                "technical": {
-                    "container": "mp4",
-                    "video_codec": "h264",
-                    "duration_sec": 12.5,
-                    "width": 1080,
-                    "height": 1920,
-                    "has_audio": true
-                }
-            }));
-            indexes.push(json!({
-                "source_id": format!("source-{media_index}"),
-                "path": index_relative,
-                "checksum": digest(&index_bytes),
-                "planning_mode": "vision",
-                "scenes": [{
-                    "id": format!("scene-{media_index}"),
-                    "start_sec": 0,
-                    "end_sec": 4,
-                    "representative_frame": frame_relative,
-                    "transcript_evidence": "A person addresses the camera.",
-                    "vision_description": "A person in a studio.",
-                    "visual_metrics": {
-                        "motion_score": 0.2,
-                        "brightness": 0.6,
-                        "scene_change_score": 0.1
-                    }
-                }]
-            }));
+    impl FakeStages {
+        fn success() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                source_fingerprint: "sha256:source",
+                narration_fingerprint: "sha256:narration",
+                plan_fingerprint: "sha256:plan",
+                fail: None,
+                cancel_after_import: false,
+                reuse_narration: false,
+            }
         }
 
-        let package = json!({
-            "schema_version": 1,
-            "post": {
-                "id": "post-123",
-                "canonical_url": MAIN_URL,
-                "platform": "instagram"
-            },
-            "analysis_identity": "analysis-2026-08-14",
-            "created_at": "2026-08-14T12:00:00Z",
-            "sources": sources,
-            "ignored": [],
-            "unavailable": [],
-            "scene_indexes": indexes
-        });
-        write(
-            &package_dir.join("source-package.json"),
-            serde_json::to_string_pretty(&package).unwrap().as_bytes(),
-        );
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
+        }
 
-        let content_set = scout_root.join("thoth_content_set.json");
-        write(&content_set, b"{}");
+        fn push(&self, value: &'static str) {
+            self.calls.lock().unwrap().push(value);
+        }
 
-        Fixture {
-            scout_root,
-            content_set,
-            job_base,
+        fn stage_result(&self) -> MainFootageStageResult {
+            MainFootageStageResult {
+                source_package_fingerprint: self.source_fingerprint.into(),
+                narration_fingerprint: self.narration_fingerprint.into(),
+                plan_fingerprint: self.plan_fingerprint.into(),
+                active_version: "v001".into(),
+                render_settings_fingerprint: None,
+                planning_mode: PlanningMode::Vision,
+                coverage_target: 0.6,
+                main_coverage_sec: 6.0,
+                main_coverage_ratio: 1.0,
+                total_duration_sec: 6.0,
+                selected_cut_count: 1,
+                candidate_count: 1,
+                transition_distribution: BTreeMap::new(),
+                warnings: Vec::new(),
+                retained_bytes: 7,
+                completed_at: chrono::Utc::now(),
+            }
         }
     }
 
-    fn descriptor() -> MainFootageDescriptor {
-        serde_json::from_value(json!({
-            "mode": "forced_url_pool",
-            "package_manifest": "main-footage/post-123/source-package.json",
-            "coverage_target": 0.6
-        }))
-        .unwrap()
+    #[async_trait]
+    impl PlannedMainStagePort for FakeStages {
+        type Imported = Artifact;
+        type Narration = Artifact;
+        type Verified = MainFootageStageResult;
+
+        async fn import_sources(
+            &self,
+            job: &JobContext,
+            _planned: &PlannedMainInput,
+            execution: &JobExecutionContext,
+        ) -> anyhow::Result<Self::Imported> {
+            self.push("import");
+            std::fs::create_dir_all(job.main_footage_dir())?;
+            std::fs::write(job.source_package_manifest(), b"immutable package")?;
+            if self.cancel_after_import {
+                execution.cancel();
+            }
+            Ok(Artifact {
+                fingerprint: self.source_fingerprint.into(),
+            })
+        }
+
+        fn source_fingerprint<'b>(&self, imported: &'b Self::Imported) -> &'b str {
+            &imported.fingerprint
+        }
+
+        fn validate_scene_index(
+            &self,
+            _job: &JobContext,
+            _imported: &Self::Imported,
+        ) -> anyhow::Result<()> {
+            self.push("validate");
+            Ok(())
+        }
+
+        fn load_narration(&self, _job: &JobContext) -> anyhow::Result<Option<Self::Narration>> {
+            Ok(self.reuse_narration.then(|| Artifact {
+                fingerprint: self.narration_fingerprint.into(),
+            }))
+        }
+
+        async fn generate_narration(
+            &self,
+            _job: &JobContext,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<Self::Narration> {
+            self.push("narration");
+            if self.fail == Some("narration") {
+                anyhow::bail!("provider response with https://private.test/?token=secret");
+            }
+            Ok(Artifact {
+                fingerprint: self.narration_fingerprint.into(),
+            })
+        }
+
+        fn narration_fingerprint<'b>(&self, narration: &'b Self::Narration) -> &'b str {
+            &narration.fingerprint
+        }
+
+        async fn resume_verified(
+            &self,
+            _job: &JobContext,
+            _planned: &PlannedMainInput,
+            _imported: &Self::Imported,
+            _narration: &Self::Narration,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<Option<Self::Verified>> {
+            Ok(self.reuse_narration.then(|| self.stage_result()))
+        }
+
+        async fn prepare_plan(
+            &self,
+            _job: &JobContext,
+            _planned: &PlannedMainInput,
+            _imported: &Self::Imported,
+            _narration: &Self::Narration,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<Self::Verified> {
+            self.push("planning");
+            crate::util::progress::emit_stage("planning_cuts", 0.25, "planning main-footage cuts");
+            if self.fail == Some("planner") {
+                anyhow::bail!("planner leaked C:\\private\\signed-url");
+            }
+            self.push("materialization");
+            crate::util::progress::emit_stage(
+                "materializing_cuts",
+                0.55,
+                "materializing main-footage cuts",
+            );
+            self.push("verification");
+            crate::util::progress::emit_stage("verifying_plan", 0.8, "verifying main-footage plan");
+            if self.fail == Some("missing_cut") {
+                return Err(MainFootageError::new(
+                    MainFootageErrorCode::PlanVerificationFailed,
+                    "cut_file_missing",
+                )
+                .into());
+            }
+            Ok(self.stage_result())
+        }
+
+        fn verified_state(&self, verified: &Self::Verified) -> MainFootageStageResult {
+            verified.clone()
+        }
+
+        fn render_settings_fingerprint(&self) -> String {
+            "sha256:render-settings".into()
+        }
+
+        async fn render(
+            &self,
+            job: &JobContext,
+            _verified: &Self::Verified,
+            _narration: &Self::Narration,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<EditResult> {
+            self.push("render");
+            let output = job.root().join("rendered.mp4");
+            std::fs::write(&output, b"render")?;
+            Ok(EditResult {
+                output_clips: vec![ClipOutput {
+                    clip_index: 0,
+                    title: "planned".into(),
+                    path: output,
+                    thumb_path: None,
+                    duration_secs: 6.0,
+                    layout: "vertical".into(),
+                }],
+                completed_at: chrono::Utc::now(),
+            })
+        }
     }
 
-    /// Runs the real import the forced branch performs before Stage 1.
-    fn import(fixture: &Fixture) -> (JobContext, ImportedSourcePackage) {
-        let job = JobContext::new_flat("forced".into(), fixture.job_base.clone()).unwrap();
-        let imported = crate::main_footage::import_package(
-            &fixture.content_set,
-            &descriptor(),
-            &job,
-            &fixture.scout_root,
-            &JobExecutionContext::new(),
-        )
-        .unwrap();
-        (job, imported)
+    fn fixture() -> (PathBuf, JobContext, PipelineState, PlannedMainInput) {
+        let root =
+            std::env::temp_dir().join(format!("planned-orchestration-{}", uuid::Uuid::new_v4()));
+        let job = JobContext::new_flat("job".into(), root.clone()).unwrap();
+        let state = PipelineState::new("job".into(), "forced".into());
+        let planned = PlannedMainInput {
+            content_set_path: root.join("content-set.json"),
+            descriptor: serde_json::from_value(serde_json::json!({
+                "mode": "forced_url_pool",
+                "package_manifest": "package.json",
+                "coverage_target": 0.6
+            }))
+            .unwrap(),
+            scout_output_root: root.join("scout"),
+        };
+        (root, job, state, planned)
     }
 
     fn code(error: &anyhow::Error) -> MainFootageErrorCode {
         error
             .downcast_ref::<MainFootageError>()
-            .unwrap_or_else(|| panic!("expected a MainFootageError, got: {error:#}"))
+            .unwrap_or_else(|| panic!("expected stable main-footage error, got {error:#}"))
             .code
     }
 
-    /// Scout publishes sources in discovery order, not media order. The Stage-1
-    /// clip is the post's own first medium, so selection must be by
-    /// `media_index` — not by array position.
-    #[test]
-    fn the_forced_stage_one_input_is_the_lowest_media_index_source() {
-        let fixture = fixture();
-        let (_job, imported) = import(&fixture);
-        assert_eq!(imported.package.sources[0].media_index, 1, "fixture ordering");
+    /// Production mutation caught: reusing the legacy run path would insert
+    /// ingest/transcribe/analyze/edit calls into this exact ordered boundary.
+    #[tokio::test]
+    async fn planned_branch_orders_local_package_narration_plan_and_renderer_only() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let stages = FakeStages::success();
 
-        let resolved = resolve_ingest_input(Some(&imported), MAIN_URL).unwrap();
+        let paths = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap();
 
-        assert!(
-            resolved.ends_with("source-0.mp4"),
-            "forced ingest took {resolved} instead of the lowest media_index source"
-        );
-    }
-
-    /// The load-bearing guarantee of brief step 6: whatever the Content Set's
-    /// `main.url` says, Stage 1 receives a job-owned local file. Asserted on the
-    /// resolved input itself, including the exact predicate `IngestService::run`
-    /// uses to choose its local-file branch over yt-dlp.
-    #[test]
-    fn the_forced_stage_one_input_is_a_job_owned_file_and_never_main_url() {
-        let fixture = fixture();
-        let (job, imported) = import(&fixture);
-
-        let resolved = resolve_ingest_input(Some(&imported), MAIN_URL).unwrap();
-        let resolved_path = Path::new(&resolved);
-
-        assert_ne!(resolved, MAIN_URL);
-        // `IngestService::run` takes its local-file branch on exactly this test.
-        assert!(!resolved.starts_with("http://") && !resolved.starts_with("https://"));
-        assert!(resolved_path.is_file(), "{resolved} is not an existing file");
-        assert!(
-            resolved_path.starts_with(fs::canonicalize(job.main_footage_dir()).unwrap()),
-            "{resolved} escaped the job's main-footage root"
-        );
-        // And it really is the imported copy, not a link back into Scout.
-        assert!(!resolved_path.starts_with(&fixture.scout_root));
-    }
-
-    /// Legacy sets keep resolving and ingesting their own `main_url`.
-    #[test]
-    fn the_legacy_stage_one_input_is_the_callers_url_unchanged() {
-        assert_eq!(resolve_ingest_input(None, MAIN_URL).unwrap(), MAIN_URL);
-    }
-
-    /// A package whose declared source path leaves the job root is rejected
-    /// rather than silently ingested from outside the job.
-    ///
-    /// `SourceVideoV1`'s deserializer already refuses such a path, so these
-    /// values are written onto the decoded struct directly — the containment
-    /// check in `forced_ingest_source` is the second of the two locks, and this
-    /// pins that it is actually closed.
-    #[test]
-    fn a_forced_source_outside_the_job_root_is_rejected() {
-        let fixture = fixture();
-        let (_job, imported) = import(&fixture);
-
-        for escape in ["../escape.mp4", "sources/../../escape.mp4"] {
-            let mut escaping = imported.clone();
-            escaping.package.sources[0].path = escape.to_string();
-            escaping.package.sources[0].media_index = 0;
-
-            let error = resolve_ingest_input(Some(&escaping), MAIN_URL)
-                .expect_err("a source outside the job root must not be ingested");
-            assert_eq!(code(&error), MainFootageErrorCode::SourcePackageInvalid);
-        }
-    }
-
-    fn planned_main(fixture: &Fixture) -> PlannedMainInput {
-        PlannedMainInput {
-            content_set_path: fixture.content_set.clone(),
-            descriptor: descriptor(),
-            scout_output_root: fixture.scout_root.clone(),
-        }
-    }
-
-    /// Brief step 7 through the runner that enforces it: a forced run with the
-    /// narrator switched off in the effective runtime config stops with
-    /// `forced_main_narration_required`, while the identical legacy runner
-    /// continues (narration stays best-effort there).
-    #[test]
-    fn a_forced_runner_with_narration_disabled_fails_the_narration_gate() {
-        let fixture = fixture();
-        let execution = JobExecutionContext::new();
-        let mut config = crate::config::AppConfig::load().expect("runtime config");
-        config.narration.enabled = false;
-
-        let legacy = PipelineRunner::new(&config, &execution);
-        legacy
-            .forced_narration_gate()
-            .expect("legacy runs keep best-effort narration");
-
-        let forced =
-            PipelineRunner::new(&config, &execution).with_planned_main(planned_main(&fixture));
-        let error = forced
-            .forced_narration_gate()
-            .expect_err("a forced run cannot plan without narration beats");
         assert_eq!(
-            code(&error),
-            MainFootageErrorCode::ForcedMainNarrationRequired
+            stages.calls(),
+            [
+                "import",
+                "validate",
+                "narration",
+                "planning",
+                "materialization",
+                "verification",
+                "render"
+            ]
         );
-
-        config.narration.enabled = true;
-        let forced =
-            PipelineRunner::new(&config, &execution).with_planned_main(planned_main(&fixture));
-        forced
-            .forced_narration_gate()
-            .expect("an enabled narrator satisfies the forced gate");
+        assert_eq!(paths.len(), 1);
+        assert!(
+            state.stages.ingest.is_none(),
+            "forced mode called legacy ingest"
+        );
+        assert!(state.stages.transcribe.is_none());
+        assert!(state.stages.analyze.is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
-    /// A rerun with `narration.mp3` already on disk skips the narration stage,
-    /// so the beat timeline can be missing while the narrator is perfectly well
-    /// enabled. That is the narrator's *output* missing, not its precondition —
-    /// `forced_main_narration_required` would send an operator to check a config
-    /// switch that is already on.
-    #[test]
-    fn a_forced_rerun_without_a_beat_timeline_is_a_narration_generation_failure() {
-        let fixture = fixture();
-        let (job, _imported) = import(&fixture);
-        let execution = JobExecutionContext::new();
-        let config = crate::config::AppConfig::load().expect("runtime config");
-        assert!(
-            !job.narration_timeline().exists(),
-            "fixture must start without a timeline"
-        );
+    #[tokio::test]
+    async fn narration_failure_is_terminal_and_redacted() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("narration");
 
-        let legacy = PipelineRunner::new(&config, &execution);
-        legacy
-            .forced_timeline_gate(&job)
-            .expect("legacy runs never need a beat timeline");
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
 
-        let forced =
-            PipelineRunner::new(&config, &execution).with_planned_main(planned_main(&fixture));
-        let error = forced
-            .forced_timeline_gate(&job)
-            .expect_err("a forced run cannot plan without beats");
         assert_eq!(
             code(&error),
             MainFootageErrorCode::NarrationGenerationFailed
         );
-
-        std::fs::create_dir_all(job.narration_timeline().parent().unwrap()).unwrap();
-        std::fs::write(job.narration_timeline(), b"{}").unwrap();
-        forced
-            .forced_timeline_gate(&job)
-            .expect("a published timeline satisfies the forced gate");
+        assert_eq!(stages.calls(), ["import", "validate", "narration"]);
+        assert!(!error.to_string().contains("private.test"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
-    /// `main_is_video` is a fact about the *post*: an image post that carries
-    /// videos declares `false`. On the forced path Stage 1 ingests a package
-    /// source — a video by contract — so the OCR preflight must branch on the
-    /// clip that was actually ingested, or a forced run with a real video clip
-    /// takes the footage-only preflight.
-    #[test]
-    fn the_forced_ocr_branch_follows_the_ingested_clip_not_the_post() {
-        let fixture = fixture();
-        let (_job, imported) = import(&fixture);
-        assert!(!imported.package.sources.is_empty());
+    #[tokio::test]
+    async fn planner_failure_maps_to_cut_planning_failed_without_render() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("planner");
 
-        assert!(
-            stage_one_is_video(Some(&imported), false),
-            "a forced run cutting a package source is a video run"
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(code(&error), MainFootageErrorCode::CutPlanningFailed);
+        assert_eq!(
+            stages.calls(),
+            ["import", "validate", "narration", "planning"]
         );
-        // Legacy runs are unchanged: the caller's declaration passes straight through.
-        assert!(!stage_one_is_video(None, false));
-        assert!(stage_one_is_video(None, true));
+        assert!(!error.to_string().contains("private"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn missing_verified_cut_fails_before_renderer() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("missing_cut");
+
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(code(&error), MainFootageErrorCode::PlanVerificationFailed);
+        assert!(!stages.calls().contains(&"render"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_import_retains_package_and_skips_later_stages() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.cancel_after_import = true;
+        let execution = JobExecutionContext::new();
+
+        let error = run_planned_main_with(&job, &mut state, &planned, &execution, &stages)
+            .await
+            .unwrap_err();
+
+        assert!(crate::execution::is_cancelled(&error));
+        assert_eq!(stages.calls(), ["import"]);
+        assert_eq!(
+            std::fs::read(job.source_package_manifest()).unwrap(),
+            b"immutable package"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn matching_persisted_resume_skips_narration_planner_and_renderer() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.reuse_narration = true;
+        let mut completed = stages.stage_result();
+        completed.render_settings_fingerprint = Some("sha256:render-settings".into());
+        state.stages.main_footage = Some(completed);
+        let output = job.root().join("existing.mp4");
+        std::fs::write(&output, b"existing").unwrap();
+        state.stages.edit = Some(EditResult {
+            output_clips: vec![ClipOutput {
+                clip_index: 0,
+                title: "existing".into(),
+                path: output.clone(),
+                thumb_path: None,
+                duration_secs: 6.0,
+                layout: "vertical".into(),
+            }],
+            completed_at: chrono::Utc::now(),
+        });
+
+        let paths = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(paths, [output]);
+        assert_eq!(stages.calls(), ["import", "validate"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn state_is_saved_after_verified_identity_and_render_mutations() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let stages = FakeStages::success();
+
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap();
+        let reloaded = PipelineState::load(&job.state_path()).unwrap();
+        let persisted = reloaded.stages.main_footage.unwrap();
+
+        assert_eq!(persisted.source_package_fingerprint, "sha256:source");
+        assert_eq!(persisted.narration_fingerprint, "sha256:narration");
+        assert_eq!(persisted.plan_fingerprint, "sha256:plan");
+        assert_eq!(persisted.active_version, "v001");
+        assert!(reloaded.stages.edit.is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn source_change_persists_plan_and_render_invalidation_without_deleting_history() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("narration");
+        let mut old = stages.stage_result();
+        old.source_package_fingerprint = "sha256:old-source".into();
+        state.stages.main_footage = Some(old);
+        state.stages.edit = Some(EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+        let retained = [
+            job.root().join("plans/v001/main-footage-plan.json"),
+            job.root().join("cuts/v001/cut-001.mp4"),
+        ];
+        for path in &retained {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"immutable").unwrap();
+        }
+
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+
+        assert!(persisted.stages.main_footage.is_none());
+        assert!(persisted.stages.edit.is_none());
+        assert!(retained.iter().all(|path| path.is_file()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn narration_change_persists_downstream_invalidation_before_planner_failure() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("planner");
+        let mut old = stages.stage_result();
+        old.narration_fingerprint = "sha256:old-narration".into();
+        state.stages.main_footage = Some(old);
+        state.stages.edit = Some(EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+
+        assert!(persisted.stages.main_footage.is_none());
+        assert!(persisted.stages.edit.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn render_settings_change_reuses_verified_plan_but_reruns_renderer() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.reuse_narration = true;
+        let mut old = stages.stage_result();
+        old.render_settings_fingerprint = Some("sha256:old-render-settings".into());
+        state.stages.main_footage = Some(old);
+        let stale = job.root().join("stale.mp4");
+        std::fs::write(&stale, b"stale").unwrap();
+        state.stages.edit = Some(EditResult {
+            output_clips: vec![ClipOutput {
+                clip_index: 0,
+                title: "stale".into(),
+                path: stale,
+                thumb_path: None,
+                duration_secs: 6.0,
+                layout: "horizontal".into(),
+            }],
+            completed_at: chrono::Utc::now(),
+        });
+
+        let paths = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stages.calls(), ["import", "validate", "render"]);
+        assert!(paths[0].ends_with("rendered.mp4"));
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+        assert_eq!(
+            persisted
+                .stages
+                .main_footage
+                .unwrap()
+                .render_settings_fingerprint
+                .as_deref(),
+            Some("sha256:render-settings")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn successful_run_emits_the_complete_safe_progress_vocabulary_monotonically() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let stages = FakeStages::success();
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        crate::util::progress::set_sink(Box::new(move |event| sink.lock().unwrap().push(event)));
+
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap();
+        crate::util::progress::set_sink(Box::new(|_| {}));
+        let events = seen.lock().unwrap();
+        let vocabulary = events
+            .iter()
+            .map(|event| event.stage.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            vocabulary,
+            [
+                "importing_sources",
+                "validating_scene_index",
+                "generating_narration",
+                "planning_cuts",
+                "materializing_cuts",
+                "verifying_plan",
+                "rendering",
+            ]
+        );
+        assert!(events.windows(2).all(|pair| pair[0].pct <= pair[1].pct));
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.message.contains("\\") && !event.message.contains("http"))
+        );
+        drop(events);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

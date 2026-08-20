@@ -5,6 +5,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+use anyhow::Context;
+
 use crate::config::AppConfig;
 use crate::execution::{is_cancelled, JobExecutionContext};
 use thoth_jobs::{validate_job_spec, JobRecord, JobStatus, JobStore};
@@ -46,7 +48,7 @@ pub async fn run_worker(db_path: &str) -> anyhow::Result<()> {
 /// (no fragile 20-field struct literal that drifts when a flag is added).
 async fn execute_pipeline(
     job: JobRecord,
-    config: AppConfig,
+    mut config: AppConfig,
     context: JobExecutionContext,
 ) -> anyhow::Result<()> {
     use clap::Parser;
@@ -66,6 +68,14 @@ async fn execute_pipeline(
         anyhow::bail!("unsupported job command: {}", job.spec.command);
     }
 
+    let home = thoth_jobs::resolve_home(None)?;
+    apply_runtime_narration_settings(
+        &mut config,
+        job.resolved_settings_snapshot.as_ref(),
+        &job.spec.params,
+        &home,
+    )?;
+
     let mut argv: Vec<String> = vec!["thoth-run".into()];
     if let Some(url) = &job.spec.url {
         argv.push(url.clone()); // positional url
@@ -82,6 +92,40 @@ async fn execute_pipeline(
 
     let args = crate::cli::RunArgs::try_parse_from(&argv)?;
     crate::run_once(args, config, &context).await
+}
+
+/// Apply only the narration fields that participate in the forced-mode gate.
+/// A stored profile snapshot is decoded through the strict typed contract and
+/// revalidated before any runtime field is mutated. The unprofiled endpoint has
+/// no snapshot, so its already-validated boolean parameter maps to the same
+/// field. Missing values preserve the worker's CLI/TOML configuration.
+fn apply_runtime_narration_settings(
+    config: &mut AppConfig,
+    snapshot: Option<&serde_json::Value>,
+    params: &serde_json::Value,
+    home: &thoth_jobs::ThothHome,
+) -> anyhow::Result<()> {
+    if let Some(snapshot) = snapshot {
+        let resolved: thoth_jobs::ResolvedSettings = serde_json::from_value(snapshot.clone())
+            .context("resolved settings snapshot is invalid")?;
+        thoth_jobs::validate_resolved_settings(&resolved, home)
+            .context("resolved settings snapshot failed validation")?;
+        let enabled = resolved.narration.enabled;
+        let language = resolved.narration.language;
+        config.narration.enabled = enabled;
+        if let Some(language) = language {
+            config.narration.language = language;
+        }
+        return Ok(());
+    }
+
+    if let Some(enabled) = params
+        .get("narration_enabled")
+        .and_then(serde_json::Value::as_bool)
+    {
+        config.narration.enabled = enabled;
+    }
+    Ok(())
 }
 
 /// One claim's lifecycle: install a DB progress sink, run `run_fn`, record the
@@ -255,7 +299,96 @@ fn pick_config<T: Clone>(loaded: anyhow::Result<T>, prev: &T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thoth_jobs::{JobSpec, JobStatus, JobStore};
+    use thoth_jobs::{JobSpec, JobStatus, JobStore, ResolvedSettings};
+
+    fn runtime_config() -> AppConfig {
+        AppConfig::load().expect("runtime config")
+    }
+
+    fn settings_home() -> thoth_jobs::ThothHome {
+        let root = std::env::temp_dir().join(format!("thoth-worker-home-{}", uuid::Uuid::new_v4()));
+        thoth_jobs::resolve_home(Some(&root)).expect("test home")
+    }
+
+    /// Production mutation caught: ignoring the enqueue-time snapshot would let
+    /// the worker's mutable config disagree with the forced-mode narration gate.
+    #[test]
+    fn resolved_snapshot_wins_and_applies_narration_language_before_execution() {
+        let mut config = runtime_config();
+        config.narration.enabled = false;
+        config.narration.language = "id".into();
+        let mut snapshot = ResolvedSettings::default();
+        snapshot.narration.enabled = true;
+        snapshot.narration.language = Some("en-US".into());
+
+        apply_runtime_narration_settings(
+            &mut config,
+            Some(&serde_json::to_value(snapshot).unwrap()),
+            &serde_json::json!({ "narration_enabled": false }),
+            &settings_home(),
+        )
+        .unwrap();
+
+        assert!(config.narration.enabled);
+        assert_eq!(config.narration.language, "en-US");
+    }
+
+    /// Production mutation caught: the profile-less endpoint validates this
+    /// boolean, so dropping it in the worker would pass enqueue and fail runtime.
+    #[test]
+    fn profile_less_narration_parameter_maps_to_the_same_runtime_field() {
+        let mut config = runtime_config();
+        config.narration.enabled = false;
+
+        apply_runtime_narration_settings(
+            &mut config,
+            None,
+            &serde_json::json!({ "narration_enabled": true }),
+            &settings_home(),
+        )
+        .unwrap();
+
+        assert!(config.narration.enabled);
+    }
+
+    #[test]
+    fn absent_snapshot_and_parameter_preserve_legacy_runtime_configuration() {
+        let mut config = runtime_config();
+        config.narration.enabled = false;
+        config.narration.language = "jv".into();
+
+        apply_runtime_narration_settings(
+            &mut config,
+            None,
+            &serde_json::json!({}),
+            &settings_home(),
+        )
+        .unwrap();
+
+        assert!(!config.narration.enabled);
+        assert_eq!(config.narration.language, "jv");
+    }
+
+    #[test]
+    fn malformed_or_unvalidated_snapshot_is_rejected_without_partial_application() {
+        let mut config = runtime_config();
+        config.narration.enabled = false;
+        let invalid = serde_json::json!({
+            "narration": { "enabled": true },
+            "analysis": { "max_clips": 0 }
+        });
+
+        assert!(
+            apply_runtime_narration_settings(
+                &mut config,
+                Some(&invalid),
+                &serde_json::json!({}),
+                &settings_home(),
+            )
+            .is_err()
+        );
+        assert!(!config.narration.enabled);
+    }
 
     async fn store_with_claimed_job() -> (std::path::PathBuf, JobStore, String, JobRecord) {
         let dir = std::env::temp_dir().join(format!("thoth-wrk-{}", uuid::Uuid::new_v4()));

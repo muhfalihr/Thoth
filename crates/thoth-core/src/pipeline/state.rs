@@ -46,6 +46,11 @@ pub struct MainFootageStageResult {
     pub narration_fingerprint: String,
     pub plan_fingerprint: String,
     pub active_version: String,
+    /// Hash of renderer-visible settings. It is deliberately not part of plan
+    /// freshness: layout/style/audio changes reuse verified cuts and invalidate
+    /// only the downstream render.
+    #[serde(default)]
+    pub render_settings_fingerprint: Option<String>,
     pub planning_mode: thoth_types::main_footage::PlanningMode,
     pub coverage_target: f64,
     pub main_coverage_sec: f64,
@@ -67,6 +72,7 @@ impl MainFootageStageResult {
             narration_fingerprint: verified.narration_fingerprint().to_owned(),
             plan_fingerprint: verified.plan_fingerprint().to_owned(),
             active_version: verified.version().to_owned(),
+            render_settings_fingerprint: None,
             planning_mode: metrics.planning_mode,
             coverage_target: metrics.coverage_target,
             main_coverage_sec: metrics.main_coverage_sec,
@@ -417,6 +423,7 @@ mod main_footage_state_tests {
             narration_fingerprint: "sha256:narration".into(),
             plan_fingerprint: "sha256:plan".into(),
             active_version: "v001".into(),
+            render_settings_fingerprint: None,
             planning_mode: thoth_types::main_footage::PlanningMode::Vision,
             coverage_target: 0.6,
             main_coverage_sec: 10.0,

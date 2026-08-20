@@ -1593,6 +1593,38 @@ async fn forced_main_profile_with_narration_enabled_enqueues() {
     let _ = std::fs::remove_dir_all(tmp);
 }
 
+/// Production mutation caught: resolving enqueue containment against the
+/// historical `scout/output` constant makes the server disagree with the core
+/// importer whenever `[scout].output_dir` is customized.
+#[tokio::test]
+async fn forced_main_enqueue_honors_the_worker_configured_scout_output_root() {
+    let (app, tmp) = build_test_app().await;
+    let configured_root = tmp.join("configured-scout-root");
+    let content_set = write_forced_main_fixture(&configured_root);
+    std::fs::write(
+        tmp.join("config.toml"),
+        format!(
+            "[scout]\noutput_dir = '{}'\n",
+            configured_root.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let (project_id, profile_id) =
+        create_profile_for_content_set(app.clone(), &content_set, true).await;
+
+    let created = project_api_json(
+        app,
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+
+    assert!(created["job_id"].is_string());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
 #[tokio::test]
 async fn forced_main_gate_does_not_reject_legacy_sets_with_narration_disabled() {
     let (app, tmp) = build_test_app().await;

@@ -161,10 +161,25 @@ fn coded_validation(status: StatusCode, code: &'static str) -> Response {
     (status, Json(serde_json::json!({ "error": { "code": code } }))).into_response()
 }
 
-fn canonical_scout_output_root() -> Result<PathBuf, ValidationError> {
+fn canonical_scout_output_root(config_path: &FsPath) -> Result<PathBuf, ValidationError> {
     let cwd = std::env::current_dir().map_err(|_| ValidationError::source_package_invalid())?;
-    fs::canonicalize(cwd.join(scout::SCOUT_OUTPUT_DIR))
-        .map_err(|_| ValidationError::source_package_invalid())
+    let configured = fs::read_to_string(config_path)
+        .ok()
+        .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
+        .and_then(|config| {
+            config
+                .get("scout")
+                .and_then(|scout| scout.get("output_dir"))
+                .and_then(toml::Value::as_str)
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| PathBuf::from(scout::SCOUT_OUTPUT_DIR));
+    let configured = if configured.is_absolute() {
+        configured
+    } else {
+        cwd.join(configured)
+    };
+    fs::canonicalize(configured).map_err(|_| ValidationError::source_package_invalid())
 }
 
 fn inspect_main_footage_descriptor(
@@ -498,7 +513,7 @@ pub async fn create_job(
             .into_response();
     }
     if let Some(content_set) = spec.content_set.as_deref() {
-        let scout_root = match canonical_scout_output_root() {
+        let scout_root = match canonical_scout_output_root(&state.worker_config_path) {
             Ok(root) => root,
             Err(error) => {
                 return coded_validation(StatusCode::UNPROCESSABLE_ENTITY, error.code);
@@ -594,7 +609,7 @@ pub async fn create_project_job(
     };
 
     if let Some(content_set) = resolved.ingest_source.content_set.as_deref() {
-        let scout_root = match canonical_scout_output_root() {
+        let scout_root = match canonical_scout_output_root(&state.worker_config_path) {
             Ok(root) => root,
             Err(error) => {
                 return coded_validation(StatusCode::UNPROCESSABLE_ENTITY, error.code);
