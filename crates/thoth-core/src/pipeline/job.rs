@@ -73,12 +73,16 @@ impl JobContext {
 
     /// Per-moment news artifacts (screenshots, metadata).
     pub fn news_dir(&self, index: usize) -> PathBuf {
-        self.enrich_dir().join("news").join(format!("moment_{index}"))
+        self.enrich_dir()
+            .join("news")
+            .join(format!("moment_{index}"))
     }
 
     /// Per-moment reaction artifacts (script, voice, avatar).
     pub fn reaction_dir(&self, index: usize) -> PathBuf {
-        self.enrich_dir().join("reaction").join(format!("moment_{index}"))
+        self.enrich_dir()
+            .join("reaction")
+            .join(format!("moment_{index}"))
     }
 
     // ── Narration (narrator-driven spine) ──────────────────────────────────────
@@ -120,12 +124,12 @@ impl JobContext {
 
     /// Narration-aligned cut plans.
     pub fn plans_dir(&self) -> PathBuf {
-        self.main_footage_dir().join("plans")
+        self.root().join("plans")
     }
 
     /// Materialized cut segments, published under immutable `vNNN` generations.
     pub fn cuts_dir(&self) -> PathBuf {
-        self.main_footage_dir().join("cuts")
+        self.root().join("cuts")
     }
 
     /// Narration beat timeline the cut planner allocates against.
@@ -153,18 +157,20 @@ impl JobContext {
     }
 
     pub fn clip_path(&self, index: usize, slug: &str) -> PathBuf {
-        self.clips_dir()
-            .join(format!("clip_{index:03}_{slug}.mp4"))
+        self.clips_dir().join(format!("clip_{index:03}_{slug}.mp4"))
     }
 
     pub fn ass_path(&self, index: usize, slug: &str) -> PathBuf {
-        self.clips_dir()
-            .join(format!("clip_{index:03}_{slug}.ass"))
+        self.clips_dir().join(format!("clip_{index:03}_{slug}.ass"))
     }
 
     /// Resolve a path that may be relative to the job root or absolute.
     pub fn resolve(&self, p: &Path) -> PathBuf {
-        if p.is_absolute() { p.to_owned() } else { self.root().join(p) }
+        if p.is_absolute() {
+            p.to_owned()
+        } else {
+            self.root().join(p)
+        }
     }
 }
 
@@ -223,20 +229,19 @@ mod tests {
     }
 
     #[test]
-    fn main_footage_paths_stay_under_one_job_owned_root() {
+    fn main_footage_paths_follow_the_job_root_artifact_layout() {
         let base_dir = temp_base();
         let ctx = JobContext::new_flat("test_job_main_footage".to_string(), base_dir).unwrap();
 
-        let root = ctx.main_footage_dir();
-        assert_eq!(root, ctx.root().join("main-footage"));
-        for path in [
-            ctx.source_package_manifest(),
-            ctx.scene_index_dir(),
-            ctx.plans_dir(),
-            ctx.cuts_dir(),
-        ] {
-            assert!(path.starts_with(&root), "{} escaped {}", path.display(), root.display());
-        }
-        assert_eq!(ctx.narration_timeline(), ctx.narration_dir().join("timeline.json"));
+        let package_root = ctx.main_footage_dir();
+        assert_eq!(package_root, ctx.root().join("main-footage"));
+        assert!(ctx.source_package_manifest().starts_with(&package_root));
+        assert!(ctx.scene_index_dir().starts_with(&package_root));
+        assert_eq!(ctx.plans_dir(), ctx.root().join("plans"));
+        assert_eq!(ctx.cuts_dir(), ctx.root().join("cuts"));
+        assert_eq!(
+            ctx.narration_timeline(),
+            ctx.narration_dir().join("timeline.json")
+        );
     }
 }

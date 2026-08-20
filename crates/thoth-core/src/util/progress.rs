@@ -116,9 +116,11 @@ pub fn step_bar(steps: u64, msg: &str) -> ProgressBar {
 pub fn sub_spinner(mp: &MultiProgress, msg: &str) -> ProgressBar {
     let pb = mp.add(ProgressBar::new_spinner());
     pb.set_style(
-        ProgressStyle::with_template(&format!("    {SPINE} {{spinner:.cyan}} {{msg}} {{elapsed}}"))
-            .unwrap()
-            .tick_strings(TICKS),
+        ProgressStyle::with_template(&format!(
+            "    {SPINE} {{spinner:.cyan}} {{msg}} {{elapsed}}"
+        ))
+        .unwrap()
+        .tick_strings(TICKS),
     );
     pb.set_message(msg.to_owned());
     pb.enable_steady_tick(Duration::from_millis(80));
@@ -133,10 +135,16 @@ pub fn stage_header(n: u8, total: u8, label: &str) {
     emit_stage(label, f32::from(n) / f32::from(total), label);
     let p = brand::p();
     let label_up = label.to_uppercase();
-    let meta = format!("{n}/{total} {} {:.1}s", brand::DOT, start().elapsed().as_secs_f64());
+    let meta = format!(
+        "{n}/{total} {} {:.1}s",
+        brand::DOT,
+        start().elapsed().as_secs_f64()
+    );
     // pad so meta right-aligns to ~40 cols of visible content
     let visible = brand::BLOCK.chars().count() + 1 + label_up.chars().count();
-    let pad = 40usize.saturating_sub(visible + meta.chars().count()).max(2);
+    let pad = 40usize
+        .saturating_sub(visible + meta.chars().count())
+        .max(2);
     eprintln!(
         "\n  {}{}{} {}{}{}{}{}{}{}",
         p.gold,
@@ -213,4 +221,135 @@ mod tests {
         // Restore global sink so other tests aren't affected.
         *SINK.write().unwrap() = None;
     }
+
+    /// Production mutation caught: accepting arbitrary planner stages/messages
+    /// would turn untrusted subprocess stdout into a log/progress injection path.
+    #[test]
+    fn planner_ndjson_maps_only_to_the_seven_safe_main_footage_stages() {
+        assert_eq!(
+            MainFootageProgressStage::ALL.map(MainFootageProgressStage::as_str),
+            [
+                "importing_sources",
+                "validating_scene_index",
+                "generating_narration",
+                "planning_cuts",
+                "materializing_cuts",
+                "verifying_plan",
+                "rendering",
+            ]
+        );
+        let parsed = parse_planner_progress_line(
+            r#"{"stage":"planning_cuts","pct":15,"message":"Bearer secret","warning":"https://private.test/?token=x"}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.stage, MainFootageProgressStage::PlanningCuts);
+        assert!((parsed.pct - 0.15).abs() < f32::EPSILON);
+        assert_eq!(parsed.message, "planning main-footage cuts");
+        assert!(!parsed.message.contains("secret"));
+
+        for rejected in [
+            r#"{"stage":"downloading_remote","pct":10,"message":"x"}"#,
+            r#"{"stage":"planning_cuts","pct":101,"message":"x"}"#,
+            r#"{"stage":"planning_cuts","pct":10,"message":"x","extra":true}"#,
+            "not-json",
+        ] {
+            assert!(parse_planner_progress_line(rejected).is_err());
+        }
+    }
+}
+
+/// The complete forced-main progress vocabulary. Planner stdout is allowed to
+/// advance only the planning/materialization/verification subset; the Rust
+/// pipeline owns import/index/narration/render events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainFootageProgressStage {
+    ImportingSources,
+    ValidatingSceneIndex,
+    GeneratingNarration,
+    PlanningCuts,
+    MaterializingCuts,
+    VerifyingPlan,
+    Rendering,
+}
+
+impl MainFootageProgressStage {
+    pub const ALL: [Self; 7] = [
+        Self::ImportingSources,
+        Self::ValidatingSceneIndex,
+        Self::GeneratingNarration,
+        Self::PlanningCuts,
+        Self::MaterializingCuts,
+        Self::VerifyingPlan,
+        Self::Rendering,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ImportingSources => "importing_sources",
+            Self::ValidatingSceneIndex => "validating_scene_index",
+            Self::GeneratingNarration => "generating_narration",
+            Self::PlanningCuts => "planning_cuts",
+            Self::MaterializingCuts => "materializing_cuts",
+            Self::VerifyingPlan => "verifying_plan",
+            Self::Rendering => "rendering",
+        }
+    }
+
+    const fn safe_message(self) -> &'static str {
+        match self {
+            Self::ImportingSources => "importing main-footage sources",
+            Self::ValidatingSceneIndex => "validating main-footage scene index",
+            Self::GeneratingNarration => "generating narration timeline",
+            Self::PlanningCuts => "planning main-footage cuts",
+            Self::MaterializingCuts => "materializing main-footage cuts",
+            Self::VerifyingPlan => "verifying main-footage plan",
+            Self::Rendering => "rendering planned main footage",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MainFootageProgress {
+    pub stage: MainFootageProgressStage,
+    pub pct: f32,
+    pub message: &'static str,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlannerProgressWire {
+    stage: String,
+    pct: f32,
+    message: String,
+    #[serde(default)]
+    warning: Option<String>,
+}
+
+/// Parses one untrusted Scout NDJSON record and projects it onto fixed safe
+/// values. Provider text, paths, warnings, and credentials are never relayed.
+pub fn parse_planner_progress_line(line: &str) -> Result<MainFootageProgress, &'static str> {
+    let wire: PlannerProgressWire =
+        serde_json::from_str(line).map_err(|_| "planner_progress_invalid")?;
+    if !wire.pct.is_finite() || !(0.0..=100.0).contains(&wire.pct) {
+        return Err("planner_progress_invalid");
+    }
+    let stage = match wire.stage.as_str() {
+        "planning_cuts" => MainFootageProgressStage::PlanningCuts,
+        "materializing_cuts" => MainFootageProgressStage::MaterializingCuts,
+        "verifying_plan" => MainFootageProgressStage::VerifyingPlan,
+        _ => return Err("planner_progress_invalid"),
+    };
+    // Read and deliberately discard both untrusted text fields so it remains
+    // obvious that no future refactor should pass them to `emit_stage`.
+    drop(wire.message);
+    drop(wire.warning);
+    Ok(MainFootageProgress {
+        stage,
+        pct: wire.pct / 100.0,
+        message: stage.safe_message(),
+    })
+}
+
+pub fn emit_main_footage_progress(progress: &MainFootageProgress) {
+    emit_stage(progress.stage.as_str(), progress.pct, progress.message);
 }

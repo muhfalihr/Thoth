@@ -1,16 +1,20 @@
 pub mod contracts;
+pub mod coordinator;
 pub mod import;
 pub mod paths;
+pub mod verify;
 
 use std::fmt;
 
 pub use contracts::{
-    fingerprint_canonical, MainFootageDescriptor, MainFootageErrorCode, MainFootageMode,
-    MainFootagePlanV1, MainFootageWarningCode, NarrationBeatV1, NarrationTimelineV1,
-    NarrationWordV1, PlanningMode, SourcePackageV1, TransitionKind,
+    MainFootageDescriptor, MainFootageErrorCode, MainFootageMode, MainFootagePlanV1,
+    MainFootageWarningCode, NarrationBeatV1, NarrationTimelineV1, NarrationWordV1, PlanningMode,
+    SourcePackageV1, TransitionKind, fingerprint_canonical,
 };
-pub use import::{import_package, ImportedSourcePackage};
+pub use coordinator::{MainFootageCoordinator, MainFootagePrepareInput};
+pub use import::{ImportedSourcePackage, import_package};
 pub use paths::{import_file, resolve_contained, write_immutable};
+pub use verify::{MainFootagePlanMetrics, VerifiedMainFootagePlan, verify_plan};
 
 /// A forced main-footage failure carrying the wire error code the CLI, worker,
 /// and REST surface all report. `detail` is a short stable reason — never a
@@ -76,7 +80,25 @@ pub fn narration_failure(forced: bool) -> Option<MainFootageError> {
 
 #[cfg(test)]
 mod reexport_tests {
-    use super::{narration_failure, require_narration_enabled, MainFootageError, MainFootageErrorCode};
+    use super::{
+        MainFootageCoordinator, MainFootageError, MainFootageErrorCode, MainFootagePlanMetrics,
+        MainFootagePrepareInput, VerifiedMainFootagePlan, narration_failure,
+        require_narration_enabled, verify_plan,
+    };
+
+    #[test]
+    fn planned_mode_interfaces_are_exported_from_the_domain_root() {
+        assert!(std::any::type_name::<MainFootageCoordinator>().contains("MainFootageCoordinator"));
+        assert!(
+            std::any::type_name::<MainFootagePrepareInput<'static>>()
+                .contains("MainFootagePrepareInput")
+        );
+        assert!(
+            std::any::type_name::<VerifiedMainFootagePlan>().contains("VerifiedMainFootagePlan")
+        );
+        assert!(std::any::type_name::<MainFootagePlanMetrics>().contains("MainFootagePlanMetrics"));
+        let _verify_entrypoint = verify_plan;
+    }
 
     /// A forced run has nothing for the cut planner to allocate against without
     /// narration beats, so a disabled narrator is a hard stop. Legacy runs are
@@ -104,16 +126,18 @@ mod reexport_tests {
 
     #[test]
     fn core_reexports_the_leaf_main_footage_contract() {
-        let descriptor: crate::main_footage::MainFootageDescriptor = serde_json::from_value(
-            serde_json::json!({
+        let descriptor: crate::main_footage::MainFootageDescriptor =
+            serde_json::from_value(serde_json::json!({
                 "mode": "forced_url_pool",
                 "package_manifest": "packages/source-package.json",
                 "coverage_target": 0.6
-            }),
-        )
-        .unwrap();
+            }))
+            .unwrap();
         let leaf: thoth_types::main_footage::MainFootageDescriptor = descriptor;
-        assert_eq!(leaf.mode, thoth_types::main_footage::MainFootageMode::ForcedUrlPool);
+        assert_eq!(
+            leaf.mode,
+            thoth_types::main_footage::MainFootageMode::ForcedUrlPool
+        );
     }
 
     /// The codes the core reports must spell exactly what `thoth-server`'s

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -32,7 +33,90 @@ pub struct StageResults {
     /// Stage 4: news + reaction enrichment (None when disabled or not yet run).
     #[serde(default)]
     pub enrich: Option<EnrichResult>,
+    /// Verified, narration-aligned forced main-footage plan. Older state files
+    /// omit this field and therefore resume as not reusable.
+    #[serde(default)]
+    pub main_footage: Option<MainFootageStageResult>,
     pub edit: Option<EditResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MainFootageStageResult {
+    pub source_package_fingerprint: String,
+    pub narration_fingerprint: String,
+    pub plan_fingerprint: String,
+    pub active_version: String,
+    pub planning_mode: thoth_types::main_footage::PlanningMode,
+    pub coverage_target: f64,
+    pub main_coverage_sec: f64,
+    pub main_coverage_ratio: f64,
+    pub total_duration_sec: f64,
+    pub selected_cut_count: u32,
+    pub candidate_count: u32,
+    pub transition_distribution: BTreeMap<String, u32>,
+    pub warnings: Vec<thoth_types::main_footage::MainFootageWarningCode>,
+    pub retained_bytes: u64,
+    pub completed_at: DateTime<Utc>,
+}
+
+impl MainFootageStageResult {
+    pub fn from_verified(verified: &crate::main_footage::verify::VerifiedMainFootagePlan) -> Self {
+        let metrics = verified.metrics();
+        Self {
+            source_package_fingerprint: verified.source_package_fingerprint().to_owned(),
+            narration_fingerprint: verified.narration_fingerprint().to_owned(),
+            plan_fingerprint: verified.plan_fingerprint().to_owned(),
+            active_version: verified.version().to_owned(),
+            planning_mode: metrics.planning_mode,
+            coverage_target: metrics.coverage_target,
+            main_coverage_sec: metrics.main_coverage_sec,
+            main_coverage_ratio: metrics.main_coverage_ratio,
+            total_duration_sec: metrics.total_duration_sec,
+            selected_cut_count: metrics.selected_cut_count,
+            candidate_count: metrics.candidate_count,
+            transition_distribution: metrics.transition_distribution.clone(),
+            warnings: verified.warnings().to_vec(),
+            retained_bytes: verified.retained_bytes(),
+            completed_at: Utc::now(),
+        }
+    }
+}
+
+pub(crate) fn main_footage_is_fresh(
+    stage: Option<&MainFootageStageResult>,
+    source_package_fingerprint: &str,
+    narration_fingerprint: &str,
+    plan_fingerprint: &str,
+    active_version: &str,
+) -> bool {
+    let Some(stage) = stage else {
+        return false;
+    };
+    stage.source_package_fingerprint == source_package_fingerprint
+        && stage.narration_fingerprint == narration_fingerprint
+        && stage.plan_fingerprint == plan_fingerprint
+        && stage.active_version == active_version
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainFootageInvalidation {
+    NarrationChanged,
+    SourceChanged,
+    RenderSettingsChanged,
+}
+
+/// Clears only mutable active references/downstream results. Immutable source,
+/// index, cut, and plan generations live on disk and are never deleted here.
+pub fn invalidate_main_footage(state: &mut PipelineState, reason: MainFootageInvalidation) {
+    match reason {
+        MainFootageInvalidation::NarrationChanged | MainFootageInvalidation::SourceChanged => {
+            state.stages.main_footage = None;
+            state.stages.edit = None;
+        }
+        MainFootageInvalidation::RenderSettingsChanged => {
+            state.stages.edit = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,8 +256,7 @@ mod ocr_state_tests {
     #[test]
     fn context_from_previous_sequential_job_is_not_reusable() {
         let mut persisted = serde_json::to_value(analyzed_context()).unwrap();
-        persisted["ocr_source_fingerprint"] =
-            serde_json::Value::String("md5:previous-job".into());
+        persisted["ocr_source_fingerprint"] = serde_json::Value::String("md5:previous-job".into());
         let persisted: MainContext = serde_json::from_value(persisted).unwrap();
 
         assert!(!ocr_is_fresh(
@@ -296,8 +379,7 @@ mod ocr_state_tests {
 
     #[test]
     fn failed_ocr_rerun_leaves_persisted_state_without_stale_completion() {
-        let dir =
-            std::env::temp_dir().join(format!("thoth-ocr-rerun-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("thoth-ocr-rerun-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let state_path = dir.join("state.json");
         let mut state = PipelineState::new("job".into(), "https://example.test/video".into());
@@ -316,5 +398,175 @@ mod ocr_state_tests {
         assert!(persisted.stages.ocr.is_none());
         assert!(persisted.stages.edit.is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod main_footage_state_tests {
+    use std::collections::BTreeMap;
+
+    use super::{
+        MainFootageInvalidation, MainFootageStageResult, PipelineState, invalidate_main_footage,
+        main_footage_is_fresh,
+    };
+    use crate::main_footage::verify::{tests::fixture, verify_plan_with_probe};
+
+    fn completed_stage() -> MainFootageStageResult {
+        MainFootageStageResult {
+            source_package_fingerprint: "sha256:source".into(),
+            narration_fingerprint: "sha256:narration".into(),
+            plan_fingerprint: "sha256:plan".into(),
+            active_version: "v001".into(),
+            planning_mode: thoth_types::main_footage::PlanningMode::Vision,
+            coverage_target: 0.6,
+            main_coverage_sec: 10.0,
+            main_coverage_ratio: 1.0,
+            total_duration_sec: 10.0,
+            selected_cut_count: 2,
+            candidate_count: 2,
+            transition_distribution: BTreeMap::from([
+                ("cross_dissolve".into(), 1),
+                ("match_cut".into(), 1),
+            ]),
+            warnings: Vec::new(),
+            retained_bytes: 4_096,
+            completed_at: chrono::Utc::now(),
+        }
+    }
+
+    /// The persistence boundary must copy every durable identity and every
+    /// verified metric from the opaque gate result. Callers must not be able to
+    /// hand-build a stage record that drifts from the plan they actually gated.
+    #[tokio::test]
+    async fn verified_plan_converts_to_a_complete_persisted_stage_result() {
+        let fixture = fixture();
+        let verified = verify_plan_with_probe(
+            &fixture.job,
+            &fixture.imported,
+            &fixture.narration,
+            &fixture.plan_path,
+            &fixture.probe,
+        )
+        .await
+        .unwrap();
+
+        let stage = MainFootageStageResult::from_verified(&verified);
+
+        assert_eq!(
+            stage.source_package_fingerprint,
+            fixture.imported.fingerprint
+        );
+        assert_eq!(
+            stage.narration_fingerprint,
+            fixture.narration.fingerprint.as_deref().unwrap()
+        );
+        assert_eq!(stage.plan_fingerprint, verified.plan_fingerprint());
+        assert_eq!(stage.active_version, "v001");
+        assert_eq!(stage.planning_mode, verified.metrics().planning_mode);
+        assert_eq!(stage.coverage_target, 0.6);
+        assert_eq!(stage.main_coverage_sec, 10.0);
+        assert_eq!(stage.main_coverage_ratio, 1.0);
+        assert_eq!(stage.total_duration_sec, 10.0);
+        assert_eq!(stage.selected_cut_count, 2);
+        assert_eq!(stage.candidate_count, 2);
+        assert_eq!(
+            stage.transition_distribution,
+            BTreeMap::from([("cross_dissolve".into(), 1), ("match_cut".into(), 1),])
+        );
+        assert_eq!(stage.warnings, verified.warnings());
+        assert_eq!(stage.retained_bytes, verified.retained_bytes());
+    }
+
+    /// Production mutation caught: omitting any durable identity from freshness
+    /// would reuse an active reference for different inputs or plan bytes.
+    #[test]
+    fn matching_all_durable_identities_is_required_for_resume() {
+        let stage = completed_stage();
+        assert!(main_footage_is_fresh(
+            Some(&stage),
+            "sha256:source",
+            "sha256:narration",
+            "sha256:plan",
+            "v001",
+        ));
+        for identities in [
+            ("sha256:other", "sha256:narration", "sha256:plan", "v001"),
+            ("sha256:source", "sha256:other", "sha256:plan", "v001"),
+            ("sha256:source", "sha256:narration", "sha256:other", "v001"),
+            ("sha256:source", "sha256:narration", "sha256:plan", "v002"),
+        ] {
+            assert!(!main_footage_is_fresh(
+                Some(&stage),
+                identities.0,
+                identities.1,
+                identities.2,
+                identities.3,
+            ));
+        }
+    }
+
+    /// Production mutation caught: deleting versioned artifacts or leaving the
+    /// stale plan/render reference during narration invalidation breaks resume.
+    #[test]
+    fn narration_change_invalidates_plan_and_render_but_retains_immutable_artifacts() {
+        let root = std::env::temp_dir().join(format!("mf-state-{}", uuid::Uuid::new_v4()));
+        let retained = [
+            root.join("main-footage/sources/source-0.mp4"),
+            root.join("main-footage/scene-index/source-0/v001/index.json"),
+            root.join("plans/v001/main-footage-plan.json"),
+            root.join("cuts/v001/cut-001.mp4"),
+        ];
+        for path in &retained {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"immutable").unwrap();
+        }
+        let mut state = PipelineState::new("job".into(), String::new());
+        state.stages.main_footage = Some(completed_stage());
+        state.stages.edit = Some(crate::edit::service::EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+
+        invalidate_main_footage(&mut state, MainFootageInvalidation::NarrationChanged);
+
+        assert!(state.stages.main_footage.is_none());
+        assert!(state.stages.edit.is_none());
+        assert!(retained.iter().all(|path| path.exists()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_change_clears_active_plan_and_render_references() {
+        let mut state = PipelineState::new("job".into(), String::new());
+        state.stages.main_footage = Some(completed_stage());
+        state.stages.edit = Some(crate::edit::service::EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+
+        invalidate_main_footage(&mut state, MainFootageInvalidation::SourceChanged);
+
+        assert!(state.stages.main_footage.is_none());
+        assert!(state.stages.edit.is_none());
+    }
+
+    /// Production mutation caught: treating style/layout as planner identity
+    /// would waste immutable cuts and advance the plan generation unnecessarily.
+    #[test]
+    fn style_or_layout_change_keeps_plan_reusable_and_only_invalidates_render() {
+        let mut state = PipelineState::new("job".into(), String::new());
+        state.stages.main_footage = Some(completed_stage());
+        state.stages.edit = Some(crate::edit::service::EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+
+        invalidate_main_footage(&mut state, MainFootageInvalidation::RenderSettingsChanged);
+
+        assert_eq!(
+            state.stages.main_footage.as_ref().unwrap().plan_fingerprint,
+            "sha256:plan"
+        );
+        assert!(state.stages.edit.is_none());
     }
 }
