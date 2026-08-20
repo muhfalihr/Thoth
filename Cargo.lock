@@ -3522,6 +3522,7 @@ dependencies = [
  "sqlx",
  "thoth-types",
  "tokio",
+ "toml",
  "uuid",
 ]
 

@@ -17,6 +17,8 @@ use thoth_jobs::{validate_job_spec, JobRecord, JobStatus, JobStore};
 pub async fn run_worker(db_path: &str) -> anyhow::Result<()> {
     let store = JobStore::connect(db_path).await?;
     let worker_id = uuid::Uuid::new_v4().to_string();
+    let worker_config_path = std::env::current_dir()?.join("config.toml");
+    let scout_output_config = thoth_jobs::ScoutOutputConfig::new(worker_config_path)?;
     // Config is re-read per job (below) so dashboard edits apply without a
     // worker restart. The warm CUDA/Whisper models live in the process, not in
     // AppConfig, so re-parsing settings each job is cheap.
@@ -33,6 +35,7 @@ pub async fn run_worker(db_path: &str) -> anyhow::Result<()> {
             Some(job) => {
                 backoff = Duration::from_millis(250);
                 config = pick_config(AppConfig::load(), &config);
+                config.scout.output_dir = scout_output_config.resolve();
                 let cfg = config.clone();
                 run_one(&store, &worker_id, job, move |j, context| {
                     execute_pipeline((*j).clone(), cfg, context)
@@ -106,8 +109,7 @@ fn apply_runtime_narration_settings(
     home: &thoth_jobs::ThothHome,
 ) -> anyhow::Result<()> {
     if let Some(snapshot) = snapshot {
-        let resolved: thoth_jobs::ResolvedSettings = serde_json::from_value(snapshot.clone())
-            .context("resolved settings snapshot is invalid")?;
+        let resolved = decode_resolved_settings_snapshot(snapshot)?;
         thoth_jobs::validate_resolved_settings(&resolved, home)
             .context("resolved settings snapshot failed validation")?;
         let enabled = resolved.narration.enabled;
@@ -128,6 +130,20 @@ fn apply_runtime_narration_settings(
     Ok(())
 }
 
+fn decode_resolved_settings_snapshot(
+    snapshot: &serde_json::Value,
+) -> anyhow::Result<thoth_jobs::ResolvedSettings> {
+    let mut settings = snapshot.clone();
+    let object = settings
+        .as_object_mut()
+        .context("resolved settings snapshot is invalid")?;
+    if let Some(credential_ref) = object.remove("credential_ref") {
+        let _: Option<String> = serde_json::from_value(credential_ref)
+            .context("resolved settings snapshot credential reference is invalid")?;
+    }
+    serde_json::from_value(settings).context("resolved settings snapshot is invalid")
+}
+
 /// One claim's lifecycle: install a DB progress sink, run `run_fn`, record the
 /// terminal state + a closing event. `run_fn` is injected so tests can stub the
 /// pipeline. This is where all the DB bookkeeping the fully-decoupled design
@@ -141,17 +157,20 @@ where
     let context = JobExecutionContext::new();
     let cancellation = context.cancellation_token();
 
-    // Progress sink: every emit_stage → a job_events "progress" row + a progress
-    // column update. Fire-and-forget spawns so the pipeline never blocks on the
-    // DB. ponytail: global sink is fine — a worker runs one job at a time.
+    // Progress sink: every emit_stage is synchronously enqueued, then one
+    // per-job writer persists the progress column and event row in emission
+    // order. The worker runs one job at a time, so the global sink remains a
+    // single-slot bridge without making pipeline stages wait on SQLite.
     let s = store.clone();
     let jid = id.clone();
-    crate::util::progress::set_sink(Box::new(move |ev| {
-        let s = s.clone();
-        let jid = jid.clone();
-        tokio::spawn(async move {
-            let _ = s.update_progress(&jid, &ev.stage, ev.pct).await;
-            let _ = s
+    let (progress_tx, mut progress_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::util::progress::ProgressEvent>();
+    let progress_writer = tokio::spawn(async move {
+        while let Some(ev) = progress_rx.recv().await {
+            if let Err(error) = s.update_progress(&jid, &ev.stage, ev.pct).await {
+                tracing::error!(job_id = %jid, %error, "progress update failed");
+            }
+            if let Err(error) = s
                 .append_event(
                     &jid,
                     "progress",
@@ -159,8 +178,14 @@ where
                     Some(ev.pct),
                     Some(&ev.message),
                 )
-                .await;
-        });
+                .await
+            {
+                tracing::error!(job_id = %jid, %error, "progress event append failed");
+            }
+        }
+    });
+    crate::util::progress::set_sink(Box::new(move |ev| {
+        let _ = progress_tx.send(ev);
     }));
 
     // Heartbeat while running — the reaper fails jobs whose worker went silent.
@@ -197,6 +222,9 @@ where
     });
 
     let result = run_fn(Arc::new(job), context.clone()).await;
+    // Closing the only sender lets the writer drain every stage already
+    // emitted. No progress event can be accepted after this job completes.
+    crate::util::progress::set_sink(Box::new(|_| {}));
     watcher.abort();
     let _ = watcher.await;
 
@@ -215,6 +243,9 @@ where
     hb.abort();
     let _ = hb.await;
     context.terminate_all().await;
+    if let Err(error) = progress_writer.await {
+        tracing::error!(job_id = %id, %error, "progress writer failed");
+    }
 
     let (status, event_kind, detail) = match result {
         Ok(()) if cancellation.is_cancelled() => (JobStatus::Cancelled, "cancelled", None),
@@ -238,9 +269,6 @@ where
         Ok(false) => tracing::warn!(job_id = %id, "job finalization lost status race"),
         Err(error) => tracing::error!(job_id = %id, %error, "job finalization failed"),
     }
-
-    // Idle the sink between jobs (worker never uses stdout NDJSON).
-    crate::util::progress::set_sink(Box::new(|_| {}));
 }
 
 /// Translate a job's `spec.params` JSON into `thoth run` CLI flags, appended to
@@ -299,7 +327,7 @@ fn pick_config<T: Clone>(loaded: anyhow::Result<T>, prev: &T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thoth_jobs::{JobSpec, JobStatus, JobStore, ResolvedSettings};
+    use thoth_jobs::{EnqueueRequest, JobSpec, JobStatus, JobStore, ResolvedSettings};
 
     fn runtime_config() -> AppConfig {
         AppConfig::load().expect("runtime config")
@@ -331,6 +359,61 @@ mod tests {
 
         assert!(config.narration.enabled);
         assert_eq!(config.narration.language, "en-US");
+    }
+
+    #[tokio::test]
+    async fn enqueued_resolved_snapshot_applies_runtime_narration_settings() {
+        let dir = std::env::temp_dir().join(format!(
+            "thoth-worker-resolved-snapshot-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = JobStore::connect(dir.join("jobs.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut settings = ResolvedSettings::default();
+        settings.narration.enabled = true;
+        settings.narration.language = Some("en-US".into());
+        store
+            .enqueue_resolved(
+                &id,
+                &EnqueueRequest {
+                    spec: JobSpec {
+                        command: "run".into(),
+                        url: Some("https://example.invalid/video".into()),
+                        content_set: None,
+                        params: serde_json::json!({}),
+                    },
+                    project_id: "project-1".into(),
+                    profile_id: Some("profile-1".into()),
+                    profile_revision: Some(1),
+                    override_summary: None,
+                    resolved_settings: settings,
+                },
+                "job-output",
+            )
+            .await
+            .unwrap();
+
+        let claimed = store.claim_next("worker-1").await.unwrap().unwrap();
+        let snapshot = claimed.resolved_settings_snapshot.unwrap();
+        assert!(snapshot.get("credential_ref").is_some());
+        let mut config = runtime_config();
+        config.narration.enabled = false;
+        config.narration.language = "id".into();
+
+        apply_runtime_narration_settings(
+            &mut config,
+            Some(&snapshot),
+            &claimed.spec.params,
+            &settings_home(),
+        )
+        .unwrap();
+
+        assert!(config.narration.enabled);
+        assert_eq!(config.narration.language, "en-US");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Production mutation caught: the profile-less endpoint validates this
@@ -466,6 +549,56 @@ mod tests {
         let events = store.events_since(&id, 0).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "done");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn production_progress_is_persisted_in_order_before_the_terminal_event() {
+        let (dir, store, id, job) = store_with_claimed_job().await;
+        let vocabulary = [
+            "importing_sources",
+            "validating_scene_index",
+            "generating_narration",
+            "planning_cuts",
+            "materializing_cuts",
+            "verifying_plan",
+            "rendering",
+        ];
+        let expected: Vec<String> = (0..64)
+            .map(|index| vocabulary[index % vocabulary.len()].to_owned())
+            .collect();
+        let emitted = expected.clone();
+
+        run_one(&store, "w1", job, move |_j, _ctx| async move {
+            for (index, stage) in emitted.iter().enumerate() {
+                crate::util::progress::emit_stage(
+                    stage,
+                    index as f32 / emitted.len() as f32,
+                    "safe progress",
+                );
+            }
+            Ok(())
+        })
+        .await;
+
+        let at_return = store.events_since(&id, 0).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let after_settle = store.events_since(&id, 0).await.unwrap();
+        assert_eq!(
+            after_settle.len(),
+            at_return.len(),
+            "writes continued after run_one returned"
+        );
+        assert_eq!(after_settle.last().unwrap().kind, "done");
+        assert_eq!(
+            after_settle
+                .iter()
+                .filter(|event| event.kind == "progress")
+                .filter_map(|event| event.stage.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(after_settle.len(), expected.len() + 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

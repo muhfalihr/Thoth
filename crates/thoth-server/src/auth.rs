@@ -9,7 +9,7 @@ use axum::{
     response::Response,
 };
 
-use thoth_jobs::{JobStore, ThothHome};
+use thoth_jobs::{JobStore, ScoutOutputConfig, ThothHome};
 
 /// Resolves whether a profile's non-secret `credential_ref` currently points
 /// at a usable credential. Never exposes the secret itself — callers only
@@ -61,6 +61,9 @@ pub struct AppState {
     pub home: ThothHome,
     /// Exact legacy TOML path the independent worker reads from its CWD.
     pub worker_config_path: PathBuf,
+    /// Typed Scout hand-off configuration with the same last-good reload
+    /// behavior as the warm worker.
+    pub scout_output_config: ScoutOutputConfig,
     /// Single-slot supervisor for the interactive scout discovery pipeline.
     /// In-memory; independent of the render job queue. See scout.rs.
     pub scout: crate::scout::ScoutSupervisor,

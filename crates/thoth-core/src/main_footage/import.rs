@@ -145,11 +145,46 @@ pub fn import_package(
     let package_root = manifest_path
         .parent()
         .ok_or_else(|| invalid("package_manifest_has_no_parent"))?;
-    let job_root = job.main_footage_dir();
-    fs::create_dir_all(&job_root).map_err(|_| invalid("job_root_not_writable"))?;
+    // Re-serialize and fingerprint before choosing the destination generation.
+    // A changed Scout package is imported beside the prior immutable generation
+    // rather than conflicting with or overwriting it.
+    let mut owned = package.clone();
+    owned.fingerprint = None;
+    let decoded =
+        serde_json::to_value(&owned).map_err(|_| invalid("manifest_not_serializable"))?;
+    let fingerprint =
+        fingerprint_canonical(&decoded).map_err(|_| invalid("fingerprint_failed"))?;
+    owned.fingerprint = Some(fingerprint.clone());
+    let manifest_bytes =
+        serde_json::to_vec_pretty(&owned).map_err(|_| invalid("manifest_not_serializable"))?;
+
+    let base_job_root = job.main_footage_dir();
+    fs::create_dir_all(&base_job_root).map_err(|_| invalid("job_root_not_writable"))?;
     // Canonical from here on, so every path the caller later resolves against
     // `root` is comparable with what `resolve_contained` hands back.
-    let job_root = fs::canonicalize(&job_root).map_err(|_| invalid("job_root_not_writable"))?;
+    let base_job_root =
+        fs::canonicalize(&base_job_root).map_err(|_| invalid("job_root_not_writable"))?;
+    let default_manifest = job.source_package_manifest();
+    let (job_root, job_manifest) = if default_manifest.exists() {
+        let published =
+            fs::read(&default_manifest).map_err(|_| invalid("published_manifest_unreadable"))?;
+        if published == manifest_bytes {
+            (base_job_root, default_manifest)
+        } else {
+            let generation_name = fingerprint
+                .strip_prefix("sha256:")
+                .unwrap_or(fingerprint.as_str());
+            let generation_root = base_job_root.join("packages").join(generation_name);
+            fs::create_dir_all(&generation_root)
+                .map_err(|_| invalid("job_root_not_writable"))?;
+            let generation_root = fs::canonicalize(&generation_root)
+                .map_err(|_| invalid("job_root_not_writable"))?;
+            let generation_manifest = generation_root.join("source-package.json");
+            (generation_root, generation_manifest)
+        }
+    } else {
+        (base_job_root, default_manifest)
+    };
 
     for source in &package.sources {
         let imported = import_artifact(execution, package_root, &job_root, &source.path)?;
@@ -169,26 +204,9 @@ pub fn import_package(
         }
     }
 
-    // Published last, and re-serialized from the decoded contract so no Scout
-    // location can ride along.
-    let mut owned = package.clone();
-    owned.fingerprint = None;
-    // Check 2 — over the decoded contract: whoever reads the published manifest
-    // can recompute this value from those same bytes. Hashing Scout's raw JSON
-    // here would not survive the round trip (an integer `duration_sec` comes back
-    // out of the `f64` contract field as `12.0`).
-    let decoded =
-        serde_json::to_value(&owned).map_err(|_| invalid("manifest_not_serializable"))?;
-    let fingerprint =
-        fingerprint_canonical(&decoded).map_err(|_| invalid("fingerprint_failed"))?;
-    owned.fingerprint = Some(fingerprint.clone());
-    let manifest_bytes =
-        serde_json::to_vec_pretty(&owned).map_err(|_| invalid("manifest_not_serializable"))?;
-    let job_manifest = job.source_package_manifest();
+    // Published last. Existing generation manifests are immutable and may only
+    // be reused when they describe these exact package bytes.
     if job_manifest.exists() {
-        // Fail closed: an identical manifest means this is an idempotent rerun,
-        // anything else means the job already owns a different package and the
-        // caller must not be handed this one as if it had been published.
         let published =
             fs::read(&job_manifest).map_err(|_| invalid("published_manifest_unreadable"))?;
         if published != manifest_bytes {
@@ -209,15 +227,19 @@ pub fn import_package(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    use async_trait::async_trait;
     use serde_json::{json, Value};
 
-    use super::{import_package, ImportedSourcePackage};
+    use super::{ImportedSourcePackage, import_package, invalid};
     use crate::execution::JobExecutionContext;
     use crate::main_footage::{MainFootageDescriptor, MainFootageError, MainFootageErrorCode};
     use crate::pipeline::job::JobContext;
+    use crate::pipeline::state::{MainFootageStageResult, PipelineState};
+    use crate::pipeline::{PlannedMainInput, PlannedMainStagePort, run_planned_main_with};
 
     /// The typed package error behind an `anyhow` failure. `import_package`
     /// returns `anyhow` so a cancellation keeps its own `Cancelled` type instead
@@ -355,6 +377,108 @@ mod tests {
             &fixture.scout_root,
             &JobExecutionContext::new(),
         )
+    }
+
+    struct RealImportThenStop;
+
+    #[async_trait]
+    impl PlannedMainStagePort for RealImportThenStop {
+        type Imported = ImportedSourcePackage;
+        type Narration = ();
+        type Verified = MainFootageStageResult;
+
+        async fn import_sources(
+            &self,
+            job: &JobContext,
+            planned: &PlannedMainInput,
+            execution: &JobExecutionContext,
+        ) -> anyhow::Result<Self::Imported> {
+            import_package(
+                &planned.content_set_path,
+                &planned.descriptor,
+                job,
+                &planned.scout_output_root,
+                execution,
+            )
+        }
+
+        fn source_fingerprint<'a>(&self, imported: &'a Self::Imported) -> &'a str {
+            &imported.fingerprint
+        }
+
+        fn validate_scene_index(
+            &self,
+            _job: &JobContext,
+            _imported: &Self::Imported,
+        ) -> anyhow::Result<()> {
+            Err(invalid("stop_after_real_import").into())
+        }
+
+        fn load_narration(&self, _job: &JobContext) -> anyhow::Result<Option<Self::Narration>> {
+            unreachable!("validation deliberately stops this adapter")
+        }
+
+        async fn generate_narration(
+            &self,
+            _job: &JobContext,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<Self::Narration> {
+            unreachable!("validation deliberately stops this adapter")
+        }
+
+        fn narration_fingerprint<'a>(&self, _narration: &'a Self::Narration) -> &'a str {
+            unreachable!("validation deliberately stops this adapter")
+        }
+
+        async fn prepare_plan(
+            &self,
+            _job: &JobContext,
+            _planned: &PlannedMainInput,
+            _imported: &Self::Imported,
+            _narration: &Self::Narration,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<Self::Verified> {
+            unreachable!("validation deliberately stops this adapter")
+        }
+
+        fn verified_state(&self, _verified: &Self::Verified) -> MainFootageStageResult {
+            unreachable!("validation deliberately stops this adapter")
+        }
+
+        fn render_settings_fingerprint(&self) -> String {
+            unreachable!("validation deliberately stops this adapter")
+        }
+
+        async fn render(
+            &self,
+            _job: &JobContext,
+            _verified: &Self::Verified,
+            _narration: &Self::Narration,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<crate::edit::service::EditResult> {
+            unreachable!("validation deliberately stops this adapter")
+        }
+    }
+
+    fn completed_stage(source_fingerprint: String) -> MainFootageStageResult {
+        MainFootageStageResult {
+            source_package_fingerprint: source_fingerprint,
+            narration_fingerprint: "sha256:old-narration".into(),
+            plan_fingerprint: "sha256:old-plan".into(),
+            active_version: "v001".into(),
+            render_settings_fingerprint: Some("sha256:old-render".into()),
+            planning_mode: crate::main_footage::PlanningMode::Vision,
+            coverage_target: 0.6,
+            main_coverage_sec: 6.0,
+            main_coverage_ratio: 1.0,
+            total_duration_sec: 6.0,
+            selected_cut_count: 1,
+            candidate_count: 1,
+            transition_distribution: BTreeMap::new(),
+            warnings: Vec::new(),
+            retained_bytes: 1,
+            completed_at: chrono::Utc::now(),
+        }
     }
 
     #[test]
@@ -587,11 +711,10 @@ mod tests {
         );
     }
 
-    /// Re-importing the same package is a no-op rerun; importing a *different*
-    /// package into a job that already published one is a contradiction and must
-    /// not be answered with a success the job cannot honour.
+    /// Re-importing the same package is a no-op rerun. A changed package receives
+    /// a separate immutable generation so the prior import remains replayable.
     #[test]
-    fn a_published_manifest_is_reused_only_when_it_matches_the_package() {
+    fn published_package_generations_are_reused_without_overwriting_history() {
         let fixture = fixture();
         let first = run(&fixture).unwrap();
         let published = fs::read(&first.manifest_path).unwrap();
@@ -604,15 +727,59 @@ mod tests {
         remanifest(&fixture, |value| {
             value["analysis_identity"] = json!("analysis-2026-08-15");
         });
-        let error = run(&fixture).unwrap_err();
-        assert_eq!(
-            package_error(&error).detail,
-            "published_manifest_conflicts_with_package"
-        );
+        let changed = run(&fixture).unwrap();
+        assert_ne!(changed.fingerprint, first.fingerprint);
+        assert_ne!(changed.root, first.root);
+        assert!(changed.manifest_path.is_file());
         assert_eq!(
             fs::read(&first.manifest_path).unwrap(),
             published,
-            "the conflicting import overwrote the published manifest"
+            "the changed import overwrote the previous generation"
+        );
+        let changed_again = run(&fixture).unwrap();
+        assert_eq!(changed_again.root, changed.root);
+        assert_eq!(changed_again.fingerprint, changed.fingerprint);
+    }
+
+    #[tokio::test]
+    async fn changed_real_import_persists_downstream_invalidation_and_retains_old_generation() {
+        let fixture = fixture();
+        let first = run(&fixture).unwrap();
+        let old_manifest = fs::read(&first.manifest_path).unwrap();
+        let job = JobContext::new_flat("forced".into(), fixture.job_base.clone()).unwrap();
+        let mut state = PipelineState::new("forced".into(), "forced".into());
+        state.stages.main_footage = Some(completed_stage(first.fingerprint));
+        state.stages.edit = Some(crate::edit::service::EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+        state.save(&job.state_path()).unwrap();
+        remanifest(&fixture, |value| {
+            value["analysis_identity"] = json!("analysis-2026-08-15");
+        });
+        let planned = PlannedMainInput {
+            content_set_path: fixture.content_set.clone(),
+            descriptor: descriptor(),
+            scout_output_root: fixture.scout_root.clone(),
+        };
+
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &RealImportThenStop,
+        )
+        .await
+        .unwrap_err();
+
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+        assert!(persisted.stages.main_footage.is_none());
+        assert!(persisted.stages.edit.is_none());
+        assert_eq!(
+            fs::read(&first.manifest_path).unwrap(),
+            old_manifest,
+            "the previous imported generation was modified"
         );
     }
 

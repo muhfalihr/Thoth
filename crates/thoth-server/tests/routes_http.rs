@@ -78,12 +78,15 @@ async fn build_test_app_with_credentials(available: &[&str]) -> (axum::Router, P
         .await
         .unwrap();
     let credentials: HashSet<String> = available.iter().map(|s| s.to_string()).collect();
+    let worker_config_path = tmp.join("config.toml");
     let state = AppState {
         api_key: "test-key".into(),
         store,
         output_root: legacy_output_root(&home),
         home,
-        worker_config_path: tmp.join("config.toml"),
+        scout_output_config: thoth_jobs::ScoutOutputConfig::new(worker_config_path.clone())
+            .unwrap(),
+        worker_config_path,
         scout: thoth_server::scout::new_supervisor(),
         credentials: Arc::new(FakeCredentialProvider(credentials)),
     };
@@ -1246,12 +1249,15 @@ async fn app_with_content_set(cs: std::path::PathBuf) -> axum::Router {
     .unwrap();
     let scout = thoth_server::scout::new_supervisor();
     scout.lock().await.last_content_set = Some(cs);
+    let worker_config_path = tmp.join("config.toml");
     let state = AppState {
         api_key: "test-key".into(),
         store,
         output_root: legacy_output_root(&home),
         home,
-        worker_config_path: tmp.join("config.toml"),
+        scout_output_config: thoth_jobs::ScoutOutputConfig::new(worker_config_path.clone())
+            .unwrap(),
+        worker_config_path,
         scout,
         credentials: Arc::new(FakeCredentialProvider(HashSet::new())),
     };
@@ -1622,6 +1628,87 @@ async fn forced_main_enqueue_honors_the_worker_configured_scout_output_root() {
     .await;
 
     assert!(created["job_id"].is_string());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn forced_main_enqueue_honors_the_worker_scout_output_environment_override() {
+    const CHILD: &str = "THOTH_SCOUT_ROUTE_CONFIG_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let configured_root = std::env::temp_dir().join(format!(
+            "thoth-route-environment-scout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("forced_main_enqueue_honors_the_worker_scout_output_environment_override")
+            .env(CHILD, "1")
+            .env("THOTH_SCOUT_OUTPUT_DIR", &configured_root)
+            .status()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(configured_root);
+        assert!(status.success());
+        return;
+    }
+
+    let (app, tmp) = build_test_app().await;
+    let configured_root = PathBuf::from(std::env::var_os("THOTH_SCOUT_OUTPUT_DIR").unwrap());
+    let content_set = write_forced_main_fixture(&configured_root);
+    let (project_id, profile_id) =
+        create_profile_for_content_set(app.clone(), &content_set, true).await;
+
+    let created = project_api_json(
+        app,
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(serde_json::json!({ "profile_id": profile_id, "overrides": {} })),
+        StatusCode::CREATED,
+    )
+    .await;
+
+    assert!(created["job_id"].is_string());
+    let _ = std::fs::remove_dir_all(configured_root);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn forced_main_enqueue_retains_the_last_good_scout_root_when_config_reload_fails() {
+    let (app, tmp) = build_test_app().await;
+    let configured_root = tmp.join("last-good-scout-root");
+    let content_set = write_forced_main_fixture(&configured_root);
+    std::fs::write(
+        tmp.join("config.toml"),
+        format!(
+            "[scout]\noutput_dir = '{}'\n",
+            configured_root.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let (project_id, profile_id) =
+        create_profile_for_content_set(app.clone(), &content_set, true).await;
+    let body = serde_json::json!({ "profile_id": profile_id, "overrides": {} });
+
+    let first = project_api_json(
+        app.clone(),
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(body.clone()),
+        StatusCode::CREATED,
+    )
+    .await;
+    assert!(first["job_id"].is_string());
+    std::fs::write(tmp.join("config.toml"), "[scout\nmalformed = true").unwrap();
+
+    let second = project_api_json(
+        app,
+        "POST",
+        &format!("/api/projects/{project_id}/jobs"),
+        Some(body),
+        StatusCode::CREATED,
+    )
+    .await;
+
+    assert!(second["job_id"].is_string());
     let _ = std::fs::remove_dir_all(tmp);
 }
 

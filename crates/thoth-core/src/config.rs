@@ -66,7 +66,7 @@ pub struct ScoutConfig {
 }
 
 fn default_scout_output_dir() -> PathBuf {
-    PathBuf::from("scout/output")
+    PathBuf::from(thoth_jobs::DEFAULT_SCOUT_OUTPUT_DIR)
 }
 
 impl Default for ScoutConfig {
@@ -1703,6 +1703,11 @@ impl AssetsConfig {
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
+        let scout_output_dir = thoth_jobs::load_scout_output_dir(
+            &std::env::current_dir()
+                .context("failed to resolve worker configuration directory")?
+                .join("config.toml"),
+        )?;
         let cfg = Config::builder()
             .set_default("llm.default_provider", "groq")?
             .set_default("llm.groq_model", "llama-3.3-70b-versatile")?
@@ -1785,6 +1790,10 @@ impl AppConfig {
             .context("failed to build configuration")?;
 
         let mut app: AppConfig = cfg.try_deserialize().context("failed to parse configuration")?;
+        // Keep this security boundary on the same typed resolver used by the
+        // enqueue server. In particular, the single explicit environment key
+        // must not depend on `config` crate underscore-splitting behavior.
+        app.scout.output_dir = scout_output_dir;
 
         // Load API keys from env — never from config file
         app.llm.groq_api_key   = std::env::var("THOTH_GROQ_API_KEY").unwrap_or_default();
@@ -1855,6 +1864,28 @@ mod tests {
         let configured: ScoutConfig =
             serde_json::from_str(r#"{ "output_dir": "D:/scout-handoff" }"#).unwrap();
         assert_eq!(configured.output_dir, PathBuf::from("D:/scout-handoff"));
+    }
+
+    #[test]
+    fn worker_app_config_honors_the_explicit_scout_output_environment_override() {
+        const CHILD: &str = "THOTH_SCOUT_OUTPUT_CONFIG_TEST_CHILD";
+        let expected = PathBuf::from("D:/environment-scout-handoff");
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(
+                AppConfig::load().expect("runtime config").scout.output_dir,
+                expected
+            );
+            return;
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("config::tests::worker_app_config_honors_the_explicit_scout_output_environment_override")
+            .env(CHILD, "1")
+            .env(thoth_jobs::SCOUT_OUTPUT_DIR_ENV, &expected)
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     // The `[animelorian]` section and its old field names were renamed to

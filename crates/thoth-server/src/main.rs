@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     home.ensure_project_layout("legacy")?;
     let output_root = legacy_output_root(&home);
     let worker_config_path = worker_compatible_config_path()?;
+    let scout_output_config = thoth_jobs::ScoutOutputConfig::new(worker_config_path.clone())?;
     // The server and the `thoth worker` process meet ONLY here — the shared
     // SQLite/WAL job database. `THOTH_DB` remains a compatibility override;
     // the default is always inside the resolved Thoth home.
@@ -57,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         output_root,
         home,
         worker_config_path,
+        scout_output_config,
         scout: thoth_server::scout::new_supervisor(),
         credentials: Arc::new(EnvCredentialProvider),
     };

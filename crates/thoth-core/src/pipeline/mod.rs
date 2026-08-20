@@ -145,7 +145,11 @@ impl PlannedMainRenderer for DeferredPlannedMainRenderer {
         _style_profile_name: &str,
         _execution: &JobExecutionContext,
     ) -> Result<crate::edit::service::EditResult> {
-        anyhow::bail!("planned_renderer_unavailable")
+        Err(crate::main_footage::MainFootageError::new(
+            crate::main_footage::MainFootageErrorCode::PlanVerificationFailed,
+            "planned_renderer_unavailable",
+        )
+        .into())
     }
 }
 
@@ -256,17 +260,101 @@ fn emit_planned_checkpoint(stage: crate::util::progress::MainFootageProgressStag
     crate::util::progress::emit_stage(stage.as_str(), pct, message);
 }
 
-fn rendered_paths(state: &PipelineState) -> Option<Vec<std::path::PathBuf>> {
-    let edit = state.stages.edit.as_ref()?;
-    let paths = edit
-        .output_clips
-        .iter()
-        .map(|clip| clip.path.clone())
-        .collect::<Vec<_>>();
-    (!paths.is_empty() && paths.iter().all(|path| path.is_file())).then_some(paths)
+fn resolve_job_render_path(
+    root: &Path,
+    path: &Path,
+    allow_absolute: bool,
+) -> Result<std::path::PathBuf> {
+    use std::path::Component;
+
+    let invalid = || {
+        crate::main_footage::MainFootageError::new(
+            crate::main_footage::MainFootageErrorCode::PlanVerificationFailed,
+            "planned_render_output_outside_job_root",
+        )
+    };
+    if path.as_os_str().is_empty()
+        || (path.is_absolute() && !allow_absolute)
+        || (!path.is_absolute()
+            && path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            }))
+    {
+        return Err(invalid().into());
+    }
+    let canonical_root = std::fs::canonicalize(root).map_err(|_| invalid())?;
+    let candidate = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        canonical_root.join(path)
+    };
+    let resolved = std::fs::canonicalize(candidate).map_err(|_| invalid())?;
+    if resolved == canonical_root || !resolved.starts_with(&canonical_root) {
+        return Err(invalid().into());
+    }
+    Ok(resolved)
 }
 
-async fn run_planned_main_with<P: PlannedMainStagePort>(
+fn normalize_render_result(
+    job: &JobContext,
+    mut edit: crate::edit::service::EditResult,
+) -> Result<crate::edit::service::EditResult> {
+    let root = std::fs::canonicalize(job.root()).map_err(|_| {
+        crate::main_footage::MainFootageError::new(
+            crate::main_footage::MainFootageErrorCode::PlanVerificationFailed,
+            "planned_render_output_outside_job_root",
+        )
+    })?;
+    for clip in &mut edit.output_clips {
+        let output = resolve_job_render_path(&root, &clip.path, true)?;
+        clip.path = output
+            .strip_prefix(&root)
+            .map_err(|_| {
+                crate::main_footage::MainFootageError::new(
+                    crate::main_footage::MainFootageErrorCode::PlanVerificationFailed,
+                    "planned_render_output_outside_job_root",
+                )
+            })?
+            .to_owned();
+        if let Some(thumb_path) = &mut clip.thumb_path {
+            let thumb = resolve_job_render_path(&root, thumb_path, true)?;
+            *thumb_path = thumb
+                .strip_prefix(&root)
+                .map_err(|_| {
+                    crate::main_footage::MainFootageError::new(
+                        crate::main_footage::MainFootageErrorCode::PlanVerificationFailed,
+                        "planned_render_output_outside_job_root",
+                    )
+                })?
+                .to_owned();
+        }
+    }
+    Ok(edit)
+}
+
+fn rendered_paths(job: &JobContext, state: &PipelineState) -> Option<Vec<std::path::PathBuf>> {
+    let edit = state.stages.edit.as_ref()?;
+    let mut paths = Vec::with_capacity(edit.output_clips.len());
+    for clip in &edit.output_clips {
+        let path = resolve_job_render_path(&job.root(), &clip.path, false).ok()?;
+        if !path.is_file() {
+            return None;
+        }
+        if let Some(thumb_path) = &clip.thumb_path {
+            let thumb = resolve_job_render_path(&job.root(), thumb_path, false).ok()?;
+            if !thumb.is_file() {
+                return None;
+            }
+        }
+        paths.push(job.root().join(&clip.path));
+    }
+    (!paths.is_empty()).then_some(paths)
+}
+
+pub(crate) async fn run_planned_main_with<P: PlannedMainStagePort>(
     job: &JobContext,
     state: &mut PipelineState,
     planned: &PlannedMainInput,
@@ -287,7 +375,6 @@ async fn run_planned_main_with<P: PlannedMainStagePort>(
                 "source_import_failed",
             )
         })?;
-    execution.check_cancelled()?;
     emit_planned_checkpoint(MainFootageProgressStage::ImportingSources, 0.0);
     let source_fingerprint = port.source_fingerprint(&imported).to_owned();
     if state
@@ -325,7 +412,6 @@ async fn run_planned_main_with<P: PlannedMainStagePort>(
                 )
             })?,
     };
-    execution.check_cancelled()?;
     emit_planned_checkpoint(MainFootageProgressStage::GeneratingNarration, 0.1);
     let narration_fingerprint = port.narration_fingerprint(&narration).to_owned();
     if state
@@ -403,21 +489,31 @@ async fn run_planned_main_with<P: PlannedMainStagePort>(
     execution.check_cancelled()?;
 
     if resumed {
-        if let Some(paths) = rendered_paths(state) {
+        if let Some(paths) = rendered_paths(job, state) {
             emit_planned_checkpoint(MainFootageProgressStage::Rendering, 1.0);
             execution.check_cancelled()?;
             return Ok(paths);
         }
     }
 
-    let edit = port.render(job, &verified, &narration, execution).await?;
+    let edit = port
+        .render(job, &verified, &narration, execution)
+        .await
+        .map_err(|error| {
+            planned_error(
+                error,
+                MainFootageErrorCode::PlanVerificationFailed,
+                "planned_renderer_failed",
+            )
+        })?;
     execution.check_cancelled()?;
+    let edit = normalize_render_result(job, edit)?;
     state.stages.edit = Some(edit);
     state.save(&job.state_path())?;
     execution.check_cancelled()?;
     emit_planned_checkpoint(MainFootageProgressStage::Rendering, 1.0);
     execution.check_cancelled()?;
-    rendered_paths(state).ok_or_else(|| {
+    rendered_paths(job, state).ok_or_else(|| {
         crate::main_footage::MainFootageError::new(
             MainFootageErrorCode::PlanVerificationFailed,
             "planned_render_output_missing",
@@ -1715,7 +1811,9 @@ mod planned_main_orchestration_tests {
         plan_fingerprint: &'static str,
         fail: Option<&'static str>,
         cancel_after_import: bool,
+        cancel_after_narration: bool,
         reuse_narration: bool,
+        render_path: Option<PathBuf>,
     }
 
     impl FakeStages {
@@ -1727,7 +1825,9 @@ mod planned_main_orchestration_tests {
                 plan_fingerprint: "sha256:plan",
                 fail: None,
                 cancel_after_import: false,
+                cancel_after_narration: false,
                 reuse_narration: false,
+                render_path: None,
             }
         }
 
@@ -1806,11 +1906,14 @@ mod planned_main_orchestration_tests {
         async fn generate_narration(
             &self,
             _job: &JobContext,
-            _execution: &JobExecutionContext,
+            execution: &JobExecutionContext,
         ) -> anyhow::Result<Self::Narration> {
             self.push("narration");
             if self.fail == Some("narration") {
                 anyhow::bail!("provider response with https://private.test/?token=secret");
+            }
+            if self.cancel_after_narration {
+                execution.cancel();
             }
             Ok(Artifact {
                 fingerprint: self.narration_fingerprint.into(),
@@ -1879,8 +1982,18 @@ mod planned_main_orchestration_tests {
             _execution: &JobExecutionContext,
         ) -> anyhow::Result<EditResult> {
             self.push("render");
-            let output = job.root().join("rendered.mp4");
-            std::fs::write(&output, b"render")?;
+            if self.fail == Some("renderer") {
+                anyhow::bail!(
+                    "ffmpeg failed at C:\\private\\job.mp4 https://signed.test/x?token=secret"
+                );
+            }
+            let output = self
+                .render_path
+                .clone()
+                .unwrap_or_else(|| job.root().join("rendered.mp4"));
+            if self.render_path.is_none() {
+                std::fs::write(&output, b"render")?;
+            }
             Ok(EditResult {
                 output_clips: vec![ClipOutput {
                     clip_index: 0,
@@ -2040,6 +2153,14 @@ mod planned_main_orchestration_tests {
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.cancel_after_import = true;
+        let mut old = stages.stage_result();
+        old.source_package_fingerprint = "sha256:old-source".into();
+        state.stages.main_footage = Some(old);
+        state.stages.edit = Some(EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+        state.save(&job.state_path()).unwrap();
         let execution = JobExecutionContext::new();
 
         let error = run_planned_main_with(&job, &mut state, &planned, &execution, &stages)
@@ -2052,6 +2173,37 @@ mod planned_main_orchestration_tests {
             std::fs::read(job.source_package_manifest()).unwrap(),
             b"immutable package"
         );
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+        assert!(persisted.stages.main_footage.is_none());
+        assert!(persisted.stages.edit.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_narration_persists_downstream_invalidation() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.cancel_after_narration = true;
+        let mut old = stages.stage_result();
+        old.narration_fingerprint = "sha256:old-narration".into();
+        state.stages.main_footage = Some(old);
+        state.stages.edit = Some(EditResult {
+            output_clips: Vec::new(),
+            completed_at: chrono::Utc::now(),
+        });
+        state.save(&job.state_path()).unwrap();
+        let execution = JobExecutionContext::new();
+
+        let error = run_planned_main_with(&job, &mut state, &planned, &execution, &stages)
+            .await
+            .unwrap_err();
+
+        assert!(crate::execution::is_cancelled(&error));
+        assert_eq!(stages.calls(), ["import", "validate", "narration"]);
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+        assert!(persisted.stages.main_footage.is_none());
+        assert!(persisted.stages.edit.is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2070,7 +2222,7 @@ mod planned_main_orchestration_tests {
             output_clips: vec![ClipOutput {
                 clip_index: 0,
                 title: "existing".into(),
-                path: output.clone(),
+                path: PathBuf::from("existing.mp4"),
                 thumb_path: None,
                 duration_secs: 6.0,
                 layout: "vertical".into(),
@@ -2090,6 +2242,49 @@ mod planned_main_orchestration_tests {
 
         assert_eq!(paths, [output]);
         assert_eq!(stages.calls(), ["import", "validate"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn ambient_absolute_persisted_output_is_not_resumed() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.reuse_narration = true;
+        let mut completed = stages.stage_result();
+        completed.render_settings_fingerprint = Some("sha256:render-settings".into());
+        state.stages.main_footage = Some(completed);
+        let ambient = root.parent().unwrap().join(format!(
+            "ambient-render-{}.mp4",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&ambient, b"ambient").unwrap();
+        state.stages.edit = Some(EditResult {
+            output_clips: vec![ClipOutput {
+                clip_index: 0,
+                title: "ambient".into(),
+                path: ambient.clone(),
+                thumb_path: None,
+                duration_secs: 6.0,
+                layout: "vertical".into(),
+            }],
+            completed_at: chrono::Utc::now(),
+        });
+
+        let paths = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(stages.calls(), ["import", "validate", "render"]);
+        assert_eq!(paths, [job.root().join("rendered.mp4")]);
+        assert_ne!(paths, [ambient.clone()]);
+        let _ = std::fs::remove_file(ambient);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2116,6 +2311,106 @@ mod planned_main_orchestration_tests {
         assert_eq!(persisted.plan_fingerprint, "sha256:plan");
         assert_eq!(persisted.active_version, "v001");
         assert!(reloaded.stages.edit.is_some());
+        assert_eq!(
+            reloaded.stages.edit.unwrap().output_clips[0].path,
+            PathBuf::from("rendered.mp4")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn renderer_output_outside_job_root_is_rejected_before_edit_is_saved() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let outside = root.parent().unwrap().join(format!(
+            "outside-render-{}.mp4",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&outside, b"outside").unwrap();
+        let mut stages = FakeStages::success();
+        stages.render_path = Some(outside.clone());
+
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(code(&error), MainFootageErrorCode::PlanVerificationFailed);
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+        assert!(persisted.stages.edit.is_none());
+        let _ = std::fs::remove_file(outside);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn renderer_parent_traversal_is_rejected_before_edit_is_saved() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.render_path = Some(PathBuf::from("../outside.mp4"));
+
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(code(&error), MainFootageErrorCode::PlanVerificationFailed);
+        let persisted = PipelineState::load(&job.state_path()).unwrap();
+        assert!(persisted.stages.edit.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn renderer_failure_is_redacted_in_worker_terminal_state_and_event() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let store = thoth_jobs::JobStore::connect(root.join("jobs.db").to_str().unwrap())
+            .await
+            .unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        store
+            .enqueue(
+                &id,
+                &thoth_jobs::JobSpec {
+                    command: "run".into(),
+                    url: Some("https://example.invalid/video".into()),
+                    content_set: None,
+                    params: serde_json::json!({}),
+                },
+                "job-output",
+            )
+            .await
+            .unwrap();
+        let claimed = store.claim_next("worker-1").await.unwrap().unwrap();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("renderer");
+
+        crate::worker::run_one(&store, "worker-1", claimed, move |_record, execution| async move {
+            run_planned_main_with(&job, &mut state, &planned, &execution, &stages)
+                .await
+                .map(|_| ())
+        })
+        .await;
+
+        let record = store.get(&id).await.unwrap().unwrap();
+        let detail = record.error.unwrap();
+        assert_eq!(detail, "plan_verification_failed: planned_renderer_failed");
+        assert!(!detail.contains("private"));
+        assert!(!detail.contains("signed.test"));
+        assert!(!detail.contains("secret"));
+        let events = store.events_since(&id, 0).await.unwrap();
+        assert_eq!(events.last().unwrap().kind, "error");
+        assert_eq!(events.last().unwrap().message.as_deref(), Some(detail.as_str()));
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -870,9 +870,14 @@ mod profile_store_tests {
 }
 
 mod home;
+mod scout_config;
 
 pub mod types;
 pub use home::{ThothHome, resolve_home};
+pub use scout_config::{
+    DEFAULT_SCOUT_OUTPUT_DIR, SCOUT_OUTPUT_DIR_ENV, ScoutOutputConfig, ScoutOutputSettings,
+    load_scout_output_dir,
+};
 pub use types::*;
 pub use validation::{
     JobValidationError, PROTECTED_EXTRA_FLAGS, SCALAR_PARAM_FLAGS, scalar_param_flag,
