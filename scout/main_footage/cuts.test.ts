@@ -11,6 +11,7 @@ import {
   type CutCommand,
   type MaterializePlanDeps,
   materializePlan,
+  readVerifiedActivePlan,
   selectTransition,
 } from './cuts.ts';
 import {
@@ -279,6 +280,17 @@ try {
     assert.deepEqual(selectTransition(prior, brokenMetrics, 300, 300, 'degraded'), {
       transition: { kind: 'cross_dissolve', duration_ms: 120 },
     });
+    // Production mutation caught: omitting scene_change_score collapses a strong local
+    // histogram/shot discontinuity to match-cut when brightness and motion happen to agree.
+    const strongSceneChange = {
+      ...prior,
+      id: 'strong-scene-change',
+      vision_description: undefined,
+      visual_metrics: { ...prior.visual_metrics, scene_change_score: 0.95 },
+    };
+    assert.deepEqual(selectTransition(prior, strongSceneChange, 300, 300, 'degraded'), {
+      transition: { kind: 'fade_through_black', duration_ms: 240 },
+    });
   }
 
   // Production mutation caught: applying transition policy only in memory, or forgetting
@@ -381,6 +393,36 @@ try {
     assert.ok(!fs.existsSync(path.join(silentRoot, 'cuts', 'v001', 'item-001.mp4')));
   }
 
+  // Production mutation caught: checking only duration and positive dimensions accepts a
+  // wrong container/codec, NaN/Infinity dimensions, or an unexpected finite frame size.
+  for (const [name, technical] of [
+    ['container', { container: 'matroska' }],
+    ['codec', { video_codec: 'vp9' }],
+    ['nan-width', { width: Number.NaN }],
+    ['infinite-height', { height: Number.POSITIVE_INFINITY }],
+    ['wrong-size', { width: 640 }],
+  ] as const) {
+    const metadataRoot = tempJob();
+    const metadataCommands: CutCommand[] = [];
+    const metadataDeps = deps(metadataCommands);
+    metadataDeps.ffprobe = async (file) => ({
+      container: 'mp4',
+      video_codec: 'h264',
+      duration_sec:
+        metadataCommands.find((command) => command.outputPath === file)?.durationSec ?? 0,
+      width: 1280,
+      height: 720,
+      has_audio: true,
+      ...technical,
+    });
+    await assert.rejects(
+      () => materializePlan(allocation(), metadataRoot, metadataDeps),
+      (error: Error & { code?: string }) => error.code === 'cut_materialization_exhausted',
+      name,
+    );
+    assert.ok(!fs.existsSync(path.join(metadataRoot, 'cuts', 'v001', 'item-001.mp4')), name);
+  }
+
   // Production mutation caught: bypassing decoders/fingerprints, resolving a transport URL,
   // hard-wiring live providers, or printing absolute paths would make the internal command
   // unsafe and impossible to exercise in Task 15's offline acceptance run.
@@ -461,6 +503,29 @@ try {
       ),
     );
 
+    // Production mutation caught: moving active reuse after candidate construction makes a
+    // style-only rerun depend on provider availability even though all durable bytes verify.
+    const callsBeforeReuse = providerCalls;
+    providers.candidateDeps.embedText = async () => {
+      providerCalls += 1;
+      throw new Error('provider_unavailable');
+    };
+    const reused = await runPlanMainFootageCli(
+      [
+        '--job-root',
+        cliRoot,
+        '--package',
+        'main-footage/package.json',
+        '--narration',
+        'narration/narration-timeline.json',
+        '--coverage-target',
+        '0.60',
+      ],
+      providers,
+    );
+    assert.deepEqual(reused, planned);
+    assert.equal(providerCalls, callsBeforeReuse, 'verified reuse must bypass candidate providers');
+
     const callsBeforeRejection = providerCalls;
     await assert.rejects(
       () =>
@@ -480,6 +545,28 @@ try {
       /artifact_path_must_be_relative/,
     );
     assert.equal(providerCalls, callsBeforeRejection, 'reject before provider access');
+
+    // Production mutation caught: removing explicit presence/finite checks lets undefined
+    // or nonnumeric coverage become NaN and reach filesystem/provider work.
+    for (const coverageArgs of [[], ['--coverage-target', 'not-a-number']]) {
+      await assert.rejects(
+        () =>
+          runPlanMainFootageCli(
+            [
+              '--job-root',
+              path.join(cliRoot, 'does-not-exist'),
+              '--package',
+              'main-footage/package.json',
+              '--narration',
+              'narration/narration-timeline.json',
+              ...coverageArgs,
+            ],
+            providers,
+          ),
+        /invalid_arguments/,
+      );
+    }
+    assert.equal(providerCalls, callsBeforeRejection, 'invalid coverage rejects before all work');
   }
 
   // Production mutation caught: treating coverage as style identity, trusting only an
@@ -519,6 +606,120 @@ try {
     assert.ok(!fs.existsSync(path.join(gapRoot, 'plans')), 'reject before version reservation');
   }
 
+  // Production mutation caught: unconditional active rename lets a late v001 completion
+  // overwrite an already-verified v002 pointer after concurrent version reservations.
+  {
+    const raceRoot = tempJob();
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    let markSlowStarted!: () => void;
+    const slowStarted = new Promise<void>((resolve) => {
+      markSlowStarted = resolve;
+    });
+    const slowCommands: CutCommand[] = [];
+    const slowDeps = deps(slowCommands);
+    slowDeps.ffmpeg = async (command) => {
+      slowCommands.push({ ...command });
+      markSlowStarted();
+      await slowGate;
+      fs.writeFileSync(command.outputPath, 'slow-v001');
+    };
+    slowDeps.ffprobe = async (file) => ({
+      container: 'mp4',
+      video_codec: 'h264',
+      duration_sec: slowCommands.find((command) => command.outputPath === file)?.durationSec ?? 0,
+      width: 1280,
+      height: 720,
+      has_audio: true,
+    });
+    const lateV001 = materializePlan(allocation(), raceRoot, slowDeps);
+    await slowStarted;
+
+    const fastCommands: CutCommand[] = [];
+    const fastDeps = deps(fastCommands);
+    fastDeps.narrationFingerprint = 'sha256:narration-b';
+    await materializePlan(allocation(), raceRoot, fastDeps);
+    releaseSlow();
+    await lateV001;
+
+    const active = JSON.parse(fs.readFileSync(path.join(raceRoot, 'plans', 'active.json'), 'utf8'));
+    assert.equal(active.version, 'v002');
+    assert.equal(active.narration_fingerprint, 'sha256:narration-b');
+  }
+
+  // Production mutation caught: checking only pointer identities and arbitrary cut checksums
+  // lets a self-consistent tampered plan claim another source or reuse bytes outside its version.
+  for (const tamper of ['source-fingerprint', 'cross-version-cut'] as const) {
+    const integrityRoot = tempJob();
+    const integrityDeps = deps([]);
+    await materializePlan(allocation(), integrityRoot, integrityDeps);
+    const planPath = path.join(integrityRoot, 'plans', 'v001', 'main-footage-plan.json');
+    const activePath = path.join(integrityRoot, 'plans', 'active.json');
+    const persisted = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+    if (tamper === 'source-fingerprint') {
+      persisted.source_package_fingerprint = 'sha256:different-source';
+    } else {
+      fs.mkdirSync(path.join(integrityRoot, 'cuts', 'v999'), { recursive: true });
+      fs.copyFileSync(
+        path.join(integrityRoot, persisted.timeline[0].cut_path),
+        path.join(integrityRoot, 'cuts', 'v999', 'item-001.mp4'),
+      );
+      persisted.timeline[0].cut_path = 'cuts/v999/item-001.mp4';
+    }
+    persisted.fingerprint = fingerprintCanonical({ ...persisted, fingerprint: undefined });
+    fs.writeFileSync(planPath, JSON.stringify(persisted, null, 2));
+    const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
+    active.plan_fingerprint = persisted.fingerprint;
+    fs.writeFileSync(activePath, JSON.stringify(active, null, 2));
+
+    assert.equal(
+      readVerifiedActivePlan(integrityRoot, {
+        sourcePackageFingerprint: integrityDeps.sourcePackageFingerprint,
+        narrationFingerprint: integrityDeps.narrationFingerprint,
+        coverageTarget: 0.6,
+      }),
+      null,
+      tamper,
+    );
+  }
+
+  // Production mutation caught: deferring source/scene structural validation until after
+  // publication can expose status=verified and active.json for an out-of-bounds cut.
+  {
+    const invalidPlanRoot = tempJob();
+    const invalidRange = allocation();
+    invalidRange.timeline[0] = {
+      ...invalidRange.timeline[0]!,
+      source_in_sec: 8,
+      source_out_sec: 11,
+    };
+    await assert.rejects(
+      () => materializePlan(invalidRange, invalidPlanRoot, deps([])),
+      (error: Error & { code?: string }) => error.code === 'plan_verification_failed',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(invalidPlanRoot, 'plans', 'v001', 'main-footage-plan.json')),
+    );
+    assert.ok(!fs.existsSync(path.join(invalidPlanRoot, 'plans', 'active.json')));
+  }
+
+  // Production mutation caught: moving the assembled-plan decoder after atomic publication
+  // exposes a verified artifact when a runtime-invalid structural value survives allocation.
+  {
+    const invalidDecodedRoot = tempJob();
+    const invalidDecoded = allocation();
+    invalidDecoded.warnings = ['not_an_approved_warning' as never];
+    await assert.rejects(
+      () => materializePlan(invalidDecoded, invalidDecodedRoot, deps([])),
+      /warning is invalid/,
+    );
+    assert.ok(
+      !fs.existsSync(path.join(invalidDecodedRoot, 'plans', 'v001', 'main-footage-plan.json')),
+    );
+    assert.ok(!fs.existsSync(path.join(invalidDecodedRoot, 'plans', 'active.json')));
+  }
 } finally {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 }

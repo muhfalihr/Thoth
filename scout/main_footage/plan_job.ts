@@ -14,13 +14,17 @@ import {
   type ShortlistEntry,
 } from './candidates.ts';
 import {
-  decodeMainFootagePlan,
   decodeNarrationTimeline,
   decodeSourcePackage,
   fingerprintCanonical,
   type MainFootagePlanV1,
 } from './contracts.ts';
-import { type CutCommand, type MaterializePlanDeps, materializePlan } from './cuts.ts';
+import {
+  type CutCommand,
+  type MaterializePlanDeps,
+  materializePlan,
+  readVerifiedActivePlan,
+} from './cuts.ts';
 import { resolveContained } from './paths.ts';
 import { probeSourceVideo } from './source_package.ts';
 
@@ -141,27 +145,6 @@ function defaultProviders(packageRoot: string): PlanMainFootageProviders {
   };
 }
 
-function verifyStructure(plan: MainFootagePlanV1): MainFootagePlanV1 {
-  let cursor = 0;
-  for (const cut of plan.timeline) {
-    if (
-      Math.abs(cut.output_start_sec - cursor) > 1e-6 ||
-      cut.output_end_sec <= cut.output_start_sec
-    ) {
-      throw stableError('plan_verification_failed');
-    }
-    cursor = cut.output_end_sec;
-  }
-  if (
-    plan.summary.selected_cut_count !== plan.timeline.length ||
-    plan.summary.main_coverage_ratio + 1e-6 < plan.main_coverage_target ||
-    Math.abs(cursor - plan.summary.total_duration_sec) > 1e-6
-  ) {
-    throw stableError('plan_verification_failed');
-  }
-  return decodeMainFootagePlan(plan);
-}
-
 export async function planMainFootageJob(
   options: PlanMainFootageOptions,
   injected?: PlanMainFootageProviders,
@@ -185,6 +168,12 @@ export async function planMainFootageJob(
     throw stableError('narration_generation_failed');
   }
   if (!narration.beats?.length) throw stableError('forced_main_narration_required');
+  const reusable = readVerifiedActivePlan(jobRoot, {
+    sourcePackageFingerprint: sourceFingerprint,
+    narrationFingerprint,
+    coverageTarget: options.coverageTarget,
+  });
+  if (reusable) return reusable;
 
   emit({ stage: 'planning_cuts', pct: 15, message: 'building candidates from package indexes' });
   const candidates = new Map<string, Awaited<ReturnType<typeof buildBeatCandidates>>>();
@@ -219,7 +208,7 @@ export async function planMainFootageJob(
     now: providers.now,
   });
   emit({ stage: 'verifying_plan', pct: 100, message: 'active plan verified' });
-  return verifyStructure(plan);
+  return plan;
 }
 
 function parseArgs(args: readonly string[]): PlanMainFootageOptions {
@@ -236,8 +225,17 @@ function parseArgs(args: readonly string[]): PlanMainFootageOptions {
   const jobRoot = values.get('--job-root');
   const packagePath = values.get('--package');
   const narrationPath = values.get('--narration');
-  const coverageTarget = Number(values.get('--coverage-target'));
-  if (!jobRoot || !packagePath || !narrationPath || coverageTarget < 0.6 || coverageTarget > 1) {
+  const rawCoverageTarget = values.get('--coverage-target');
+  const coverageTarget = Number(rawCoverageTarget);
+  if (
+    !jobRoot ||
+    !packagePath ||
+    !narrationPath ||
+    rawCoverageTarget === undefined ||
+    !Number.isFinite(coverageTarget) ||
+    coverageTarget < 0.6 ||
+    coverageTarget > 1
+  ) {
     throw new Error('invalid_arguments');
   }
   return { jobRoot, packagePath, narrationPath, coverageTarget };

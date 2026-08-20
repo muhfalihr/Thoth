@@ -78,8 +78,10 @@ export function selectTransition(
     const values = [
       previous.visual_metrics.brightness,
       previous.visual_metrics.motion_score,
+      previous.visual_metrics.scene_change_score,
       current.visual_metrics.brightness,
       current.visual_metrics.motion_score,
+      current.visual_metrics.scene_change_score,
     ];
     if (!values.every(Number.isFinite)) {
       kind = 'cross_dissolve';
@@ -91,7 +93,10 @@ export function selectTransition(
       const motionDelta = Math.abs(
         previous.visual_metrics.motion_score - current.visual_metrics.motion_score,
       );
-      if (luminanceDelta > 0.45 || motionDelta > 0.6) {
+      const sceneChangeDelta = Math.abs(
+        previous.visual_metrics.scene_change_score - current.visual_metrics.scene_change_score,
+      );
+      if (luminanceDelta > 0.45 || motionDelta > 0.6 || sceneChangeDelta > 0.6) {
         kind = 'fade_through_black';
         durationMs = 240;
       } else if (luminanceDelta <= 0.15 && motionDelta <= 0.15) {
@@ -174,31 +179,41 @@ function reserveVersion(jobRoot: string): { version: `v${string}`; planRoot: str
   }
 }
 
-function readReusablePlan(
+export interface ActivePlanExpectation {
+  sourcePackageFingerprint: string;
+  narrationFingerprint: string;
+  coverageTarget: number;
+}
+
+export function readVerifiedActivePlan(
   jobRoot: string,
-  deps: MaterializePlanDeps,
-  coverageTarget: number,
+  expected: ActivePlanExpectation,
 ): MainFootagePlanV1 | null {
   const activePath = resolveContained(jobRoot, 'plans/active.json');
   if (!fs.existsSync(activePath)) return null;
   try {
     const active = decodeMainFootageActive(JSON.parse(fs.readFileSync(activePath, 'utf8')));
     if (
-      active.source_package_fingerprint !== deps.sourcePackageFingerprint ||
-      active.narration_fingerprint !== deps.narrationFingerprint
+      active.source_package_fingerprint !== expected.sourcePackageFingerprint ||
+      active.narration_fingerprint !== expected.narrationFingerprint
     ) {
       return null;
     }
     const planPath = resolveContained(jobRoot, active.plan_path);
     const plan = decodeMainFootagePlan(JSON.parse(fs.readFileSync(planPath, 'utf8')));
     if (
-      plan.main_coverage_target !== coverageTarget ||
+      plan.source_package_fingerprint !== active.source_package_fingerprint ||
+      plan.source_package_fingerprint !== expected.sourcePackageFingerprint ||
+      plan.narration_fingerprint !== active.narration_fingerprint ||
+      plan.narration_fingerprint !== expected.narrationFingerprint ||
+      plan.main_coverage_target !== expected.coverageTarget ||
       plan.fingerprint !== active.plan_fingerprint ||
       fingerprintCanonical({ ...plan, fingerprint: undefined }) !== active.plan_fingerprint
     ) {
       return null;
     }
     for (const cut of plan.timeline) {
+      if (!cut.cut_path.startsWith(`cuts/${active.version}/`)) return null;
       const cutPath = resolveContained(jobRoot, cut.cut_path);
       if (!fs.existsSync(cutPath) || checksum(cutPath) !== cut.checksum) return null;
     }
@@ -209,11 +224,7 @@ function readReusablePlan(
 }
 
 function assertValidAllocation(allocation: AllocationResult): void {
-  const fail = (): never => {
-    throw Object.assign(new Error('plan_verification_failed'), {
-      code: 'plan_verification_failed',
-    });
-  };
+  const fail = planVerificationFailed;
   if (
     allocation.coverage.target < 0.6 ||
     allocation.coverage.target > 1 ||
@@ -249,12 +260,79 @@ function assertValidAllocation(allocation: AllocationResult): void {
   }
 }
 
+function planVerificationFailed(): never {
+  throw Object.assign(new Error('plan_verification_failed'), {
+    code: 'plan_verification_failed',
+  });
+}
+
+function assertItemWithinSource(item: AllocatedItemV1, pkg: SourcePackageV1): void {
+  if (item.asset_kind !== 'main_cut') return;
+  const source = pkg.sources.find((entry) => entry.id === item.source_id);
+  const scene = sourceScene(pkg, item);
+  if (
+    !source ||
+    !scene ||
+    !Number.isFinite(item.source_in_sec) ||
+    !Number.isFinite(item.source_out_sec) ||
+    item.source_in_sec < scene.start_sec - 1e-6 ||
+    item.source_out_sec > scene.end_sec + 1e-6 ||
+    item.source_out_sec > source.technical.duration_sec + 1e-6
+  ) {
+    planVerificationFailed();
+  }
+}
+
+export function verifyMaterializedPlanStructure(plan: MainFootagePlanV1): MainFootagePlanV1 {
+  const decoded = decodeMainFootagePlan(plan);
+  let cursor = 0;
+  for (const cut of decoded.timeline) {
+    if (
+      Math.abs(cut.output_start_sec - cursor) > 1e-6 ||
+      cut.output_end_sec <= cut.output_start_sec
+    ) {
+      planVerificationFailed();
+    }
+    cursor = cut.output_end_sec;
+  }
+  if (
+    decoded.summary.selected_cut_count !== decoded.timeline.length ||
+    decoded.summary.main_coverage_ratio + 1e-6 < decoded.main_coverage_target ||
+    Math.abs(cursor - decoded.summary.total_duration_sec) > 1e-6
+  ) {
+    planVerificationFailed();
+  }
+  return decoded;
+}
+
 function publishActive(jobRoot: string, active: MainFootageActiveV1): void {
   const destination = resolveContained(jobRoot, 'plans/active.json');
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  const temp = path.join(path.dirname(destination), `.active-${randomUUID()}.tmp`);
-  fs.writeFileSync(temp, JSON.stringify(active, null, 2));
-  fs.renameSync(temp, destination);
+  const lockPath = resolveContained(jobRoot, 'plans/.active.lock');
+  const waitCell = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = Date.now() + 5_000;
+  let lock: number | undefined;
+  while (lock === undefined) {
+    try {
+      lock = fs.openSync(lockPath, 'wx');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) throw new Error('active_plan_lock_timeout');
+      Atomics.wait(waitCell, 0, 0, 10);
+    }
+  }
+  try {
+    if (fs.existsSync(destination)) {
+      const current = decodeMainFootageActive(JSON.parse(fs.readFileSync(destination, 'utf8')));
+      if (Number(current.version.slice(1)) >= Number(active.version.slice(1))) return;
+    }
+    const temp = path.join(path.dirname(destination), `.active-${randomUUID()}.tmp`);
+    fs.writeFileSync(temp, JSON.stringify(active, null, 2));
+    fs.renameSync(temp, destination);
+  } finally {
+    fs.closeSync(lock);
+    fs.unlinkSync(lockPath);
+  }
 }
 
 function sourceFor(pkg: SourcePackageV1, sourceId: string) {
@@ -306,13 +384,18 @@ async function publishCut(
     try {
       await deps.ffmpeg(command);
       const technical = await deps.ffprobe(temp);
+      const containers = technical.container.split(',').map((value) => value.trim().toLowerCase());
       if (
         !fs.existsSync(temp) ||
         fs.statSync(temp).size <= 0 ||
         !Number.isFinite(technical.duration_sec) ||
         Math.abs(technical.duration_sec - physicalDuration) > DURATION_TOLERANCE_SEC ||
-        technical.width <= 0 ||
-        technical.height <= 0 ||
+        !containers.includes('mp4') ||
+        technical.video_codec.toLowerCase() !== 'h264' ||
+        !Number.isFinite(technical.width) ||
+        !Number.isFinite(technical.height) ||
+        technical.width !== source.technical.width ||
+        technical.height !== source.technical.height ||
         (source.technical.has_audio && !technical.has_audio)
       ) {
         throw new Error('plan_verification_failed');
@@ -356,8 +439,13 @@ export async function materializePlan(
   resolveContained(resolvedRoot, deps.narrationTimelinePath);
   if (allocation.error) throw Object.assign(new Error(allocation.error.code), allocation.error);
   assertValidAllocation(allocation);
+  for (const item of allocation.timeline) assertItemWithinSource(item, deps.package);
 
-  const reusable = readReusablePlan(resolvedRoot, deps, allocation.coverage.target);
+  const reusable = readVerifiedActivePlan(resolvedRoot, {
+    sourcePackageFingerprint: deps.sourcePackageFingerprint,
+    narrationFingerprint: deps.narrationFingerprint,
+    coverageTarget: allocation.coverage.target,
+  });
   if (reusable) return reusable;
 
   const { version, planRoot } = reserveVersion(resolvedRoot);
@@ -371,6 +459,7 @@ export async function materializePlan(
     if (item.asset_kind === 'main_cut' && !sourceScene(deps.package, item)) {
       throw new Error('source_package_invalid');
     }
+    assertItemWithinSource(item, deps.package);
     try {
       timeline.push(await publishCut(item, version, resolvedRoot, deps));
       itemIndex += 1;
@@ -435,6 +524,7 @@ export async function materializePlan(
     ...withoutFingerprint,
     fingerprint: fingerprintCanonical(withoutFingerprint),
   };
+  verifyMaterializedPlanStructure(plan);
   const planRelative = path.posix.join('plans', version, 'main-footage-plan.json');
   const planTemp = path.join(planRoot, `.main-footage-plan-${randomUUID()}.tmp`);
   fs.writeFileSync(planTemp, JSON.stringify(plan, null, 2));
