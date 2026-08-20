@@ -12,6 +12,7 @@ import './lib/env.ts'; // inject .env root ke process.env sebelum spawn apa pun
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { ui } from './lib/ui.ts';
+import { runPlanMainFootageCli } from './main_footage/plan_job.ts';
 
 // perintah → [script, deskripsi singkat]
 const CMDS: Record<string, [string, string]> = {
@@ -44,6 +45,10 @@ const CMDS: Record<string, [string, string]> = {
   pulse: ['enrich/pulse_harvest.ts', 'Cultural Pulse harian → CKB (--max --per-video --min-freq)'],
   topics: ['pipeline/discover_topics.ts', 'discovery sekunder trending X/YouTube'],
   news: ['scrapers/search_news.ts', 'kartu image Google News → footage[]'],
+  'plan-main-footage': [
+    'main_footage/plan_job.ts',
+    '--job-root <root> --package <relative> --narration <relative> --coverage-target <0.60..1.00>',
+  ],
 };
 
 function help(bad?: string) {
@@ -62,6 +67,31 @@ function help(bad?: string) {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
+if (cmd === 'plan-main-footage') {
+  try {
+    await runPlanMainFootageCli(rest);
+    process.exit(0);
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : 'cut_planning_failed';
+    const safeCodes = new Set([
+      'invalid_arguments',
+      'artifact_path_must_be_relative',
+      'path_outside_root',
+      'forced_main_no_usable_video',
+      'forced_main_narration_required',
+      'source_package_invalid',
+      'narration_generation_failed',
+      'cut_planning_failed',
+      'cut_materialization_exhausted',
+      'plan_verification_failed',
+    ]);
+    const safe = safeCodes.has(raw) ? raw : 'cut_planning_failed';
+    process.stderr.write(
+      `${JSON.stringify({ stage: 'planning_cuts', pct: 0, message: safe, warning: safe })}\n`,
+    );
+    process.exit(1);
+  }
+}
 if (cmd !== 'ocr-local') ui.banner();
 if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') help();
 if (!CMDS[cmd]) help(cmd);

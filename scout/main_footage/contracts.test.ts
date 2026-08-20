@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   decodeMainFootageDescriptor,
+  decodeMainFootageActive,
   decodeMainFootagePlan,
   decodeNarrationTimeline,
   decodeSourcePackage,
@@ -13,6 +14,47 @@ const fixtures = path.resolve(import.meta.dirname, '../../tests/fixtures/main-fo
 
 function fixture(name: string): unknown {
   return JSON.parse(readFileSync(path.join(fixtures, name), 'utf8'));
+}
+
+// Production mutation caught: accepting an unversioned, unverified, or escaping active
+// pointer would let resume select a partial plan or a path outside the job root.
+{
+  const active = decodeMainFootageActive({
+    schema_version: 1,
+    status: 'verified',
+    version: 'v001',
+    plan_path: 'plans/v001/main-footage-plan.json',
+    source_package_fingerprint: 'sha256:package',
+    narration_fingerprint: 'sha256:narration',
+    plan_fingerprint: 'sha256:plan',
+  });
+  assert.equal(active.version, 'v001');
+  assert.throws(
+    () => decodeMainFootageActive({ ...active, status: 'pending' }),
+    /status is invalid/,
+  );
+  assert.throws(
+    () => decodeMainFootageActive({ ...active, plan_path: '../partial.json' }),
+    /path_outside_root/,
+  );
+  assert.throws(
+    () => decodeMainFootageActive({ ...active, plan_path: 'plans/v002/main-footage-plan.json' }),
+    /plan_path does not match version/,
+  );
+  assert.throws(
+    () => decodeMainFootageActive({ ...active, plan_fingerprint: 'md5:not-sha256' }),
+    /SHA-256 identity/,
+  );
+}
+
+// Production mutation caught: omitting or weakening the verified status on a plan would
+// allow Task 11 to mistake a structurally decoded partial plan for a durable artifact.
+{
+  const plan = fixture('main-footage-plan.v1.json') as Record<string, unknown>;
+  assert.equal(decodeMainFootagePlan({ ...plan, status: 'verified' }).status, 'verified');
+  const { status: _status, ...withoutStatus } = plan;
+  assert.throws(() => decodeMainFootagePlan(withoutStatus), /status is invalid/);
+  assert.throws(() => decodeMainFootagePlan({ ...plan, status: 'pending' }), /status is invalid/);
 }
 
 {

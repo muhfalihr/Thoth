@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "status": "verified",
   "source_package_path": "sources/source-package.v1.json",
   "narration_timeline_path": "narration/v001/timeline.json",
   "source_package_fingerprint": "sha256:package",

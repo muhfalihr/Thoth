@@ -7,6 +7,7 @@ export type TransitionKind = 'match_cut' | 'cross_dissolve' | 'fade_through_blac
 export type MatchLevel = 'exact' | 'topic_only';
 export type PlanningMode = 'vision' | 'degraded';
 export type MainFootageMode = 'forced_url_pool';
+export type MainFootagePlanStatus = 'verified';
 
 export type MainFootageErrorCode =
   | 'forced_main_no_usable_video'
@@ -159,6 +160,7 @@ export interface PlanSummaryV1 {
 
 export interface MainFootagePlanV1 {
   schema_version: typeof MAIN_FOOTAGE_SCHEMA_VERSION;
+  status: MainFootagePlanStatus;
   source_package_path: string;
   narration_timeline_path: string;
   source_package_fingerprint: string;
@@ -170,6 +172,17 @@ export interface MainFootagePlanV1 {
   warnings: MainFootageWarningCode[];
   created_at?: string;
   fingerprint?: string;
+}
+
+/** Atomic pointer published only after every cut and the immutable plan verify. */
+export interface MainFootageActiveV1 {
+  schema_version: typeof MAIN_FOOTAGE_SCHEMA_VERSION;
+  status: MainFootagePlanStatus;
+  version: `v${string}`;
+  plan_path: string;
+  source_package_fingerprint: string;
+  narration_fingerprint: string;
+  plan_fingerprint: string;
 }
 
 export interface MainFootageDescriptor {
@@ -435,6 +448,7 @@ export function decodeMainFootagePlan(input: unknown): MainFootagePlanV1 {
   const summary = record(value.summary, 'summary');
   return {
     schema_version: MAIN_FOOTAGE_SCHEMA_VERSION,
+    status: enumValue(value.status, 'status', ['verified']),
     source_package_path: artifact(value.source_package_path, 'source_package_path'),
     narration_timeline_path: artifact(value.narration_timeline_path, 'narration_timeline_path'),
     source_package_fingerprint: string(value.source_package_fingerprint, 'source_package_fingerprint'),
@@ -455,6 +469,36 @@ export function decodeMainFootagePlan(input: unknown): MainFootagePlanV1 {
     warnings: array(value.warnings, 'warnings').map((warning) => enumValue(warning, 'warning', WARNING_CODES)),
     ...(value.created_at === undefined ? {} : { created_at: string(value.created_at, 'created_at') }),
     ...(value.fingerprint === undefined ? {} : { fingerprint: string(value.fingerprint, 'fingerprint') }),
+  };
+}
+
+function sha256Identity(value: unknown, name: string): string {
+  const result = string(value, name);
+  const digest = result.startsWith('sha256:') ? result.slice('sha256:'.length) : '';
+  if (!digest || /\s/.test(digest)) throw new Error(`${name} must be a SHA-256 identity`);
+  return result;
+}
+
+export function decodeMainFootageActive(input: unknown): MainFootageActiveV1 {
+  const value = record(input, 'active main footage plan');
+  schema(value);
+  const version = string(value.version, 'version');
+  if (!/^v\d{3,}$/.test(version)) throw new Error('version is invalid');
+  const planPath = artifact(value.plan_path, 'plan_path');
+  if (planPath !== `plans/${version}/main-footage-plan.json`) {
+    throw new Error('plan_path does not match version');
+  }
+  return {
+    schema_version: MAIN_FOOTAGE_SCHEMA_VERSION,
+    status: enumValue(value.status, 'status', ['verified']),
+    version: version as `v${string}`,
+    plan_path: planPath,
+    source_package_fingerprint: sha256Identity(
+      value.source_package_fingerprint,
+      'source_package_fingerprint',
+    ),
+    narration_fingerprint: sha256Identity(value.narration_fingerprint, 'narration_fingerprint'),
+    plan_fingerprint: sha256Identity(value.plan_fingerprint, 'plan_fingerprint'),
   };
 }
 

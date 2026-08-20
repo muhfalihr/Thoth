@@ -397,6 +397,12 @@ pub enum PlanningMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum MainFootagePlanStatus {
+    Verified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MainFootageErrorCode {
     ForcedMainNoUsableVideo,
     ForcedMainNarrationRequired,
@@ -805,6 +811,7 @@ pub struct PlanSummaryV1 {
 pub struct MainFootagePlanV1 {
     #[serde(deserialize_with = "deserialize_schema_version")]
     pub schema_version: u8,
+    pub status: MainFootagePlanStatus,
     #[serde(deserialize_with = "deserialize_artifact_path")]
     pub source_package_path: String,
     #[serde(deserialize_with = "deserialize_artifact_path")]
@@ -822,6 +829,68 @@ pub struct MainFootagePlanV1 {
     pub fingerprint: Option<String>,
 }
 
+fn deserialize_plan_version<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    let digits = value.strip_prefix('v').unwrap_or_default();
+    if digits.len() < 3 || !digits.chars().all(|character| character.is_ascii_digit()) {
+        return Err(serde::de::Error::custom("version is invalid"));
+    }
+    Ok(value)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "MainFootageActiveWire")]
+pub struct MainFootageActiveV1 {
+    pub schema_version: u8,
+    pub status: MainFootagePlanStatus,
+    pub version: String,
+    pub plan_path: String,
+    pub source_package_fingerprint: String,
+    pub narration_fingerprint: String,
+    pub plan_fingerprint: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MainFootageActiveWire {
+    #[serde(deserialize_with = "deserialize_schema_version")]
+    schema_version: u8,
+    status: MainFootagePlanStatus,
+    #[serde(deserialize_with = "deserialize_plan_version")]
+    version: String,
+    #[serde(deserialize_with = "deserialize_artifact_path")]
+    plan_path: String,
+    #[serde(deserialize_with = "deserialize_sha256_identity")]
+    source_package_fingerprint: String,
+    #[serde(deserialize_with = "deserialize_sha256_identity")]
+    narration_fingerprint: String,
+    #[serde(deserialize_with = "deserialize_sha256_identity")]
+    plan_fingerprint: String,
+}
+
+impl TryFrom<MainFootageActiveWire> for MainFootageActiveV1 {
+    type Error = &'static str;
+
+    fn try_from(value: MainFootageActiveWire) -> Result<Self, Self::Error> {
+        let expected = format!("plans/{}/main-footage-plan.json", value.version);
+        if value.plan_path != expected {
+            return Err("plan_path does not match version");
+        }
+        Ok(Self {
+            schema_version: value.schema_version,
+            status: value.status,
+            version: value.version,
+            plan_path: value.plan_path,
+            source_package_fingerprint: value.source_package_fingerprint,
+            narration_fingerprint: value.narration_fingerprint,
+            plan_fingerprint: value.plan_fingerprint,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MainFootageDescriptor {
@@ -834,12 +903,45 @@ pub struct MainFootageDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{
-        fingerprint_canonical, MainFootageDescriptor, MainFootageMode, MainFootagePlanV1,
-        NarrationTimelineV1, SourcePackageV1,
+        MainFootageActiveV1, MainFootageDescriptor, MainFootageMode, MainFootagePlanV1,
+        NarrationTimelineV1, SourcePackageV1, fingerprint_canonical,
     };
+
+    // Production mutation caught: a permissive Rust mirror could resume an unverified
+    // pointer or open a plan outside the job artifact root.
+    #[test]
+    fn active_plan_pointer_requires_verified_versioned_relative_artifact() {
+        let active = json!({
+            "schema_version": 1,
+            "status": "verified",
+            "version": "v001",
+            "plan_path": "plans/v001/main-footage-plan.json",
+            "source_package_fingerprint": "sha256:package",
+            "narration_fingerprint": "sha256:narration",
+            "plan_fingerprint": "sha256:plan"
+        });
+        assert!(serde_json::from_value::<MainFootageActiveV1>(active.clone()).is_ok());
+        let mut pending = active.clone();
+        pending["status"] = json!("pending");
+        assert!(serde_json::from_value::<MainFootageActiveV1>(pending).is_err());
+        let mut escaping = active;
+        escaping["plan_path"] = json!("../partial.json");
+        assert!(serde_json::from_value::<MainFootageActiveV1>(escaping).is_err());
+
+        let mismatched = json!({
+            "schema_version": 1,
+            "status": "verified",
+            "version": "v001",
+            "plan_path": "plans/v002/main-footage-plan.json",
+            "source_package_fingerprint": "sha256:package",
+            "narration_fingerprint": "sha256:narration",
+            "plan_fingerprint": "sha256:plan"
+        });
+        assert!(serde_json::from_value::<MainFootageActiveV1>(mismatched).is_err());
+    }
 
     #[test]
     fn shared_v1_fixtures_deserialize() {
