@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -95,6 +96,29 @@ fn parse_frame_rate(value: Option<&str>) -> Option<f64> {
     (parsed.is_finite() && parsed > 0.0).then_some(parsed)
 }
 
+fn decode_ffprobe_metadata(stdout: &[u8]) -> Result<MediaMetadata> {
+    let decoded: FfprobeEnvelope = serde_json::from_slice(stdout)?;
+    let video = decoded
+        .streams
+        .iter()
+        .find(|stream| stream.codec_type == "video")
+        .ok_or_else(|| anyhow::anyhow!("ffprobe_video_stream_missing"))?;
+    let frame_rate = parse_frame_rate(video.r_frame_rate.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("ffprobe_frame_rate_invalid"))?;
+    Ok(MediaMetadata {
+        duration_sec: decoded.format.duration.parse()?,
+        container: decoded.format.format_name,
+        video_codec: video.codec_name.clone().unwrap_or_default(),
+        width: video.width.unwrap_or_default(),
+        height: video.height.unwrap_or_default(),
+        has_audio: decoded
+            .streams
+            .iter()
+            .any(|stream| stream.codec_type == "audio"),
+        frame_rate,
+    })
+}
+
 #[async_trait]
 impl MediaProbe for SupervisedFfprobe<'_> {
     async fn probe(&self, path: &Path) -> Result<MediaMetadata> {
@@ -112,24 +136,7 @@ impl MediaProbe for SupervisedFfprobe<'_> {
         if !output.status.success() {
             anyhow::bail!("ffprobe_failed");
         }
-        let decoded: FfprobeEnvelope = serde_json::from_slice(&output.stdout)?;
-        let video = decoded
-            .streams
-            .iter()
-            .find(|stream| stream.codec_type == "video")
-            .ok_or_else(|| anyhow::anyhow!("ffprobe_video_stream_missing"))?;
-        Ok(MediaMetadata {
-            duration_sec: decoded.format.duration.parse()?,
-            container: decoded.format.format_name,
-            video_codec: video.codec_name.clone().unwrap_or_default(),
-            width: video.width.unwrap_or_default(),
-            height: video.height.unwrap_or_default(),
-            has_audio: decoded
-                .streams
-                .iter()
-                .any(|stream| stream.codec_type == "audio"),
-            frame_rate: parse_frame_rate(video.r_frame_rate.as_deref()).unwrap_or(30.0),
-        })
+        decode_ffprobe_metadata(&output.stdout)
     }
 }
 
@@ -248,12 +255,54 @@ fn checksum(bytes: &[u8]) -> String {
     format!("sha256:{:x}", hash.finalize())
 }
 
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
+
+fn checksum_reader<R: Read>(reader: R) -> std::io::Result<(String, u64)> {
+    let mut reader = BufReader::with_capacity(HASH_BUFFER_BYTES, reader);
+    let mut buffer = [0_u8; HASH_BUFFER_BYTES];
+    let mut hash = Sha256::new();
+    let mut bytes_read = 0_u64;
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+        bytes_read += count as u64;
+    }
+    Ok((format!("sha256:{:x}", hash.finalize()), bytes_read))
+}
+
+fn checksum_file(path: &Path) -> Result<(String, u64)> {
+    let file = fs::File::open(path).map_err(|_| invalid("declared_artifact_unreadable"))?;
+    let retained_bytes = file
+        .metadata()
+        .map_err(|_| invalid("declared_artifact_unreadable"))?
+        .len();
+    let (checksum, bytes_read) =
+        checksum_reader(file).map_err(|_| invalid("declared_artifact_unreadable"))?;
+    if bytes_read != retained_bytes {
+        return Err(invalid("declared_artifact_changed_during_verification"));
+    }
+    Ok((checksum, retained_bytes))
+}
+
+fn retained_file_bytes(path: &Path) -> Result<u64> {
+    fs::File::open(path)
+        .and_then(|file| file.metadata())
+        .map(|metadata| metadata.len())
+        .map_err(|_| invalid("declared_artifact_unreadable"))
+}
+
 fn milliseconds(seconds: f64) -> Result<i64> {
     if !seconds.is_finite() || seconds < 0.0 || seconds > i64::MAX as f64 / 1000.0 {
         return Err(invalid("timeline_value_invalid"));
     }
     Ok((seconds * 1000.0).round() as i64)
 }
+
+const MIN_VISIBLE_CUT_MS: i64 = 1_500;
+const MAX_VISIBLE_CUT_MS: i64 = 6_000;
 
 fn validate_timeline_coverage(
     plan: &MainFootagePlanV1,
@@ -316,6 +365,7 @@ fn validate_source_bindings(plan: &MainFootagePlanV1, package: &SourcePackageV1)
         if source_end_ms <= source_start_ms
             || source_end_ms > milliseconds(source.technical.duration_sec)?
             || source_end_ms - source_start_ms != output_duration_ms
+            || !(MIN_VISIBLE_CUT_MS..=MAX_VISIBLE_CUT_MS).contains(&output_duration_ms)
         {
             return Err(invalid("cut_source_range_invalid"));
         }
@@ -571,11 +621,11 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
     let mut source_paths = Vec::with_capacity(published_package.sources.len());
     for source in &published_package.sources {
         let source_path = canonical_file(&root, &imported.root.join(&source.path))?;
-        let bytes = file_bytes(&source_path)?;
-        if checksum(&bytes) != source.checksum {
+        let (actual_checksum, source_bytes) = checksum_file(&source_path)?;
+        if actual_checksum != source.checksum {
             return Err(invalid("source_checksum_mismatch"));
         }
-        retained_bytes += bytes.len() as u64;
+        retained_bytes += source_bytes;
         source_paths.push((source, source_path));
     }
     for index in &published_package.scene_indexes {
@@ -587,28 +637,28 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
         retained_bytes += bytes.len() as u64;
         for scene in &index.scenes {
             let frame = canonical_file(&root, &imported.root.join(&scene.representative_frame))?;
-            retained_bytes += file_bytes(&frame)?.len() as u64;
+            retained_bytes += retained_file_bytes(&frame)?;
             if let Some(embedding) = scene.embedding_path.as_deref() {
                 let embedding = canonical_file(&root, &imported.root.join(embedding))?;
-                retained_bytes += file_bytes(&embedding)?.len() as u64;
+                retained_bytes += retained_file_bytes(&embedding)?;
             }
         }
     }
     let audio_path = canonical_file(&root, &root.join(&narration.audio_path))?;
-    let audio_bytes = file_bytes(&audio_path)?;
-    if checksum(&audio_bytes) != narration.audio_checksum {
+    let (audio_checksum, audio_bytes) = checksum_file(&audio_path)?;
+    if audio_checksum != narration.audio_checksum {
         return Err(invalid("narration_audio_checksum_mismatch"));
     }
-    retained_bytes += audio_bytes.len() as u64;
+    retained_bytes += audio_bytes;
 
     let mut cut_paths = Vec::with_capacity(plan.timeline.len());
     for cut in &plan.timeline {
         let path = canonical_file(&root, &root.join(&cut.cut_path))?;
-        let bytes = file_bytes(&path)?;
-        if checksum(&bytes) != cut.checksum {
+        let (actual_checksum, cut_bytes) = checksum_file(&path)?;
+        if actual_checksum != cut.checksum {
             return Err(invalid("cut_checksum_mismatch"));
         }
-        retained_bytes += bytes.len() as u64;
+        retained_bytes += cut_bytes;
         cut_paths.push((cut, path));
     }
 
@@ -688,16 +738,23 @@ pub async fn verify_plan(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::cell::Cell;
     use std::collections::HashMap;
     use std::fs;
+    use std::io::Read;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
 
-    use super::{MediaMetadata, MediaProbe, verify_plan_with_probe};
+    use super::{
+        HASH_BUFFER_BYTES, MediaMetadata, MediaProbe, checksum, checksum_reader,
+        decode_ffprobe_metadata, duration_matches, validate_source_bindings,
+        validate_timeline_coverage, verify_plan_with_probe,
+    };
     use crate::main_footage::{ImportedSourcePackage, fingerprint_canonical};
     use crate::pipeline::job::JobContext;
 
@@ -710,6 +767,24 @@ pub(crate) mod tests {
     fn write(path: &Path, bytes: &[u8]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, bytes).unwrap();
+    }
+
+    struct BoundedReadProbe {
+        remaining: usize,
+        calls: Rc<Cell<usize>>,
+        largest_request: Rc<Cell<usize>>,
+    }
+
+    impl Read for BoundedReadProbe {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.calls.set(self.calls.get() + 1);
+            self.largest_request
+                .set(self.largest_request.get().max(buffer.len()));
+            let count = self.remaining.min(buffer.len());
+            buffer[..count].fill(b'x');
+            self.remaining -= count;
+            Ok(count)
+        }
     }
 
     pub(crate) struct Fixture {
@@ -1025,6 +1100,111 @@ pub(crate) mod tests {
         assert_eq!(verified.timeline().len(), 2);
         assert_eq!(verified.narration_duration_sec(), 10.0);
         assert!(verified.retained_bytes() > 0);
+    }
+
+    /// Production mutation caught: replacing the streaming loop with
+    /// `read_to_end`/`fs::read` would request the complete media payload instead
+    /// of bounded chunks and defeat the durability gate on large source pools.
+    #[test]
+    fn checksum_reader_hashes_large_inputs_in_bounded_chunks() {
+        let total_bytes = HASH_BUFFER_BYTES * 3 + 17;
+        let calls = Rc::new(Cell::new(0));
+        let largest_request = Rc::new(Cell::new(0));
+        let reader = BoundedReadProbe {
+            remaining: total_bytes,
+            calls: Rc::clone(&calls),
+            largest_request: Rc::clone(&largest_request),
+        };
+
+        let (actual, bytes_read) = checksum_reader(reader).unwrap();
+
+        assert_eq!(bytes_read, total_bytes as u64);
+        assert_eq!(actual, checksum(&vec![b'x'; total_bytes]));
+        assert!(calls.get() >= 4, "the payload must require multiple reads");
+        assert!(largest_request.get() <= HASH_BUFFER_BYTES);
+    }
+
+    /// The duration tolerance is derived from probed media truth. Missing or
+    /// unusable rates must fail closed; a real low rate keeps its one-frame
+    /// tolerance instead of being silently rewritten to 30 fps.
+    #[test]
+    fn ffprobe_requires_a_usable_frame_rate_and_preserves_low_fps() {
+        let payload = |frame_rate: Option<&str>| {
+            let mut stream = json!({
+                "codec_type": "video",
+                "codec_name": "h264",
+                "width": 1080,
+                "height": 1920
+            });
+            if let Some(frame_rate) = frame_rate {
+                stream["r_frame_rate"] = json!(frame_rate);
+            }
+            serde_json::to_vec(&json!({
+                "format": {"duration": "10.0", "format_name": "mp4"},
+                "streams": [stream]
+            }))
+            .unwrap()
+        };
+
+        for rejected in [None, Some("0/0"), Some("0/1"), Some("not-a-rate")] {
+            assert!(
+                decode_ffprobe_metadata(&payload(rejected)).is_err(),
+                "{rejected:?} must fail closed"
+            );
+        }
+
+        let metadata = decode_ffprobe_metadata(&payload(Some("1/2"))).unwrap();
+        assert_eq!(metadata.frame_rate, 0.5);
+        assert!(duration_matches(11.9, 10.0, metadata.frame_rate));
+        assert!(!duration_matches(12.01, 10.0, metadata.frame_rate));
+    }
+
+    /// Production mutation caught: deleting the explicit millisecond range
+    /// check would let a self-consistent 200 ms or eight-second visible cut pass.
+    #[test]
+    fn visible_cut_duration_accepts_only_the_inclusive_1500_to_6000_ms_range() {
+        let fixture = fixture();
+        let original: thoth_types::main_footage::MainFootagePlanV1 =
+            serde_json::from_slice(&fs::read(&fixture.plan_path).unwrap()).unwrap();
+
+        for rejected_ms in [200, 1_499, 6_001, 8_000] {
+            let mut plan = original.clone();
+            let duration_sec = f64::from(rejected_ms) / 1_000.0;
+            plan.timeline[0].source_end_sec = duration_sec;
+            plan.timeline[0].output_end_sec = duration_sec;
+            assert!(
+                validate_source_bindings(&plan, &fixture.imported.package).is_err(),
+                "{rejected_ms} ms must be rejected"
+            );
+        }
+
+        for accepted_ms in [1_500, 6_000] {
+            let mut plan = original.clone();
+            let duration_sec = f64::from(accepted_ms) / 1_000.0;
+            plan.timeline[0].source_end_sec = duration_sec;
+            plan.timeline[0].output_end_sec = duration_sec;
+            validate_source_bindings(&plan, &fixture.imported.package)
+                .unwrap_or_else(|error| panic!("{accepted_ms} ms must be accepted: {error:#}"));
+        }
+    }
+
+    /// Long narration beats remain legal by containing multiple ordered normal
+    /// cuts; the per-cut duration bound must not become a per-beat bound.
+    #[test]
+    fn a_long_beat_can_contain_multiple_ordered_visible_cuts() {
+        let fixture = fixture();
+        let plan: thoth_types::main_footage::MainFootagePlanV1 =
+            serde_json::from_slice(&fs::read(&fixture.plan_path).unwrap()).unwrap();
+        let mut narration = fixture.narration.clone();
+        narration.beats = vec![thoth_types::main_footage::NarrationBeatV1 {
+            id: "beat-long".into(),
+            start_sec: 0.0,
+            end_sec: 10.0,
+            text: "one long beat".into(),
+        }];
+
+        validate_timeline_coverage(&plan, &narration).unwrap();
+        validate_source_bindings(&plan, &fixture.imported.package).unwrap();
     }
 
     /// Production mutation caught: trusting the plan and active pointer's
