@@ -173,7 +173,10 @@ export async function planMainFootageJob(
     narrationFingerprint,
     coverageTarget: options.coverageTarget,
   });
-  if (reusable) return reusable;
+  if (reusable) {
+    emit({ stage: 'verifying_plan', pct: 100, message: 'active plan verified' });
+    return reusable;
+  }
 
   emit({ stage: 'planning_cuts', pct: 15, message: 'building candidates from package indexes' });
   const candidates = new Map<string, Awaited<ReturnType<typeof buildBeatCandidates>>>();

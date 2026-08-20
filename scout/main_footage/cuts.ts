@@ -99,7 +99,7 @@ export function selectTransition(
       if (luminanceDelta > 0.45 || motionDelta > 0.6 || sceneChangeDelta > 0.6) {
         kind = 'fade_through_black';
         durationMs = 240;
-      } else if (luminanceDelta <= 0.15 && motionDelta <= 0.15) {
+      } else if (luminanceDelta <= 0.15 && motionDelta <= 0.15 && sceneChangeDelta <= 0.15) {
         kind = 'match_cut';
         durationMs = 120;
       } else {
@@ -305,22 +305,197 @@ export function verifyMaterializedPlanStructure(plan: MainFootagePlanV1): MainFo
   return decoded;
 }
 
+interface ActivePublicationLease {
+  pid: number;
+  token: string;
+  expires_at_ms: number;
+}
+
+interface LeaseSnapshot {
+  lease: ActivePublicationLease | null;
+  raw: string;
+  dev: number;
+  ino: number;
+  mtimeMs: number;
+}
+
+export interface ActivePublicationLock {
+  release(): void;
+}
+
+export interface ActivePublicationLockOptions {
+  timeoutMs?: number;
+  leaseMs?: number;
+}
+
+function sameFile(left: LeaseSnapshot, right: LeaseSnapshot): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function decodeLease(raw: string): ActivePublicationLease | null {
+  try {
+    const value = JSON.parse(raw) as Partial<ActivePublicationLease>;
+    if (
+      !Number.isInteger(value.pid) ||
+      (value.pid ?? 0) <= 0 ||
+      typeof value.token !== 'string' ||
+      value.token.length === 0 ||
+      !Number.isFinite(value.expires_at_ms)
+    ) {
+      return null;
+    }
+    return value as ActivePublicationLease;
+  } catch {
+    return null;
+  }
+}
+
+function readLeaseSnapshot(file: string): LeaseSnapshot | null {
+  try {
+    const before = fs.statSync(file);
+    const raw = fs.readFileSync(file, 'utf8');
+    const after = fs.statSync(file);
+    if (before.dev !== after.dev || before.ino !== after.ino) return null;
+    return {
+      lease: decodeLease(raw),
+      raw,
+      dev: after.dev,
+      ino: after.ino,
+      mtimeMs: after.mtimeMs,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function pidLiveness(pid: number): 'live' | 'dead' | 'unknown' {
+  try {
+    process.kill(pid, 0);
+    return 'live';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return 'dead';
+    if (code === 'EPERM') return 'live';
+    return 'unknown';
+  }
+}
+
+function leaseIsAbandoned(snapshot: LeaseSnapshot, now: number, leaseMs: number): boolean {
+  if (!snapshot.lease) return snapshot.mtimeMs + leaseMs <= now;
+  const liveness = pidLiveness(snapshot.lease.pid);
+  if (liveness === 'live') return false;
+  if (liveness === 'dead') return true;
+  return snapshot.lease.expires_at_ms <= now;
+}
+
+function unlinkObservedLease(
+  jobRoot: string,
+  lockPath: string,
+  observed: LeaseSnapshot,
+  purpose: 'recovery' | 'release',
+): boolean {
+  const witnessPath = resolveContained(
+    jobRoot,
+    path.posix.join('plans', `.active-lock-${purpose}-${randomUUID()}`),
+  );
+  try {
+    fs.linkSync(lockPath, witnessPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  try {
+    const witness = readLeaseSnapshot(witnessPath);
+    const current = readLeaseSnapshot(lockPath);
+    if (
+      !witness ||
+      !current ||
+      !sameFile(witness, observed) ||
+      !sameFile(current, observed) ||
+      witness.raw !== observed.raw ||
+      current.raw !== observed.raw
+    ) {
+      return false;
+    }
+    fs.unlinkSync(lockPath);
+    return true;
+  } finally {
+    fs.unlinkSync(witnessPath);
+  }
+}
+
+/** Acquires crash-recoverable, job-local ownership of active-plan publication. */
+export function acquireActivePublicationLock(
+  jobRoot: string,
+  options: ActivePublicationLockOptions = {},
+): ActivePublicationLock {
+  const resolvedRoot = path.resolve(jobRoot);
+  if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) {
+    throw new Error('path_outside_root');
+  }
+  const plansRoot = resolveContained(resolvedRoot, 'plans');
+  fs.mkdirSync(plansRoot, { recursive: true });
+  const lockPath = resolveContained(resolvedRoot, 'plans/.active.lock');
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const leaseMs = options.leaseMs ?? 30_000;
+  const deadline = Date.now() + timeoutMs;
+  const waitCell = new Int32Array(new SharedArrayBuffer(4));
+
+  for (;;) {
+    const token = randomUUID();
+    const lease: ActivePublicationLease = {
+      pid: process.pid,
+      token,
+      expires_at_ms: Date.now() + leaseMs,
+    };
+    const leasePath = resolveContained(
+      resolvedRoot,
+      path.posix.join('plans', `.active-lock-lease-${token}`),
+    );
+    fs.writeFileSync(leasePath, JSON.stringify(lease), { flag: 'wx', mode: 0o600 });
+    try {
+      fs.linkSync(leasePath, lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    } finally {
+      fs.unlinkSync(leasePath);
+    }
+
+    const acquired = readLeaseSnapshot(lockPath);
+    if (acquired?.lease?.token === token) {
+      let released = false;
+      return {
+        release(): void {
+          if (released) return;
+          released = true;
+          const current = readLeaseSnapshot(lockPath);
+          if (
+            current?.lease?.token === token &&
+            sameFile(current, acquired) &&
+            current.raw === acquired.raw
+          ) {
+            unlinkObservedLease(resolvedRoot, lockPath, acquired, 'release');
+          }
+        },
+      };
+    }
+
+    const observed = readLeaseSnapshot(lockPath);
+    if (observed && leaseIsAbandoned(observed, Date.now(), leaseMs)) {
+      if (unlinkObservedLease(resolvedRoot, lockPath, observed, 'recovery')) continue;
+    } else if (!observed) {
+      continue;
+    }
+    if (Date.now() >= deadline) throw new Error('active_plan_lock_timeout');
+    Atomics.wait(waitCell, 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
+  }
+}
+
 function publishActive(jobRoot: string, active: MainFootageActiveV1): void {
   const destination = resolveContained(jobRoot, 'plans/active.json');
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  const lockPath = resolveContained(jobRoot, 'plans/.active.lock');
-  const waitCell = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = Date.now() + 5_000;
-  let lock: number | undefined;
-  while (lock === undefined) {
-    try {
-      lock = fs.openSync(lockPath, 'wx');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) throw new Error('active_plan_lock_timeout');
-      Atomics.wait(waitCell, 0, 0, 10);
-    }
-  }
+  const lock = acquireActivePublicationLock(jobRoot);
   try {
     if (fs.existsSync(destination)) {
       const current = decodeMainFootageActive(JSON.parse(fs.readFileSync(destination, 'utf8')));
@@ -330,8 +505,7 @@ function publishActive(jobRoot: string, active: MainFootageActiveV1): void {
     fs.writeFileSync(temp, JSON.stringify(active, null, 2));
     fs.renameSync(temp, destination);
   } finally {
-    fs.closeSync(lock);
-    fs.unlinkSync(lockPath);
+    lock.release();
   }
 }
 

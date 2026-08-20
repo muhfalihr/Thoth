@@ -8,6 +8,7 @@ import type { RankedCandidate } from './candidates.ts';
 import type { SourcePackageV1 } from './contracts.ts';
 import { fingerprintCanonical } from './contracts.ts';
 import {
+  acquireActivePublicationLock,
   type CutCommand,
   type MaterializePlanDeps,
   materializePlan,
@@ -291,6 +292,17 @@ try {
     assert.deepEqual(selectTransition(prior, strongSceneChange, 300, 300, 'degraded'), {
       transition: { kind: 'fade_through_black', duration_ms: 240 },
     });
+    // Production mutation caught: ignoring a soft scene-change delta lets a visibly
+    // discontinuous degraded boundary collapse to match-cut when luminance/motion agree.
+    const softSceneChange = {
+      ...prior,
+      id: 'soft-scene-change',
+      vision_description: undefined,
+      visual_metrics: { ...prior.visual_metrics, scene_change_score: 0.4 },
+    };
+    assert.deepEqual(selectTransition(prior, softSceneChange, 300, 300, 'degraded'), {
+      transition: { kind: 'cross_dissolve', duration_ms: 180 },
+    });
   }
 
   // Production mutation caught: applying transition policy only in memory, or forgetting
@@ -510,6 +522,7 @@ try {
       providerCalls += 1;
       throw new Error('provider_unavailable');
     };
+    progress.length = 0;
     const reused = await runPlanMainFootageCli(
       [
         '--job-root',
@@ -525,6 +538,9 @@ try {
     );
     assert.deepEqual(reused, planned);
     assert.equal(providerCalls, callsBeforeReuse, 'verified reuse must bypass candidate providers');
+    assert.deepEqual(progress, [
+      { stage: 'verifying_plan', pct: 100, message: 'active plan verified' },
+    ]);
 
     const callsBeforeRejection = providerCalls;
     await assert.rejects(
@@ -604,6 +620,67 @@ try {
       (error: Error & { code?: string }) => error.code === 'plan_verification_failed',
     );
     assert.ok(!fs.existsSync(path.join(gapRoot, 'plans')), 'reject before version reservation');
+  }
+
+  // Production mutation caught: a persistent exclusive lock survives crashes forever;
+  // unowned recovery, live-owner exclusion, token-safe release, and root confinement must
+  // all hold or concurrent publishers can stall, steal ownership, or write outside the job.
+  {
+    const abandonedRoot = tempJob();
+    fs.mkdirSync(path.join(abandonedRoot, 'plans'), { recursive: true });
+    const abandonedPath = path.join(abandonedRoot, 'plans', '.active.lock');
+    fs.writeFileSync(
+      abandonedPath,
+      JSON.stringify({ pid: 2_147_483_647, token: 'abandoned', expires_at_ms: 0 }),
+    );
+    const recovered = acquireActivePublicationLock(abandonedRoot, { timeoutMs: 0 });
+    const recoveredLease = JSON.parse(fs.readFileSync(abandonedPath, 'utf8'));
+    assert.equal(recoveredLease.pid, process.pid);
+    assert.notEqual(recoveredLease.token, 'abandoned');
+    recovered.release();
+    assert.ok(!fs.existsSync(abandonedPath));
+
+    const liveRoot = tempJob();
+    fs.mkdirSync(path.join(liveRoot, 'plans'), { recursive: true });
+    const livePath = path.join(liveRoot, 'plans', '.active.lock');
+    fs.writeFileSync(
+      livePath,
+      JSON.stringify({ pid: process.pid, token: 'live-owner', expires_at_ms: 0 }),
+    );
+    assert.throws(
+      () => acquireActivePublicationLock(liveRoot, { timeoutMs: 0 }),
+      /active_plan_lock_timeout/,
+    );
+    assert.equal(JSON.parse(fs.readFileSync(livePath, 'utf8')).token, 'live-owner');
+
+    const replacedRoot = tempJob();
+    const original = acquireActivePublicationLock(replacedRoot, { timeoutMs: 0 });
+    const replacedPath = path.join(replacedRoot, 'plans', '.active.lock');
+    fs.unlinkSync(replacedPath);
+    fs.writeFileSync(
+      replacedPath,
+      JSON.stringify({
+        pid: process.pid,
+        token: 'replacement',
+        expires_at_ms: Date.now() + 60_000,
+      }),
+    );
+    original.release();
+    assert.equal(JSON.parse(fs.readFileSync(replacedPath, 'utf8')).token, 'replacement');
+
+    const escapedRoot = tempJob();
+    const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-lock-outside-'));
+    roots.push(outsideRoot);
+    fs.symlinkSync(
+      outsideRoot,
+      path.join(escapedRoot, 'plans'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    assert.throws(
+      () => acquireActivePublicationLock(escapedRoot, { timeoutMs: 0 }),
+      /path_outside_root/,
+    );
+    assert.ok(!fs.existsSync(path.join(outsideRoot, '.active.lock')));
   }
 
   // Production mutation caught: unconditional active rename lets a late v001 completion
