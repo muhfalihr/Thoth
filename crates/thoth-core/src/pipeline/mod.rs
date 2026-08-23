@@ -233,6 +233,23 @@ fn planned_error(
     }
 }
 
+/// The renderer is an injected port (`PlannedMainRenderer`), not an in-tree
+/// stage, so a typed `MainFootageError` it returns is an arbitrary code crossing
+/// an untrusted seam. Unlike [`planned_error`], this projects *everything* except
+/// cancellation onto one stable terminal pair, after logging the original so the
+/// operator still sees it.
+fn planned_renderer_error(error: anyhow::Error) -> anyhow::Error {
+    if crate::execution::is_cancelled(&error) {
+        return error;
+    }
+    warn!("planned renderer failed: {error:#}");
+    crate::main_footage::MainFootageError::new(
+        crate::main_footage::MainFootageErrorCode::PlanVerificationFailed,
+        "planned_renderer_failed",
+    )
+    .into()
+}
+
 fn emit_planned_checkpoint(stage: crate::util::progress::MainFootageProgressStage, pct: f32) {
     let message = match stage {
         crate::util::progress::MainFootageProgressStage::ImportingSources => {
@@ -499,13 +516,7 @@ pub(crate) async fn run_planned_main_with<P: PlannedMainStagePort>(
     let edit = port
         .render(job, &verified, &narration, execution)
         .await
-        .map_err(|error| {
-            planned_error(
-                error,
-                MainFootageErrorCode::PlanVerificationFailed,
-                "planned_renderer_failed",
-            )
-        })?;
+        .map_err(planned_renderer_error)?;
     execution.check_cancelled()?;
     let edit = normalize_render_result(job, edit)?;
     state.stages.edit = Some(edit);
@@ -1876,6 +1887,13 @@ mod planned_main_orchestration_tests {
             self.push("import");
             std::fs::create_dir_all(job.main_footage_dir())?;
             std::fs::write(job.source_package_manifest(), b"immutable package")?;
+            if self.fail == Some("import_typed") {
+                return Err(MainFootageError::new(
+                    MainFootageErrorCode::CutMaterializationExhausted,
+                    "import_internal",
+                )
+                .into());
+            }
             if self.cancel_after_import {
                 execution.cancel();
             }
@@ -1986,6 +2004,16 @@ mod planned_main_orchestration_tests {
                 anyhow::bail!(
                     "ffmpeg failed at C:\\private\\job.mp4 https://signed.test/x?token=secret"
                 );
+            }
+            if self.fail == Some("renderer_typed") {
+                return Err(MainFootageError::new(
+                    MainFootageErrorCode::CutMaterializationExhausted,
+                    "renderer_internal",
+                )
+                .into());
+            }
+            if self.fail == Some("renderer_cancelled") {
+                return Err(crate::execution::Cancelled.into());
             }
             let output = self
                 .render_path
@@ -2411,6 +2439,109 @@ mod planned_main_orchestration_tests {
         let events = store.events_since(&id, 0).await.unwrap();
         assert_eq!(events.last().unwrap().kind, "error");
         assert_eq!(events.last().unwrap().message.as_deref(), Some(detail.as_str()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The renderer is an injected port, so a typed `MainFootageError` it returns
+    /// is an arbitrary code crossing an untrusted seam and must be redacted — the
+    /// untyped-`bail!` regression above cannot discriminate this.
+    #[tokio::test]
+    async fn typed_renderer_error_is_redacted_to_the_stable_terminal_pair() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("renderer_typed");
+
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+
+        let typed = error
+            .downcast_ref::<MainFootageError>()
+            .unwrap_or_else(|| panic!("expected stable main-footage error, got {error:#}"));
+        assert_eq!(
+            typed.code,
+            MainFootageErrorCode::PlanVerificationFailed,
+            "renderer-supplied code escaped the renderer seam"
+        );
+        assert_eq!(
+            typed.detail, "planned_renderer_failed",
+            "renderer-supplied detail escaped the renderer seam"
+        );
+        assert_ne!(
+            typed.code,
+            MainFootageErrorCode::CutMaterializationExhausted,
+            "renderer-supplied code survived redaction"
+        );
+        assert!(
+            !error.to_string().contains("renderer_internal"),
+            "renderer-supplied detail survived redaction: {error:#}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancelled_renderer_error_passes_through_the_renderer_seam() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("renderer_cancelled");
+
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            crate::execution::is_cancelled(&error),
+            "renderer cancellation was redacted instead of passed through: {error:#}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Pins Ruling AD: redaction is scoped to the renderer seam. The four upstream
+    /// stages are in-tree subsystems whose own code is the diagnostic Task 11's
+    /// durability gate reads, so it must survive to the boundary unchanged.
+    #[tokio::test]
+    async fn typed_upstream_stage_error_is_not_redacted() {
+        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.fail = Some("import_typed");
+
+        let error = run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap_err();
+
+        let typed = error
+            .downcast_ref::<MainFootageError>()
+            .unwrap_or_else(|| panic!("expected stable main-footage error, got {error:#}"));
+        assert_eq!(
+            typed.code,
+            MainFootageErrorCode::CutMaterializationExhausted,
+            "upstream stage code was redacted; typed pass-through is load-bearing there"
+        );
+        assert_eq!(
+            typed.detail, "import_internal",
+            "upstream stage detail was redacted"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
