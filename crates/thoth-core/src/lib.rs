@@ -1076,7 +1076,7 @@ pub async fn run_once(
                         args.resume.as_deref(),
                         &args.style_profile,
                         args.job_id.as_deref(),
-                        &pipeline::DeferredPlannedMainRenderer,
+                        &edit::PlannedFfmpegRenderer::new(&config.ffmpeg),
                     )
                     .await?
             } else {
