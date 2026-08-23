@@ -345,6 +345,9 @@ mod tests {
     use super::*;
     use super::super::planned_ffmpeg::PlannedGraph;
     use crate::execution::Cancelled;
+    use crate::main_footage::fingerprint_canonical;
+    use crate::main_footage::verify::tests::{Fixture, fixture};
+    use crate::main_footage::verify::verify_plan_with_probe;
     use thoth_types::main_footage::{CutHandlesV1, MatchLevel, TransitionKind, TransitionV1};
 
     /// Every identifier that would mean this renderer can reach the network or
@@ -896,5 +899,197 @@ mod tests {
         assert!(report.contains("1920"), "{report}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── The production entry point: the trait impl over a real verified plan ──
+
+    fn sha256_of(path: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(std::fs::read(path).unwrap());
+        format!("sha256:{:x}", hash.finalize())
+    }
+
+    fn read_json(path: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn write_json(path: &Path, value: &serde_json::Value) {
+        std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
+    }
+
+    /// The verify fixture writes *text bytes* for its cuts and narration, which
+    /// FFmpeg cannot open. Regenerate all three as real media and re-derive every
+    /// checksum and fingerprint that binds them, so `verify_plan_with_probe` —
+    /// the only constructor of a `VerifiedMainFootagePlan` — still accepts the
+    /// tree. The fixture's probe reports 5.18s per cut whatever is on disk, so
+    /// only the durations the *renderer* trims against have to be real.
+    fn real_media_fixture(ffmpeg: &Path) -> Fixture {
+        let mut fixture = fixture();
+
+        // 5.3s of slack: the plan trims cut-002 at [0.18, 5.18].
+        for (index, colour) in ["red", "blue"].iter().enumerate() {
+            let cut = fixture
+                .root
+                .join(format!("cuts/v001/cut-{:03}.mp4", index + 1));
+            let video = format!("color=c={colour}:size=320x240:rate=30:duration=5.3");
+            let tone = format!("sine=frequency={}:duration=5.3", 220 * (index + 1));
+            run_tool(
+                ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &video,
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &tone,
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-shortest",
+                    cut.to_str().unwrap(),
+                ],
+            );
+        }
+
+        let narration_audio = fixture.job.narration_dir().join("narration.mp3");
+        run_tool(
+            ffmpeg,
+            &[
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=10",
+                narration_audio.to_str().unwrap(),
+            ],
+        );
+
+        // Narration: new audio → new checksum → new fingerprint → rewritten file.
+        fixture.narration.audio_checksum = sha256_of(&narration_audio);
+        fixture.narration.fingerprint = None;
+        let narration_fingerprint =
+            fingerprint_canonical(&serde_json::to_value(&fixture.narration).unwrap()).unwrap();
+        fixture.narration.fingerprint = Some(narration_fingerprint.clone());
+        write_json(
+            &fixture.job.narration_timeline(),
+            &serde_json::to_value(&fixture.narration).unwrap(),
+        );
+
+        // Plan: new cut checksums + the new narration fingerprint → new plan
+        // fingerprint, which `plans/active.json` also pins.
+        let mut plan = read_json(&fixture.plan_path);
+        plan["narration_fingerprint"] = narration_fingerprint.clone().into();
+        for index in 0..2 {
+            let cut = fixture
+                .root
+                .join(plan["timeline"][index]["cut_path"].as_str().unwrap());
+            plan["timeline"][index]["checksum"] = sha256_of(&cut).into();
+        }
+        plan.as_object_mut().unwrap().remove("fingerprint");
+        let plan_fingerprint = fingerprint_canonical(&plan).unwrap();
+        plan["fingerprint"] = plan_fingerprint.clone().into();
+        write_json(&fixture.plan_path, &plan);
+
+        let active_path = fixture.root.join("plans/active.json");
+        let mut active = read_json(&active_path);
+        active["narration_fingerprint"] = narration_fingerprint.into();
+        active["plan_fingerprint"] = plan_fingerprint.into();
+        write_json(&active_path, &active);
+
+        fixture
+    }
+
+    /// The production entry point — the `PlannedMainRenderer` impl that
+    /// `lib.rs` calls — driven end to end over a genuinely verified plan.
+    ///
+    /// Two things only this test can see:
+    /// * the two adjacent `&str` arguments in the delegation are not swapped
+    ///   (a swap compiles and silently mislabels every clip);
+    /// * the `-stream_loop -1` BGM input **terminates**. A BGM shorter than the
+    ///   timeline makes that input infinite, and the graph's `-t` bound is the
+    ///   only thing stopping it — `ffmpeg.rs`'s watchdog would otherwise have to
+    ///   fire, 300s later, on a job that should have finished.
+    #[tokio::test]
+    async fn the_trait_impl_renders_a_verified_plan_under_a_looping_bgm() {
+        let Some(ffmpeg) = test_ffmpeg() else {
+            eprintln!("SKIP: no ffmpeg binary found — trait-impl render not exercised");
+            return;
+        };
+
+        let fixture = real_media_fixture(&ffmpeg);
+        let verified = verify_plan_with_probe(
+            &fixture.job,
+            &fixture.imported,
+            &fixture.narration,
+            &fixture.plan_path,
+            &fixture.probe,
+        )
+        .await
+        .expect("the regenerated fixture must still verify");
+
+        // Two seconds under a ten-second timeline: five loops, not one pass.
+        let bgm = fixture.root.join("bgm.wav");
+        run_tool(
+            &ffmpeg,
+            &[
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=110:duration=2",
+                bgm.to_str().unwrap(),
+            ],
+        );
+
+        let audio = AudioOptions {
+            bgm: Some(bgm),
+            bgm_volume: 0.2,
+            ..AudioOptions::default()
+        };
+        let renderer = PlannedFfmpegRenderer::new(&FfmpegConfig {
+            ffmpeg_path: Some(ffmpeg.to_string_lossy().into_owned()),
+            nvenc: false,
+            cq_value: 28,
+            preset: "ultrafast".to_owned(),
+            audio_bitrate: "128k".to_owned(),
+        });
+        let execution = JobExecutionContext::new();
+        let result = PlannedMainRenderer::render(
+            &renderer,
+            &fixture.job,
+            &verified,
+            &fixture.narration,
+            &OutputLayout::Vertical,
+            &audio,
+            "thoth",
+            "vertical-punch",
+            &execution,
+        )
+        .await
+        .expect("the trait impl must render a verified plan");
+
+        let clip = &result.output_clips[0];
+        assert_eq!(
+            clip.title, "thoth",
+            "the clip title must carry the social name, not the style profile"
+        );
+        assert_eq!(clip.layout, OutputLayout::Vertical.to_string());
+        assert!(clip.path.is_file(), "{}", clip.path.display());
+
+        let report = probe_json(&ffmpeg, &clip.path);
+        let rendered = probed_duration(&report);
+        assert!(
+            (rendered - 10.0).abs() < 0.25,
+            "a 2s BGM looped forever under a 10s timeline must not extend the \
+             render: {rendered:.3}s, {report}"
+        );
+        assert!(report.contains("\"audio\""), "{report}");
     }
 }
