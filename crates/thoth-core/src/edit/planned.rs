@@ -161,14 +161,21 @@ impl PlannedFfmpegRenderer {
         cache.insert(path.to_owned(), present);
         Ok(present)
     }
-}
 
-#[async_trait]
-impl PlannedMainRenderer for PlannedFfmpegRenderer {
-    async fn render(
+    /// The whole render, expressed over the plan's *contents* rather than the
+    /// opaque [`VerifiedMainFootagePlan`].
+    ///
+    /// `VerifiedMainFootagePlan` has private fields and only `verify_plan` can
+    /// build one, so this seam is what makes the render path reachable from a
+    /// test without a two-hundred-line package fixture. It is `pub(crate)` and
+    /// takes `&[PlannedCutV1]` — a caller still cannot invent a verified plan,
+    /// only pass one's timeline through.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn render_timeline(
         &self,
         job: &JobContext,
-        plan: &VerifiedMainFootagePlan,
+        timeline: &[PlannedCutV1],
+        narration_duration_sec: f64,
         narration: &NarrationTimelineV1,
         layout: &OutputLayout,
         audio: &AudioOptions,
@@ -179,7 +186,7 @@ impl PlannedMainRenderer for PlannedFfmpegRenderer {
         execution.check_cancelled()?;
 
         let root = job.root();
-        let cut_paths = resolve_planned_cuts(&root, plan.timeline())?;
+        let cut_paths = resolve_planned_cuts(&root, timeline)?;
         let narration_audio = resolve_contained(&root, Path::new(&narration.audio_path))
             .map_err(|_| invalid("planned_narration_audio_invalid"))?;
         if !narration_audio.is_file() {
@@ -188,7 +195,7 @@ impl PlannedMainRenderer for PlannedFfmpegRenderer {
 
         let mut probe_cache = HashMap::new();
         let mut items = Vec::with_capacity(cut_paths.len());
-        for (cut, cut_path) in plan.timeline().iter().zip(cut_paths) {
+        for (cut, cut_path) in timeline.iter().zip(cut_paths) {
             let has_audio = if audio.mute_event {
                 // The source stream is dropped anyway; skip the probe entirely.
                 false
@@ -233,7 +240,7 @@ impl PlannedMainRenderer for PlannedFfmpegRenderer {
         let request = PlannedGraphRequest {
             items,
             narration_audio,
-            narration_duration_sec: plan.narration_duration_sec(),
+            narration_duration_sec,
             leak_windows,
             duck_vol,
             leak_vol,
@@ -273,6 +280,34 @@ impl PlannedMainRenderer for PlannedFfmpegRenderer {
             }],
             completed_at: Utc::now(),
         })
+    }
+}
+
+#[async_trait]
+impl PlannedMainRenderer for PlannedFfmpegRenderer {
+    async fn render(
+        &self,
+        job: &JobContext,
+        plan: &VerifiedMainFootagePlan,
+        narration: &NarrationTimelineV1,
+        layout: &OutputLayout,
+        audio: &AudioOptions,
+        social_name: &str,
+        style_profile_name: &str,
+        execution: &JobExecutionContext,
+    ) -> Result<EditResult> {
+        self.render_timeline(
+            job,
+            plan.timeline(),
+            plan.narration_duration_sec(),
+            narration,
+            layout,
+            audio,
+            social_name,
+            style_profile_name,
+            execution,
+        )
+        .await
     }
 }
 
@@ -465,6 +500,244 @@ mod tests {
                 .expect_err("an escaping cut path must not resolve");
             assert_eq!(error.detail, "planned_cut_path_invalid", "for `{escape}`");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Step 5: generated-media render ────────────────────────────────────────
+
+    fn test_ffmpeg() -> Option<PathBuf> {
+        if let Ok(path) = std::env::var("FFMPEG_PATH") {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        // Walk out of `crates/thoth-core` to the repo root, where the project
+        // keeps its own binary (see CLAUDE.md "FFmpeg: Local ffmpeg.exe").
+        let mut dir = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
+        while let Some(current) = dir {
+            let candidate = current.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            dir = current.parent();
+        }
+        let bundled = ffmpeg_sidecar::paths::ffmpeg_path();
+        bundled.is_file().then_some(bundled)
+    }
+
+    fn run_tool(binary: &Path, args: &[&str]) {
+        let output = std::process::Command::new(binary)
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("{} {args:?}: {error}", binary.display()));
+        assert!(
+            output.status.success(),
+            "{} {args:?} failed:\n{}",
+            binary.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn probe_json(ffmpeg: &Path, media: &Path) -> String {
+        let output = std::process::Command::new(ffprobe_binary(ffmpeg))
+            .args([
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_entries",
+                "format=duration:stream=codec_type,width,height",
+            ])
+            .arg(media)
+            .output()
+            .expect("ffprobe must run");
+        assert!(output.status.success(), "ffprobe failed on {media:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn probed_duration(report: &str) -> f64 {
+        let marker = "\"duration\":";
+        let start = report.find(marker).expect("ffprobe reports a duration") + marker.len();
+        let rest = &report[start..];
+        let text = rest.trim_start().trim_start_matches('"');
+        let end = text
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(text.len());
+        text[..end].parse().expect("a numeric duration")
+    }
+
+    fn cut(index: usize, kind: TransitionKind, duration_ms: u16) -> PlannedCutV1 {
+        PlannedCutV1 {
+            id: format!("cut-{index:03}"),
+            source_id: format!("src-{index:03}"),
+            source_path: format!("sources/source-{index}.mp4"),
+            cut_path: format!("cuts/v001/cut-{index:03}.mp4"),
+            checksum: "0".repeat(64),
+            source_start_sec: 1.0,
+            source_end_sec: 3.0,
+            output_start_sec: 2.0 * index as f64,
+            output_end_sec: 2.0 * index as f64 + 2.0,
+            match_level: MatchLevel::Exact,
+            reuse_count: 0,
+            transition: TransitionV1 { kind, duration_ms },
+            handles: CutHandlesV1 {
+                before_ms: 300,
+                after_ms: 300,
+            },
+        }
+    }
+
+    /// End-to-end proof on real media that the renderer works **only** from the
+    /// immutable cuts: the generated sources are deleted after materialization,
+    /// so any reach back to `sources/` would make this fail rather than pass
+    /// quietly. Also pins the two facts a mis-built graph would break — the
+    /// rendered length equals the visible sum (handles are not screen time) and
+    /// both streams survive the mix.
+    #[tokio::test]
+    async fn renders_from_immutable_cuts_after_the_sources_are_deleted() {
+        let Some(ffmpeg) = test_ffmpeg() else {
+            eprintln!("SKIP: no ffmpeg binary found — generated-media render not exercised");
+            return;
+        };
+
+        let root = scratch_root();
+        let sources = root.join("sources");
+        let cuts = root.join("cuts/v001");
+        let narration_dir = root.join("narration");
+        for dir in [&sources, &cuts, &narration_dir] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        // Two distinct generated sources; the third timeline item reuses the first.
+        for (index, colour) in ["red", "blue"].iter().enumerate() {
+            let source = sources.join(format!("source-{index}.mp4"));
+            run_tool(
+                &ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("color=c={colour}:size=320x240:rate=30:duration=6"),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("sine=frequency={}:duration=6", 220 * (index + 1)),
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    "-shortest",
+                    source.to_str().unwrap(),
+                ],
+            );
+        }
+
+        // Materialize the cuts with their handles baked in: 0.3 + 2.0 + 0.3.
+        let timeline = vec![
+            cut(0, TransitionKind::MatchCut, 0),
+            cut(1, TransitionKind::CrossDissolve, 200),
+            cut(2, TransitionKind::FadeThroughBlack, 300),
+        ];
+        for (index, planned) in timeline.iter().enumerate() {
+            let source = sources.join(format!("source-{}.mp4", index.min(1)));
+            run_tool(
+                &ffmpeg,
+                &[
+                    "-y",
+                    "-ss",
+                    "0.7",
+                    "-t",
+                    "2.6",
+                    "-i",
+                    source.to_str().unwrap(),
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    root.join(&planned.cut_path).to_str().unwrap(),
+                ],
+            );
+        }
+
+        let narration_audio = narration_dir.join("narration.mp3");
+        run_tool(
+            &ffmpeg,
+            &[
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=6",
+                narration_audio.to_str().unwrap(),
+            ],
+        );
+
+        // The teeth: after materialization the sources are gone. Task 10's whole
+        // point is that the renderer never reaches back to them.
+        std::fs::remove_dir_all(&sources).unwrap();
+        assert!(!sources.exists());
+
+        let job = JobContext::new_flat("planned-render".to_owned(), root.clone()).unwrap();
+        let narration = NarrationTimelineV1 {
+            schema_version: 1,
+            audio_path: "narration/narration.mp3".to_owned(),
+            audio_checksum: "0".repeat(64),
+            duration_sec: 6.0,
+            words: vec![thoth_types::main_footage::NarrationWordV1 {
+                text: "halo".to_owned(),
+                start_sec: 1.0,
+                end_sec: 1.4,
+            }],
+            beats: Vec::new(),
+            created_at: None,
+            fingerprint: None,
+        };
+        let renderer = PlannedFfmpegRenderer::new(&FfmpegConfig {
+            ffmpeg_path: Some(ffmpeg.to_string_lossy().into_owned()),
+            nvenc: false,
+            cq_value: 28,
+            preset: "ultrafast".to_owned(),
+            audio_bitrate: "128k".to_owned(),
+        });
+        let execution = JobExecutionContext::new();
+        let result = renderer
+            .render_timeline(
+                &job,
+                &timeline,
+                6.0,
+                &narration,
+                &OutputLayout::Vertical,
+                &AudioOptions::default(),
+                "thoth",
+                "default",
+                &execution,
+            )
+            .await
+            .expect("the planned render must succeed from the cuts alone");
+
+        let clip = &result.output_clips[0];
+        assert!(clip.path.is_file(), "{}", clip.path.display());
+        assert!((clip.duration_secs - 6.0).abs() < 1e-9);
+
+        let report = probe_json(&ffmpeg, &clip.path);
+        let rendered = probed_duration(&report);
+        assert!(
+            (rendered - 6.0).abs() < 0.25,
+            "rendered {rendered:.3}s must equal the visible sum (6.0s), not the \
+             cut lengths (7.8s): {report}"
+        );
+        assert!(report.contains("\"video\""), "{report}");
+        assert!(report.contains("\"audio\""), "{report}");
+        assert!(report.contains("1080"), "{report}");
+        assert!(report.contains("1920"), "{report}");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }
