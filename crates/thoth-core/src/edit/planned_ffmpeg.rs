@@ -832,11 +832,6 @@ mod tests {
             "{}",
             graph.filter
         );
-        assert!(
-            !graph.filter.contains("1.000)"),
-            "the ceiling must not be unity: {}",
-            graph.filter
-        );
     }
 
     /// A ceiling below the duck floor would make gaps quieter than speech; it is

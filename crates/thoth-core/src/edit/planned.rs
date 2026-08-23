@@ -1,6 +1,7 @@
 //! FFmpeg-backed [`PlannedMainRenderer`] over a **verified** main-footage plan.
 //!
-//! This is the production endpoint that replaces `DeferredPlannedMainRenderer`.
+//! This is the production endpoint; it replaced the placeholder
+//! `DeferredPlannedMainRenderer` that Task 12 left behind the same port.
 //! Its whole input surface is job-owned local media: the verified plan's cut
 //! paths, the narration audio the timeline names, and render settings. There is
 //! deliberately no URL, HTTP client, ingest service, planner, or downloader
@@ -327,7 +328,9 @@ mod tests {
             ("fetch_overlay", "_from_url"),
             ("yt-", "dlp"),
             ("ingest::", "service"),
-            ("http", "://"),
+            // Scheme-agnostic on purpose: `"https://…".contains("http://")` is
+            // false, so a needle spelling one scheme misses the commonest form.
+            (":", "//"),
             ("Ingest", "Service"),
             ("down", "load_"),
         ]
@@ -355,6 +358,10 @@ mod tests {
             needles.contains(&"reqwest".to_owned()),
             "the needle list must actually spell the forbidden crate"
         );
+        assert!(
+            needles.contains(&"://".to_owned()),
+            "the needle list must catch every URL scheme, not one spelling of it"
+        );
         for (name, source) in modules {
             let body = source_without_test_module(source);
             for needle in &needles {
@@ -369,7 +376,10 @@ mod tests {
 
     /// Type-level half of Ruling F: the graph request is constructible from local
     /// paths alone, and every path it carries is a `PathBuf` — there is no field
-    /// that could hold a URL or a client handle.
+    /// that could hold a URL or a client handle. The *construction* is the real
+    /// (compile-time) guarantee; the one runtime assertion worth making is that
+    /// the graph opens nothing the request did not name, which is what would
+    /// change if a remote fallback input were ever introduced.
     #[test]
     fn a_render_request_is_constructible_from_local_paths_only() {
         let request = PlannedGraphRequest {
@@ -403,13 +413,14 @@ mod tests {
             output: PathBuf::from("clips/planned_main.mp4"),
         };
         let graph = build_planned_graph(&request).unwrap();
-        for path in &graph.input_paths {
-            assert!(
-                !path.to_string_lossy().contains("://"),
-                "no graph input may be a remote locator: {}",
-                path.display()
-            );
-        }
+        assert_eq!(
+            graph.input_paths,
+            vec![
+                PathBuf::from("cuts/v001/cut-000.mp4"),
+                PathBuf::from("narration/narration.mp3"),
+            ],
+            "the graph may open only the local files the request named"
+        );
     }
 
     /// Ruling AH item 2: cancellation is the one error with observable behaviour

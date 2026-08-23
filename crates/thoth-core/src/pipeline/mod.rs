@@ -127,32 +127,6 @@ pub trait PlannedMainRenderer: Sync {
     ) -> Result<crate::edit::service::EditResult>;
 }
 
-/// Temporary production endpoint until Task 13 binds the real renderer behind
-/// `PlannedMainRenderer`. Keeping the failure behind the port prevents this task
-/// from re-entering legacy edit or adding a downloader fallback.
-pub struct DeferredPlannedMainRenderer;
-
-#[async_trait]
-impl PlannedMainRenderer for DeferredPlannedMainRenderer {
-    async fn render(
-        &self,
-        _job: &JobContext,
-        _plan: &crate::main_footage::VerifiedMainFootagePlan,
-        _narration: &crate::main_footage::NarrationTimelineV1,
-        _layout: &crate::edit::layout::OutputLayout,
-        _audio: &AudioOptions,
-        _social_name: &str,
-        _style_profile_name: &str,
-        _execution: &JobExecutionContext,
-    ) -> Result<crate::edit::service::EditResult> {
-        Err(crate::main_footage::MainFootageError::new(
-            crate::main_footage::MainFootageErrorCode::PlanVerificationFailed,
-            "planned_renderer_unavailable",
-        )
-        .into())
-    }
-}
-
 /// Injected boundary for the planned-main state machine. Production binds this
 /// to package import, narration, the Task-11 coordinator, and the renderer port;
 /// tests replace only those expensive/external stages while exercising the same
