@@ -12,6 +12,8 @@ pub mod intro;
 pub mod keyframe;
 pub mod layout;
 pub mod overlay;
+pub mod planned;
+pub(crate) mod planned_ffmpeg;
 pub mod profile_card;
 pub mod service;
 pub(crate) mod source_timing;
@@ -25,6 +27,7 @@ pub use ffmpeg::{AudioOptions, ClipStyle, HeadlineOverlay, ImageOverlaySpec, Soc
 pub use fonts::FontConfig;
 pub use keyframe::{ClipAnimation, Easing, KeyframeTrack, Keyframe};
 pub use layout::OutputLayout;
+pub use planned::PlannedFfmpegRenderer;
 pub use service::{EditResult, EditService};
 pub use speed::{SpeedCurve, SpeedPoint, SpeedPreset};
 pub use transition::{ClipSpec, Transition, concat_with_transitions, transition_sequence_from_vibes};

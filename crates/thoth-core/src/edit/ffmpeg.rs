@@ -611,7 +611,7 @@ fn build_footage_card_overlay(
 /// Audio fade duration (s) at clip head/tail.
 const FADE_DUR: f64 = 0.5;
 /// Resample+reformat every audio stream to 48000 Hz stereo fltp before mixing.
-const NORMALIZE: &str = "aresample=48000:resampler=swr:async=1:first_pts=0,\
+pub(crate) const NORMALIZE: &str = "aresample=48000:resampler=swr:async=1:first_pts=0,\
                           aformat=sample_fmts=fltp:channel_layouts=stereo";
 
 /// Main-clip audio filter: trim → normalize → fade in/out. When `mute` is set the
@@ -830,7 +830,7 @@ fn build_profile_image_overlay(
 /// the overlay needs no geometry — only an alpha fade and the enable window. A
 /// short scale "pop" (110%→100%) gives the same scroll-stopper bounce the ASS
 /// path had, anchored at the frame centre.
-fn build_headline_png_overlay(
+pub(crate) fn build_headline_png_overlay(
     input_idx: usize,
     hl: &HeadlineImage,
     in_label: &str,
@@ -857,7 +857,7 @@ fn build_headline_png_overlay(
 /// so it cross-dissolves into the running footage underneath. Placed as the
 /// ABSOLUTE topmost layer (after the subtitle burn) so it hides everything during
 /// the hook window.
-fn build_cover_overlay(
+pub(crate) fn build_cover_overlay(
     input_idx: usize,
     cov: &HeadlineImage,
     canvas_w: u32,
@@ -2366,7 +2366,7 @@ fn wrap_headline(text: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
-fn build_encoder(cfg: &FfmpegConfig) -> (String, Vec<String>) {
+pub(crate) fn build_encoder(cfg: &FfmpegConfig) -> (String, Vec<String>) {
     if cfg.nvenc {
         (
             "h264_nvenc".to_owned(),
@@ -2402,7 +2402,7 @@ async fn run_ffmpeg(execution: &JobExecutionContext, args: &[String]) -> Result<
     run_ffmpeg_with_binary(execution, &binary, args).await
 }
 
-async fn run_ffmpeg_with_binary(
+pub(crate) async fn run_ffmpeg_with_binary(
     execution: &JobExecutionContext,
     binary: &Path,
     args: &[String],
