@@ -127,6 +127,39 @@ pub trait PlannedMainRenderer: Sync {
     ) -> Result<crate::edit::service::EditResult>;
 }
 
+/// Fill the `AudioOptions` fields the planned path would otherwise leave at
+/// their `Default` value.
+///
+/// The legacy renderer populates these in `edit::service`, which the planned
+/// path never enters — so without this the renderer falls back to its own
+/// hardcoded duck/leak constants while `render_settings_fingerprint` still
+/// hashes `config.narration.duck_event_vol` / `leak_event_vol`. Changing either
+/// value would then invalidate the cache, force a full re-render, and produce a
+/// byte-identical file.
+///
+/// `leak_windows` stays empty on purpose: the renderer derives them from the
+/// immutable narration words, which is a property of the timeline rather than of
+/// a render setting. `lead_in_secs` is carried for fidelity but the planned
+/// renderer deliberately ignores it — the plan is already authored in narration
+/// coordinates, so delaying the voice would slide every word off its cut.
+pub(crate) fn planned_audio_options(
+    audio: &AudioOptions,
+    narration: &crate::config::NarrationConfig,
+    narration_mp3: std::path::PathBuf,
+    mute_source: bool,
+) -> AudioOptions {
+    let mut audio = audio.clone();
+    audio.mute_event = mute_source;
+    audio.narration = Some(crate::edit::ffmpeg::NarrationVoice {
+        mp3: narration_mp3,
+        duck_event_vol: narration.duck_event_vol,
+        leak_vol: narration.leak_event_vol,
+        leak_windows: Vec::new(),
+        lead_in_secs: narration.lead_in_secs,
+    });
+    audio
+}
+
 /// Injected boundary for the planned-main state machine. Production binds this
 /// to package import, narration, the Task-11 coordinator, and the renderer port;
 /// tests replace only those expensive/external stages while exercising the same
@@ -768,11 +801,22 @@ impl<'a> PipelineRunner<'a> {
         }
         ensure_dir(&job.narration_dir())?;
 
+        // The planned path never enters `edit::service`, so the config-derived
+        // audio settings have to be bound here or the renderer silently uses its
+        // own defaults for values the render fingerprint already hashes.
+        let audio_opts = planned_audio_options(
+            audio_opts,
+            &self.config.narration,
+            job.narration_mp3(),
+            crate::ingest::content_search::load_main_context(&job.base_dir)
+                .is_some_and(|context| context.mute_audio),
+        );
+
         let stages = ProductionPlannedMainStages {
             runner: self,
             provider,
             layout: crate::edit::layout::OutputLayout::from(layout),
-            audio: audio_opts,
+            audio: &audio_opts,
             social_name,
             style_profile_name,
             renderer,

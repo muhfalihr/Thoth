@@ -163,6 +163,67 @@ impl PlannedFfmpegRenderer {
         Ok(present)
     }
 
+    /// The pure half of [`Self::render_timeline`]: everything the graph needs,
+    /// assembled from already-probed items and the caller's render settings.
+    ///
+    /// Split out so the path from `AudioOptions` to the emitted filter graph is
+    /// testable without spawning FFmpeg — the ducking volumes an operator
+    /// configures reach the render through here and nowhere else.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn planned_graph_request(
+        &self,
+        items: Vec<PlannedGraphItem>,
+        narration_audio: PathBuf,
+        narration_duration_sec: f64,
+        narration: &NarrationTimelineV1,
+        layout: &OutputLayout,
+        audio: &AudioOptions,
+        output: PathBuf,
+    ) -> PlannedGraphRequest {
+        // The plan is authored directly in narration coordinates, so
+        // `voice.lead_in_secs` is deliberately NOT applied: delaying the voice
+        // here would slide every word off the cut it was planned against.
+        let (duck_vol, leak_vol, leak_windows) = match audio.narration.as_ref() {
+            Some(voice) if !voice.leak_windows.is_empty() => (
+                voice.duck_event_vol,
+                voice.leak_vol,
+                voice.leak_windows.clone(),
+            ),
+            Some(voice) => (
+                voice.duck_event_vol,
+                voice.leak_vol,
+                leak_windows_from_words(&narration.words, narration.duration_sec, LEAK_GAP_SEC),
+            ),
+            None => (
+                DEFAULT_DUCK_VOL,
+                DEFAULT_LEAK_VOL,
+                leak_windows_from_words(&narration.words, narration.duration_sec, LEAK_GAP_SEC),
+            ),
+        };
+
+        PlannedGraphRequest {
+            items,
+            narration_audio,
+            narration_duration_sec,
+            leak_windows,
+            duck_vol,
+            leak_vol,
+            mute_source: audio.mute_event,
+            width: layout.width(),
+            height: layout.height(),
+            bgm: audio
+                .bgm
+                .as_ref()
+                .map(|path| (path.clone(), audio.bgm_volume)),
+            sfx_intro: audio.sfx_intro.clone(),
+            hook_title_png: audio.hook_title_png.clone(),
+            cover: audio.cover.clone(),
+            encoder: build_encoder(&self.ffmpeg),
+            audio_bitrate: self.ffmpeg.audio_bitrate.clone(),
+            output,
+        }
+    }
+
     /// The whole render, expressed over the plan's *contents* rather than the
     /// opaque [`VerifiedMainFootagePlan`].
     ///
@@ -212,53 +273,20 @@ impl PlannedFfmpegRenderer {
             });
         }
 
-        // The plan is authored directly in narration coordinates, so `lead_in_secs`
-        // is deliberately NOT applied: delaying the voice here would slide every
-        // word off the cut it was planned against.
-        let (duck_vol, leak_vol, leak_windows) = match audio.narration.as_ref() {
-            Some(voice) if !voice.leak_windows.is_empty() => (
-                voice.duck_event_vol,
-                voice.leak_vol,
-                voice.leak_windows.clone(),
-            ),
-            Some(voice) => (
-                voice.duck_event_vol,
-                voice.leak_vol,
-                leak_windows_from_words(&narration.words, narration.duration_sec, LEAK_GAP_SEC),
-            ),
-            None => (
-                DEFAULT_DUCK_VOL,
-                DEFAULT_LEAK_VOL,
-                leak_windows_from_words(&narration.words, narration.duration_sec, LEAK_GAP_SEC),
-            ),
-        };
-
         let output = job.clips_dir().join(OUTPUT_NAME);
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent).map_err(|_| invalid("planned_output_dir_unwritable"))?;
         }
 
-        let request = PlannedGraphRequest {
+        let request = self.planned_graph_request(
             items,
             narration_audio,
             narration_duration_sec,
-            leak_windows,
-            duck_vol,
-            leak_vol,
-            mute_source: audio.mute_event,
-            width: layout.width(),
-            height: layout.height(),
-            bgm: audio
-                .bgm
-                .as_ref()
-                .map(|path| (path.clone(), audio.bgm_volume)),
-            sfx_intro: audio.sfx_intro.clone(),
-            hook_title_png: audio.hook_title_png.clone(),
-            cover: audio.cover.clone(),
-            encoder: build_encoder(&self.ffmpeg),
-            audio_bitrate: self.ffmpeg.audio_bitrate.clone(),
-            output: output.clone(),
-        };
+            narration,
+            layout,
+            audio,
+            output.clone(),
+        );
         let graph = build_planned_graph(&request)?;
 
         info!(
@@ -315,6 +343,7 @@ impl PlannedMainRenderer for PlannedFfmpegRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::planned_ffmpeg::PlannedGraph;
     use crate::execution::Cancelled;
     use thoth_types::main_footage::{CutHandlesV1, MatchLevel, TransitionKind, TransitionV1};
 
@@ -421,6 +450,123 @@ mod tests {
             ],
             "the graph may open only the local files the request named"
         );
+    }
+
+    fn test_renderer() -> PlannedFfmpegRenderer {
+        PlannedFfmpegRenderer::new(&FfmpegConfig {
+            ffmpeg_path: Some("ffmpeg".to_owned()),
+            nvenc: false,
+            cq_value: 28,
+            preset: "ultrafast".to_owned(),
+            audio_bitrate: "128k".to_owned(),
+        })
+    }
+
+    fn graph_items() -> Vec<PlannedGraphItem> {
+        vec![PlannedGraphItem {
+            cut_path: PathBuf::from("cuts/v001/cut-000.mp4"),
+            visible_duration_sec: 6.0,
+            handles: CutHandlesV1 {
+                before_ms: 300,
+                after_ms: 300,
+            },
+            transition: TransitionV1 {
+                kind: TransitionKind::MatchCut,
+                duration_ms: 0,
+            },
+            has_audio: true,
+        }]
+    }
+
+    /// One word inside a six-second timeline, so the derived leak windows are
+    /// non-empty and the ambience gain is rendered as the two-level expression.
+    fn graph_narration() -> NarrationTimelineV1 {
+        NarrationTimelineV1 {
+            schema_version: 1,
+            audio_path: "narration/narration.mp3".to_owned(),
+            audio_checksum: "0".repeat(64),
+            duration_sec: 6.0,
+            words: vec![thoth_types::main_footage::NarrationWordV1 {
+                text: "halo".to_owned(),
+                start_sec: 1.0,
+                end_sec: 1.4,
+            }],
+            beats: Vec::new(),
+            created_at: None,
+            fingerprint: None,
+        }
+    }
+
+    fn audio_from_config(narration: &crate::config::NarrationConfig) -> AudioOptions {
+        crate::pipeline::planned_audio_options(
+            &AudioOptions::default(),
+            narration,
+            PathBuf::from("narration/narration.mp3"),
+            false,
+        )
+    }
+
+    fn graph_for(audio: &AudioOptions) -> PlannedGraph {
+        let request = test_renderer().planned_graph_request(
+            graph_items(),
+            PathBuf::from("narration/narration.mp3"),
+            6.0,
+            &graph_narration(),
+            &OutputLayout::Vertical,
+            audio,
+            PathBuf::from("clips/planned_main.mp4"),
+        );
+        build_planned_graph(&request).unwrap()
+    }
+
+    /// Ruling AO: the planned path never enters `edit::service`, where the legacy
+    /// renderer fills `AudioOptions::narration`. Without the pipeline binding the
+    /// renderer falls back to `DEFAULT_DUCK_VOL`/`DEFAULT_LEAK_VOL` while
+    /// `render_settings_fingerprint` still hashes the configured values — so
+    /// tuning them would force a full re-render that produces an identical file.
+    /// This walks the whole path: config → `planned_audio_options` → request →
+    /// emitted filter.
+    #[test]
+    fn the_configured_ducking_volumes_reach_the_filter_graph() {
+        let config = crate::config::NarrationConfig {
+            duck_event_vol: 0.42,
+            leak_event_vol: 0.77,
+            ..Default::default()
+        };
+        let graph = graph_for(&audio_from_config(&config));
+        assert!(
+            graph.filter.contains("\\,0.770\\,0.420)"),
+            "the operator's configured ceiling/floor must be what is rendered: {}",
+            graph.filter
+        );
+    }
+
+    /// Ruling AL / I4: the plan is authored in narration coordinates, so applying
+    /// `lead_in_secs` here would slide every narration word off the cut it was
+    /// planned against. The omission is deliberate; this is its regression guard.
+    #[test]
+    fn the_narration_lead_in_never_shifts_the_planned_graph() {
+        let prompt = crate::config::NarrationConfig {
+            lead_in_secs: 0.0,
+            ..Default::default()
+        };
+        let delayed = crate::config::NarrationConfig {
+            lead_in_secs: 2.5,
+            ..Default::default()
+        };
+        let immediate = graph_for(&audio_from_config(&prompt));
+        let delayed = graph_for(&audio_from_config(&delayed));
+        assert_eq!(
+            immediate.args, delayed.args,
+            "a configured lead-in must not change one argument of the planned graph"
+        );
+        for banned in ["adelay", "itsoffset"] {
+            assert!(
+                !immediate.filter.contains(banned),
+                "the narration spine must start at zero, found `{banned}`: {}",
+                immediate.filter
+            );
+        }
     }
 
     /// Ruling AH item 2: cancellation is the one error with observable behaviour
