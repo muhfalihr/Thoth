@@ -680,3 +680,11 @@ diff. No production code changed.
 - RED compiler: `bun run --cwd scout typecheck` exited 1 because `MainFootagePlanV1` omitted `external_sources_fingerprint` while the decoder, reuse gate, and mixed-cut test consumed it.
 - GREEN: the CLI fixture now publishes a checksum-bound local external source plus a canonical-fingerprint manifest, passes the same external path on reuse, and asserts the immutable plan binds both path and fingerprint. The plan contract requires both external identity fields or neither. Mixed materialization resolves external bytes only through the external registry, honors `trim_start_sec` as the head-handle floor, publishes job-relative `source_path`, preserves `external_cut`, and keeps forced-main coverage at exactly 0.60.
 - Verification: `bun test scout/main_footage/cuts.test.ts scout/main_footage/contracts.test.ts` exited 0 and printed `ok cuts`; `bun run --cwd scout typecheck` exited 0; `git diff --check` exited 0.
+
+## Task 15 external b-roll corrective round — Rust durability semantics
+
+- RED contract: `cargo test -p thoth-types plans_require_both_halves_of_external_source_identity -- --test-threads=1` failed to compile because `MainFootagePlanV1` had no external path/fingerprint fields.
+- RED verifier: the valid 6-second main + 4-second external fixture failed `cut_source_unknown`, proving Rust still resolved every cut through the forced package. The paired mutation already rejected an inflated summary.
+- GREEN: the Rust plan wire accepts a contained external manifest path and SHA-256 fingerprint only as a pair. The verifier reopens and fingerprints the imported job-owned external manifest, binds `external_cut` only to that registry, enforces trim/range/handle/source metadata/checksum rules, retains manifest plus source bytes, and counts only `main_cut` duration toward forced-main coverage.
+- Mutation proof: the valid mixed fixture verifies at exactly 6.0 seconds / 0.60 main coverage; changing its summary to claim the external four seconds as main is rejected before any probe.
+- Verification: `cargo test -p thoth-types main_footage -- --test-threads=1` passed 19/19; `cargo test -p thoth-core main_footage::verify -- --test-threads=1` passed 28/28; `cargo check -p thoth-core --all-targets` exited 0; `git diff --check` exited 0.

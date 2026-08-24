@@ -13,8 +13,9 @@ use tokio::process::Command;
 
 use crate::execution::JobExecutionContext;
 use thoth_types::main_footage::{
-    MainFootageErrorCode, MainFootagePlanV1, MainFootageWarningCode, NarrationTimelineV1,
-    PlannedCutV1, PlanningMode, SourcePackageV1, fingerprint_canonical,
+    AssetKind, ExternalSourcesV1, MainFootageErrorCode, MainFootagePlanV1, MainFootageWarningCode,
+    NarrationTimelineV1, PlannedCutV1, PlanningMode, SourcePackageV1, SourceTechnicalMetadata,
+    fingerprint_canonical,
 };
 
 use crate::main_footage::{ImportedSourcePackage, MainFootageError};
@@ -345,53 +346,85 @@ fn validate_timeline_coverage(
     Ok(())
 }
 
-fn validate_source_bindings(plan: &MainFootagePlanV1, package: &SourcePackageV1) -> Result<()> {
+fn validate_source_bindings(
+    plan: &MainFootagePlanV1,
+    package: &SourcePackageV1,
+    external_sources: Option<&ExternalSourcesV1>,
+) -> Result<()> {
     let package_parent = Path::new(&plan.source_package_path)
         .parent()
         .ok_or_else(|| invalid("source_package_path_invalid"))?;
     for cut in &plan.timeline {
-        let source = package
-            .sources
-            .iter()
-            .find(|source| source.id == cut.source_id)
-            .ok_or_else(|| invalid("cut_source_unknown"))?;
-        if Path::new(&cut.source_path) != package_parent.join(&source.path) {
-            return Err(invalid("cut_source_path_mismatch"));
-        }
+        let (technical, available_floor_ms) = match cut.asset_kind {
+            AssetKind::MainCut => {
+                let source = package
+                    .sources
+                    .iter()
+                    .find(|source| source.id == cut.source_id)
+                    .ok_or_else(|| invalid("cut_source_unknown"))?;
+                if Path::new(&cut.source_path) != package_parent.join(&source.path) {
+                    return Err(invalid("cut_source_path_mismatch"));
+                }
+                (&source.technical, 0_i64)
+            }
+            AssetKind::ExternalCut => {
+                let external_sources =
+                    external_sources.ok_or_else(|| invalid("external_sources_identity_missing"))?;
+                let external_parent = Path::new(
+                    plan.external_sources_path
+                        .as_deref()
+                        .ok_or_else(|| invalid("external_sources_identity_missing"))?,
+                )
+                .parent()
+                .ok_or_else(|| invalid("external_sources_path_invalid"))?;
+                let source = external_sources
+                    .sources
+                    .iter()
+                    .find(|source| source.id == cut.source_id)
+                    .ok_or_else(|| invalid("external_cut_source_unknown"))?;
+                if Path::new(&cut.source_path) != external_parent.join(&source.path) {
+                    return Err(invalid("external_cut_source_path_mismatch"));
+                }
+                (&source.technical, milliseconds(source.trim_start_sec)?)
+            }
+        };
         let source_start_ms = milliseconds(cut.source_start_sec)?;
         let source_end_ms = milliseconds(cut.source_end_sec)?;
         let output_duration_ms =
             milliseconds(cut.output_end_sec)? - milliseconds(cut.output_start_sec)?;
-        if source_end_ms <= source_start_ms
-            || source_end_ms > milliseconds(source.technical.duration_sec)?
+        if source_start_ms < available_floor_ms
+            || source_end_ms <= source_start_ms
+            || source_end_ms > milliseconds(technical.duration_sec)?
             || source_end_ms - source_start_ms != output_duration_ms
             || !(MIN_VISIBLE_CUT_MS..=MAX_VISIBLE_CUT_MS).contains(&output_duration_ms)
         {
             return Err(invalid("cut_source_range_invalid"));
         }
-        let index = package
-            .scene_indexes
-            .iter()
-            .find(|index| index.source_id == cut.source_id)
-            .ok_or_else(|| invalid("cut_scene_index_unknown"))?;
-        let declared_scene = index.scenes.iter().find(|scene| {
-            let Ok(scene_start_ms) = milliseconds(scene.start_sec) else {
-                return false;
-            };
-            let Ok(scene_end_ms) = milliseconds(scene.end_sec) else {
-                return false;
-            };
-            source_start_ms >= scene_start_ms && source_end_ms <= scene_end_ms
-        });
-        declared_scene.ok_or_else(|| invalid("cut_scene_unknown"))?;
+        if cut.asset_kind == AssetKind::MainCut {
+            let index = package
+                .scene_indexes
+                .iter()
+                .find(|index| index.source_id == cut.source_id)
+                .ok_or_else(|| invalid("cut_scene_index_unknown"))?;
+            let declared_scene = index.scenes.iter().find(|scene| {
+                let Ok(scene_start_ms) = milliseconds(scene.start_sec) else {
+                    return false;
+                };
+                let Ok(scene_end_ms) = milliseconds(scene.end_sec) else {
+                    return false;
+                };
+                source_start_ms >= scene_start_ms && source_end_ms <= scene_end_ms
+            });
+            declared_scene.ok_or_else(|| invalid("cut_scene_unknown"))?;
+        }
         // Handles are extra decoded media either side of the visible cut, so what
         // bounds them is the source file, not the scene: a scene boundary is an
         // analysis artifact and the transition frames legitimately come from across
         // it. Scout computes them exactly this way (`cuts.ts::publishCut`), so
         // measuring them against the scene rejected the planner's own legal output
         // whenever a cut began at a scene start — which is the common case.
-        let available_before_ms = source_start_ms;
-        let available_after_ms = milliseconds(source.technical.duration_sec)? - source_end_ms;
+        let available_before_ms = source_start_ms - available_floor_ms;
+        let available_after_ms = milliseconds(technical.duration_sec)? - source_end_ms;
         if i64::from(cut.handles.before_ms) > available_before_ms
             || i64::from(cut.handles.after_ms) > available_after_ms
         {
@@ -414,9 +447,10 @@ fn validate_source_bindings(plan: &MainFootagePlanV1, package: &SourcePackageV1)
 fn validate_summary(plan: &MainFootagePlanV1, narration: &NarrationTimelineV1) -> Result<()> {
     let total_ms = milliseconds(narration.duration_sec)?;
     let main_ms = plan.timeline.iter().try_fold(0_i64, |sum, cut| {
-        Ok::<_, anyhow::Error>(
-            sum + milliseconds(cut.output_end_sec)? - milliseconds(cut.output_start_sec)?,
-        )
+        if cut.asset_kind == AssetKind::ExternalCut {
+            return Ok::<_, anyhow::Error>(sum);
+        }
+        Ok(sum + milliseconds(cut.output_end_sec)? - milliseconds(cut.output_start_sec)?)
     })?;
     let actual = if total_ms == 0 {
         0.0
@@ -497,17 +531,17 @@ fn container_contains(actual: &str, expected: &str) -> bool {
 
 fn validate_source_metadata(
     metadata: &MediaMetadata,
-    source: &thoth_types::main_footage::SourceVideoV1,
+    technical: &SourceTechnicalMetadata,
 ) -> Result<()> {
     if !duration_matches(
         metadata.duration_sec,
-        source.technical.duration_sec,
+        technical.duration_sec,
         metadata.frame_rate,
-    ) || !container_contains(&metadata.container, &source.technical.container)
-        || metadata.video_codec != source.technical.video_codec
-        || metadata.width != source.technical.width
-        || metadata.height != source.technical.height
-        || metadata.has_audio != source.technical.has_audio
+    ) || !container_contains(&metadata.container, &technical.container)
+        || metadata.video_codec != technical.video_codec
+        || metadata.width != technical.width
+        || metadata.height != technical.height
+        || metadata.has_audio != technical.has_audio
     {
         return Err(invalid("source_metadata_mismatch"));
     }
@@ -517,7 +551,7 @@ fn validate_source_metadata(
 fn validate_cut_metadata(
     metadata: &MediaMetadata,
     cut: &PlannedCutV1,
-    source: &thoth_types::main_footage::SourceVideoV1,
+    technical: &SourceTechnicalMetadata,
 ) -> Result<()> {
     let visible_duration = cut.source_end_sec - cut.source_start_sec;
     let handle_ms = u32::from(cut.handles.before_ms) + u32::from(cut.handles.after_ms);
@@ -528,13 +562,76 @@ fn validate_cut_metadata(
         metadata.frame_rate,
     ) || !container_contains(&metadata.container, "mp4")
         || metadata.video_codec != "h264"
-        || metadata.width != source.technical.width
-        || metadata.height != source.technical.height
-        || metadata.has_audio != source.technical.has_audio
+        || metadata.width != technical.width
+        || metadata.height != technical.height
+        || metadata.has_audio != technical.has_audio
     {
         return Err(invalid("cut_metadata_mismatch"));
     }
     Ok(())
+}
+
+struct VerifiedExternalSources {
+    manifest: ExternalSourcesV1,
+    root: PathBuf,
+    manifest_bytes: u64,
+}
+
+fn verify_external_sources_identity(
+    root: &Path,
+    plan: &MainFootagePlanV1,
+    imported: &ImportedSourcePackage,
+) -> Result<Option<VerifiedExternalSources>> {
+    let has_external_cut = plan
+        .timeline
+        .iter()
+        .any(|cut| cut.asset_kind == AssetKind::ExternalCut);
+    match (
+        plan.external_sources_path.as_deref(),
+        plan.external_sources_fingerprint.as_deref(),
+        imported.external_sources.as_ref(),
+    ) {
+        (None, None, None) if !has_external_cut => Ok(None),
+        (Some(declared_path), Some(declared_fingerprint), Some(imported_external)) => {
+            let manifest_path = canonical_file(root, &root.join(declared_path))?;
+            let imported_manifest_path = canonical_file(root, &imported_external.manifest_path)?;
+            if manifest_path != imported_manifest_path
+                || relative_artifact(root, &manifest_path)? != declared_path
+            {
+                return Err(invalid("external_manifest_path_mismatch"));
+            }
+            let external_root = fs::canonicalize(&imported_external.root)
+                .map_err(|_| invalid("external_root_missing"))?;
+            if !external_root.starts_with(root) || !external_root.is_dir() {
+                return Err(invalid("external_root_outside_job"));
+            }
+            let bytes = file_bytes(&manifest_path)?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|_| invalid("external_manifest_rejected"))?;
+            let manifest: ExternalSourcesV1 = serde_json::from_value(value.clone())
+                .map_err(|_| invalid("external_manifest_rejected"))?;
+            let fingerprint = fingerprint_canonical(&value)
+                .map_err(|_| invalid("external_fingerprint_failed"))?;
+            let imported_value = serde_json::to_value(&imported_external.manifest)
+                .map_err(|_| invalid("external_manifest_rejected"))?;
+            let imported_fingerprint = fingerprint_canonical(&imported_value)
+                .map_err(|_| invalid("external_fingerprint_failed"))?;
+            if fingerprint != imported_fingerprint
+                || fingerprint != imported_external.fingerprint
+                || fingerprint != declared_fingerprint
+                || manifest.fingerprint.as_deref() != Some(fingerprint.as_str())
+                || imported_external.manifest.fingerprint.as_deref() != Some(fingerprint.as_str())
+            {
+                return Err(invalid("external_fingerprint_mismatch"));
+            }
+            Ok(Some(VerifiedExternalSources {
+                manifest,
+                root: external_root,
+                manifest_bytes: bytes.len() as u64,
+            }))
+        }
+        _ => Err(invalid("external_sources_identity_mismatch")),
+    }
 }
 
 pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
@@ -629,15 +726,23 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
     if relative_artifact(&root, &narration_path)? != plan.narration_timeline_path {
         return Err(invalid("narration_timeline_path_mismatch"));
     }
+    let external_sources = verify_external_sources_identity(&root, &plan, imported)?;
     validate_timeline_coverage(&plan, narration)?;
-    validate_source_bindings(&plan, &published_package)?;
+    validate_source_bindings(
+        &plan,
+        &published_package,
+        external_sources.as_ref().map(|external| &external.manifest),
+    )?;
     validate_summary(&plan, narration)?;
     validate_reuse_spacing(&plan)?;
 
     let mut retained_bytes = plan_bytes.len() as u64
         + active_bytes.len() as u64
         + manifest_bytes.len() as u64
-        + narration_bytes.len() as u64;
+        + narration_bytes.len() as u64
+        + external_sources
+            .as_ref()
+            .map_or(0, |external| external.manifest_bytes);
     let mut source_paths = Vec::with_capacity(published_package.sources.len());
     for source in &published_package.sources {
         let source_path = canonical_file(&root, &imported.root.join(&source.path))?;
@@ -647,6 +752,19 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
         }
         retained_bytes += source_bytes;
         source_paths.push((source, source_path));
+    }
+    let mut external_source_paths = Vec::new();
+    if let Some(external) = external_sources.as_ref() {
+        external_source_paths.reserve(external.manifest.sources.len());
+        for source in &external.manifest.sources {
+            let source_path = canonical_file(&root, &external.root.join(&source.path))?;
+            let (actual_checksum, source_bytes) = checksum_file(&source_path)?;
+            if actual_checksum != source.checksum {
+                return Err(invalid("external_source_checksum_mismatch"));
+            }
+            retained_bytes += source_bytes;
+            external_source_paths.push((source, source_path));
+        }
     }
     for index in &published_package.scene_indexes {
         let index_path = canonical_file(&root, &imported.root.join(&index.path))?;
@@ -689,16 +807,38 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
 
     for (source, source_path) in &source_paths {
         let metadata = probe.probe(source_path).await.map_err(probe_failed)?;
-        validate_source_metadata(&metadata, source)?;
+        validate_source_metadata(&metadata, &source.technical)?;
+    }
+    for (source, source_path) in &external_source_paths {
+        let metadata = probe.probe(source_path).await.map_err(probe_failed)?;
+        validate_source_metadata(&metadata, &source.technical)?;
     }
     for (cut, path) in &cut_paths {
         let metadata = probe.probe(path).await.map_err(probe_failed)?;
-        let source = published_package
-            .sources
-            .iter()
-            .find(|source| source.id == cut.source_id)
-            .ok_or_else(|| invalid("cut_source_unknown"))?;
-        validate_cut_metadata(&metadata, cut, source)?;
+        let technical = match cut.asset_kind {
+            AssetKind::MainCut => {
+                &published_package
+                    .sources
+                    .iter()
+                    .find(|source| source.id == cut.source_id)
+                    .ok_or_else(|| invalid("cut_source_unknown"))?
+                    .technical
+            }
+            AssetKind::ExternalCut => {
+                &external_sources
+                    .as_ref()
+                    .and_then(|external| {
+                        external
+                            .manifest
+                            .sources
+                            .iter()
+                            .find(|source| source.id == cut.source_id)
+                    })
+                    .ok_or_else(|| invalid("external_cut_source_unknown"))?
+                    .technical
+            }
+        };
+        validate_cut_metadata(&metadata, cut, technical)?;
     }
 
     let mut transition_distribution = BTreeMap::new();
@@ -780,8 +920,10 @@ pub(crate) mod tests {
         decode_ffprobe_metadata, duration_matches, validate_source_bindings,
         validate_timeline_coverage, verify_plan_with_probe,
     };
+    use crate::main_footage::import::ImportedExternalSources;
     use crate::main_footage::{ImportedSourcePackage, fingerprint_canonical};
     use crate::pipeline::job::JobContext;
+    use thoth_types::main_footage::{AssetKind, ExternalSourcesV1};
 
     fn digest(bytes: &[u8]) -> String {
         let mut hash = Sha256::new();
@@ -1109,11 +1251,163 @@ pub(crate) mod tests {
         fs::write(active_path, serde_json::to_vec_pretty(&active).unwrap()).unwrap();
     }
 
+    fn add_mixed_external_cut(fixture: &mut Fixture) {
+        let external_root = fixture
+            .job
+            .main_footage_dir()
+            .join("external-footage/external-fixture");
+        let source_bytes = b"external source bytes";
+        let external_source = external_root.join("sources/external-1.mp4");
+        write(&external_source, source_bytes);
+        let mut manifest_value = json!({
+            "schema_version": 1,
+            "sources": [{
+                "id": "external-1",
+                "path": "sources/external-1.mp4",
+                "checksum": digest(source_bytes),
+                "technical": {
+                    "container": "mp4",
+                    "video_codec": "h264",
+                    "duration_sec": 6.0,
+                    "width": 1080,
+                    "height": 1920,
+                    "has_audio": true
+                },
+                "query": "mountain rescue",
+                "description": "Mountain rescue team beside a helicopter.",
+                "trim_start_sec": 1.0
+            }]
+        });
+        let external_fingerprint = fingerprint_canonical(&manifest_value).unwrap();
+        manifest_value["fingerprint"] = Value::String(external_fingerprint.clone());
+        let manifest: ExternalSourcesV1 = serde_json::from_value(manifest_value.clone()).unwrap();
+        let manifest_path = external_root.join("manifest.json");
+        write(
+            &manifest_path,
+            &serde_json::to_vec_pretty(&manifest_value).unwrap(),
+        );
+        fixture.imported.external_sources = Some(ImportedExternalSources {
+            root: fs::canonicalize(&external_root).unwrap(),
+            manifest_path,
+            manifest,
+            fingerprint: external_fingerprint.clone(),
+        });
+
+        let mut narration_value = serde_json::to_value(&fixture.narration).unwrap();
+        narration_value["beats"] = json!([
+            {"id": "beat-001", "start_sec": 0.0, "end_sec": 6.0, "text": "one"},
+            {"id": "beat-002", "start_sec": 6.0, "end_sec": 10.0, "text": "mountain rescue"}
+        ]);
+        fixture.narration = serde_json::from_value(narration_value.clone()).unwrap();
+        write(
+            &fixture.job.narration_timeline(),
+            &serde_json::to_vec_pretty(&narration_value).unwrap(),
+        );
+
+        rewrite_plan(fixture, |plan| {
+            plan["external_sources_path"] =
+                json!("main-footage/external-footage/external-fixture/manifest.json");
+            plan["external_sources_fingerprint"] = json!(external_fingerprint);
+            plan["timeline"][0]["asset_kind"] = json!("main_cut");
+            plan["timeline"][0]["source_end_sec"] = json!(6.0);
+            plan["timeline"][0]["output_end_sec"] = json!(6.0);
+            plan["timeline"][1]["asset_kind"] = json!("external_cut");
+            plan["timeline"][1]["source_id"] = json!("external-1");
+            plan["timeline"][1]["source_path"] =
+                json!("main-footage/external-footage/external-fixture/sources/external-1.mp4");
+            plan["timeline"][1]["source_start_sec"] = json!(1.0);
+            plan["timeline"][1]["source_end_sec"] = json!(5.0);
+            plan["timeline"][1]["output_start_sec"] = json!(6.0);
+            plan["timeline"][1]["output_end_sec"] = json!(10.0);
+            plan["timeline"][1]["transition"] = json!({"kind": "match_cut", "duration_ms": 120});
+            plan["timeline"][1]["handles"] = json!({"before_ms": 0, "after_ms": 180});
+            plan["summary"]["main_coverage_sec"] = json!(6.0);
+            plan["summary"]["main_coverage_ratio"] = json!(0.6);
+        });
+
+        fixture.probe.results.insert(
+            "external-1.mp4".into(),
+            MediaMetadata {
+                duration_sec: 6.0,
+                container: "mp4".into(),
+                video_codec: "h264".into(),
+                width: 1080,
+                height: 1920,
+                has_audio: true,
+                frame_rate: 30.0,
+            },
+        );
+        fixture
+            .probe
+            .results
+            .get_mut("cut-001.mp4")
+            .unwrap()
+            .duration_sec = 6.18;
+        fixture
+            .probe
+            .results
+            .get_mut("cut-002.mp4")
+            .unwrap()
+            .duration_sec = 4.18;
+    }
+
     fn error_code(error: &anyhow::Error) -> thoth_types::main_footage::MainFootageErrorCode {
         error
             .downcast_ref::<crate::main_footage::MainFootageError>()
             .unwrap_or_else(|| panic!("expected MainFootageError, got {error:#}"))
             .code
+    }
+
+    #[tokio::test]
+    async fn external_cut_is_job_local_and_only_main_duration_counts_for_coverage() {
+        let mut fixture = fixture();
+        add_mixed_external_cut(&mut fixture);
+
+        let verified = verify_plan_with_probe(
+            &fixture.job,
+            &fixture.imported,
+            &fixture.narration,
+            &fixture.plan_path,
+            &fixture.probe,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.metrics().main_coverage_sec, 6.0);
+        assert_eq!(verified.metrics().main_coverage_ratio, 0.6);
+        let external = verified
+            .timeline()
+            .iter()
+            .find(|cut| cut.asset_kind == AssetKind::ExternalCut)
+            .expect("the verified timeline must retain its external cut");
+        assert_eq!(external.source_id, "external-1");
+        assert!(
+            external
+                .source_path
+                .starts_with("main-footage/external-footage/")
+        );
+        assert!(fixture.root.join(&external.source_path).is_file());
+    }
+
+    #[tokio::test]
+    async fn external_duration_cannot_inflate_main_coverage() {
+        let mut fixture = fixture();
+        add_mixed_external_cut(&mut fixture);
+        rewrite_plan(&fixture, |plan| {
+            plan["summary"]["main_coverage_sec"] = json!(10.0);
+            plan["summary"]["main_coverage_ratio"] = json!(1.0);
+        });
+
+        verify_plan_with_probe(
+            &fixture.job,
+            &fixture.imported,
+            &fixture.narration,
+            &fixture.plan_path,
+            &fixture.probe,
+        )
+        .await
+        .expect_err("external duration must not satisfy forced-main coverage");
+        assert!(fixture.probe.opened.lock().unwrap().is_empty());
     }
 
     /// Production mutation caught: constructing the opaque verified value before
@@ -1238,7 +1532,7 @@ pub(crate) mod tests {
             plan.timeline[0].source_end_sec = duration_sec;
             plan.timeline[0].output_end_sec = duration_sec;
             assert!(
-                validate_source_bindings(&plan, &fixture.imported.package).is_err(),
+                validate_source_bindings(&plan, &fixture.imported.package, None).is_err(),
                 "{rejected_ms} ms must be rejected"
             );
         }
@@ -1248,7 +1542,7 @@ pub(crate) mod tests {
             let duration_sec = f64::from(accepted_ms) / 1_000.0;
             plan.timeline[0].source_end_sec = duration_sec;
             plan.timeline[0].output_end_sec = duration_sec;
-            validate_source_bindings(&plan, &fixture.imported.package)
+            validate_source_bindings(&plan, &fixture.imported.package, None)
                 .unwrap_or_else(|error| panic!("{accepted_ms} ms must be accepted: {error:#}"));
         }
     }
@@ -1269,7 +1563,7 @@ pub(crate) mod tests {
         }];
 
         validate_timeline_coverage(&plan, &narration).unwrap();
-        validate_source_bindings(&plan, &fixture.imported.package).unwrap();
+        validate_source_bindings(&plan, &fixture.imported.package, None).unwrap();
     }
 
     /// Production mutation caught: trusting the plan and active pointer's

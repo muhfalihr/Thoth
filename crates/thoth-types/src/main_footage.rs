@@ -97,9 +97,7 @@ where
     Ok(value)
 }
 
-fn deserialize_optional_sha256_identity<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
+fn deserialize_optional_sha256_identity<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -770,8 +768,11 @@ where
     D: Deserializer<'de>,
 {
     let beats = Vec::<NarrationBeatV1>::deserialize(deserializer)?;
-    unique_ids(beats.iter().map(|beat| beat.id.as_str()), "duplicate beat id")
-        .map_err(serde::de::Error::custom)?;
+    unique_ids(
+        beats.iter().map(|beat| beat.id.as_str()),
+        "duplicate beat id",
+    )
+    .map_err(serde::de::Error::custom)?;
     if let Some(first) = beats.first() {
         if first.start_sec != 0.0 {
             return Err(serde::de::Error::custom("beats must start at 0"));
@@ -923,7 +924,7 @@ pub struct PlanSummaryV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "MainFootagePlanWire")]
 pub struct MainFootagePlanV1 {
     #[serde(deserialize_with = "deserialize_schema_version")]
     pub schema_version: u8,
@@ -934,6 +935,18 @@ pub struct MainFootagePlanV1 {
     pub narration_timeline_path: String,
     pub source_package_fingerprint: String,
     pub narration_fingerprint: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_artifact_path"
+    )]
+    pub external_sources_path: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_sha256_identity"
+    )]
+    pub external_sources_fingerprint: Option<String>,
     #[serde(deserialize_with = "deserialize_coverage_target")]
     pub main_coverage_target: f64,
     #[serde(deserialize_with = "deserialize_unique_cuts")]
@@ -943,6 +956,60 @@ pub struct MainFootagePlanV1 {
     pub warnings: Vec<MainFootageWarningCode>,
     pub created_at: Option<String>,
     pub fingerprint: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MainFootagePlanWire {
+    #[serde(deserialize_with = "deserialize_schema_version")]
+    schema_version: u8,
+    status: MainFootagePlanStatus,
+    #[serde(deserialize_with = "deserialize_artifact_path")]
+    source_package_path: String,
+    #[serde(deserialize_with = "deserialize_artifact_path")]
+    narration_timeline_path: String,
+    source_package_fingerprint: String,
+    narration_fingerprint: String,
+    #[serde(default, deserialize_with = "deserialize_optional_artifact_path")]
+    external_sources_path: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_sha256_identity")]
+    external_sources_fingerprint: Option<String>,
+    #[serde(deserialize_with = "deserialize_coverage_target")]
+    main_coverage_target: f64,
+    #[serde(deserialize_with = "deserialize_unique_cuts")]
+    timeline: Vec<PlannedCutV1>,
+    diagnostics: PlanDiagnosticsV1,
+    summary: PlanSummaryV1,
+    warnings: Vec<MainFootageWarningCode>,
+    created_at: Option<String>,
+    fingerprint: Option<String>,
+}
+
+impl TryFrom<MainFootagePlanWire> for MainFootagePlanV1 {
+    type Error = &'static str;
+
+    fn try_from(value: MainFootagePlanWire) -> Result<Self, Self::Error> {
+        if value.external_sources_path.is_some() != value.external_sources_fingerprint.is_some() {
+            return Err("external sources identity is incomplete");
+        }
+        Ok(Self {
+            schema_version: value.schema_version,
+            status: value.status,
+            source_package_path: value.source_package_path,
+            narration_timeline_path: value.narration_timeline_path,
+            source_package_fingerprint: value.source_package_fingerprint,
+            narration_fingerprint: value.narration_fingerprint,
+            external_sources_path: value.external_sources_path,
+            external_sources_fingerprint: value.external_sources_fingerprint,
+            main_coverage_target: value.main_coverage_target,
+            timeline: value.timeline,
+            diagnostics: value.diagnostics,
+            summary: value.summary,
+            warnings: value.warnings,
+            created_at: value.created_at,
+            fingerprint: value.fingerprint,
+        })
+    }
 }
 
 fn deserialize_plan_version<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -1025,8 +1092,7 @@ mod tests {
 
     use super::{
         AssetKind, ExternalSourcesV1, MainFootageActiveV1, MainFootageDescriptor, MainFootageMode,
-        MainFootagePlanV1,
-        NarrationTimelineV1, SourcePackageV1, fingerprint_canonical,
+        MainFootagePlanV1, NarrationTimelineV1, SourcePackageV1, fingerprint_canonical,
     };
 
     // Production mutation caught: a permissive Rust mirror could resume an unverified
@@ -1090,13 +1156,15 @@ mod tests {
             descriptor.external_sources_manifest.as_deref(),
             Some("external-footage/v001/manifest.json")
         );
-        assert!(serde_json::from_value::<MainFootageDescriptor>(json!({
-            "mode": "forced",
-            "source_package_path": "sources.json",
-            "narration_timeline_path": "narration.json",
-            "main_coverage_target": 0.6
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<MainFootageDescriptor>(json!({
+                "mode": "forced",
+                "source_package_path": "sources.json",
+                "narration_timeline_path": "narration.json",
+                "main_coverage_target": 0.6
+            }))
+            .is_err()
+        );
     }
 
     fn source_fixture() -> Value {
@@ -1130,6 +1198,29 @@ mod tests {
         let mut invalid = plan_fixture();
         invalid["timeline"][0]["asset_kind"] = json!("remote_cut");
         assert!(serde_json::from_value::<MainFootagePlanV1>(invalid).is_err());
+    }
+
+    #[test]
+    fn plans_require_both_halves_of_external_source_identity() {
+        let mut complete = plan_fixture();
+        complete["external_sources_path"] =
+            json!("main-footage/external-footage/generation/manifest.json");
+        complete["external_sources_fingerprint"] = json!(format!("sha256:{}", "3".repeat(64)));
+        let decoded: MainFootagePlanV1 = serde_json::from_value(complete.clone()).unwrap();
+        assert_eq!(
+            decoded.external_sources_path.as_deref(),
+            Some("main-footage/external-footage/generation/manifest.json")
+        );
+        assert_eq!(
+            decoded.external_sources_fingerprint.as_deref(),
+            Some(format!("sha256:{}", "3".repeat(64)).as_str())
+        );
+
+        complete
+            .as_object_mut()
+            .unwrap()
+            .remove("external_sources_fingerprint");
+        assert!(serde_json::from_value::<MainFootagePlanV1>(complete).is_err());
     }
 
     #[test]
@@ -1259,10 +1350,7 @@ mod tests {
 
     #[test]
     fn source_packages_require_nonzero_source_dimensions() {
-        for pointer in [
-            "/sources/0/technical/width",
-            "/sources/0/technical/height",
-        ] {
+        for pointer in ["/sources/0/technical/width", "/sources/0/technical/height"] {
             let mut package = source_fixture();
             *package.pointer_mut(pointer).unwrap() = json!(0);
             assert!(
