@@ -110,10 +110,12 @@ struct PublishedSceneIndex {
 /// thing the manifest says. Both sides are compared through Rust's own serializer,
 /// so a field Scout writes differently (an absent `vision_description` versus an
 /// explicit null) cannot masquerade as tampering.
-fn verify_index_contents(path: &Path, declared: &SceneIndexV1) -> Result<(), MainFootageError> {
-    let bytes = fs::read(path).map_err(|_| invalid("artifact_unreadable"))?;
+pub(crate) fn verify_index_contents(
+    bytes: &[u8],
+    declared: &SceneIndexV1,
+) -> Result<(), MainFootageError> {
     let file: PublishedSceneIndex =
-        serde_json::from_slice(&bytes).map_err(|_| invalid("scene_index_rejected"))?;
+        serde_json::from_slice(bytes).map_err(|_| invalid("scene_index_rejected"))?;
     let same_scenes = serde_json::to_value(&file.scenes)
         .map_err(|_| invalid("scene_index_not_serializable"))?
         == serde_json::to_value(&declared.scenes)
@@ -238,7 +240,8 @@ pub fn import_package(
 
     for index in &package.scene_indexes {
         let imported = import_artifact(execution, package_root, &job_root, &index.path)?;
-        verify_index_contents(&imported, index)?;
+        let bytes = fs::read(&imported).map_err(|_| invalid("artifact_unreadable"))?;
+        verify_index_contents(&bytes, index)?;
         for scene in &index.scenes {
             import_artifact(execution, package_root, &job_root, &scene.representative_frame)?;
             // A `degraded` scene with no evidence at all legitimately carries no

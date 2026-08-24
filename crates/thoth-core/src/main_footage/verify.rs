@@ -631,9 +631,14 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
     for index in &published_package.scene_indexes {
         let index_path = canonical_file(&root, &imported.root.join(&index.path))?;
         let bytes = file_bytes(&index_path)?;
-        if checksum(&bytes) != index.checksum {
-            return Err(invalid("scene_index_checksum_mismatch"));
-        }
+        // NOT `checksum(&bytes) == index.checksum`. `SceneIndexV1.checksum` is Scout's
+        // content fingerprint over the source digest, planning mode, projected scene
+        // evidence and artifact *bytes* — it can never equal the digest of `index.json`,
+        // so demanding that fixed point rejected every genuine Scout package. What
+        // verification has to establish is that the file this job owns still describes
+        // the scenes the manifest declares, which is what import checks on the way in.
+        crate::main_footage::import::verify_index_contents(&bytes, index)
+            .map_err(|_| invalid("scene_index_contents_mismatch"))?;
         retained_bytes += bytes.len() as u64;
         for scene in &index.scenes {
             let frame = canonical_file(&root, &imported.root.join(&scene.representative_frame))?;
@@ -835,11 +840,45 @@ pub(crate) mod tests {
         let source_bytes = b"immutable source bytes";
         let source_path = job.main_footage_dir().join("sources/source-0.mp4");
         write(&source_path, source_bytes);
-        let index_bytes = br#"{"schema_version":1,"source_id":"source-0"}"#;
+        // The published index file and the manifest's `scenes` are the same evidence,
+        // written once. Verification compares them (see `import::verify_index_contents`),
+        // so a fixture that hand-wrote a stub here would be a fixture built to pass.
+        let scenes = json!([{
+            "id": "scene-0",
+            "start_sec": 0.0,
+            "end_sec": 10.0,
+            "representative_frame": "frames/source-0-000.jpg",
+            "transcript_evidence": "first scene",
+            "vision_description": "first scene",
+            "visual_metrics": {
+                "motion_score": 0.2,
+                "brightness": 0.5,
+                "scene_change_score": 0.1
+            }
+        }, {
+            "id": "scene-1",
+            "start_sec": 10.0,
+            "end_sec": 20.0,
+            "representative_frame": "frames/source-0-001.jpg",
+            "transcript_evidence": "second scene",
+            "vision_description": "second scene",
+            "visual_metrics": {
+                "motion_score": 0.3,
+                "brightness": 0.6,
+                "scene_change_score": 0.2
+            }
+        }]);
+        let index_bytes = serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "source_id": "source-0",
+            "planning_mode": "vision",
+            "scenes": scenes.clone(),
+        }))
+        .unwrap();
         let index_path = job
             .main_footage_dir()
             .join("scene-index/source-0/v001/index.json");
-        write(&index_path, index_bytes);
+        write(&index_path, &index_bytes);
         write(
             &job.main_footage_dir().join("frames/source-0-000.jpg"),
             b"frame-0",
@@ -876,33 +915,9 @@ pub(crate) mod tests {
             "scene_indexes": [{
                 "source_id": "source-0",
                 "path": "scene-index/source-0/v001/index.json",
-                "checksum": digest(index_bytes),
+                "checksum": digest(&index_bytes),
                 "planning_mode": "vision",
-                "scenes": [{
-                    "id": "scene-0",
-                    "start_sec": 0.0,
-                    "end_sec": 10.0,
-                    "representative_frame": "frames/source-0-000.jpg",
-                    "transcript_evidence": "first scene",
-                    "vision_description": "first scene",
-                    "visual_metrics": {
-                        "motion_score": 0.2,
-                        "brightness": 0.5,
-                        "scene_change_score": 0.1
-                    }
-                }, {
-                    "id": "scene-1",
-                    "start_sec": 10.0,
-                    "end_sec": 20.0,
-                    "representative_frame": "frames/source-0-001.jpg",
-                    "transcript_evidence": "second scene",
-                    "vision_description": "second scene",
-                    "visual_metrics": {
-                        "motion_score": 0.3,
-                        "brightness": 0.6,
-                        "scene_change_score": 0.2
-                    }
-                }]
+                "scenes": scenes
             }]
         });
         let package_fingerprint = fingerprint_canonical(&package_value).unwrap();
