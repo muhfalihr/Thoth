@@ -653,10 +653,10 @@ struct NarrationTtsExecutionIdentity<'a> {
 
 /// Non-secret embedding selection used for narration-structure retrieval.
 #[derive(serde::Serialize)]
-struct NarrationEmbeddingIdentity<'a> {
-    provider: &'a str,
-    base_url: &'a str,
-    model: &'a str,
+struct NarrationEmbeddingIdentity {
+    provider: String,
+    base_url: String,
+    model: String,
 }
 
 #[derive(serde::Serialize)]
@@ -665,7 +665,7 @@ struct NarrationInputSettingsIdentity<'a> {
     narration: String,
     tts: NarrationTtsIdentity<'a>,
     tts_execution: NarrationTtsExecutionIdentity<'a>,
-    embedding: NarrationEmbeddingIdentity<'a>,
+    embedding: Option<NarrationEmbeddingIdentity>,
 }
 
 fn effective_narration_model<'a>(
@@ -678,6 +678,20 @@ fn effective_narration_model<'a>(
     } else {
         configured
     }
+}
+
+/// Retain the endpoint components that can select a different service while
+/// excluding URL material that is commonly used to carry credentials.
+fn endpoint_identity(endpoint: &str) -> String {
+    let endpoint = endpoint.trim();
+    let Ok(mut url) = reqwest::Url::parse(endpoint) else {
+        return endpoint.trim_end_matches('/').to_owned();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string().trim_end_matches('/').to_owned()
 }
 
 fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -> String {
@@ -724,7 +738,16 @@ fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -
             "https://api.fireworks.ai/inference".to_owned(),
         ),
     };
+    let endpoint = endpoint_identity(&endpoint);
     let tts = &config.reaction.tts;
+    let embedding = config.narration.structure_rag.then(|| {
+        let embed = crate::rag::embed::EmbedConfig::from_app_config(config);
+        NarrationEmbeddingIdentity {
+            provider: embed.provider,
+            base_url: endpoint_identity(&embed.base_url),
+            model: embed.model,
+        }
+    });
     serde_json::to_string(&NarrationInputSettingsIdentity {
         generation: NarrationGenerationIdentity {
             provider: provider.to_string(),
@@ -751,11 +774,7 @@ fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -
             conda_env: &config.news.conda_env,
             python_path: &config.news.python_path,
         },
-        embedding: NarrationEmbeddingIdentity {
-            provider: &config.vector_db.embed_provider,
-            base_url: &config.vector_db.embed_base_url,
-            model: &config.vector_db.embed_model,
-        },
+        embedding,
     })
     .expect("narration input settings identity is serializable")
 }
@@ -2582,6 +2601,78 @@ mod planned_main_orchestration_tests {
         .unwrap();
         assert_eq!(active["version"], "v002");
         assert_eq!(active["input_fingerprint"], "sha256:input-v2");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn production_narration_identity_ignores_custom_endpoint_credentials() {
+        let (root, job, _, _) = fixture();
+        let provider = crate::cli::LlmProviderName::Vllm;
+        let mut config = crate::config::AppConfig::load().unwrap();
+        config.narration.structure_rag = true;
+        config.vector_db.supabase_url = "https://project.example.supabase.co".into();
+        config.vector_db.embed_provider = "vllm".into();
+        config.llm.vllm_base_url =
+            "https://llm-user:llm-token-v1@llm.example:8443/openai?access_token=one#route".into();
+        config.vector_db.embed_base_url =
+            "https://embed-user:embed-token-v1@embed.example:9443/embeddings?api_key=one#route"
+                .into();
+        let v1_input = production_narration_input_fingerprint(&config, &provider, &job);
+
+        config.llm.vllm_base_url =
+            "https://rotated-user:llm-token-v2@llm.example:8443/openai?access_token=two#other"
+                .into();
+        assert_eq!(
+            v1_input,
+            production_narration_input_fingerprint(&config, &provider, &job)
+        );
+
+        config.llm.vllm_base_url =
+            "https://llm-user:llm-token-v1@llm.example:8443/openai-v2?access_token=one#route"
+                .into();
+        assert_ne!(
+            v1_input,
+            production_narration_input_fingerprint(&config, &provider, &job)
+        );
+
+        config.llm.vllm_base_url =
+            "https://llm-user:llm-token-v1@llm.example:8443/openai?access_token=one#route".into();
+        config.vector_db.embed_base_url =
+            "https://rotated-user:embed-token-v2@embed.example:9443/embeddings?api_key=two#other"
+                .into();
+        assert_eq!(
+            v1_input,
+            production_narration_input_fingerprint(&config, &provider, &job)
+        );
+
+        config.vector_db.embed_base_url =
+            "https://embed-user:embed-token-v1@embed.example:9443/embeddings-v2?api_key=one#route"
+                .into();
+        assert_ne!(
+            v1_input,
+            production_narration_input_fingerprint(&config, &provider, &job)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn production_narration_identity_uses_effective_embedding_fallback_endpoint() {
+        let (root, job, _, _) = fixture();
+        let provider = crate::cli::LlmProviderName::Groq;
+        let mut config = crate::config::AppConfig::load().unwrap();
+        config.narration.structure_rag = true;
+        config.vector_db.supabase_url = "https://project.example.supabase.co".into();
+        config.vector_db.embed_provider = "vllm".into();
+        config.vector_db.embed_base_url.clear();
+        config.vector_db.embed_model.clear();
+        config.llm.vllm_base_url = "https://embedding-v1.example:8443/openai".into();
+        let v1_input = production_narration_input_fingerprint(&config, &provider, &job);
+
+        config.llm.vllm_base_url = "https://embedding-v2.example:8443/openai".into();
+        assert_ne!(
+            v1_input,
+            production_narration_input_fingerprint(&config, &provider, &job)
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

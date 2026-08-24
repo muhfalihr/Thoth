@@ -810,3 +810,20 @@ Remaining disclosed limitations:
 - GREEN: a typed, JSON-encoded `NarrationGenerationIdentity` records provider, effective model, and effective endpoint for every supported provider without API keys. The existing presentation-only reaction/news over-invalidation Minor remains deliberately deferred.
 - Regression: empty `[narration].model` plus only `config.llm.groq_model` changing drives the versioned publication path from v001 to v002, proves narration regeneration, and asserts an injected API key is excluded.
 - Verification: focused regression 1/1; serial `planned_main_orchestration_tests` 23/23; serial `narration::timeline` 8/8; `git diff --check` exit 0. Workspace-wide `cargo fmt --check` remains baseline-noisy and no broad formatter output is retained.
+
+## Ruling BK corrective round — endpoint-safe effective embedding identity
+
+- RED: `production_narration_identity_ignores_custom_endpoint_credentials` failed because
+  custom vLLM and embedding URLs were hashed verbatim; rotating their user-info/query/fragment
+  changed the production fingerprint. `production_narration_identity_uses_effective_embedding_fallback_endpoint`
+  also failed because an empty `embed_base_url` remained empty in the identity when the effective
+  vLLM fallback endpoint changed.
+- GREEN: endpoint identity now parses URLs before hashing, retaining scheme, host, port, and path
+  while stripping user-info, query, and fragment. Structure-RAG identity is now optional and,
+  when enabled, derives provider, base URL, and model from the effective `EmbedConfig` defaults.
+- Regression proof: rotating custom LLM and embedding URL credentials leaves the production
+  fingerprint unchanged; changing either non-secret endpoint path changes it. With an empty
+  embedding override, changing the effective vLLM fallback endpoint also changes it. The existing
+  empty-narration-model default-LLM/secret v001→v002 regression remains green.
+- Verification: the two new focused tests passed 2/2; retained default-model regression passed
+  1/1; serial `planned_main_orchestration_tests` passed 25/25; `git diff --check` exited 0.
