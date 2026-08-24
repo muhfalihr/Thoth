@@ -1029,30 +1029,75 @@ mod tests {
     /// `concurrent_termination_owns_all_children_and_closes_spawn`. Closing it
     /// needs identity-aware probing (creation time + image name captured at
     /// spawn), not a wider deadline. Serial runs are unaffected.
+    /// Ruling AX. `is_ok_and(success)` cannot tell "the process is gone" from
+    /// "I could not ask" — a probe that failed to launch reported the target as
+    /// dead, manufacturing phantom pass/fail either side of an assertion. The
+    /// probe therefore answers on three distinct exit codes and treats anything
+    /// else as a harness fault, which is loud rather than silently wrong.
+    ///
+    /// `ALIVE`/`DEAD` are chosen away from `1` because an interpreter that
+    /// fails to start conventionally exits `1`.
+    const PROBE_ALIVE: i32 = 0;
+    const PROBE_DEAD: i32 = 3;
+
+    fn liveness_from_probe(pid: u32, code: Option<i32>) -> bool {
+        match code {
+            Some(PROBE_ALIVE) => true,
+            Some(PROBE_DEAD) => false,
+            other => panic!(
+                "liveness probe for process {pid} could not answer (exit {other:?}); \
+                 this is a broken probe, not a dead process"
+            ),
+        }
+    }
+
     #[cfg(windows)]
     fn process_is_alive(pid: u32) -> bool {
-        std::process::Command::new("powershell")
+        let status = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
                 &format!(
-                    "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+                    "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) \
+                     {{ exit {PROBE_ALIVE} }} else {{ exit {PROBE_DEAD} }}"
                 ),
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .is_ok_and(|status| status.success())
+            .unwrap_or_else(|error| {
+                panic!("liveness probe for process {pid} failed to launch powershell: {error}")
+            });
+        liveness_from_probe(pid, status.code())
     }
 
     #[cfg(unix)]
     fn process_is_alive(pid: u32) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
+        let status = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("kill -0 {pid} 2>/dev/null && exit {PROBE_ALIVE} || exit {PROBE_DEAD}"),
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .is_ok_and(|status| status.success())
+            .unwrap_or_else(|error| {
+                panic!("liveness probe for process {pid} failed to launch sh: {error}")
+            });
+        liveness_from_probe(pid, status.code())
+    }
+
+    #[test]
+    fn the_liveness_probe_separates_death_from_an_unanswerable_probe() {
+        assert!(liveness_from_probe(1, Some(PROBE_ALIVE)));
+        assert!(!liveness_from_probe(1, Some(PROBE_DEAD)));
+        for unanswerable in [Some(1), Some(-1), None] {
+            let verdict = std::panic::catch_unwind(|| liveness_from_probe(1, unanswerable));
+            assert!(
+                verdict.is_err(),
+                "an unanswerable probe ({unanswerable:?}) must not be reported as a verdict"
+            );
+        }
     }
 
     async fn assert_process_exits(pid: u32) {

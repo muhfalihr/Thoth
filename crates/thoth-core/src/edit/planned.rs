@@ -39,8 +39,11 @@ use thoth_types::main_footage::PlannedCutV1;
 /// Narration pause long enough for the source ambience to breathe through.
 const LEAK_GAP_SEC: f64 = 0.5;
 
-/// Applied when the caller supplies no narration voice settings. Matches the
-/// legacy narrator defaults so a planned render sounds like the rest of Thoth.
+/// Applied only when the caller supplies no narration voice settings at all.
+/// These are NOT the configured defaults — `NarrationConfig` defaults to
+/// `duck_event_vol = 0.12` / `leak_event_vol = 0.45`, and production always
+/// binds those through `pipeline::planned_audio_options`. This pair is a
+/// last-resort fallback for a request that carries no voice at all.
 const DEFAULT_DUCK_VOL: f32 = 0.25;
 const DEFAULT_LEAK_VOL: f32 = 0.60;
 
@@ -557,8 +560,22 @@ mod tests {
             lead_in_secs: 2.5,
             ..Default::default()
         };
+        let delayed_audio = audio_from_config(&delayed);
+        // Ruling AS item 1: without this, hardcoding `lead_in_secs: 0.0` in
+        // `planned_audio_options` makes both sides identical and the equality
+        // below degrades into a tautology. The lead-in must genuinely reach the
+        // renderer's input for the graph's indifference to mean anything.
+        assert_eq!(
+            delayed_audio
+                .narration
+                .as_ref()
+                .expect("planned audio must carry a narration voice")
+                .lead_in_secs,
+            2.5,
+            "the configured lead-in must reach the renderer before we can claim the graph ignores it"
+        );
         let immediate = graph_for(&audio_from_config(&prompt));
-        let delayed = graph_for(&audio_from_config(&delayed));
+        let delayed = graph_for(&delayed_audio);
         assert_eq!(
             immediate.args, delayed.args,
             "a configured lead-in must not change one argument of the planned graph"
