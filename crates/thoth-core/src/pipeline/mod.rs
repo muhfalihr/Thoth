@@ -703,6 +703,12 @@ fn sanitize_malformed_endpoint(endpoint: &str) -> String {
         .unwrap_or(endpoint.len());
     let endpoint = &endpoint[..cutoff];
     let Some(scheme_end) = endpoint.find("://") else {
+        let path_colon = endpoint.find('/').and_then(|slash| {
+            endpoint[slash + 1..]
+                .find(':')
+                .map(|offset| slash + 1 + offset)
+        });
+        let endpoint = path_colon.map_or(endpoint, |index| &endpoint[..index]);
         return endpoint.trim_end_matches('/').to_owned();
     };
     let authority_start = scheme_end + 3;
@@ -2719,6 +2725,17 @@ mod planned_main_orchestration_tests {
         assert!(!first.contains("token"));
         assert!(!first.contains("access_token"));
         assert!(!first.contains("route"));
+    }
+
+    #[test]
+    fn path_like_endpoint_identity_excludes_credentials_for_llm_and_embedding_helpers() {
+        let endpoint = "llm.example/user:secret?token=x#fragment";
+        let expected = "llm.example/user";
+        assert_eq!(endpoint_identity(endpoint), expected);
+        assert_eq!(endpoint_identity(endpoint), endpoint_identity("llm.example/user"));
+        assert!(!endpoint_identity(endpoint).contains("secret"));
+        assert!(!endpoint_identity(endpoint).contains("token"));
+        assert!(!endpoint_identity(endpoint).contains("fragment"));
     }
 
     #[tokio::test]

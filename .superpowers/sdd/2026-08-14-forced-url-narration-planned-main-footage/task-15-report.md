@@ -832,3 +832,8 @@ Remaining disclosed limitations:
 - GREEN: parse failures now drop query/fragment text and strip user-info from a `scheme://authority` prefix while retaining safe routing text.
 - Regression: malformed percent-encoded credentials with rotated query/fragment values produce the same safe `https://llm.example:8443/openai` identity and expose none of the secret markers.
 - Verification: malformed endpoint regression 1/1; existing production endpoint regressions 2/2; `git diff --check` exit 0.
+\n+## Ruling BM corrective round — path-like malformed endpoint credential sanitization
+\n+- Root cause: the parse-failure fallback dropped query/fragment text but returned a path-like endpoint verbatim, so `llm.example/user:secret?token=x#f` still exposed credential material.
+- GREEN: the shared LLM/embedding endpoint identity helper now truncates a colon credential suffix after the first path separator, while preserving host:port routing and the safe path prefix.
+- Regression: exact path-like endpoint input yields `llm.example/user` and contains neither the credential nor query/fragment markers.
+- Verification: focused endpoint identity tests passed 2/2; `git diff --check` exit 0.
