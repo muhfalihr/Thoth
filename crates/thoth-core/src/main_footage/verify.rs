@@ -383,11 +383,15 @@ fn validate_source_bindings(plan: &MainFootagePlanV1, package: &SourcePackageV1)
             };
             source_start_ms >= scene_start_ms && source_end_ms <= scene_end_ms
         });
-        let scene = declared_scene.ok_or_else(|| invalid("cut_scene_unknown"))?;
-        let available_before_ms = source_start_ms - milliseconds(scene.start_sec)?;
-        let available_after_ms = milliseconds(scene.end_sec)?
-            .min(milliseconds(source.technical.duration_sec)?)
-            - source_end_ms;
+        declared_scene.ok_or_else(|| invalid("cut_scene_unknown"))?;
+        // Handles are extra decoded media either side of the visible cut, so what
+        // bounds them is the source file, not the scene: a scene boundary is an
+        // analysis artifact and the transition frames legitimately come from across
+        // it. Scout computes them exactly this way (`cuts.ts::publishCut`), so
+        // measuring them against the scene rejected the planner's own legal output
+        // whenever a cut began at a scene start — which is the common case.
+        let available_before_ms = source_start_ms;
+        let available_after_ms = milliseconds(source.technical.duration_sec)? - source_end_ms;
         if i64::from(cut.handles.before_ms) > available_before_ms
             || i64::from(cut.handles.after_ms) > available_after_ms
         {
@@ -477,10 +481,18 @@ fn duration_matches(actual: f64, expected: f64, frame_rate: f64) -> bool {
     (actual - expected).abs() <= tolerance
 }
 
+/// ffprobe reports `format_name` as a comma-separated demuxer family
+/// (`mov,mp4,m4a,3gp,3g2,mj2`), and Scout stores that whole string as the source's
+/// declared `container` (`source_package.ts::probeSourceVideo`). Splitting only the
+/// probed side therefore compared each family member against the entire list and
+/// never matched, so every real mp4 source failed `source_metadata_mismatch`. Both
+/// sides are lists; sharing a member means the same container.
 fn container_contains(actual: &str, expected: &str) -> bool {
-    actual
-        .split(',')
-        .any(|container| container.eq_ignore_ascii_case(expected))
+    expected.split(',').any(|expected| {
+        actual
+            .split(',')
+            .any(|container| container.eq_ignore_ascii_case(expected))
+    })
 }
 
 fn validate_source_metadata(

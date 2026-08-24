@@ -12,8 +12,8 @@
       "id": "source-CAPTURE1-1",
       "media_index": 1,
       "path": "sources/source-CAPTURE1-1.mp4",
-      "checksum": "sha256:434e69b8c60cc85483e4c407381d370677370455fe3162c59fa474a86eb47754",
-      "bytes": 128220,
+      "checksum": "sha256:bc8173c2c410f57d41920cf4e6bdecdd138f402d2676d71db63eabb28bd1c7a2",
+      "bytes": 153753,
       "technical": {
         "container": "mov,mp4,m4a,3gp,3g2,mj2",
         "video_codec": "h264",
@@ -40,40 +40,40 @@
   "scene_indexes": [
     {
       "source_id": "source-CAPTURE1-1",
-      "path": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/index.json",
-      "checksum": "sha256:0d45cd3808db06b14f968b467251d7a842ed8a3701f40be82058440bf56a9c29",
+      "path": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/index.json",
+      "checksum": "sha256:8dd3c944d4314dbc1b24f3b125610a1898f3ff4480cc652d468729d4f1cd6c18",
       "planning_mode": "vision",
       "scenes": [
         {
           "id": "scene-0001",
           "start_sec": 0,
           "end_sec": 3,
-          "representative_frame": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/frames/scene-0001-mid.jpg",
+          "representative_frame": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/frames/scene-0001-mid.jpg",
           "transcript_evidence": "the crane swings",
           "vision_description": "{\"subject\":\"harbour\",\"action\":\"crane\",\"setting\":\"dock\",\"composition\":\"wide\",\"motion\":\"panning\",\"topic\":\"harbour\"}",
-          "embedding_path": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/embeddings/scene-0001.json",
+          "embedding_path": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/embeddings/scene-0001.json",
           "visual_metrics": {
-            "motion_score": 0.5,
-            "brightness": 0.5,
-            "scene_change_score": 0.5
+            "motion_score": 0.05150078431372549,
+            "brightness": 0.48918823529411765,
+            "scene_change_score": 0.05150078431372549
           }
         },
         {
           "id": "scene-0002",
           "start_sec": 3,
           "end_sec": 6,
-          "representative_frame": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/frames/scene-0002-mid.jpg",
+          "representative_frame": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/frames/scene-0002-mid.jpg",
           "transcript_evidence": "(no speech detected)",
           "vision_description": "{\"subject\":\"harbour\",\"action\":\"crane\",\"setting\":\"dock\",\"composition\":\"wide\",\"motion\":\"panning\",\"topic\":\"harbour\"}",
-          "embedding_path": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/embeddings/scene-0002.json",
+          "embedding_path": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/embeddings/scene-0002.json",
           "visual_metrics": {
-            "motion_score": 0.5,
-            "brightness": 0.5,
-            "scene_change_score": 0.5
+            "motion_score": 0.05017686274509804,
+            "brightness": 0.5033882352941177,
+            "scene_change_score": 0.05017686274509804
           }
         }
       ]
     }
   ],
-  "fingerprint": "sha256:97a215ebd32dfe3b665047c7dddf7369a50506b460a1e28972a57c9168f5d2ad"
+  "fingerprint": "sha256:025c1bd2ede0d4bca80523d6ff40add6d7f77be67f95dfff0bb61f250ee0f1ca"
 }

@@ -92,3 +92,7 @@ api_key.txt
 # ── Unused root tooling artifacts (Scout owns its own config/package state) ──────
 /biome.json
 /bun.lock
+
+# Committed Scout package fixture: real media and frames the Rust acceptance
+# suite imports, plans and renders. Must survive the *.mp4 / *.jpg rules above.
+!crates/thoth-core/tests/fixtures/scout_package/**

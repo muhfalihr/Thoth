@@ -331,9 +331,32 @@ fn fingerprint_projection(value: &Value) -> Result<Value, String> {
     Ok(Value::Object(projected))
 }
 
+/// Prints a number the way `JSON.stringify` does.
+///
+/// The canonical form is a cross-runtime protocol, so "the same value" has to
+/// produce the same bytes in both runtimes. `serde_json` prints an integral `f64`
+/// as `6.0` where JavaScript prints `6`, which meant every value Rust
+/// *re-serialized* — the job-owned manifest, a narration timeline Rust built —
+/// fingerprinted differently on the two sides, and the Scout planner rejected the
+/// manifest Rust had just handed it. Integers already print identically; only the
+/// float branch needs the correction, and only below JavaScript's 1e21 exponential
+/// threshold.
+fn canonical_number(number: &serde_json::Number) -> String {
+    if !number.is_f64() {
+        return number.to_string();
+    }
+    match number.as_f64() {
+        // JavaScript prints negative zero as `0`.
+        Some(value) if value == 0.0 => "0".to_string(),
+        Some(value) if value.fract() == 0.0 && value.abs() < 1e21 => format!("{value:.0}"),
+        _ => number.to_string(),
+    }
+}
+
 fn canonical_json(value: &Value) -> Result<String, String> {
     match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+        Value::Number(number) => Ok(canonical_number(number)),
+        Value::Null | Value::Bool(_) | Value::String(_) => {
             serde_json::to_string(value).map_err(|error| error.to_string())
         }
         Value::Array(values) => values
@@ -490,6 +513,12 @@ pub struct SourceOutcomeV1 {
     pub id: String,
     pub media_index: u32,
     pub code: OutcomeCode,
+    // Absent, never null: Rust republishes this manifest into the job and Scout's
+    // planner decodes that copy, and Scout's decoder reads optionals as
+    // "`undefined` or a valid value" (`contracts.ts::outcome`). Serializing `None`
+    // as `null` made every mixed carousel — the case this feature exists for — die
+    // in the planner with `cut_planning_failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
@@ -513,8 +542,14 @@ pub struct SceneEvidenceV1 {
     #[serde(deserialize_with = "deserialize_artifact_path")]
     pub representative_frame: String,
     pub transcript_evidence: String,
+    // Absent, never null — see `SourceOutcomeV1::message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub vision_description: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_artifact_path")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_artifact_path"
+    )]
     pub embedding_path: Option<String>,
     pub visual_metrics: VisualMetricsV1,
 }
@@ -592,6 +627,8 @@ pub struct SourcePackageV1 {
     pub post: SourcePostV1,
     #[serde(deserialize_with = "deserialize_non_blank")]
     pub analysis_identity: String,
+    // Absent, never null — see `SourceOutcomeV1::message`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_sha256_identity")]
     pub fingerprint: Option<String>,
@@ -715,7 +752,11 @@ pub struct NarrationTimelineV1 {
     /// Derived beat segmentation. Absent in a words-only timeline.
     #[serde(default, deserialize_with = "deserialize_contiguous_beats")]
     pub beats: Vec<NarrationBeatV1>,
+    // Absent, never null — see `SourceOutcomeV1::message`. Rust publishes this file
+    // and the Scout planner decodes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
 }
 

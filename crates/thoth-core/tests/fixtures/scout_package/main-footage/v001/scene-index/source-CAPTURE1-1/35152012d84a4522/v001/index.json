@@ -1,0 +1,37 @@
+{
+  "source_id": "source-CAPTURE1-1",
+  "path": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/index.json",
+  "checksum": "sha256:8dd3c944d4314dbc1b24f3b125610a1898f3ff4480cc652d468729d4f1cd6c18",
+  "planning_mode": "vision",
+  "scenes": [
+    {
+      "id": "scene-0001",
+      "start_sec": 0,
+      "end_sec": 3,
+      "representative_frame": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/frames/scene-0001-mid.jpg",
+      "transcript_evidence": "the crane swings",
+      "vision_description": "{\"subject\":\"harbour\",\"action\":\"crane\",\"setting\":\"dock\",\"composition\":\"wide\",\"motion\":\"panning\",\"topic\":\"harbour\"}",
+      "embedding_path": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/embeddings/scene-0001.json",
+      "visual_metrics": {
+        "motion_score": 0.05150078431372549,
+        "brightness": 0.48918823529411765,
+        "scene_change_score": 0.05150078431372549
+      }
+    },
+    {
+      "id": "scene-0002",
+      "start_sec": 3,
+      "end_sec": 6,
+      "representative_frame": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/frames/scene-0002-mid.jpg",
+      "transcript_evidence": "(no speech detected)",
+      "vision_description": "{\"subject\":\"harbour\",\"action\":\"crane\",\"setting\":\"dock\",\"composition\":\"wide\",\"motion\":\"panning\",\"topic\":\"harbour\"}",
+      "embedding_path": "scene-index/source-CAPTURE1-1/35152012d84a4522/v001/embeddings/scene-0002.json",
+      "visual_metrics": {
+        "motion_score": 0.05017686274509804,
+        "brightness": 0.5033882352941177,
+        "scene_change_score": 0.05017686274509804
+      }
+    }
+  ],
+  "analyzer_identity": "capture-analyzer@1"
+}

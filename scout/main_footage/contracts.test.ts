@@ -169,7 +169,7 @@ function fixture(name: string): unknown {
 {
   const shared = path.resolve(
     import.meta.dirname,
-    '../../crates/thoth-core/tests/fixtures/scout_source_package.v1.json',
+    '../../crates/thoth-core/tests/fixtures/scout_package/main-footage/v001/package.json',
   );
   const raw = JSON.parse(readFileSync(shared, 'utf8')) as Record<string, unknown>;
   const pkg = decodeSourcePackage(raw);
