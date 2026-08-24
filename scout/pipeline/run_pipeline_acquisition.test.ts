@@ -39,6 +39,9 @@ await runPipelineWithDeps(
       stages.push('footage');
       contexts.add(received);
     },
+    packageExternalFootage: async () => {
+      throw new Error('legacy runs must not package planned external footage');
+    },
     extractFigures: async (_options, received) => {
       stages.push('figures');
       contexts.add(received);
@@ -102,6 +105,12 @@ try {
         forcedStages.push('footage');
         assert.deepEqual(options.excludedMediaIds, ['FORCED:0']);
       },
+      packageExternalFootage: async (options, received) => {
+        forcedStages.push('external');
+        assert.equal(received, forcedContext);
+        assert.equal(options.contentSetPath, 'set.json');
+        assert.deepEqual(options.excludedMediaIds, ['FORCED:0']);
+      },
       extractFigures: async () => forcedStages.push('figures'),
       validate: async () => forcedStages.push('validate'),
       summarize: async () => {},
@@ -113,7 +122,7 @@ try {
   if (previousFfprobe === undefined) delete process.env.THOTH_FFPROBE;
   else process.env.THOTH_FFPROBE = previousFfprobe;
 }
-assert.deepEqual(forcedStages, ['footage', 'figures', 'validate']);
+assert.deepEqual(forcedStages, ['footage', 'external', 'figures', 'validate']);
 assert.equal(forcedInspectCalls, 1);
 assert.equal(forcedPackageCalls, 1);
 

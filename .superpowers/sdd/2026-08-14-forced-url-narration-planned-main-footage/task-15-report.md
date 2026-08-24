@@ -618,6 +618,13 @@ diff. No production code changed.
 - GREEN: both runtimes now share `main_cut | external_cut`; legacy schema-v1 plans without the field decode as `main_cut`, newly published cuts always include it, unknown kinds fail closed, and `external_sources_manifest` is an optional contained descriptor path.
 - Verification: `bun test scout/main_footage/contracts.test.ts`; `bun test scout/main_footage/cuts.test.ts scout/main_footage/allocator.test.ts`; `cargo test -p thoth-types main_footage -- --test-threads=1` (17 passed); and `git diff --check` all exited 0.
 
+## Task 15 external b-roll corrective round — immutable Scout package
+
+- RED: the forced acquisition integration expected a new `external` stage immediately after `build_footage`; production skipped it and the observed stage list lacked that entry. The focused package test initially failed because `external_sources.ts` did not exist.
+- GREEN: forced runs now re-open the enriched Content Set after `build_footage`, inspect accepted video identities through the shared acquisition service, fail closed on ambiguous/excluded media, materialize through `service.materialize(..., 'footage')`, probe and checksum local bytes, and publish a write-once `main-footage/external-footage/vNNN/manifest.json` package. The Content Set receives only its relative descriptor path.
+- Durability/security proof: the manifest contains no remote URL or acquisition-cache path, only relative immutable source paths plus technical/context fields. The test deletes the materializer output and verifies the packaged copy remains readable; forced-post media and photos never reach materialization.
+- Verification: focused external package, shared contract, and forced pipeline tests all exited 0; `bun run --cwd scout typecheck` exited 0.
+
 ## Task 15 final-review fix — cross-runtime narration Unicode parity
 
 - Root cause: Scout normalizes narration word text to NFC before canonical hashing;

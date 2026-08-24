@@ -24,6 +24,11 @@ import { canonicalizeUrl } from '../acquisition/url.ts';
 import type { ContentSet, MainVideo } from '../lib/types.ts';
 import type { PostRecord } from '../acquisition/types.ts';
 import { buildSourcePackage, probeSourceVideo, type SourcePackageResult } from '../main_footage/source_package.ts';
+import {
+  packageExternalFootage,
+  productionExternalFootageDeps,
+  type PackageExternalFootageOptions,
+} from '../main_footage/external_sources.ts';
 import { runTraceSource, type TraceSourceOptions } from './trace_source.ts';
 import { runCollectComments, type CollectCommentsOptions } from './collect_comments.ts';
 import { runTopicDossier } from '../enrich/topic_dossier.ts';
@@ -61,6 +66,10 @@ export interface RunPipelineDeps {
   collectComments(options: CollectCommentsOptions, context: AcquisitionRunContext): Promise<void>;
   topicDossier(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
   buildFootage(options: BuildFootageOptions, context: AcquisitionRunContext): Promise<void>;
+  packageExternalFootage(
+    options: PackageExternalFootageOptions,
+    context: AcquisitionRunContext,
+  ): Promise<void>;
   extractFigures(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
   validate(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
   summarize(file: string): Promise<void>;
@@ -246,6 +255,15 @@ export async function runPipelineWithDeps(
     FOOTAGE_TIMEOUT_MS,
   );
 
+  if (options.useInputAsMain) {
+    await runStage(
+      'materialize_external_footage (job-plannable b-roll)',
+      true,
+      () => deps.packageExternalFootage({ contentSetPath: file, excludedMediaIds }, context),
+      FOOTAGE_TIMEOUT_MS,
+    );
+  }
+
   await runStage('extract_figures (tokoh — main + footage)', false, () =>
     deps.extractFigures({ file }, context),
   );
@@ -274,6 +292,18 @@ const realDeps: RunPipelineDeps = {
   collectComments: (options, context) => runCollectComments(options, context),
   topicDossier: (options, context) => runTopicDossier(options, context),
   buildFootage: (options, context) => runBuildFootage(options, context),
+  packageExternalFootage: async (options, context) => {
+    await packageExternalFootage(
+      options,
+      productionExternalFootageDeps(
+        async (url) => {
+          context.service.registerIntent(url, 'media');
+          return context.service.inspectPost(url);
+        },
+        (asset) => context.service.materialize(asset, 'footage'),
+      ),
+    );
+  },
   extractFigures: (options, context) => runExtractFigures(options, context),
   validate: async (options, context) => {
     const ok = await runValidateContentSet(options, context);

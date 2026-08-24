@@ -176,6 +176,23 @@ export interface MainFootagePlanV1 {
   fingerprint?: string;
 }
 
+export interface ExternalSourceV1 {
+  id: string;
+  path: string;
+  checksum: string;
+  technical: SourceTechnicalMetadata;
+  query: string;
+  description: string;
+  trim_start_sec: number;
+}
+
+export interface ExternalSourcesV1 {
+  schema_version: typeof MAIN_FOOTAGE_SCHEMA_VERSION;
+  sources: ExternalSourceV1[];
+  created_at?: string;
+  fingerprint?: string;
+}
+
 /** Atomic pointer published only after every cut and the immutable plan verify. */
 export interface MainFootageActiveV1 {
   schema_version: typeof MAIN_FOOTAGE_SCHEMA_VERSION;
@@ -485,6 +502,47 @@ export function decodeMainFootagePlan(input: unknown): MainFootagePlanV1 {
     warnings: array(value.warnings, 'warnings').map((warning) => enumValue(warning, 'warning', WARNING_CODES)),
     ...(value.created_at === undefined ? {} : { created_at: string(value.created_at, 'created_at') }),
     ...(value.fingerprint === undefined ? {} : { fingerprint: string(value.fingerprint, 'fingerprint') }),
+  };
+}
+
+export function decodeExternalSources(input: unknown): ExternalSourcesV1 {
+  const value = record(input, 'external sources');
+  schema(value);
+  const sources = array(value.sources, 'sources').map((item, index) => {
+    const source = record(item, `sources[${index}]`);
+    const technical = record(source.technical, `sources[${index}].technical`);
+    return {
+      id: string(source.id, `sources[${index}].id`),
+      path: artifact(source.path, `sources[${index}].path`),
+      checksum: string(source.checksum, `sources[${index}].checksum`),
+      technical: {
+        container: string(technical.container, 'technical.container'),
+        video_codec: string(technical.video_codec, 'technical.video_codec'),
+        duration_sec: number(technical.duration_sec, 'technical.duration_sec', 0),
+        width: number(technical.width, 'technical.width', 1),
+        height: number(technical.height, 'technical.height', 1),
+        has_audio:
+          typeof technical.has_audio === 'boolean'
+            ? technical.has_audio
+            : (() => {
+                throw new Error('technical.has_audio must be boolean');
+              })(),
+      },
+      query: looseString(source.query, `sources[${index}].query`),
+      description: looseString(source.description, `sources[${index}].description`),
+      trim_start_sec: number(source.trim_start_sec, `sources[${index}].trim_start_sec`, 0),
+    };
+  });
+  unique(sources.map((source) => source.id), 'external source id');
+  return {
+    schema_version: MAIN_FOOTAGE_SCHEMA_VERSION,
+    sources,
+    ...(value.created_at === undefined
+      ? {}
+      : { created_at: string(value.created_at, 'created_at') }),
+    ...(value.fingerprint === undefined
+      ? {}
+      : { fingerprint: string(value.fingerprint, 'fingerprint') }),
   };
 }
 
