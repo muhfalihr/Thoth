@@ -626,6 +626,48 @@ struct NarrationGenerationIdentity {
     endpoint: String,
 }
 
+/// Non-secret TTS request settings that affect narration audio or timings.
+#[derive(serde::Serialize)]
+struct NarrationTtsIdentity<'a> {
+    provider: &'a str,
+    edge_voice: &'a str,
+    minimax_model: &'a str,
+    minimax_voice_id: &'a str,
+    minimax_speed: f32,
+    minimax_emotion: &'a str,
+    fish_audio_model: &'a str,
+    fish_audio_reference_id: &'a str,
+    elevenlabs_voice_id: &'a str,
+    elevenlabs_model: &'a str,
+    openai_voice: &'a str,
+    openai_model: &'a str,
+}
+
+/// Local command selection used by Edge's timed and fallback synthesis.
+#[derive(serde::Serialize)]
+struct NarrationTtsExecutionIdentity<'a> {
+    script: &'a std::path::PathBuf,
+    conda_env: &'a str,
+    python_path: &'a str,
+}
+
+/// Non-secret embedding selection used for narration-structure retrieval.
+#[derive(serde::Serialize)]
+struct NarrationEmbeddingIdentity<'a> {
+    provider: &'a str,
+    base_url: &'a str,
+    model: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct NarrationInputSettingsIdentity<'a> {
+    generation: NarrationGenerationIdentity,
+    narration: String,
+    tts: NarrationTtsIdentity<'a>,
+    tts_execution: NarrationTtsExecutionIdentity<'a>,
+    embedding: NarrationEmbeddingIdentity<'a>,
+}
+
 fn effective_narration_model<'a>(
     configured: &'a str,
     narration_model: &'a str,
@@ -682,12 +724,40 @@ fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -
             "https://api.fireworks.ai/inference".to_owned(),
         ),
     };
-    serde_json::to_string(&NarrationGenerationIdentity {
-        provider: provider.to_string(),
-        model: model.to_owned(),
-        endpoint,
+    let tts = &config.reaction.tts;
+    serde_json::to_string(&NarrationInputSettingsIdentity {
+        generation: NarrationGenerationIdentity {
+            provider: provider.to_string(),
+            model: model.to_owned(),
+            endpoint,
+        },
+        narration: format!("{:?}", config.narration),
+        tts: NarrationTtsIdentity {
+            provider: &tts.provider,
+            edge_voice: &tts.edge_voice,
+            minimax_model: &tts.minimax_model,
+            minimax_voice_id: &tts.minimax_voice_id,
+            minimax_speed: tts.minimax_speed,
+            minimax_emotion: &tts.minimax_emotion,
+            fish_audio_model: &tts.fish_audio_model,
+            fish_audio_reference_id: &tts.fish_audio_reference_id,
+            elevenlabs_voice_id: &tts.elevenlabs_voice_id,
+            elevenlabs_model: &tts.elevenlabs_model,
+            openai_voice: &tts.openai_voice,
+            openai_model: &tts.openai_model,
+        },
+        tts_execution: NarrationTtsExecutionIdentity {
+            script: &config.reaction.tts_script,
+            conda_env: &config.news.conda_env,
+            python_path: &config.news.python_path,
+        },
+        embedding: NarrationEmbeddingIdentity {
+            provider: &config.vector_db.embed_provider,
+            base_url: &config.vector_db.embed_base_url,
+            model: &config.vector_db.embed_model,
+        },
     })
-    .expect("narration generation identity is serializable")
+    .expect("narration input settings identity is serializable")
 }
 
 fn timeline_error(detail: &'static str) -> anyhow::Error {
@@ -754,14 +824,7 @@ impl<R: PlannedMainRenderer> PlannedMainStagePort for ProductionPlannedMainStage
         job: &JobContext,
         imported: &Self::Imported,
     ) -> Result<String> {
-        let settings_identity = format!(
-            "narration_generation={};narration={:?};reaction={:?};news={:?};vector_db={:?}",
-            narration_settings_identity(self.runner.config, self.provider),
-            self.runner.config.narration,
-            self.runner.config.reaction,
-            self.runner.config.news,
-            self.runner.config.vector_db,
-        );
+        let settings_identity = narration_settings_identity(self.runner.config, self.provider);
         fingerprint_narration_inputs(job, &imported.fingerprint, &settings_identity)
     }
 
@@ -1976,8 +2039,8 @@ mod planned_main_orchestration_tests {
     use async_trait::async_trait;
 
     use super::{
-        PlannedMainInput, PlannedMainStagePort, fingerprint_narration_inputs,
-        narration_settings_identity,
+        PipelineRunner, PlannedMainInput, PlannedMainRenderer, PlannedMainStagePort,
+        ProductionPlannedMainStages, fingerprint_narration_inputs,
         run_planned_main_with,
     };
     use crate::edit::service::{ClipOutput, EditResult};
@@ -2302,6 +2365,61 @@ mod planned_main_orchestration_tests {
         (root, job, state, planned)
     }
 
+    struct FingerprintOnlyRenderer;
+
+    #[async_trait]
+    impl PlannedMainRenderer for FingerprintOnlyRenderer {
+        async fn render(
+            &self,
+            _job: &JobContext,
+            _plan: &crate::main_footage::VerifiedMainFootagePlan,
+            _narration: &crate::main_footage::NarrationTimelineV1,
+            _layout: &crate::edit::layout::OutputLayout,
+            _audio: &crate::edit::AudioOptions,
+            _social_name: &str,
+            _style_profile_name: &str,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<EditResult> {
+            unreachable!("narration identity never renders")
+        }
+    }
+
+    fn production_narration_input_fingerprint(
+        config: &crate::config::AppConfig,
+        provider: &crate::cli::LlmProviderName,
+        job: &JobContext,
+    ) -> String {
+        let package_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/scout_package/main-footage/v001/package.json");
+        let package = serde_json::from_slice(
+            &std::fs::read(package_path).expect("read captured Scout package"),
+        )
+        .expect("decode captured Scout package");
+        let imported = crate::main_footage::ImportedSourcePackage {
+            root: job.main_footage_dir(),
+            manifest_path: job.main_footage_dir().join("package.json"),
+            package,
+            fingerprint: "sha256:source".into(),
+            external_sources: None,
+        };
+        let execution = JobExecutionContext::new();
+        let runner = PipelineRunner::new(config, &execution);
+        let audio = crate::edit::AudioOptions::default();
+        let renderer = FingerprintOnlyRenderer;
+        let stages = ProductionPlannedMainStages {
+            runner: &runner,
+            provider,
+            layout: crate::edit::layout::OutputLayout::Vertical,
+            audio: &audio,
+            social_name: "test",
+            style_profile_name: "test",
+            renderer: &renderer,
+        };
+        stages
+            .narration_input_fingerprint(job, &imported)
+            .expect("production narration fingerprint")
+    }
+
     #[test]
     fn narration_input_identity_tracks_grounding_sidecars_and_source() {
         let (root, job, _state, _planned) = fixture();
@@ -2476,29 +2594,28 @@ mod planned_main_orchestration_tests {
         config.narration.model.clear();
         config.llm.groq_model = "narration-model-v1".into();
         config.llm.groq_api_key = "must-not-hash-secret".into();
-        let v1_settings = narration_settings_identity(&config, &provider);
-        assert!(!v1_settings.contains("must-not-hash-secret"));
-        let v1_input: &'static str = Box::leak(
-            fingerprint_narration_inputs(
-                &job,
-                "sha256:source",
-                &v1_settings,
-            )
-            .unwrap()
-            .into_boxed_str(),
-        );
+        config.reaction.tts.elevenlabs_api_key = "elevenlabs-key-v1".into();
+        config.reaction.avatar.did_api_key = "did-key-v1".into();
+        config.news.serper_api_key = "serper-key-v1".into();
+        config.vector_db.embed_api_key = "embed-key-v1".into();
+        config.vector_db.supabase_url = "https://project-v1.supabase.co".into();
+        let v1_input = production_narration_input_fingerprint(&config, &provider, &job);
+
+        config.llm.groq_api_key = "rotated-groq-key".into();
+        config.reaction.tts.elevenlabs_api_key = "elevenlabs-key-v2".into();
+        config.reaction.avatar.did_api_key = "did-key-v2".into();
+        config.news.serper_api_key = "serper-key-v2".into();
+        config.vector_db.embed_api_key = "embed-key-v2".into();
+        config.vector_db.supabase_url = "https://project-v2.supabase.co".into();
+        let credential_rotated_input =
+            production_narration_input_fingerprint(&config, &provider, &job);
+        assert_eq!(v1_input, credential_rotated_input);
 
         config.llm.groq_model = "narration-model-v2".into();
-        let v2_settings = narration_settings_identity(&config, &provider);
-        let v2_input: &'static str = Box::leak(
-            fingerprint_narration_inputs(
-                &job,
-                "sha256:source",
-                &v2_settings,
-            )
-            .unwrap()
-            .into_boxed_str(),
-        );
+        let v2_input = production_narration_input_fingerprint(&config, &provider, &job);
+        assert_ne!(v1_input, v2_input);
+        let v1_input: &'static str = Box::leak(v1_input.into_boxed_str());
+        let v2_input: &'static str = Box::leak(v2_input.into_boxed_str());
 
         let mut v1 = FakeStages::success();
         v1.publish_narration = true;
