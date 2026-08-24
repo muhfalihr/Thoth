@@ -182,3 +182,17 @@ function fixture(name: string): unknown {
   assert.ok(pkg.scene_indexes.length > 0, 'the shared fixture must carry a scene index');
   assert.ok(pkg.ignored.length > 0, 'the shared fixture must keep a non-video outcome');
 }
+
+// Cross-runtime mutation caught: dropping NFC normalization in either runtime
+// makes canonically equivalent narration words disagree at the planner gate.
+{
+  const unicode = fixture('narration-unicode-equivalence.v1.json') as {
+    composed: unknown;
+    decomposed: unknown;
+  };
+  assert.equal(
+    fingerprintCanonical(unicode.composed),
+    fingerprintCanonical(unicode.decomposed),
+    'composed and decomposed narration text must share one fingerprint',
+  );
+}

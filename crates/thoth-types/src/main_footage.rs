@@ -4,6 +4,7 @@ use std::path::{Component, Path};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
 
 pub const MAIN_FOOTAGE_SCHEMA_VERSION: u8 = 1;
 
@@ -245,6 +246,8 @@ fn normalized_word(word: &Value) -> Result<Value, String> {
         .get("text")
         .and_then(Value::as_str)
         .ok_or_else(|| "word text must be a string".to_string())?
+        .nfc()
+        .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -1252,5 +1255,17 @@ mod tests {
             let value: Value = serde_json::from_str(input).unwrap();
             assert_eq!(super::canonical_json(&value).unwrap(), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn narration_fingerprints_normalize_composed_and_decomposed_unicode_like_typescript() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/main-footage/contracts/narration-unicode-equivalence.v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fingerprint_canonical(&fixture["composed"]).unwrap(),
+            fingerprint_canonical(&fixture["decomposed"]).unwrap(),
+        );
     }
 }

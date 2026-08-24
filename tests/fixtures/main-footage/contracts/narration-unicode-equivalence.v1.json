@@ -1,0 +1,20 @@
+{
+  "composed": {
+    "schema_version": 1,
+    "audio_path": "narration/v001/narration.mp3",
+    "audio_checksum": "sha256:unicode-audio",
+    "duration_sec": 1,
+    "words": [
+      { "text": "café", "start_sec": 0, "end_sec": 1 }
+    ]
+  },
+  "decomposed": {
+    "schema_version": 1,
+    "audio_path": "narration/v001/narration.mp3",
+    "audio_checksum": "sha256:unicode-audio",
+    "duration_sec": 1,
+    "words": [
+      { "text": "cafe\u0301", "start_sec": 0, "end_sec": 1 }
+    ]
+  }
+}
