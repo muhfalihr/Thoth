@@ -47,6 +47,7 @@ export interface PlanMainFootageOptions {
   jobRoot: string;
   packagePath: string;
   narrationPath: string;
+  externalSourcesPath?: string;
   coverageTarget: number;
 }
 
@@ -232,7 +233,7 @@ function parseArgs(args: readonly string[]): PlanMainFootageOptions {
     const flag = args[index];
     const value = args[index + 1];
     if (!flag?.startsWith('--') || value === undefined) throw new Error('invalid_arguments');
-    if (!['--job-root', '--package', '--narration', '--coverage-target'].includes(flag)) {
+    if (!['--job-root', '--package', '--narration', '--externals', '--coverage-target'].includes(flag)) {
       throw new Error('invalid_arguments');
     }
     values.set(flag, value);
@@ -240,6 +241,7 @@ function parseArgs(args: readonly string[]): PlanMainFootageOptions {
   const jobRoot = values.get('--job-root');
   const packagePath = values.get('--package');
   const narrationPath = values.get('--narration');
+  const externalSourcesPath = values.get('--externals');
   const rawCoverageTarget = values.get('--coverage-target');
   const coverageTarget = Number(rawCoverageTarget);
   if (
@@ -253,7 +255,13 @@ function parseArgs(args: readonly string[]): PlanMainFootageOptions {
   ) {
     throw new Error('invalid_arguments');
   }
-  return { jobRoot, packagePath, narrationPath, coverageTarget };
+  return {
+    jobRoot,
+    packagePath,
+    narrationPath,
+    ...(externalSourcesPath === undefined ? {} : { externalSourcesPath }),
+    coverageTarget,
+  };
 }
 
 /** Test-only seam: callers may inject all provider/process ports; CLI production omits it. */

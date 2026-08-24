@@ -19,7 +19,18 @@ use crate::main_footage::{
     SourcePackageV1,
 };
 use crate::pipeline::job::JobContext;
-use thoth_types::main_footage::{PlanningMode, SceneEvidenceV1, SceneIndexV1};
+use thoth_types::main_footage::{
+    ExternalSourcesV1, PlanningMode, SceneEvidenceV1, SceneIndexV1,
+};
+
+#[derive(Debug, Clone)]
+pub struct ImportedExternalSources {
+    /// Job-owned root every `manifest.sources[*].path` resolves against.
+    pub root: PathBuf,
+    pub manifest_path: PathBuf,
+    pub manifest: ExternalSourcesV1,
+    pub fingerprint: String,
+}
 
 /// A forced source package the job now owns outright.
 #[derive(Debug, Clone)]
@@ -32,6 +43,8 @@ pub struct ImportedSourcePackage {
     pub package: SourcePackageV1,
     /// Canonical fingerprint of the imported package.
     pub fingerprint: String,
+    /// Optional immutable enrichment package selected by the forced Content Set.
+    pub external_sources: Option<ImportedExternalSources>,
 }
 
 fn invalid(detail: &str) -> MainFootageError {
@@ -128,6 +141,75 @@ pub(crate) fn verify_index_contents(
         return Err(invalid("scene_index_contents_mismatch"));
     }
     Ok(())
+}
+
+fn import_external_sources(
+    content_set_parent: &Path,
+    descriptor: &MainFootageDescriptor,
+    job: &JobContext,
+    scout_root: &Path,
+    execution: &JobExecutionContext,
+) -> Result<Option<ImportedExternalSources>> {
+    let Some(relative_manifest) = descriptor.external_sources_manifest.as_deref() else {
+        return Ok(None);
+    };
+    let scout_manifest = resolve_contained(content_set_parent, Path::new(relative_manifest))
+        .map_err(|_| invalid("external_manifest_path_rejected"))?;
+    if !scout_manifest.starts_with(scout_root) {
+        return Err(invalid("external_manifest_outside_scout_output").into());
+    }
+    let raw = fs::read(&scout_manifest).map_err(|_| invalid("external_manifest_unreadable"))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&raw).map_err(|_| invalid("external_manifest_not_json"))?;
+    let mut manifest: ExternalSourcesV1 = serde_json::from_value(value.clone())
+        .map_err(|_| invalid("external_manifest_rejected"))?;
+    let scout_fingerprint =
+        fingerprint_canonical(&value).map_err(|_| invalid("external_fingerprint_failed"))?;
+    if manifest.fingerprint.as_deref() != Some(scout_fingerprint.as_str()) {
+        return Err(invalid("external_fingerprint_mismatch").into());
+    }
+
+    manifest.fingerprint = None;
+    let decoded =
+        serde_json::to_value(&manifest).map_err(|_| invalid("external_manifest_not_serializable"))?;
+    let fingerprint =
+        fingerprint_canonical(&decoded).map_err(|_| invalid("external_fingerprint_failed"))?;
+    manifest.fingerprint = Some(fingerprint.clone());
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|_| invalid("external_manifest_not_serializable"))?;
+    let generation = fingerprint
+        .strip_prefix("sha256:")
+        .unwrap_or(fingerprint.as_str());
+    let root = job
+        .main_footage_dir()
+        .join("external-footage")
+        .join(generation);
+    fs::create_dir_all(&root).map_err(|_| invalid("job_root_not_writable"))?;
+    let root = fs::canonicalize(&root).map_err(|_| invalid("job_root_not_writable"))?;
+    let scout_package_root = scout_manifest
+        .parent()
+        .ok_or_else(|| invalid("external_manifest_has_no_parent"))?;
+    for source in &manifest.sources {
+        let imported = import_artifact(execution, scout_package_root, &root, &source.path)?;
+        verify_checksum(&imported, &source.checksum)?;
+    }
+    let manifest_path = root.join("manifest.json");
+    if manifest_path.exists() {
+        let published =
+            fs::read(&manifest_path).map_err(|_| invalid("external_manifest_unreadable"))?;
+        if published != manifest_bytes {
+            return Err(invalid("external_manifest_generation_conflict").into());
+        }
+    } else {
+        write_immutable(&manifest_path, &manifest_bytes)
+            .map_err(|_| invalid("external_manifest_publish_failed"))?;
+    }
+    Ok(Some(ImportedExternalSources {
+        root,
+        manifest_path,
+        manifest,
+        fingerprint,
+    }))
 }
 
 /// Resolves, verifies, and imports the package `descriptor` points at.
@@ -265,11 +347,19 @@ pub fn import_package(
             .map_err(|_| invalid("manifest_publish_failed"))?;
     }
 
+    let external_sources = import_external_sources(
+        content_set_parent,
+        descriptor,
+        job,
+        &scout_root,
+        execution,
+    )?;
     Ok(ImportedSourcePackage {
         root: job_root,
         manifest_path: job_manifest,
         package: owned,
         fingerprint,
+        external_sources,
     })
 }
 
@@ -667,6 +757,65 @@ mod tests {
 
         assert_eq!(fs::read(&source).unwrap(), bytes);
         assert!(imported.manifest_path.exists());
+    }
+
+    #[test]
+    fn external_sources_are_imported_into_an_immutable_job_generation() {
+        let fixture = fixture();
+        let external_root = fixture
+            .scout_root
+            .join("main-footage/external-footage/v001");
+        let source_bytes = b"external b-roll bytes";
+        write(&external_root.join("sources/external-1.mp4"), source_bytes);
+        let mut manifest = json!({
+            "schema_version": 1,
+            "sources": [{
+                "id": "external-1",
+                "path": "sources/external-1.mp4",
+                "checksum": digest(source_bytes),
+                "technical": {
+                    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+                    "video_codec": "h264",
+                    "duration_sec": 4.0,
+                    "width": 1280,
+                    "height": 720,
+                    "has_audio": true
+                },
+                "query": "harbour rescue",
+                "description": "Rescue crews beside the harbour crane.",
+                "trim_start_sec": 0.0
+            }]
+        });
+        let fingerprint = crate::main_footage::fingerprint_canonical(&manifest).unwrap();
+        manifest["fingerprint"] = json!(fingerprint);
+        write(
+            &external_root.join("manifest.json"),
+            &serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let mut descriptor = descriptor();
+        descriptor.external_sources_manifest =
+            Some("main-footage/external-footage/v001/manifest.json".into());
+        let job = JobContext::new_flat("forced".into(), fixture.job_base.clone()).unwrap();
+
+        let imported = import_package(
+            &fixture.content_set,
+            &descriptor,
+            &job,
+            &fixture.scout_root,
+            &JobExecutionContext::new(),
+        )
+        .unwrap();
+        let external = imported
+            .external_sources
+            .as_ref()
+            .expect("declared external sources must be imported");
+        assert!(external.manifest_path.is_file());
+        let retained = external.root.join(&external.manifest.sources[0].path);
+        assert_eq!(fs::read(&retained).unwrap(), source_bytes);
+        assert!(retained.starts_with(fs::canonicalize(job.root()).unwrap()));
+
+        fs::remove_dir_all(external_root).unwrap();
+        assert_eq!(fs::read(retained).unwrap(), source_bytes);
     }
 
     #[test]

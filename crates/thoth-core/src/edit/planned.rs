@@ -621,6 +621,7 @@ mod tests {
     fn planned_cut(cut_path: &str) -> PlannedCutV1 {
         PlannedCutV1 {
             id: "cut-000".into(),
+            asset_kind: thoth_types::main_footage::AssetKind::MainCut,
             source_id: "src-000".into(),
             source_path: "sources/main.mp4".into(),
             cut_path: cut_path.into(),
@@ -755,6 +756,7 @@ mod tests {
     fn cut(index: usize, kind: TransitionKind, duration_ms: u16) -> PlannedCutV1 {
         PlannedCutV1 {
             id: format!("cut-{index:03}"),
+            asset_kind: thoth_types::main_footage::AssetKind::MainCut,
             source_id: format!("src-{index:03}"),
             source_path: format!("sources/source-{index}.mp4"),
             cut_path: format!("cuts/v001/cut-{index:03}.mp4"),

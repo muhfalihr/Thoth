@@ -512,6 +512,50 @@ pub struct SourceVideoV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ExternalSourceV1 {
+    #[serde(deserialize_with = "deserialize_non_blank")]
+    pub id: String,
+    #[serde(deserialize_with = "deserialize_artifact_path")]
+    pub path: String,
+    #[serde(deserialize_with = "deserialize_sha256_identity")]
+    pub checksum: String,
+    pub technical: SourceTechnicalMetadata,
+    pub query: String,
+    pub description: String,
+    #[serde(deserialize_with = "deserialize_nonnegative_finite")]
+    pub trim_start_sec: f64,
+}
+
+fn deserialize_unique_external_sources<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ExternalSourceV1>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let sources = Vec::<ExternalSourceV1>::deserialize(deserializer)?;
+    unique_ids(
+        sources.iter().map(|source| source.id.as_str()),
+        "duplicate external source id",
+    )
+    .map_err(serde::de::Error::custom)?;
+    Ok(sources)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalSourcesV1 {
+    #[serde(deserialize_with = "deserialize_schema_version")]
+    pub schema_version: u8,
+    #[serde(deserialize_with = "deserialize_unique_external_sources")]
+    pub sources: Vec<ExternalSourceV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_sha256_identity")]
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceOutcomeV1 {
     #[serde(deserialize_with = "deserialize_non_blank")]
     pub id: String,
@@ -980,7 +1024,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        AssetKind, MainFootageActiveV1, MainFootageDescriptor, MainFootageMode, MainFootagePlanV1,
+        AssetKind, ExternalSourcesV1, MainFootageActiveV1, MainFootageDescriptor, MainFootageMode,
+        MainFootagePlanV1,
         NarrationTimelineV1, SourcePackageV1, fingerprint_canonical,
     };
 
@@ -1085,6 +1130,37 @@ mod tests {
         let mut invalid = plan_fixture();
         invalid["timeline"][0]["asset_kind"] = json!("remote_cut");
         assert!(serde_json::from_value::<MainFootagePlanV1>(invalid).is_err());
+    }
+
+    #[test]
+    fn external_sources_require_unique_local_artifacts_and_technical_metadata() {
+        let value = json!({
+            "schema_version": 1,
+            "sources": [{
+                "id": "external-1",
+                "path": "sources/external-1.mp4",
+                "checksum": format!("sha256:{}", "1".repeat(64)),
+                "technical": {
+                    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+                    "video_codec": "h264",
+                    "duration_sec": 4.0,
+                    "width": 1280,
+                    "height": 720,
+                    "has_audio": true
+                },
+                "query": "harbour rescue",
+                "description": "Rescue crews beside the harbour crane.",
+                "trim_start_sec": 0.25
+            }],
+            "fingerprint": format!("sha256:{}", "2".repeat(64))
+        });
+        let decoded: ExternalSourcesV1 = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(decoded.sources[0].id, "external-1");
+
+        let mut duplicate = value;
+        let source = duplicate["sources"][0].clone();
+        duplicate["sources"].as_array_mut().unwrap().push(source);
+        assert!(serde_json::from_value::<ExternalSourcesV1>(duplicate).is_err());
     }
 
     #[test]

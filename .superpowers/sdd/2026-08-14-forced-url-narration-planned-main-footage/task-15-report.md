@@ -625,6 +625,13 @@ diff. No production code changed.
 - Durability/security proof: the manifest contains no remote URL or acquisition-cache path, only relative immutable source paths plus technical/context fields. The test deletes the materializer output and verifies the packaged copy remains readable; forced-post media and photos never reach materialization.
 - Verification: focused external package, shared contract, and forced pipeline tests all exited 0; `bun run --cwd scout typecheck` exited 0.
 
+## Task 15 external b-roll corrective round — job import and planner input
+
+- RED 1: the Rust external contract test failed to compile because `ExternalSourcesV1` did not exist. RED 2: the production import test failed because `ImportedSourcePackage` carried no external registry. RED 3: the coordinator path-capture test observed `None` instead of the imported job-relative manifest path. RED 4: Scout rejected Rust's new `--externals` argument as `invalid_arguments`.
+- GREEN: Rust mirrors the strict versioned external manifest, imports every declared/checksummed source into `main-footage/external-footage/<fingerprint>/`, writes its job-owned manifest last, and retains it after the Scout generation is removed. The coordinator resolves that imported manifest inside the canonical job root and passes its relative path through both production and explicit acceptance planner compositions. Scout accepts the optional internal CLI argument.
+- Compatibility correction: `asset_kind` defaults legacy schema-v1 plans to `main_cut`. The durability gate now fingerprints the original decoded JSON value rather than a typed reserialization that inserts defaulted fields; this preserves old plan identities while still binding newly explicit `asset_kind` bytes.
+- Verification: `cargo test -p thoth-types main_footage -- --test-threads=1` (18 passed), `cargo test -p thoth-core main_footage:: -- --test-threads=1` (59 passed), `cargo check -p thoth-core --all-targets`, focused Scout contracts/cuts, Scout typecheck, and `git diff --check` all exited 0.
+
 ## Task 15 final-review fix — cross-runtime narration Unicode parity
 
 - Root cause: Scout normalizes narration word text to NFC before canonical hashing;

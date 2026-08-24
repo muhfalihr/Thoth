@@ -547,15 +547,16 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
     let root = canonical_job_root(job)?;
     let plan_path = canonical_file(&root, plan_path)?;
     let plan_bytes = file_bytes(&plan_path)?;
-    let plan: MainFootagePlanV1 =
+    let plan_value: serde_json::Value =
         serde_json::from_slice(&plan_bytes).map_err(|_| invalid("plan_manifest_rejected"))?;
+    let plan: MainFootagePlanV1 = serde_json::from_value(plan_value.clone())
+        .map_err(|_| invalid("plan_manifest_rejected"))?;
 
     let active_path = canonical_file(&root, &job.plans_dir().join("active.json"))?;
     let active_bytes = file_bytes(&active_path)?;
     let active: thoth_types::main_footage::MainFootageActiveV1 =
         serde_json::from_slice(&active_bytes).map_err(|_| invalid("active_pointer_rejected"))?;
 
-    let plan_value = serde_json::to_value(&plan).map_err(|_| invalid("plan_manifest_rejected"))?;
     let plan_fingerprint =
         fingerprint_canonical(&plan_value).map_err(|_| invalid("plan_fingerprint_failed"))?;
     if plan.fingerprint.as_deref() != Some(plan_fingerprint.as_str())
@@ -952,6 +953,7 @@ pub(crate) mod tests {
             manifest_path,
             package,
             fingerprint: package_fingerprint.clone(),
+            external_sources: None,
         };
 
         let audio_bytes = b"narration audio";

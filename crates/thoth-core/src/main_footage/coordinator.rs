@@ -37,6 +37,7 @@ pub(crate) trait PlannerPort: Sync {
         job: &JobContext,
         package_path: &str,
         narration_path: &str,
+        external_path: Option<&str>,
         coverage_target: f64,
         execution: &JobExecutionContext,
     ) -> Result<()>;
@@ -51,6 +52,7 @@ impl PlannerPort for ScoutPlanner {
         job: &JobContext,
         package_path: &str,
         narration_path: &str,
+        external_path: Option<&str>,
         coverage_target: f64,
         execution: &JobExecutionContext,
     ) -> Result<()> {
@@ -58,6 +60,7 @@ impl PlannerPort for ScoutPlanner {
             job,
             package_path,
             narration_path,
+            external_path,
             coverage_target,
             execution,
         )
@@ -78,6 +81,7 @@ impl PlannerPort for TestOnlyScoutPlanner<'_> {
         job: &JobContext,
         package_path: &str,
         narration_path: &str,
+        external_path: Option<&str>,
         coverage_target: f64,
         execution: &JobExecutionContext,
     ) -> Result<()> {
@@ -85,6 +89,7 @@ impl PlannerPort for TestOnlyScoutPlanner<'_> {
             job,
             package_path,
             narration_path,
+            external_path,
             coverage_target,
             execution,
             self.script_path,
@@ -190,6 +195,7 @@ async fn invoke_scout_planner(
     job: &JobContext,
     package_path: &str,
     narration_path: &str,
+    external_path: Option<&str>,
     coverage_target: f64,
     execution: &JobExecutionContext,
 ) -> Result<()> {
@@ -204,6 +210,7 @@ async fn invoke_scout_planner(
         job,
         package_path,
         narration_path,
+        external_path,
         coverage_target,
         execution,
         &runtime,
@@ -217,6 +224,7 @@ async fn invoke_test_only_scout_planner(
     job: &JobContext,
     package_path: &str,
     narration_path: &str,
+    external_path: Option<&str>,
     coverage_target: f64,
     execution: &JobExecutionContext,
     script_path: &Path,
@@ -232,6 +240,7 @@ async fn invoke_test_only_scout_planner(
         job,
         package_path,
         narration_path,
+        external_path,
         coverage_target,
         execution,
         &runtime,
@@ -245,6 +254,7 @@ async fn invoke_scout_planner_script(
     job: &JobContext,
     package_path: &str,
     narration_path: &str,
+    external_path: Option<&str>,
     coverage_target: f64,
     execution: &JobExecutionContext,
     runtime: &crate::pipeline::ocr::ScoutRuntime,
@@ -263,7 +273,11 @@ async fn invoke_scout_planner_script(
         .arg("--package")
         .arg(package_path)
         .arg("--narration")
-        .arg(narration_path)
+        .arg(narration_path);
+    if let Some(external_path) = external_path {
+        command.arg("--externals").arg(external_path);
+    }
+    command
         .arg("--coverage-target")
         .arg(coverage_target.to_string())
         .current_dir(&runtime.scout_dir)
@@ -435,11 +449,18 @@ impl MainFootageCoordinator {
         }
 
         let package_path = job_relative_artifact(&root, &input.imported.manifest_path)?;
+        let external_path = input
+            .imported
+            .external_sources
+            .as_ref()
+            .map(|external| job_relative_artifact(&root, &external.manifest_path))
+            .transpose()?;
         planner
             .plan(
                 job,
                 &package_path,
                 &narration_path,
+                external_path.as_deref(),
                 input.coverage_target,
                 execution,
             )
@@ -498,6 +519,7 @@ mod tests {
             _job: &crate::pipeline::job::JobContext,
             _package_path: &str,
             _narration_path: &str,
+            _external_path: Option<&str>,
             _coverage_target: f64,
             _execution: &JobExecutionContext,
         ) -> anyhow::Result<()> {
@@ -518,6 +540,7 @@ mod tests {
             job: &crate::pipeline::job::JobContext,
             _package_path: &str,
             _narration_path: &str,
+            _external_path: Option<&str>,
             _coverage_target: f64,
             _execution: &JobExecutionContext,
         ) -> anyhow::Result<()> {
@@ -565,6 +588,7 @@ mod tests {
     struct PathCapturingPlanner {
         package_path: Mutex<Option<String>>,
         narration_path: Mutex<Option<String>>,
+        external_path: Mutex<Option<String>>,
     }
 
     struct SourceGenerationPublishingPlanner {
@@ -579,11 +603,13 @@ mod tests {
             _job: &crate::pipeline::job::JobContext,
             package_path: &str,
             narration_path: &str,
+            external_path: Option<&str>,
             _coverage_target: f64,
             _execution: &JobExecutionContext,
         ) -> anyhow::Result<()> {
             *self.package_path.lock().unwrap() = Some(package_path.to_owned());
             *self.narration_path.lock().unwrap() = Some(narration_path.to_owned());
+            *self.external_path.lock().unwrap() = external_path.map(str::to_owned);
             anyhow::bail!("stop_after_capturing_planner_paths")
         }
     }
@@ -595,6 +621,7 @@ mod tests {
             job: &crate::pipeline::job::JobContext,
             package_path: &str,
             narration_path: &str,
+            _external_path: Option<&str>,
             _coverage_target: f64,
             _execution: &JobExecutionContext,
         ) -> anyhow::Result<()> {
@@ -651,6 +678,7 @@ mod tests {
             job: &crate::pipeline::job::JobContext,
             _package_path: &str,
             _narration_path: &str,
+            _external_path: Option<&str>,
             _coverage_target: f64,
             execution: &JobExecutionContext,
         ) -> anyhow::Result<()> {
@@ -750,6 +778,30 @@ mod tests {
         fixture.imported.manifest_path = generation.join("source-package.json");
         fixture.imported.fingerprint = format!("sha256:{}", "2".repeat(64));
         fs::write(&fixture.imported.manifest_path, b"{}").unwrap();
+        let external_root = fixture
+            .root
+            .join("main-footage/external-footage/external-generation");
+        fs::create_dir_all(&external_root).unwrap();
+        let external_manifest_path = external_root.join("manifest.json");
+        let external_manifest: thoth_types::main_footage::ExternalSourcesV1 =
+            serde_json::from_value(json!({
+                "schema_version": 1,
+                "sources": [],
+                "fingerprint": format!("sha256:{}", "3".repeat(64))
+            }))
+            .unwrap();
+        fs::write(
+            &external_manifest_path,
+            serde_json::to_vec_pretty(&external_manifest).unwrap(),
+        )
+        .unwrap();
+        fixture.imported.external_sources =
+            Some(crate::main_footage::import::ImportedExternalSources {
+                root: fs::canonicalize(&external_root).unwrap(),
+                manifest_path: external_manifest_path,
+                fingerprint: external_manifest.fingerprint.clone().unwrap(),
+                manifest: external_manifest,
+            });
 
         let planner = PathCapturingPlanner::default();
         let error = MainFootageCoordinator::prepare_with(
@@ -778,6 +830,10 @@ mod tests {
         assert_eq!(
             planner.narration_path.lock().unwrap().as_deref(),
             Some("narration/v001/timeline.json")
+        );
+        assert_eq!(
+            planner.external_path.lock().unwrap().as_deref(),
+            Some("main-footage/external-footage/external-generation/manifest.json")
         );
     }
 

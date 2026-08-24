@@ -278,6 +278,7 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
     let descriptor = MainFootageDescriptor {
         mode: MainFootageMode::ForcedUrlPool,
         package_manifest: "main-footage/v001/package.json".to_owned(),
+        external_sources_manifest: None,
         coverage_target: 0.6,
     };
     // Only the Content Set's *directory* is used, to resolve the manifest the way a
