@@ -473,7 +473,18 @@ mod tests {
         assert!(!config.narration.enabled);
     }
 
-    async fn store_with_claimed_job() -> (std::path::PathBuf, JobStore, String, JobRecord) {
+    /// Every caller drives `run_one`, which installs the process-wide progress
+    /// sink. Handing back the sink guard makes that serialization impossible to
+    /// forget: without it a concurrent `pipeline` test replaces the sink
+    /// mid-run and this job's stages are persisted nowhere.
+    async fn store_with_claimed_job() -> (
+        std::sync::MutexGuard<'static, ()>,
+        std::path::PathBuf,
+        JobStore,
+        String,
+        JobRecord,
+    ) {
+        let sink_guard = crate::util::progress::lock_sink_for_test();
         let dir = std::env::temp_dir().join(format!("thoth-wrk-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = JobStore::connect(dir.join("t.db").to_str().unwrap())
@@ -488,7 +499,7 @@ mod tests {
         let id = uuid::Uuid::new_v4().to_string();
         store.enqueue(&id, &spec, "out/j").await.unwrap();
         let job = store.claim_next("w1").await.unwrap().unwrap();
-        (dir, store, id, job)
+        (sink_guard, dir, store, id, job)
     }
 
     #[test]
@@ -539,7 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn claim_run_marks_succeeded_and_emits_done() {
-        let (dir, store, id, job) = store_with_claimed_job().await;
+        let (_sink_guard, dir, store, id, job) = store_with_claimed_job().await;
         run_one(&store, "w1", job, |_j, _ctx| async { Ok(()) }).await; // stub pipeline
 
         assert_eq!(
@@ -554,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn production_progress_is_persisted_in_order_before_the_terminal_event() {
-        let (dir, store, id, job) = store_with_claimed_job().await;
+        let (_sink_guard, dir, store, id, job) = store_with_claimed_job().await;
         let vocabulary = [
             "importing_sources",
             "validating_scene_index",
@@ -613,7 +624,7 @@ mod tests {
         use std::time::{Duration, Instant};
         use tokio::sync::oneshot;
 
-        let (dir, store, id, job) = store_with_claimed_job().await;
+        let (_sink_guard, dir, store, id, job) = store_with_claimed_job().await;
         let cancelling_store = JobStore::connect(dir.join("t.db").to_str().unwrap())
             .await
             .unwrap();
@@ -649,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_text_without_a_cancelled_context_marks_failed() {
-        let (dir, store, id, job) = store_with_claimed_job().await;
+        let (_sink_guard, dir, store, id, job) = store_with_claimed_job().await;
 
         run_one(&store, "w1", job, |_j, _ctx| async {
             anyhow::bail!("cancelled by upstream text")
@@ -671,7 +682,7 @@ mod tests {
         use thoth_jobs::CancelRequestOutcome;
         use tokio::sync::oneshot;
 
-        let (dir, store, id, job) = store_with_claimed_job().await;
+        let (_sink_guard, dir, store, id, job) = store_with_claimed_job().await;
         let cancelling_store = JobStore::connect(dir.join("t.db").to_str().unwrap())
             .await
             .unwrap();
@@ -708,7 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_run_marks_failed_and_emits_one_error() {
-        let (dir, store, id, job) = store_with_claimed_job().await;
+        let (_sink_guard, dir, store, id, job) = store_with_claimed_job().await;
         run_one(&store, "w1", job, |_j, _ctx| async {
             anyhow::bail!("pipeline failed")
         })

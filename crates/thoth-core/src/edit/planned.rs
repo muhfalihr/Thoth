@@ -665,6 +665,13 @@ mod tests {
 
     // ── Step 5: generated-media render ────────────────────────────────────────
 
+    /// These two are the only tests that touch real media. Skipping them when
+    /// the binary is missing turned "the renderer was never exercised" into a
+    /// green run, so a missing binary now fails loudly instead.
+    const FFMPEG_REQUIRED: &str = "no ffmpeg binary found — set FFMPEG_PATH or \
+         put ffmpeg next to the repo root (see CLAUDE.md); the real-media render \
+         tests cannot be skipped silently";
+
     fn test_ffmpeg() -> Option<PathBuf> {
         if let Ok(path) = std::env::var("FFMPEG_PATH") {
             let path = PathBuf::from(path);
@@ -757,10 +764,7 @@ mod tests {
     /// both streams survive the mix.
     #[tokio::test]
     async fn renders_from_immutable_cuts_after_the_sources_are_deleted() {
-        let Some(ffmpeg) = test_ffmpeg() else {
-            eprintln!("SKIP: no ffmpeg binary found — generated-media render not exercised");
-            return;
-        };
+        let ffmpeg = test_ffmpeg().expect(FFMPEG_REQUIRED);
 
         let root = scratch_root();
         let sources = root.join("sources");
@@ -1018,10 +1022,7 @@ mod tests {
     ///   fire, 300s later, on a job that should have finished.
     #[tokio::test]
     async fn the_trait_impl_renders_a_verified_plan_under_a_looping_bgm() {
-        let Some(ffmpeg) = test_ffmpeg() else {
-            eprintln!("SKIP: no ffmpeg binary found — trait-impl render not exercised");
-            return;
-        };
+        let ffmpeg = test_ffmpeg().expect(FFMPEG_REQUIRED);
 
         let fixture = real_media_fixture(&ffmpeg);
         let verified = verify_plan_with_probe(

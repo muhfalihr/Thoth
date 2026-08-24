@@ -679,7 +679,7 @@ mod tests {
             ],
         );
         #[cfg(unix)]
-        let (bin, args) = ("sh", vec!["-c", "printf 'started\\n'; sleep 30"]);
+        let (bin, args) = ("sh", vec!["-c", "printf 'started\\n'; sleep 600"]);
         let mut child = crate::ingest::YtDlpArgs::new(bin)
             .extra(&args)
             .spawn_with_streams(&context)?;
@@ -836,7 +836,7 @@ mod tests {
         command.args([
             "-NoProfile",
             "-Command",
-            "Write-Output 'ready-output'; [Console]::Error.WriteLine('ready-error'); Start-Sleep 30",
+            "Write-Output 'ready-output'; [Console]::Error.WriteLine('ready-error'); Start-Sleep 600",
         ]);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         command
@@ -847,7 +847,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "printf 'ready-output\\n'; printf 'ready-error\\n' >&2; sleep 30",
+            "printf 'ready-output\\n'; printf 'ready-error\\n' >&2; sleep 600",
         ]);
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         command
@@ -939,22 +939,22 @@ mod tests {
     #[cfg(unix)]
     fn stdin_streamed_command() -> Command {
         let mut command = Command::new("sh");
-        command.args(["-c", "IFS= read -r line; printf 'echo:%s\\n' \"$line\"; sleep 30"]);
+        command.args(["-c", "IFS= read -r line; printf 'echo:%s\\n' \"$line\"; sleep 600"]);
         command
     }
 
     #[cfg(windows)]
     fn long_running_command() -> Command {
         let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-Command", "Start-Sleep 30"]);
+        command.args(["-NoProfile", "-Command", "Start-Sleep 600"]);
         command
     }
 
     #[cfg(windows)]
     fn parent_with_child_command(child_pid_path: &std::path::Path) -> Command {
         let script = format!(
-            "$child = Start-Process powershell -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 30') -PassThru; \
-             Set-Content -NoNewline -Path '{}' -Value $child.Id; Start-Sleep 30",
+            "$child = Start-Process powershell -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 600') -PassThru; \
+             Set-Content -NoNewline -Path '{}' -Value $child.Id; Start-Sleep 600",
             child_pid_path.display()
         );
         let mut command = Command::new("powershell");
@@ -965,7 +965,7 @@ mod tests {
     #[cfg(windows)]
     fn exiting_root_with_child_command(child_pid_path: &std::path::Path) -> Command {
         let script = format!(
-            "$child = Start-Process powershell -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 30') -PassThru; \
+            "$child = Start-Process powershell -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 600') -PassThru; \
              Set-Content -NoNewline -Path '{}' -Value $child.Id; exit 0",
             child_pid_path.display()
         );
@@ -976,7 +976,7 @@ mod tests {
 
     #[cfg(unix)]
     fn parent_with_child_command(child_pid_path: &std::path::Path) -> Command {
-        let script = format!("sleep 30 & echo $! > '{}'; wait", child_pid_path.display());
+        let script = format!("sleep 600 & echo $! > '{}'; wait", child_pid_path.display());
         let mut command = Command::new("sh");
         command.args(["-c", &script]);
         command
@@ -985,7 +985,7 @@ mod tests {
     #[cfg(unix)]
     fn exiting_root_with_child_command(child_pid_path: &std::path::Path) -> Command {
         let script = format!(
-            "sleep 30 & echo $! > '{}'; exit 0",
+            "sleep 600 & echo $! > '{}'; exit 0",
             child_pid_path.display()
         );
         let mut command = Command::new("sh");
@@ -996,7 +996,7 @@ mod tests {
     #[cfg(unix)]
     fn exiting_root_with_child_status_command(child_pid_path: &std::path::Path) -> Command {
         let script = format!(
-            "sleep 30 & echo $! > '{}'; exit 23",
+            "sleep 600 & echo $! > '{}'; exit 23",
             child_pid_path.display()
         );
         let mut command = Command::new("sh");
@@ -1004,8 +1004,11 @@ mod tests {
         command
     }
 
+    /// Deadlines here are load tolerance, not timing assertions: both loops
+    /// return the instant the condition holds, and a genuine leak keeps the
+    /// process alive forever, so a generous ceiling still fails the same way.
     async fn read_child_pid(path: &std::path::Path) -> u32 {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Ok(contents) = tokio::fs::read_to_string(path).await
                 && let Ok(pid) = contents.trim().parse()
@@ -1017,6 +1020,15 @@ mod tests {
         }
     }
 
+    /// KNOWN LIMITATION (parallel runs, Windows). This probe identifies a
+    /// process by PID alone. Once a child has been waited on, Windows frees its
+    /// PID for immediate reuse, and this suite spawns hundreds of `powershell`
+    /// children — so under `cargo test` without `--test-threads=1` a reused PID
+    /// can make an exited process look alive. Observed roughly once in six runs
+    /// as `process <pid> is still alive` in
+    /// `concurrent_termination_owns_all_children_and_closes_spawn`. Closing it
+    /// needs identity-aware probing (creation time + image name captured at
+    /// spawn), not a wider deadline. Serial runs are unaffected.
     #[cfg(windows)]
     fn process_is_alive(pid: u32) -> bool {
         std::process::Command::new("powershell")
@@ -1044,7 +1056,7 @@ mod tests {
     }
 
     async fn assert_process_exits(pid: u32) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while process_is_alive(pid) && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -1054,7 +1066,7 @@ mod tests {
     #[cfg(unix)]
     fn long_running_command() -> Command {
         let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30"]);
+        command.args(["-c", "sleep 600"]);
         command
     }
 

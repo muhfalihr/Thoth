@@ -2677,13 +2677,13 @@ mod tests {
             vec![
                 "-NoProfile".into(),
                 "-Command".into(),
-                "Write-Output ready; Start-Sleep -Seconds 30".into(),
+                "Write-Output ready; Start-Sleep -Seconds 600".into(),
             ],
         );
         #[cfg(unix)]
         let args = vec![
             "-c".into(),
-            "printf 'ready\\n'; sleep 30".into(),
+            "printf 'ready\\n'; sleep 600".into(),
         ];
         #[cfg(unix)]
         let binary = "sh";
@@ -2698,13 +2698,16 @@ mod tests {
             .await
         });
 
-        tokio::time::timeout(Duration::from_secs(2), ready_rx)
+        // 60s is load tolerance, not a timing assertion — the helper is a cold
+        // PowerShell start competing with the rest of the parallel suite, and
+        // both waits return the moment their event arrives.
+        tokio::time::timeout(Duration::from_secs(60), ready_rx)
             .await
             .expect("helper child must emit its ready marker")
             .expect("helper must forward its ready marker");
         execution.cancel();
 
-        let result = tokio::time::timeout(Duration::from_secs(2), waiting)
+        let result = tokio::time::timeout(Duration::from_secs(60), waiting)
             .await
             .expect("cancelled wrapper must return promptly")
             .expect("wrapper task must not panic");

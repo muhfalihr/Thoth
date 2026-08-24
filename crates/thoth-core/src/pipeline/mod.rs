@@ -1826,7 +1826,11 @@ mod planned_main_orchestration_tests {
     use crate::pipeline::job::JobContext;
     use crate::pipeline::state::{MainFootageStageResult, PipelineState};
 
-    static PLANNED_TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// These tests install a global progress sink, so they share one lock with
+    /// every other test in the crate that does the same (`worker::tests` runs
+    /// `run_one`, which installs its own). A lock private to this module only
+    /// serialized half the contenders.
+    use crate::util::progress::lock_sink_for_test as planned_test_lock;
 
     #[derive(Clone)]
     struct Artifact {
@@ -2083,7 +2087,7 @@ mod planned_main_orchestration_tests {
     /// ingest/transcribe/analyze/edit calls into this exact ordered boundary.
     #[tokio::test]
     async fn planned_branch_orders_local_package_narration_plan_and_renderer_only() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let stages = FakeStages::success();
 
@@ -2121,7 +2125,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn narration_failure_is_terminal_and_redacted() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("narration");
@@ -2147,7 +2151,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn planner_failure_maps_to_cut_planning_failed_without_render() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("planner");
@@ -2173,7 +2177,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn missing_verified_cut_fails_before_renderer() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("missing_cut");
@@ -2195,7 +2199,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn cancellation_after_import_retains_package_and_skips_later_stages() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.cancel_after_import = true;
@@ -2227,7 +2231,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn cancellation_after_narration_persists_downstream_invalidation() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.cancel_after_narration = true;
@@ -2255,7 +2259,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn matching_persisted_resume_skips_narration_planner_and_renderer() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.reuse_narration = true;
@@ -2293,7 +2297,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn ambient_absolute_persisted_output_is_not_resumed() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.reuse_narration = true;
@@ -2336,7 +2340,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn state_is_saved_after_verified_identity_and_render_mutations() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let stages = FakeStages::success();
 
@@ -2366,7 +2370,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn renderer_output_outside_job_root_is_rejected_before_edit_is_saved() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let outside = root.parent().unwrap().join(format!(
             "outside-render-{}.mp4",
@@ -2395,7 +2399,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn renderer_parent_traversal_is_rejected_before_edit_is_saved() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.render_path = Some(PathBuf::from("../outside.mp4"));
@@ -2418,7 +2422,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn renderer_failure_is_redacted_in_worker_terminal_state_and_event() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let store = thoth_jobs::JobStore::connect(root.join("jobs.db").to_str().unwrap())
             .await
@@ -2465,7 +2469,7 @@ mod planned_main_orchestration_tests {
     /// untyped-`bail!` regression above cannot discriminate this.
     #[tokio::test]
     async fn typed_renderer_error_is_redacted_to_the_stable_terminal_pair() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("renderer_typed");
@@ -2506,7 +2510,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn cancelled_renderer_error_passes_through_the_renderer_seam() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("renderer_cancelled");
@@ -2533,7 +2537,7 @@ mod planned_main_orchestration_tests {
     /// durability gate reads, so it must survive to the boundary unchanged.
     #[tokio::test]
     async fn typed_upstream_stage_error_is_not_redacted() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("import_typed");
@@ -2565,7 +2569,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn source_change_persists_plan_and_render_invalidation_without_deleting_history() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("narration");
@@ -2604,7 +2608,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn narration_change_persists_downstream_invalidation_before_planner_failure() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.fail = Some("planner");
@@ -2634,7 +2638,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn render_settings_change_reuses_verified_plan_but_reruns_renderer() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let mut stages = FakeStages::success();
         stages.reuse_narration = true;
@@ -2682,7 +2686,7 @@ mod planned_main_orchestration_tests {
 
     #[tokio::test]
     async fn successful_run_emits_the_complete_safe_progress_vocabulary_monotonically() {
-        let _guard = PLANNED_TEST_LOCK.lock().unwrap();
+        let _guard = planned_test_lock();
         let (root, job, mut state, planned) = fixture();
         let stages = FakeStages::success();
         let seen = std::sync::Arc::new(Mutex::new(Vec::new()));

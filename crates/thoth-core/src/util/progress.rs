@@ -26,6 +26,21 @@ pub fn set_sink(sink: Sink) {
     *SINK.write().unwrap() = Some(sink);
 }
 
+/// Serializes every test that installs a sink. `SINK` is one process-wide slot,
+/// so two tests running concurrently silently steal each other's events — the
+/// collector ends up short a stage, or empty. Any test that calls `set_sink`,
+/// directly or through `worker::run_one`, must hold this guard for its whole
+/// body.
+///
+/// Poison-tolerant on purpose: a single genuine assertion failure inside the
+/// guard would otherwise cascade into a `PoisonError` panic in every other test
+/// that takes the lock, burying the one real failure under a dozen fake ones.
+#[cfg(test)]
+pub fn lock_sink_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static SINK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SINK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Enable NDJSON progress on stdout (set by `--progress-json`).
 pub fn set_json_mode(on: bool) {
     JSON_MODE.store(on, Ordering::Relaxed);
@@ -203,6 +218,9 @@ mod tests {
 
     #[test]
     fn emit_stage_routes_to_installed_sink() {
+        // Installing the sink is exactly what makes this test a thief: it must
+        // hold the same guard as every other test that touches the global slot.
+        let _sink_guard = lock_sink_for_test();
         // A sink (what the `thoth worker` installs) captures events regardless
         // of JSON mode — this is the whole point of set_sink.
         set_json_mode(false);
