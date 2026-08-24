@@ -878,6 +878,148 @@ pub struct Manifest {
     pub narration: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// Beat timeline the forced-main cut planner allocated against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narration_timeline: Option<String>,
+    /// The job's own immutable copy of the Scout source package manifest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_package: Option<String>,
+    /// Plan file the active generation points at (`plans/vNNN/...`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_plan: Option<String>,
+    /// Directory of materialized cuts for the active generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cuts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_footage: Option<MainFootageJobFacts>,
+}
+
+/// Post-plan facts for a forced-main run, read from the job's own `state.json`
+/// (plus the beat timeline and active plan). Deliberately carries no path: the
+/// dashboard addresses artifacts through `Manifest`'s relpaths instead.
+#[derive(serde::Serialize)]
+pub struct MainFootageJobFacts {
+    pub active_plan_version: String,
+    pub planning_mode: String,
+    pub coverage_target: f64,
+    pub coverage_actual: f64,
+    pub coverage_sec: f64,
+    pub total_duration_sec: f64,
+    pub beat_count: u64,
+    pub cut_count: u64,
+    /// Total scene reuses across the active plan's cuts.
+    pub reuse_count: u64,
+    pub candidate_count: u64,
+    pub transitions: std::collections::BTreeMap<String, u64>,
+    pub warnings: Vec<String>,
+    pub retained_bytes: u64,
+}
+
+/// A job-relative artifact path that is safe to hand back to a client and to
+/// probe on disk: no absolute form, no `..`, no separator the client could turn
+/// into an escape. Returns `None` unless the file actually exists.
+fn safe_relative_file(root: &FsPath, relative: &str) -> Option<String> {
+    if relative.is_empty() || relative.contains('\\') || relative.contains(':') {
+        return None;
+    }
+    let path = FsPath::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    root.join(relative).is_file().then(|| relative.to_owned())
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> u64 {
+    value.get(key).and_then(serde_json::Value::as_u64).unwrap_or_default()
+}
+
+fn json_f64(value: &serde_json::Value, key: &str) -> f64 {
+    value.get(key).and_then(serde_json::Value::as_f64).unwrap_or_default()
+}
+
+fn json_str(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn json_string_list(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ponytail: `state.json` is parsed as untyped JSON on purpose — thoth-server has
+// no dep on thoth-core, and a strict mirror of `MainFootageStageResult` would
+// turn every additive core field into a server-side decode failure.
+fn main_footage_job_facts(root: &FsPath, active_plan: Option<&str>) -> Option<MainFootageJobFacts> {
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(root.join("state.json")).ok()?).ok()?;
+    let stage = state.get("stages")?.get("main_footage")?;
+    if !stage.is_object() {
+        return None;
+    }
+
+    let beat_count = fs::read(root.join("narration/timeline.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|timeline| {
+            timeline
+                .get("beats")
+                .and_then(serde_json::Value::as_array)
+                .map(|beats| beats.len() as u64)
+        })
+        .unwrap_or_default();
+
+    let reuse_count = active_plan
+        .and_then(|relative| fs::read(root.join(relative)).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|plan| {
+            plan.get("timeline")
+                .and_then(serde_json::Value::as_array)
+                .map(|cuts| cuts.iter().map(|cut| json_u64(cut, "reuse_count")).sum())
+        })
+        .unwrap_or_default();
+
+    let transitions = stage
+        .get("transition_distribution")
+        .and_then(serde_json::Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(kind, count)| (kind.clone(), count.as_u64().unwrap_or_default()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(MainFootageJobFacts {
+        active_plan_version: json_str(stage, "active_version"),
+        planning_mode: json_str(stage, "planning_mode"),
+        coverage_target: json_f64(stage, "coverage_target"),
+        coverage_actual: json_f64(stage, "main_coverage_ratio"),
+        coverage_sec: json_f64(stage, "main_coverage_sec"),
+        total_duration_sec: json_f64(stage, "total_duration_sec"),
+        beat_count,
+        cut_count: json_u64(stage, "selected_cut_count"),
+        reuse_count,
+        candidate_count: json_u64(stage, "candidate_count"),
+        transitions,
+        warnings: json_string_list(stage, "warnings"),
+        retained_bytes: json_u64(stage, "retained_bytes"),
+    })
 }
 
 // ponytail: this mirrors the thoth-core JobPaths sub-layout (clips/ analyze/
@@ -910,13 +1052,345 @@ pub async fn get_manifest(
         root.join(&t).is_file().then_some(t)
     });
 
+    // Forced-main artifacts. `plans/active.json` names the live generation, so
+    // the plan and cut relpaths follow it rather than a guessed version.
+    let active_plan = fs::read(root.join("plans/active.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|active| {
+            let plan = safe_relative_file(&root, active.get("plan_path")?.as_str()?)?;
+            Some((plan, active.get("version")?.as_str()?.to_owned()))
+        });
+    let cuts = active_plan.as_ref().and_then(|(_, version)| {
+        let relative = format!("cuts/{version}");
+        (is_plain_component(version) && root.join(&relative).is_dir()).then_some(relative)
+    });
+    let active_plan = active_plan.map(|(plan, _)| plan);
+
     Json(Manifest {
         video,
         thumbnail,
         moments: rel("analyze/moments.json"),
         narration: rel("narration/narration.mp3"),
         transcript: rel("transcribe/transcript.json"),
+        narration_timeline: rel("narration/timeline.json"),
+        source_package: rel("main-footage/source-package.json"),
+        main_footage: main_footage_job_facts(&root, active_plan.as_deref()),
+        active_plan,
+        cuts,
     })
+}
+
+// ── Scout package facts + explicit, confirmed cleanup ───────────────────────
+//
+// Both cleanup routes are irreversible deletes, so the trust boundary is wide:
+// the caller may name exactly one id, that id must be a single plain component,
+// and the request body must repeat it verbatim. A caller never supplies a path.
+
+/// `true` for an id that is one ordinary path component — no separator, no
+/// drive/UNC form, no `.`/`..`. Percent-encoded forms have already been decoded
+/// by axum when this runs, so `%2e%2e` arrives here as `..`.
+fn is_plain_component(id: &str) -> bool {
+    if id.is_empty() || id == "." || id == ".." {
+        return false;
+    }
+    if id.contains('/') || id.contains('\\') || id.contains(':') {
+        return false;
+    }
+    let mut components = FsPath::new(id).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_))) && components.next().is_none()
+}
+
+/// Resolve `id` to the directory that is *literally* `parent/id` after
+/// canonicalizing both sides. A junction/symlink pointing outside `parent`
+/// resolves to a different parent and is refused, so a link can never be
+/// followed into a delete.
+fn contained_child(
+    parent: &FsPath,
+    id: &str,
+    invalid_code: &'static str,
+    missing_code: &'static str,
+) -> Result<PathBuf, Response> {
+    let invalid = || coded_validation(StatusCode::BAD_REQUEST, invalid_code);
+    if !is_plain_component(id) {
+        return Err(invalid());
+    }
+    let root = fs::canonicalize(parent)
+        .map_err(|_| coded_validation(StatusCode::NOT_FOUND, missing_code))?;
+    let target = fs::canonicalize(root.join(id))
+        .map_err(|_| coded_validation(StatusCode::NOT_FOUND, missing_code))?;
+    if target.parent() != Some(root.as_path()) || !target.is_dir() {
+        return Err(invalid());
+    }
+    Ok(target)
+}
+
+/// Recursive file count + byte total. Entries are stat'ed with
+/// `symlink_metadata`, so a link is counted as a single entry and never
+/// descended into — an inventory can only ever describe this tree.
+fn inventory(root: &FsPath) -> (u64, u64) {
+    let mut files = 0;
+    let mut bytes = 0;
+    let Ok(entries) = fs::read_dir(root) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            let (nested_files, nested_bytes) = inventory(&entry.path());
+            files += nested_files;
+            bytes += nested_bytes;
+        } else {
+            files += 1;
+            bytes += metadata.len();
+        }
+    }
+    (files, bytes)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupBody {
+    #[serde(default)]
+    pub confirm: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct CleanupReport {
+    pub removed_files: u64,
+    pub removed_bytes: u64,
+    /// Always `false`. Cleanup is a delete, not an archive — the dashboard says
+    /// so before asking, and this field keeps the answer on the wire too.
+    pub recoverable: bool,
+}
+
+/// The confirmation IS the feature: an absent, unparsable, or non-matching
+/// `confirm` refuses the request before anything is resolved on disk.
+fn confirmed(body: Result<Json<CleanupBody>, JsonRejection>, expected: &str) -> Result<(), Response> {
+    let Ok(Json(body)) = body else {
+        return Err(coded_validation(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "cleanup_confirmation_required",
+        ));
+    };
+    match body.confirm.as_deref() {
+        None => Err(coded_validation(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "cleanup_confirmation_required",
+        )),
+        Some(value) if value == expected => Ok(()),
+        Some(_) => Err(coded_validation(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "cleanup_confirmation_mismatch",
+        )),
+    }
+}
+
+fn remove_tree(root: &FsPath) -> Response {
+    let (removed_files, removed_bytes) = inventory(root);
+    if let Err(error) = fs::remove_dir_all(root) {
+        tracing::error!(error = ?error, "artifact cleanup failed");
+        return coded_validation(StatusCode::INTERNAL_SERVER_ERROR, "cleanup_failed");
+    }
+    Json(CleanupReport {
+        removed_files,
+        removed_bytes,
+        recoverable: false,
+    })
+    .into_response()
+}
+
+/// `<scout output root>/main-footage` — the only parent a package id resolves
+/// under. Derived from worker configuration, never from the request.
+fn package_generations_root(state: &AppState) -> Result<PathBuf, Response> {
+    canonical_scout_output_root(&state.scout_output_config)
+        .map(|root| root.join("main-footage"))
+        .map_err(|_| coded_validation(StatusCode::NOT_FOUND, "package_not_found"))
+}
+
+/// Safe facts about one retained Scout package: what it holds, how much disk it
+/// costs, and why anything was left out. No filesystem path is exposed — the
+/// only URL is the post's own public canonical URL.
+#[derive(serde::Serialize)]
+pub struct PackageSummary {
+    pub package_id: String,
+    pub platform: String,
+    pub canonical_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    pub usable_count: usize,
+    pub skipped_count: usize,
+    pub ignored_count: usize,
+    pub total_duration_sec: f64,
+    pub total_bytes: u64,
+    pub file_count: u64,
+    pub warnings: Vec<String>,
+}
+
+pub async fn scout_package_summary(
+    State(state): State<AppState>,
+    Path(package_id): Path<String>,
+) -> Response {
+    let root = match package_generations_root(&state) {
+        Ok(root) => root,
+        Err(response) => return response,
+    };
+    let package = match contained_child(&root, &package_id, "invalid_package_id", "package_not_found")
+    {
+        Ok(package) => package,
+        Err(response) => return response,
+    };
+
+    // ponytail: read the manifest as untyped JSON. Scout writes members the
+    // strict `SourcePackageV1` decoder rejects (`bytes`, `acquisition`), and a
+    // read-only summary must never be the thing that fails over an extra field.
+    let Ok(bytes) = fs::read(package.join("package.json")) else {
+        return coded_validation(StatusCode::NOT_FOUND, "package_not_found");
+    };
+    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return coded_validation(StatusCode::UNPROCESSABLE_ENTITY, "package_manifest_invalid");
+    };
+
+    let list = |key: &str| -> Vec<serde_json::Value> {
+        manifest
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let sources = list("sources");
+    let ignored = list("ignored");
+    let unavailable = list("unavailable");
+    let scene_indexes = list("scene_indexes");
+
+    let mut warnings: Vec<String> = ignored
+        .iter()
+        .chain(unavailable.iter())
+        .map(|outcome| json_str(outcome, "code"))
+        .filter(|code| !code.is_empty())
+        .collect();
+    let analysis_mode = if scene_indexes
+        .iter()
+        .any(|index| json_str(index, "planning_mode") == "degraded")
+    {
+        warnings.push("vision_degraded".to_owned());
+        Some("degraded".to_owned())
+    } else if scene_indexes.is_empty() {
+        None
+    } else {
+        Some("vision".to_owned())
+    };
+    warnings.sort();
+    warnings.dedup();
+
+    let (file_count, total_bytes) = inventory(&package);
+    let post = manifest.get("post").cloned().unwrap_or_default();
+    Json(PackageSummary {
+        package_id,
+        platform: json_str(&post, "platform"),
+        canonical_url: json_str(&post, "canonical_url"),
+        analysis_mode,
+        fingerprint: manifest
+            .get("fingerprint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        usable_count: sources.len(),
+        skipped_count: unavailable.len(),
+        ignored_count: ignored.len(),
+        total_duration_sec: sources
+            .iter()
+            .map(|source| {
+                source
+                    .get("technical")
+                    .map(|technical| json_f64(technical, "duration_sec"))
+                    .unwrap_or_default()
+            })
+            .sum(),
+        total_bytes,
+        file_count,
+        warnings,
+    })
+    .into_response()
+}
+
+/// Delete exactly one Scout package generation. Refused while a Scout command is
+/// running, because that command may still be writing into the tree.
+pub async fn cleanup_scout_package(
+    State(state): State<AppState>,
+    Path(package_id): Path<String>,
+    body: Result<Json<CleanupBody>, JsonRejection>,
+) -> Response {
+    if !is_plain_component(&package_id) {
+        return coded_validation(StatusCode::BAD_REQUEST, "invalid_package_id");
+    }
+    if let Err(response) = confirmed(body, &package_id) {
+        return response;
+    }
+    if state.scout.lock().await.status == scout::ScoutStatus::Running {
+        return coded_validation(StatusCode::CONFLICT, "scout_busy");
+    }
+    let root = match package_generations_root(&state) {
+        Ok(root) => root,
+        Err(response) => return response,
+    };
+    match contained_child(&root, &package_id, "invalid_package_id", "package_not_found") {
+        Ok(package) => remove_tree(&package),
+        Err(response) => response,
+    }
+}
+
+/// Delete one terminal job's artifact tree. The SQLite job row and its event
+/// trail are the audit record of the run and are never touched — after this the
+/// job still lists, still reports its terminal status, and its artifact manifest
+/// is simply empty.
+pub async fn cleanup_job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<CleanupBody>, JsonRejection>,
+) -> Response {
+    if !is_plain_component(&id) {
+        return coded_validation(StatusCode::BAD_REQUEST, "invalid_job_id");
+    }
+    if let Err(response) = confirmed(body, &id) {
+        return response;
+    }
+    let job = match state.store.get(&id).await {
+        Ok(Some(job)) => job,
+        Ok(None) => return coded_validation(StatusCode::NOT_FOUND, "job_not_found"),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if !job.status.is_terminal() {
+        return coded_validation(StatusCode::CONFLICT, "job_not_terminal");
+    }
+
+    // The deletion target is the output dir the *server* recorded at enqueue —
+    // never a caller value. It must still be named after the job and still live
+    // under the Thoth home, so a doctored row cannot aim cleanup elsewhere.
+    let recorded = PathBuf::from(&job.output_dir);
+    if recorded.file_name() != Some(std::ffi::OsStr::new(&id)) {
+        return coded_validation(StatusCode::CONFLICT, "job_artifacts_unresolved");
+    }
+    let Ok(home_root) = fs::canonicalize(state.home.root()) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Ok(root) = fs::canonicalize(&recorded) else {
+        // Already gone: report the idempotent empty result rather than a 404 for
+        // a job that demonstrably exists.
+        return Json(CleanupReport {
+            removed_files: 0,
+            removed_bytes: 0,
+            recoverable: false,
+        })
+        .into_response();
+    };
+    if root == home_root || !root.starts_with(&home_root) {
+        return coded_validation(StatusCode::CONFLICT, "job_artifacts_unresolved");
+    }
+    remove_tree(&root)
 }
 
 /// Newest `clips/clip_*.mp4` as a relpath (single-clip runs have no concat).

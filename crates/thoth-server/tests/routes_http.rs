@@ -3188,3 +3188,1014 @@ async fn wrong_method_on_live_api_route_is_405_not_404() {
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     let _ = std::fs::remove_dir_all(tmp);
 }
+
+// ── Task 14: main-footage package facts, job facts, and explicit cleanup ─────
+//
+// Every test below carries `main_footage` in its name so the focused filter
+// `cargo test -p thoth-server --test routes_http main_footage` selects it.
+
+struct MainFootageApp {
+    app: axum::Router,
+    /// Thoth home root for this test (also the temp dir to remove).
+    home_root: PathBuf,
+    /// Canonical-parent root the package cleanup/summary routes resolve under.
+    scout_root: PathBuf,
+    /// `output_root/<job_id>` is where legacy job artifacts live.
+    output_root: PathBuf,
+    scout: thoth_server::scout::ScoutSupervisor,
+    store: thoth_jobs::JobStore,
+}
+
+impl MainFootageApp {
+    fn cleanup(&self) {
+        let _ = std::fs::remove_dir_all(&self.home_root);
+    }
+}
+
+/// Router whose worker config pins `[scout].output_dir` inside the test's own
+/// temp tree, so nothing here can touch the repository's real `scout/output`.
+async fn build_main_footage_app() -> MainFootageApp {
+    let tmp = std::env::temp_dir().join(format!("thoth-mf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let home = test_home(&tmp);
+    home.ensure_project_layout("legacy").unwrap();
+    let store = thoth_jobs::JobStore::connect_with_home(
+        server_db_path(&home).to_str().unwrap(),
+        home.clone(),
+    )
+    .await
+    .unwrap();
+    let scout_root = tmp.join("scout-output");
+    std::fs::create_dir_all(scout_root.join("main-footage")).unwrap();
+    let worker_config_path = tmp.join("config.toml");
+    std::fs::write(
+        &worker_config_path,
+        // TOML literal string: Windows backslashes must not be escape-processed.
+        format!("[scout]\noutput_dir = '{}'\n", scout_root.to_string_lossy()),
+    )
+    .unwrap();
+    let scout = thoth_server::scout::new_supervisor();
+    let output_root = legacy_output_root(&home);
+    let state = AppState {
+        api_key: "test-key".into(),
+        store: store.clone(),
+        output_root: output_root.clone(),
+        home,
+        scout_output_config: thoth_jobs::ScoutOutputConfig::new(worker_config_path.clone()).unwrap(),
+        worker_config_path,
+        scout: scout.clone(),
+        credentials: Arc::new(FakeCredentialProvider(HashSet::new())),
+    };
+    MainFootageApp {
+        app: build_router(state),
+        home_root: tmp,
+        scout_root,
+        output_root,
+        scout,
+        store,
+    }
+}
+
+/// A Scout main-footage package generation (`<scout_root>/main-footage/vNNN`).
+/// The manifest deliberately carries the `bytes` / `acquisition` members Scout
+/// really writes (`scout/main_footage/source_package.ts`) — the summary route
+/// must read it leniently, not through a `deny_unknown_fields` decode.
+fn write_main_footage_package(scout_root: &std::path::Path, package_id: &str) -> PathBuf {
+    let root = scout_root.join("main-footage").join(package_id);
+    std::fs::create_dir_all(root.join("sources")).unwrap();
+    std::fs::create_dir_all(root.join("scene-index")).unwrap();
+    std::fs::write(root.join("sources/source-0.mp4"), vec![7u8; 2048]).unwrap();
+    std::fs::write(root.join("sources/source-1.mp4"), vec![9u8; 1024]).unwrap();
+    std::fs::write(root.join("scene-index/source-0.json"), b"{\"scenes\":[]}").unwrap();
+    std::fs::write(
+        root.join("package.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "post": {
+                "id": "post-123",
+                "canonical_url": "https://www.instagram.com/reel/post-123/",
+                "platform": "instagram"
+            },
+            "analysis_identity": "analysis-2026-08-14",
+            "created_at": "2026-08-14T12:00:00Z",
+            "fingerprint": "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+            "sources": [
+                {
+                    "id": "source-0",
+                    "media_index": 0,
+                    "path": "sources/source-0.mp4",
+                    "checksum": "sha256:source0",
+                    "bytes": 2048,
+                    "acquisition": { "source": "ytdlp", "attempts": 1, "elapsed_ms": 120 },
+                    "technical": {
+                        "container": "mp4", "video_codec": "h264", "duration_sec": 12.5,
+                        "width": 1080, "height": 1920, "has_audio": true
+                    }
+                },
+                {
+                    "id": "source-1",
+                    "media_index": 1,
+                    "path": "sources/source-1.mp4",
+                    "checksum": "sha256:source1",
+                    "bytes": 1024,
+                    "acquisition": { "source": "ytdlp", "attempts": 2, "elapsed_ms": 340 },
+                    "technical": {
+                        "container": "mp4", "video_codec": "h264", "duration_sec": 7.5,
+                        "width": 1080, "height": 1920, "has_audio": false
+                    }
+                }
+            ],
+            "ignored": [
+                { "id": "media-2", "media_index": 2, "code": "photo_slide_ignored", "message": null }
+            ],
+            "unavailable": [
+                { "id": "media-3", "media_index": 3, "code": "source_video_skipped", "message": null }
+            ],
+            "scene_indexes": [
+                {
+                    "source_id": "source-0",
+                    "path": "scene-index/source-0.json",
+                    "checksum": "sha256:index0",
+                    "planning_mode": "degraded",
+                    "scenes": []
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    root
+}
+
+/// Post-plan job artifacts as the pipeline lays them out (`pipeline/job.rs`).
+fn write_main_footage_job_artifacts(root: &std::path::Path) {
+    for dir in ["clips", "narration", "main-footage", "plans/v002", "cuts/v002"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    std::fs::write(root.join("clips/final_concat.mp4"), vec![1u8; 512]).unwrap();
+    std::fs::write(root.join("narration/narration.mp3"), vec![2u8; 256]).unwrap();
+    std::fs::write(root.join("cuts/v002/cut-0.mp4"), vec![3u8; 128]).unwrap();
+    std::fs::write(root.join("main-footage/source-package.json"), b"{}").unwrap();
+    std::fs::write(
+        root.join("narration/timeline.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "beats": [
+                { "id": "b0", "start_sec": 0.0, "end_sec": 3.0 },
+                { "id": "b1", "start_sec": 3.0, "end_sec": 6.0 },
+                { "id": "b2", "start_sec": 6.0, "end_sec": 9.0 }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("plans/active.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "status": "verified",
+            "version": "v002",
+            "plan_path": "plans/v002/main-footage-plan.json"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("plans/v002/main-footage-plan.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "timeline": [
+                { "id": "cut-0", "reuse_count": 1 },
+                { "id": "cut-1", "reuse_count": 0 }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("state.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "job_id": "job-mf",
+            "url": "https://www.instagram.com/reel/post-123/",
+            "created_at": "2026-08-14T12:00:00Z",
+            "updated_at": "2026-08-14T12:30:00Z",
+            "stages": {
+                "main_footage": {
+                    "source_package_fingerprint": "sha256:aaa",
+                    "narration_fingerprint": "sha256:bbb",
+                    "plan_fingerprint": "sha256:ccc",
+                    "active_version": "v002",
+                    "planning_mode": "degraded",
+                    "coverage_target": 0.6,
+                    "main_coverage_sec": 18.0,
+                    "main_coverage_ratio": 0.72,
+                    "total_duration_sec": 25.0,
+                    "selected_cut_count": 2,
+                    "candidate_count": 9,
+                    "transition_distribution": { "match_cut": 1, "cross_dissolve": 1 },
+                    "warnings": ["exact_scene_reused", "transition_fallback"],
+                    "retained_bytes": 4096,
+                    "completed_at": "2026-08-14T12:30:00Z"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// Leak guard: no string anywhere in an operational summary may be a filesystem
+/// absolute path, may contain one of the private roots, or may carry a
+/// signed-URL credential. Applied to whole response bodies, not to a hand-picked
+/// field, so a future field cannot quietly reintroduce the leak.
+fn assert_no_private_paths(value: &serde_json::Value, forbidden: &[&std::path::Path]) {
+    match value {
+        serde_json::Value::String(text) => {
+            assert!(
+                !std::path::Path::new(text).is_absolute(),
+                "summary leaked an absolute path: {text}"
+            );
+            for root in forbidden {
+                let root = root.to_string_lossy().replace('\\', "/");
+                assert!(
+                    !text.replace('\\', "/").contains(root.as_str()),
+                    "summary leaked a private root: {text}"
+                );
+            }
+            for credential in ["token=", "signature=", "X-Amz-", "Expires="] {
+                assert!(
+                    !text.contains(credential),
+                    "summary leaked a signed-URL credential ({credential}): {text}"
+                );
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                assert_no_private_paths(item, forbidden);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for item in fields.values() {
+                assert_no_private_paths(item, forbidden);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recursive file count + byte total, used by tests to prove cleanup emptied
+/// exactly one tree and left its siblings untouched.
+fn tree_inventory(root: &std::path::Path) -> (u64, u64) {
+    let mut files = 0;
+    let mut bytes = 0;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            let (nested_files, nested_bytes) = tree_inventory(&entry.path());
+            files += nested_files;
+            bytes += nested_bytes;
+        } else {
+            files += 1;
+            bytes += meta.len();
+        }
+    }
+    (files, bytes)
+}
+
+/// Directory link that `fs::canonicalize` follows. Windows symlinks need a
+/// privilege this machine lacks; junctions do not. Either way the test HARD
+/// FAILS rather than skipping if the link cannot be made — an escape guard no
+/// test ever exercises has zero coverage however green the suite is.
+fn link_dir(target: &std::path::Path, link: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .expect("mklink must be runnable to test link escapes");
+        assert!(
+            status.success(),
+            "could not create a directory junction at {link:?} — the escape guard is untested"
+        );
+    }
+    #[cfg(not(windows))]
+    {
+        std::os::unix::fs::symlink(target, link)
+            .expect("could not create a directory symlink — the escape guard is untested");
+    }
+}
+
+fn api_request(method: &str, uri: &str, body: Option<serde_json::Value>) -> Request<Body> {
+    let builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", "Bearer test-key")
+        .header("content-type", "application/json");
+    match body {
+        Some(body) => builder.body(Body::from(body.to_string())).unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    }
+}
+
+// --- package facts -----------------------------------------------------------
+
+#[tokio::test]
+async fn main_footage_package_summary_reports_counts_duration_and_bytes() {
+    let harness = build_main_footage_app().await;
+    write_main_footage_package(&harness.scout_root, "v001");
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request("GET", "/api/scout/packages/v001/summary", None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+
+    assert_eq!(body["package_id"], "v001");
+    assert_eq!(body["platform"], "instagram");
+    assert_eq!(
+        body["canonical_url"],
+        "https://www.instagram.com/reel/post-123/"
+    );
+    assert_eq!(body["analysis_mode"], "degraded");
+    assert_eq!(
+        body["fingerprint"],
+        "sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    );
+    assert_eq!(body["usable_count"], 2);
+    assert_eq!(body["skipped_count"], 1);
+    assert_eq!(body["ignored_count"], 1);
+    assert_eq!(body["total_duration_sec"], 20.0);
+    assert_eq!(body["file_count"], 4);
+    assert!(
+        body["total_bytes"].as_u64().unwrap() >= 3072,
+        "total_bytes must account for the on-disk sources: {body}"
+    );
+    assert_eq!(
+        body["warnings"],
+        serde_json::json!(["photo_slide_ignored", "source_video_skipped", "vision_degraded"])
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_summary_exposes_no_private_paths() {
+    let harness = build_main_footage_app().await;
+    write_main_footage_package(&harness.scout_root, "v001");
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request("GET", "/api/scout/packages/v001/summary", None))
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+
+    assert_no_private_paths(&body, &[&harness.scout_root, &harness.home_root]);
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_summary_rejects_unknown_package_id() {
+    let harness = build_main_footage_app().await;
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request("GET", "/api/scout/packages/v404/summary", None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "package_not_found"
+    );
+    harness.cleanup();
+}
+
+// --- job facts ---------------------------------------------------------------
+
+#[tokio::test]
+async fn main_footage_job_manifest_reports_plan_facts_and_relative_artifacts() {
+    let harness = build_main_footage_app().await;
+    let job_root = harness.output_root.join("job-mf");
+    write_main_footage_job_artifacts(&job_root);
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request("GET", "/api/jobs/job-mf/manifest", None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+
+    assert_eq!(body["narration_timeline"], "narration/timeline.json");
+    assert_eq!(body["source_package"], "main-footage/source-package.json");
+    assert_eq!(body["active_plan"], "plans/v002/main-footage-plan.json");
+    assert_eq!(body["cuts"], "cuts/v002");
+
+    let facts = &body["main_footage"];
+    assert_eq!(facts["active_plan_version"], "v002");
+    assert_eq!(facts["planning_mode"], "degraded");
+    assert_eq!(facts["coverage_target"], 0.6);
+    assert_eq!(facts["coverage_actual"], 0.72);
+    assert_eq!(facts["coverage_sec"], 18.0);
+    assert_eq!(facts["total_duration_sec"], 25.0);
+    assert_eq!(facts["beat_count"], 3);
+    assert_eq!(facts["cut_count"], 2);
+    assert_eq!(facts["reuse_count"], 1);
+    assert_eq!(facts["candidate_count"], 9);
+    assert_eq!(
+        facts["transitions"],
+        serde_json::json!({ "cross_dissolve": 1, "match_cut": 1 })
+    );
+    assert_eq!(
+        facts["warnings"],
+        serde_json::json!(["exact_scene_reused", "transition_fallback"])
+    );
+    assert_eq!(facts["retained_bytes"], 4096);
+
+    assert_no_private_paths(&body, &[&harness.scout_root, &harness.home_root]);
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_job_manifest_omits_plan_facts_when_artifacts_are_absent() {
+    let harness = build_main_footage_app().await;
+    let job_root = harness.output_root.join("plain-job");
+    std::fs::create_dir_all(job_root.join("clips")).unwrap();
+    std::fs::write(job_root.join("clips/final_concat.mp4"), b"v").unwrap();
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request("GET", "/api/jobs/plain-job/manifest", None))
+        .await
+        .unwrap();
+    let body = body_json(response).await;
+
+    assert_eq!(body["video"], "clips/final_concat.mp4");
+    for absent in [
+        "narration_timeline",
+        "source_package",
+        "active_plan",
+        "cuts",
+        "main_footage",
+    ] {
+        assert!(
+            body.get(absent).is_none(),
+            "`{absent}` must be omitted when the artifact does not exist: {body}"
+        );
+    }
+    harness.cleanup();
+}
+
+// --- package cleanup: the confirmation IS the feature ------------------------
+
+#[tokio::test]
+async fn main_footage_package_cleanup_requires_confirmation() {
+    let harness = build_main_footage_app().await;
+    let package = write_main_footage_package(&harness.scout_root, "v001");
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/v001/cleanup",
+            Some(serde_json::json!({})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "cleanup_confirmation_required"
+    );
+    assert!(
+        package.join("package.json").is_file(),
+        "nothing may be deleted without a confirmation"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_rejects_mismatched_confirmation() {
+    let harness = build_main_footage_app().await;
+    let package = write_main_footage_package(&harness.scout_root, "v001");
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/v001/cleanup",
+            Some(serde_json::json!({ "confirm": "v002" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "cleanup_confirmation_mismatch"
+    );
+    assert!(
+        package.join("package.json").is_file(),
+        "a confirmation naming another package may not delete this one"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_rejects_parent_traversal_id() {
+    let harness = build_main_footage_app().await;
+    write_main_footage_package(&harness.scout_root, "v001");
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/%2e%2e/cleanup",
+            Some(serde_json::json!({ "confirm": ".." })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "invalid_package_id"
+    );
+    assert!(
+        harness
+            .scout_root
+            .join("main-footage/v001/package.json")
+            .is_file()
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_rejects_encoded_traversal_id() {
+    let harness = build_main_footage_app().await;
+    write_main_footage_package(&harness.scout_root, "v001");
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/%2e%2e%2fv001/cleanup",
+            Some(serde_json::json!({ "confirm": "../v001" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "invalid_package_id"
+    );
+    assert!(
+        harness
+            .scout_root
+            .join("main-footage/v001/package.json")
+            .is_file()
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_rejects_path_separators_in_id() {
+    let harness = build_main_footage_app().await;
+    write_main_footage_package(&harness.scout_root, "v001");
+
+    for (encoded, confirm) in [
+        ("v001%2Fsources", "v001/sources"),
+        ("v001%5Csources", "v001\\sources"),
+    ] {
+        let response = harness
+            .app
+            .clone()
+            .oneshot(api_request(
+                "POST",
+                &format!("/api/scout/packages/{encoded}/cleanup"),
+                Some(serde_json::json!({ "confirm": confirm })),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "separator id `{confirm}` must be refused"
+        );
+        assert_eq!(
+            body_json(response).await["error"]["code"],
+            "invalid_package_id"
+        );
+    }
+    assert!(
+        harness
+            .scout_root
+            .join("main-footage/v001/sources/source-0.mp4")
+            .is_file()
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_rejects_a_link_escaping_the_scout_root() {
+    let harness = build_main_footage_app().await;
+    let outside = harness.home_root.join("outside-package");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("precious.json"), b"{}").unwrap();
+    link_dir(&outside, &harness.scout_root.join("main-footage/escaped"));
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/escaped/cleanup",
+            Some(serde_json::json!({ "confirm": "escaped" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "invalid_package_id"
+    );
+    assert!(
+        outside.join("precious.json").is_file(),
+        "a link escaping the Scout root must never be followed into a delete"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_rejects_unknown_package_id() {
+    let harness = build_main_footage_app().await;
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/v404/cleanup",
+            Some(serde_json::json!({ "confirm": "v404" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "package_not_found"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_is_refused_while_scout_is_running() {
+    let harness = build_main_footage_app().await;
+    let package = write_main_footage_package(&harness.scout_root, "v001");
+    {
+        let mut run = harness.scout.lock().await;
+        run.kind = Some(thoth_server::scout::ScoutKind::Run);
+        run.status = thoth_server::scout::ScoutStatus::Running;
+    }
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/v001/cleanup",
+            Some(serde_json::json!({ "confirm": "v001" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json(response).await["error"]["code"], "scout_busy");
+    assert!(
+        package.join("package.json").is_file(),
+        "a package a running Scout command may still be writing must not be deleted"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_package_cleanup_removes_only_the_named_package() {
+    let harness = build_main_footage_app().await;
+    let doomed = write_main_footage_package(&harness.scout_root, "v001");
+    let sibling = write_main_footage_package(&harness.scout_root, "v002");
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/scout/packages/v001/cleanup",
+            Some(serde_json::json!({ "confirm": "v001" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body_json(response).await;
+
+    assert_eq!(report["removed_files"], 4);
+    assert!(report["removed_bytes"].as_u64().unwrap() >= 3072);
+    assert_eq!(report["recoverable"], false);
+    assert!(!doomed.exists(), "the named package must be gone");
+    assert_eq!(
+        tree_inventory(&sibling).0,
+        4,
+        "a sibling generation must survive"
+    );
+    assert!(
+        harness.scout_root.join("main-footage").is_dir(),
+        "cleanup must not remove the generations root itself"
+    );
+    harness.cleanup();
+}
+
+// --- job cleanup: artifacts go, the audit row stays --------------------------
+
+async fn enqueue_running_job(harness: &MainFootageApp, id: &str) -> PathBuf {
+    let root = harness.output_root.join(id);
+    let spec = thoth_jobs::JobSpec {
+        command: "run".into(),
+        url: Some("https://www.instagram.com/reel/post-123/".into()),
+        content_set: None,
+        params: serde_json::json!({}),
+    };
+    harness
+        .store
+        .enqueue(id, &spec, &root.to_string_lossy())
+        .await
+        .unwrap();
+    let claimed = harness
+        .store
+        .claim_next("test-worker")
+        .await
+        .unwrap()
+        .expect("the freshly enqueued job must be claimable");
+    assert_eq!(claimed.id, id, "claim_next must hand back the job under test");
+    root
+}
+
+async fn enqueue_terminal_job(harness: &MainFootageApp, id: &str) -> PathBuf {
+    let root = enqueue_running_job(harness, id).await;
+    harness
+        .store
+        .finish_running(id, thoth_jobs::JobStatus::Succeeded, None, "done", None)
+        .await
+        .unwrap();
+    root
+}
+
+#[tokio::test]
+async fn main_footage_job_cleanup_requires_confirmation() {
+    let harness = build_main_footage_app().await;
+    let root = enqueue_terminal_job(&harness, "job-a").await;
+    write_main_footage_job_artifacts(&root);
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/jobs/job-a/cleanup",
+            Some(serde_json::json!({})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "cleanup_confirmation_required"
+    );
+    assert!(
+        root.join("state.json").is_file(),
+        "nothing may be deleted without a confirmation"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_job_cleanup_rejects_mismatched_confirmation() {
+    let harness = build_main_footage_app().await;
+    let root = enqueue_terminal_job(&harness, "job-a").await;
+    write_main_footage_job_artifacts(&root);
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/jobs/job-a/cleanup",
+            Some(serde_json::json!({ "confirm": "job-b" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "cleanup_confirmation_mismatch"
+    );
+    assert!(
+        root.join("state.json").is_file(),
+        "a confirmation naming another job may not delete this one"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_job_cleanup_rejects_traversal_job_id() {
+    let harness = build_main_footage_app().await;
+    let root = enqueue_terminal_job(&harness, "job-a").await;
+    write_main_footage_job_artifacts(&root);
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/jobs/%2e%2e/cleanup",
+            Some(serde_json::json!({ "confirm": ".." })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"]["code"], "invalid_job_id");
+    assert!(root.join("state.json").is_file());
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_job_cleanup_rejects_unknown_job_id() {
+    let harness = build_main_footage_app().await;
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/jobs/job-missing/cleanup",
+            Some(serde_json::json!({ "confirm": "job-missing" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_json(response).await["error"]["code"], "job_not_found");
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_job_cleanup_is_refused_while_the_job_is_not_terminal() {
+    let harness = build_main_footage_app().await;
+    let root = enqueue_running_job(&harness, "job-live").await;
+    write_main_footage_job_artifacts(&root);
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/jobs/job-live/cleanup",
+            Some(serde_json::json!({ "confirm": "job-live" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(response).await["error"]["code"],
+        "job_not_terminal"
+    );
+    assert!(
+        root.join("state.json").is_file(),
+        "a live job's artifacts must survive"
+    );
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_job_cleanup_removes_artifacts_but_retains_the_audit_row() {
+    let harness = build_main_footage_app().await;
+    let doomed = enqueue_terminal_job(&harness, "job-a").await;
+    let sibling = enqueue_terminal_job(&harness, "job-b").await;
+    write_main_footage_job_artifacts(&doomed);
+    write_main_footage_job_artifacts(&sibling);
+    let (expected_files, expected_bytes) = tree_inventory(&doomed);
+
+    let response = harness
+        .app
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/jobs/job-a/cleanup",
+            Some(serde_json::json!({ "confirm": "job-a" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report = body_json(response).await;
+
+    assert_eq!(report["removed_files"], expected_files);
+    assert_eq!(report["removed_bytes"], expected_bytes);
+    assert_eq!(report["recoverable"], false);
+    assert!(!doomed.exists(), "the job artifact root must be gone");
+    assert_eq!(
+        tree_inventory(&sibling),
+        (expected_files, expected_bytes),
+        "a sibling job's artifacts must be untouched"
+    );
+
+    // The audit row survives with its terminal status, and the artifact
+    // manifest is now empty — cleanup deletes files, never the record of the run.
+    let job = harness
+        .app
+        .clone()
+        .oneshot(api_request("GET", "/api/jobs/job-a", None))
+        .await
+        .unwrap();
+    assert_eq!(job.status(), StatusCode::OK);
+    assert_eq!(body_json(job).await["status"], "succeeded");
+    assert_eq!(
+        harness.store.get("job-a").await.unwrap().unwrap().status,
+        thoth_jobs::JobStatus::Succeeded
+    );
+    assert!(
+        !harness.store.events_since("job-a", 0).await.unwrap().is_empty(),
+        "the job's event audit trail must survive artifact cleanup"
+    );
+
+    let manifest = harness
+        .app
+        .clone()
+        .oneshot(api_request("GET", "/api/jobs/job-a/manifest", None))
+        .await
+        .unwrap();
+    assert_eq!(&response_bytes(manifest).await[..], b"{}");
+    harness.cleanup();
+}
+
+#[tokio::test]
+async fn main_footage_cleanup_has_no_background_or_age_based_path() {
+    // Retained main footage is expensive, which is exactly the pressure that
+    // grows an "expire after N days" timer. There must be none: artifacts
+    // stamped at the epoch survive the server's only background task (the
+    // stale-job reaper), and only an explicit confirmed call removes them.
+    let harness = build_main_footage_app().await;
+    let job_root = enqueue_terminal_job(&harness, "job-old").await;
+    write_main_footage_job_artifacts(&job_root);
+    let package = write_main_footage_package(&harness.scout_root, "v001");
+    for stamped in [job_root.join("state.json"), package.join("package.json")] {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stamped)
+            .unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH))
+            .unwrap();
+    }
+
+    thoth_server::reaper::spawn_reaper(harness.store.clone(), 1, 0);
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+
+    assert!(
+        job_root.join("state.json").is_file(),
+        "no background pass may delete job artifacts by age"
+    );
+    assert_eq!(
+        tree_inventory(&job_root).0,
+        8,
+        "no background pass may thin the job artifact tree"
+    );
+    assert_eq!(
+        tree_inventory(&package).0,
+        4,
+        "no background pass may delete Scout package files by age"
+    );
+    harness.cleanup();
+}
