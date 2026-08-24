@@ -42,6 +42,11 @@ fn fixture_path() -> PathBuf {
     fixture_root().join("main-footage/v001/package.json")
 }
 
+fn test_only_offline_planner_script() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scout/main_footage/test_support/offline_plan_cli.ts")
+}
+
 #[test]
 fn a_package_scout_actually_wrote_decodes_and_fingerprints_identically_in_rust() {
     let bytes = std::fs::read(fixture_path()).expect("the captured Scout package must be readable");
@@ -236,13 +241,12 @@ fn narration_timeline(job: &JobContext, ffmpeg: &Path) -> NarrationTimelineV1 {
 /// goes in, a playable file comes out.
 ///
 /// Every leg is production code. `import_package` copies and verifies the real
-/// artifacts; `MainFootageCoordinator::prepare` spawns the real Scout planner CLI
-/// (`bun scout/cli.ts plan-main-footage`), which builds candidates, allocates the
+/// artifacts; the test-only injected Scout entry point calls the production planner
+/// implementation with just its two model-facing providers substituted. It builds candidates, allocates the
 /// timeline and cuts real media with ffmpeg; the durability gate re-verifies every
 /// checksum and probes every cut with the real ffprobe; and the real
 /// `PlannedFfmpegRenderer` encodes the result. Nothing is faked but the two ports a
-/// live planner would send to a model, which `THOTH_PLANNER_OFFLINE` degrades to the
-/// shortlist's own deterministic ranking — the assertion is on the rendered file, so
+/// live planner would send to a model. The assertion is on the rendered file, so
 /// a fake that produced no cuts could not satisfy it.
 #[tokio::test]
 async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
@@ -250,13 +254,10 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
     let ffprobe = repo_binary("ffprobe").expect(FFMPEG_REQUIRED);
     // SAFETY: set before anything in this test spawns a child, and read by the
     // verifier and the planner process rather than by another thread. `ffprobe_binary`
-    // otherwise resolves the bundled sidecar, which this repo does not install, and
-    // the planner would otherwise try to reach an embedding model.
+    // otherwise resolves the bundled sidecar, which this repo does not install.
     unsafe {
         std::env::set_var("THOTH_FFPROBE", &ffprobe);
         std::env::set_var("THOTH_FFMPEG", &ffmpeg);
-        std::env::set_var("THOTH_PLANNER_OFFLINE", "1");
-        std::env::set_var("THOTH_PLANNER_TEST_CONTEXT", "1");
     }
 
     let root = std::env::temp_dir().join(format!("mf-acceptance-{}", uuid::Uuid::new_v4()));
@@ -281,7 +282,7 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
     )
     .expect("Rust must import a package Scout actually wrote");
 
-    let verified = MainFootageCoordinator::prepare(
+    let verified = MainFootageCoordinator::prepare_with_test_only_planner_script(
         &job,
         MainFootagePrepareInput {
             imported: &imported,
@@ -289,6 +290,7 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
         },
         &narration,
         &execution,
+        &test_only_offline_planner_script(),
     )
     .await
     .expect("the real Scout planner must produce a plan this job verifies");

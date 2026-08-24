@@ -65,6 +65,34 @@ impl PlannerPort for ScoutPlanner {
     }
 }
 
+/// Explicit test composition for the cross-runtime acceptance harness. Production
+/// callers use `ScoutPlanner`, which always launches `scout/cli.ts`.
+struct TestOnlyScoutPlanner<'a> {
+    script_path: &'a Path,
+}
+
+#[async_trait]
+impl PlannerPort for TestOnlyScoutPlanner<'_> {
+    async fn plan(
+        &self,
+        job: &JobContext,
+        package_path: &str,
+        narration_path: &str,
+        coverage_target: f64,
+        execution: &JobExecutionContext,
+    ) -> Result<()> {
+        invoke_test_only_scout_planner(
+            job,
+            package_path,
+            narration_path,
+            coverage_target,
+            execution,
+            self.script_path,
+        )
+        .await
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlannerTerminalWire {
@@ -172,11 +200,64 @@ async fn invoke_scout_planner(
             "planner_runtime_unavailable",
         )
     })?;
+    invoke_scout_planner_script(
+        job,
+        package_path,
+        narration_path,
+        coverage_target,
+        execution,
+        &runtime,
+        &runtime.cli_ts,
+        Some("plan-main-footage"),
+    )
+    .await
+}
+
+async fn invoke_test_only_scout_planner(
+    job: &JobContext,
+    package_path: &str,
+    narration_path: &str,
+    coverage_target: f64,
+    execution: &JobExecutionContext,
+    script_path: &Path,
+) -> Result<()> {
+    execution.check_cancelled()?;
+    let runtime = crate::pipeline::ocr::resolve_scout_runtime().map_err(|_| {
+        MainFootageError::new(
+            MainFootageErrorCode::CutPlanningFailed,
+            "planner_runtime_unavailable",
+        )
+    })?;
+    invoke_scout_planner_script(
+        job,
+        package_path,
+        narration_path,
+        coverage_target,
+        execution,
+        &runtime,
+        script_path,
+        None,
+    )
+    .await
+}
+
+async fn invoke_scout_planner_script(
+    job: &JobContext,
+    package_path: &str,
+    narration_path: &str,
+    coverage_target: f64,
+    execution: &JobExecutionContext,
+    runtime: &crate::pipeline::ocr::ScoutRuntime,
+    script_path: &Path,
+    command_name: Option<&str>,
+) -> Result<()> {
     let root = canonical_job_root(job)?;
     let mut command = Command::new(&runtime.bun);
+    command.arg(script_path);
+    if let Some(command_name) = command_name {
+        command.arg(command_name);
+    }
     command
-        .arg(&runtime.cli_ts)
-        .arg("plan-main-footage")
         .arg("--job-root")
         .arg(&root)
         .arg("--package")
@@ -275,6 +356,27 @@ impl MainFootageCoordinator {
             narration,
             execution,
             &ScoutPlanner,
+            &SupervisedFfprobe::new(execution),
+        )
+        .await
+    }
+
+    /// Test-only entry/provider composition for the real cross-runtime acceptance
+    /// harness. It is deliberately explicit: no process environment value can select it.
+    #[doc(hidden)]
+    pub async fn prepare_with_test_only_planner_script(
+        job: &JobContext,
+        input: MainFootagePrepareInput<'_>,
+        narration: &NarrationTimelineV1,
+        execution: &JobExecutionContext,
+        script_path: &Path,
+    ) -> Result<VerifiedMainFootagePlan> {
+        Self::prepare_with(
+            job,
+            input,
+            narration,
+            execution,
+            &TestOnlyScoutPlanner { script_path },
             &SupervisedFfprobe::new(execution),
         )
         .await

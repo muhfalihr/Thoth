@@ -572,3 +572,15 @@ identified one line added in this resume (`error.1 .0`); that line was corrected
 - RED: `cargo test -p thoth-types canonical_json_numbers_match_json_stringify_at_ecmascript_boundaries -- --test-threads=1` failed at the valid protocol value `0.000001`: Rust emitted `1e-6`, while JavaScript `JSON.stringify` emits `0.000001` (exit 101).
 - GREEN: `ryu-js` 1.0.3 now supplies ECMAScript number formatting for `serde_json` f64 values. The table pins literal JavaScript outputs for `-0`, `1e-7`, `1e-6`, `0.000001`, `1e20`, `1e21`, and `-1e21`.
 - Verification: the same serial Rust test passed with `1 passed; 0 failed` (exit 0). This explicitly covers both ECMAScript notation thresholds and exponent-sign behavior rather than only the original integral-float case.
+
+## Task 15 corrective round — offline planner confinement
+
+- RED: the former production-path check set both `THOTH_PLANNER_OFFLINE=1` and `THOTH_PLANNER_TEST_CONTEXT=1`; `plannerIsOffline()` returned `true` (exit 1). Because `scout/lib/env.ts` backfills ordinary `.env` values, those keys were not a test boundary.
+- GREEN: `scout/main_footage/plan_job.ts` no longer reads either key. `productionPlannerProviders()` always composes the model-backed embedding/ranking ports. `planner_offline.test.ts` sets both former flags, supplies a controlled non-empty planner key, and proves the real production ranking port performs its request (one intercepted request); the old offline branch yields zero requests and fails this test.
+- The offline acceptance composition is now an explicit test-only script, `scout/main_footage/test_support/offline_plan_cli.ts`. It injects only `embedText: null` and empty model ranking; it retains the real file embedding loader, `ffmpegCut`, `probeSourceVideo`, candidate builder, allocator, materialization, and verification. The Rust import → plan → render acceptance test calls it through the explicitly named test-only coordinator API; production `MainFootageCoordinator::prepare` still launches only `scout/cli.ts`.
+- Verification: `bun run --cwd scout typecheck`, `bun scout/main_footage/planner_offline.test.ts`, `cargo test -p thoth-types -- --test-threads=1` (15 passed), and `cargo test -p thoth-core --test planned_main_footage -- --test-threads=1` (3 passed) all exited 0. `git diff --check` exited 0. `build_cuda.bat` was not run.
+
+### Correction to the preceding offline GREEN record
+
+- The final policy is stronger than the intermediate request-observation implementation recorded above: production `productionPlannerProviders()` rejects when either former offline key is present. The final RED set **both** `THOTH_PLANNER_OFFLINE=1` and `THOTH_PLANNER_TEST_CONTEXT=1` and failed with a missing `planner_offline_environment_not_supported` exception (exit 1); the final GREEN emitted that exact rejection and exited 0. This is the evidence for “both former flags rejected.”
+- Final reruns: `bun run --cwd scout typecheck`, `bun scout/main_footage/planner_offline.test.ts`, `bun scout/main_footage/offline_acceptance.test.ts`, and serial `cargo test -p thoth-core --test planned_main_footage -- --test-threads=1` (3 passed) all exited 0.

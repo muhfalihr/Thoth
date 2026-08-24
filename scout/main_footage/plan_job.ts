@@ -137,34 +137,20 @@ export async function ffmpegCut(command: CutCommand): Promise<void> {
   if (result.error || result.status !== 0) throw new Error('ffmpeg_cut_failed');
 }
 
-/**
- * Test-only offline switch (`THOTH_PLANNER_OFFLINE=1`).
- *
- * The two model-backed ports return exactly what they already return on a machine
- * with no `THOTH_NOVITA_API_KEY` — a null beat vector and no planner ranking — so an
- * end-to-end test can drive the real CLI without a network call and without depending
- * on whether the repository `.env` happens to hold a key. Nothing else changes:
- * ffmpeg, ffprobe and the on-disk embedding loader stay the production ports, and
- * candidate selection still runs its real lexical/topic tiering.
- */
-export function plannerIsOffline(): boolean {
-  if (process.env.THOTH_PLANNER_OFFLINE !== '1') return false;
-  if (process.env.THOTH_PLANNER_TEST_CONTEXT !== '1') {
-    throw new Error(
-      'THOTH_PLANNER_OFFLINE is test-only; refusing degraded planning outside test context',
-    );
+/** Production composition; it never consults offline-mode environment variables. */
+export function productionPlannerProviders(packageRoot: string): PlanMainFootageProviders {
+  if (
+    process.env.THOTH_PLANNER_OFFLINE !== undefined ||
+    process.env.THOTH_PLANNER_TEST_CONTEXT !== undefined
+  ) {
+    throw new Error('planner_offline_environment_not_supported');
   }
-  return true;
-}
-
-function defaultProviders(packageRoot: string): PlanMainFootageProviders {
   const loadEmbedding = fileEmbeddingLoader(packageRoot);
   return {
     candidateDeps: {
-      embedText: async (text) => (plannerIsOffline() ? null : ((await embed([text]))[0] ?? null)),
+      embedText: async (text) => (await embed([text]))[0] ?? null,
       loadEmbedding,
-      rankShortlist: async (_beat, shortlist) =>
-        plannerIsOffline() ? [] : rankWithPlanner(shortlist),
+      rankShortlist: async (_beat, shortlist) => rankWithPlanner(shortlist),
     },
     ffmpeg: ffmpegCut,
     ffprobe: probeSourceVideo,
@@ -180,7 +166,7 @@ export async function planMainFootageJob(
   const packageFile = resolveContained(jobRoot, options.packagePath);
   const narrationFile = resolveContained(jobRoot, options.narrationPath);
   const packageRoot = path.dirname(packageFile);
-  const providers = injected ?? defaultProviders(packageRoot);
+  const providers = injected ?? productionPlannerProviders(packageRoot);
   const emit = providers.emit ?? ((event: PlanProgress) => console.log(JSON.stringify(event)));
 
   const pkg = decodeSourcePackage(JSON.parse(fs.readFileSync(packageFile, 'utf8')));
