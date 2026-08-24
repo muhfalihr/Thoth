@@ -51,6 +51,18 @@ The mode is requested by the **Content Set**, not by a CLI flag. Scout writes a
 Narration is mandatory in this mode. A run with narration disabled fails immediately with
 `forced_main_narration_required` rather than silently falling back to clip mode.
 
+### 2.1 Readiness
+
+`GET /api/scout/status` reports `main_footage_ready`. It is false when the server is paired
+with a Scout tree that has no `scout/main_footage/plan_job.ts` — the planner module the run
+shells out to. The Rust half needs no probing: import, the durability gate and the planned
+renderer are linked into the server binary, so if it starts they are present.
+
+The Dashboard's **Use URL media as main footage** control in Discovery is disabled while
+readiness is false, and a status payload with no `main_footage_ready` field at all — an
+older server — counts as not ready rather than as permission. If the control is greyed out,
+the deployment is mismatched; update the Scout tree, do not work around the control.
+
 ---
 
 ## 3. What lands on disk
@@ -239,7 +251,20 @@ It exists because `scout/lib/env.ts` back-fills any falsy `process.env` entry fr
 repository `.env`: unsetting an API key in a child process does **not** make that process
 offline.
 
-### 8.4 Latent invariant: failure-detail redaction
+### 8.4 What this feature's gate does not cover
+
+Two pieces of the plan are **not** implemented and are not covered by any test here:
+
+- **No Rust end-to-end render test.** `crates/thoth-core/tests/planned_main_footage.rs`
+  proves the cross-runtime *contract* — a package Scout really wrote decodes in Rust and
+  fingerprints to the same value. It does not import that package into a job, render it and
+  FFprobe the result, and it does not exercise the `v001` / `v002` immutability rule from
+  the Rust side. The Scout-side equivalent
+  (`scout/main_footage/offline_acceptance.test.ts`) does cover acquisition through cuts and
+  the unchanged-rerun resume, so the untested seam is specifically *import → render*.
+- **Live-platform smoke tests** — see section 9.
+
+### 8.5 Latent invariant: failure-detail redaction
 
 Redaction of operator-visible failures depends on `crates/thoth-core/src/worker/mod.rs`
 persisting `Some(e.to_string())` — the error's own `Display` — rather than `{e:#}`. The
