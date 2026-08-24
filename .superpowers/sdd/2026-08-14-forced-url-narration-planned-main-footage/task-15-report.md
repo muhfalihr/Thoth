@@ -766,3 +766,21 @@ Remaining disclosed limitations:
 - GREEN verification: both focused regressions passed 1/1; serial verifier suite passed 31/31;
  `cargo check -p thoth-core --all-targets` exited 0; `git diff --check` exited 0.
  `build_cuda.bat` was not run.
+
+## Ruling BH corrective round — cross-process external generation reservation
+
+- Root cause: each process scanned `external-footage` for the next version and then recursively
+ created the selected generation. Two processes could both select `v001`, interleave temporary
+ files, and collide at manifest publication; a zero-source process could recursively remove the
+ shared generation while another process still owned work inside it.
+- RED: two independent Bun child processes were held after selecting the same absent version.
+ Both entered `v001`, and one failed at immutable manifest publication with `destination_exists`.
+- GREEN: generation reservation now uses exclusive non-recursive directory creation. A losing
+ process increments the `vNNN` candidate and retries. Each reservation carries a random owner
+ token; zero-source cleanup recursively removes a generation only after verifying that exact token,
+ and successful publication releases the marker.
+- Cross-process proof: two forced-collision publishers independently produced `v001` and `v002`.
+ A paired empty/publisher race forced empty cleanup to finish before publisher materialization;
+ the publisher's foreign generation and manifest survived. The focused test passed three
+ consecutive runs; `bun run --cwd scout typecheck` and `git diff --check` exited 0.
+ `build_cuda.bat` was not run.

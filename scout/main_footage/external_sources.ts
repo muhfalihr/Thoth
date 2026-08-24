@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { LocalAsset, MediaAsset, PostRecord } from '../acquisition/types.ts';
@@ -30,6 +30,62 @@ export interface PackageExternalFootageDeps {
 export interface ExternalSourcesResult {
   manifestPath: string;
   descriptorPath: string;
+}
+
+interface GenerationReservation {
+  generationRoot: string;
+  ownerPath: string;
+  ownerToken: string;
+}
+
+function reserveGeneration(generationsRoot: string): GenerationReservation {
+  let number = Number(nextVersion(generationsRoot).slice(1));
+  for (;;) {
+    const version = `v${String(number).padStart(3, '0')}`;
+    const generationRoot = resolveContained(generationsRoot, version);
+    try {
+      fs.mkdirSync(generationRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        number += 1;
+        continue;
+      }
+      throw error;
+    }
+
+    const ownerPath = path.join(generationRoot, '.reservation-owner');
+    const ownerToken = `${process.pid}:${randomUUID()}`;
+    try {
+      fs.writeFileSync(ownerPath, ownerToken, { encoding: 'utf8', flag: 'wx' });
+    } catch (error) {
+      fs.rmdirSync(generationRoot);
+      throw error;
+    }
+    return { generationRoot, ownerPath, ownerToken };
+  }
+}
+
+function ownsReservation(reservation: GenerationReservation): boolean {
+  try {
+    const owner = fs.lstatSync(reservation.ownerPath);
+    return (
+      owner.isFile() &&
+      !owner.isSymbolicLink() &&
+      fs.readFileSync(reservation.ownerPath, 'utf8') === reservation.ownerToken
+    );
+  } catch {
+    return false;
+  }
+}
+
+function cleanupReservation(reservation: GenerationReservation): void {
+  if (!ownsReservation(reservation)) return;
+  fs.rmSync(reservation.generationRoot, { recursive: true, force: true });
+}
+
+function releaseReservation(reservation: GenerationReservation): void {
+  if (!ownsReservation(reservation)) throw new Error('external_generation_reservation_lost');
+  fs.unlinkSync(reservation.ownerPath);
 }
 
 function checksum(file: string): string {
@@ -96,8 +152,8 @@ export async function packageExternalFootage(
   fs.mkdirSync(outputRoot, { recursive: true });
   const generationsRoot = resolveContained(outputRoot, 'main-footage/external-footage');
   fs.mkdirSync(generationsRoot, { recursive: true });
-  const version = nextVersion(generationsRoot);
-  const generationRoot = resolveContained(generationsRoot, version);
+  const reservation = reserveGeneration(generationsRoot);
+  const generationRoot = reservation.generationRoot;
   const sourcesRoot = path.join(generationRoot, 'sources');
   const tempRoot = path.join(generationRoot, '.tmp');
   fs.mkdirSync(sourcesRoot, { recursive: true });
@@ -150,7 +206,7 @@ export async function packageExternalFootage(
   }
 
   if (!sources.length) {
-    fs.rmSync(generationRoot, { recursive: true, force: true });
+    cleanupReservation(reservation);
     return null;
   }
   sources.sort((left, right) => left.id.localeCompare(right.id));
@@ -169,6 +225,7 @@ export async function packageExternalFootage(
   fs.writeFileSync(manifestTemp, JSON.stringify(manifest, null, 2), 'utf8');
   atomicPublish(manifestTemp, manifestPath);
   fs.rmSync(tempRoot, { recursive: true, force: true });
+  releaseReservation(reservation);
 
   const descriptorPath = relativeManifest(contentSetPath, manifestPath);
   if (!set.main_footage) throw new Error('forced_main_descriptor_missing');
