@@ -266,6 +266,12 @@ export type ScoutRunSummary = {
 export type ScoutStatus = {
   browser_attached: boolean;
   cdp_base: string;
+  /**
+   * Whether this deployment can run forced main footage at all — false when the
+   * server is paired with a Scout tree that has no planner module. Absent on an
+   * older server, which is treated as not ready rather than as permission.
+   */
+  main_footage_ready?: boolean;
   run: ScoutRunSummary | null;
 };
 // reel_topics.json entries are returned raw; these are the fields the UI reads.

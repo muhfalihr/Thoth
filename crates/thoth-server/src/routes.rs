@@ -1434,12 +1434,31 @@ pub async fn migrate_config_toml(State(state): State<AppState>) -> Response {
     }
 }
 
+/// The Scout module that plans forced main footage, resolved the same way
+/// `scout::SCOUT_CLI` is: relative to the working directory the server was started in.
+const SCOUT_PLANNER: &str = "scout/main_footage/plan_job.ts";
+
+/// Whether this deployment can actually run the forced main-footage mode.
+///
+/// The Rust half needs no probing — import, the durability gate and the planned
+/// renderer are linked into this binary, so if it starts, they are present. What can
+/// be missing is the *other* runtime. `scout_run` shells out to whatever Scout tree
+/// sits next to `SCOUT_CLI`, and a tree older than this binary has no planner module.
+/// Offering the control in that state produces a run that dies partway through instead
+/// of a refusal up front — the silent legacy fallback this mode is not allowed to have.
+///
+/// `is_file` and not `exists`: a directory of that name is not a module to run.
+fn planner_is_installed(planner: &FsPath) -> bool {
+    planner.is_file()
+}
+
 pub async fn scout_status(State(state): State<AppState>) -> Json<serde_json::Value> {
     let attached = scout::cdp_attached().await;
     let run = state.scout.lock().await.status_dto();
     Json(serde_json::json!({
         "browser_attached": attached,
         "cdp_base": scout::cdp_base(),
+        "main_footage_ready": planner_is_installed(FsPath::new(SCOUT_PLANNER)),
         "run": run,
     }))
 }
@@ -1691,4 +1710,57 @@ pub async fn scout_output_file(
     let full = std::path::Path::new(scout::SCOUT_OUTPUT_DIR).join(rel_path);
     let content_type = guess_content_type(&full);
     crate::artifact::serve_file(&method, &headers, &full, content_type).await
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::{SCOUT_PLANNER, planner_is_installed};
+    use std::path::{Path as FsPath, PathBuf};
+
+    fn scratch() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("thoth-ready-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Readiness is a deployment fact, so all three states a filesystem can be in
+    /// have to map to the right answer — including the directory case, which
+    /// `exists()` would have called ready.
+    #[test]
+    fn readiness_follows_whether_the_planner_module_is_actually_a_file() {
+        let dir = scratch();
+        let planner = dir.join("plan_job.ts");
+        assert!(
+            !planner_is_installed(&planner),
+            "a Scout tree without the planner module cannot plan"
+        );
+
+        std::fs::create_dir_all(&planner).unwrap();
+        assert!(
+            !planner_is_installed(&planner),
+            "a directory of that name is not a module to run"
+        );
+
+        std::fs::remove_dir_all(&planner).unwrap();
+        std::fs::write(&planner, b"export {}").unwrap();
+        assert!(
+            planner_is_installed(&planner),
+            "an installed planner is ready"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The constant is what production probes; if the module is renamed or moved
+    /// without updating it, every deployment silently reports itself unready.
+    #[test]
+    fn the_probed_path_names_the_planner_this_repository_ships() {
+        let repo_root = FsPath::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(FsPath::parent)
+            .expect("crates/thoth-server sits two levels below the repo root");
+        assert!(
+            planner_is_installed(&repo_root.join(SCOUT_PLANNER)),
+            "SCOUT_PLANNER no longer points at a module in this repository"
+        );
+    }
 }

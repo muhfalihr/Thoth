@@ -1116,6 +1116,9 @@ async fn scout_status_idle_shape() {
     assert!(v["browser_attached"].is_boolean(), "body: {v}");
     assert!(v["cdp_base"].as_str().unwrap().contains("18800"), "body: {v}");
     assert!(v["run"].is_null(), "body: {v}");
+    // The dashboard gates the forced main-footage control on this field and no
+    // compiler checks that contract, so its presence and type are asserted here.
+    assert!(v["main_footage_ready"].is_boolean(), "body: {v}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

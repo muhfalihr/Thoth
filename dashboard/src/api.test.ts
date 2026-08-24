@@ -165,7 +165,11 @@ test("Discovery forced-main checkbox starts unchecked on each mount and is not s
 });
 
 test("Discovery resets forced-main selection after a successful run", async () => {
-  stub({ ok: true }, 202);
+  // A ready server: the control is only operable when the planner is installed.
+  stubRoutes({
+    "/api/scout/status": { json: { main_footage_ready: true, run: null } },
+    "/api/scout": { json: { ok: true }, status: 202 },
+  });
   const user = userEvent.setup();
   let view!: ReturnType<typeof render>;
   await act(async () => {
@@ -188,6 +192,37 @@ test("Discovery resets forced-main selection after a successful run", async () =
   await user.click(view.getByRole("button", { name: "Run pipeline" }));
   const secondRun = calls.find((call) => call.url === "/api/scout/run");
   expect(JSON.parse(String(secondRun?.init?.body))).toMatchObject({ use_input_as_main: false });
+});
+
+/**
+ * Readiness is the only thing standing between an operator and a run that dies
+ * partway through, so an unready server has to refuse the control outright — not
+ * accept the tick and fail later, which is the silent legacy fallback this mode
+ * is not allowed to have.
+ */
+test("Discovery refuses forced main footage when the server reports it unready", async () => {
+  stubRoutes({
+    "/api/scout/status": { json: { main_footage_ready: false, run: null } },
+    "/api/scout": { json: { ok: true }, status: 202 },
+  });
+  const user = userEvent.setup();
+  let view!: ReturnType<typeof render>;
+  await act(async () => {
+    view = render(createElement(Discovery));
+  });
+  const checkbox = view.getByRole("checkbox", {
+    name: /Use URL media as main footage/,
+  }) as HTMLInputElement;
+  expect(checkbox.disabled).toBe(true);
+
+  await user.type(view.getByLabelText("topic url"), "https://www.instagram.com/p/ABC/");
+  await user.click(checkbox);
+  expect(checkbox.checked).toBe(false);
+
+  calls = [];
+  await user.click(view.getByRole("button", { name: "Run pipeline" }));
+  const run = calls.find((call) => call.url === "/api/scout/run");
+  expect(JSON.parse(String(run?.init?.body))).toMatchObject({ use_input_as_main: false });
 });
 
 // --- Task 14: package facts, job monitoring, explicit cleanup ----------------

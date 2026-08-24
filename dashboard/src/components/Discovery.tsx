@@ -10,6 +10,9 @@ import {
   type ScoutStatus, type ScoutTopic, type ScoutLogLine,
 } from "@/api";
 
+const NOT_READY_REASON =
+  "Unavailable: this server is paired with a Scout install that has no main-footage planner.";
+
 /** Discovery surface: drives the scout browser -> discover -> run -> validate flow. */
 export function Discovery() {
   const [status, setStatus] = useState<ScoutStatus | null>(null);
@@ -30,6 +33,11 @@ export function Discovery() {
   const esRef = useRef<EventSource | null>(null);
 
   const running = status?.run?.status === "running";
+  // Forced main footage needs the Scout planner module this server is paired with.
+  // Until the server has answered, treat it as not ready: offering the control and
+  // withdrawing it looks like a bug, and a run started without a planner dies partway
+  // through instead of refusing up front.
+  const mainFootageReady = status?.main_footage_ready === true;
 
   // Poll status every 3s.
   useEffect(() => {
@@ -174,11 +182,15 @@ export function Discovery() {
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" className="accent-primary" checked={noComments} onChange={(e) => setNoComments(e.target.checked)} /> no-comments
               </label>
-              <label className="flex items-start gap-2 text-sm">
+              <label
+                className={`flex items-start gap-2 text-sm ${mainFootageReady ? "" : "opacity-50"}`}
+                title={mainFootageReady ? undefined : NOT_READY_REASON}
+              >
                 <input
                   type="checkbox"
                   className="mt-1 accent-primary"
-                  checked={useInputAsMain}
+                  disabled={!mainFootageReady}
+                  checked={useInputAsMain && mainFootageReady}
                   onChange={(e) => setUseInputAsMain(e.target.checked)}
                 />
                 <span>
@@ -186,12 +198,15 @@ export function Discovery() {
                   <span className="block text-xs text-muted-foreground">
                     Download every video from this post, ignore photos, and build narration-aligned cuts.
                   </span>
-                  <span className="block text-xs text-muted-foreground">Narrator mode is required.</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {mainFootageReady ? "Narrator mode is required." : NOT_READY_REASON}
+                  </span>
                 </span>
               </label>
               <Button size="sm" disabled={running || url.trim() === ""} onClick={() =>
                 scoutRun({ url: url.trim(), per: num(per), max: num(max), cap: num(cap),
-                  no_comments: noComments, use_input_as_main: useInputAsMain }).then((result) => {
+                  no_comments: noComments,
+                  use_input_as_main: useInputAsMain && mainFootageReady }).then((result) => {
                     ack("run")(result);
                     if (result.ok) setUseInputAsMain(false);
                   })}>
