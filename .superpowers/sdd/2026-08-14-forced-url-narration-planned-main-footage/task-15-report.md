@@ -584,3 +584,5 @@ identified one line added in this resume (`error.1 .0`); that line was corrected
 
 - The final policy is stronger than the intermediate request-observation implementation recorded above: production `productionPlannerProviders()` rejects when either former offline key is present. The final RED set **both** `THOTH_PLANNER_OFFLINE=1` and `THOTH_PLANNER_TEST_CONTEXT=1` and failed with a missing `planner_offline_environment_not_supported` exception (exit 1); the final GREEN emitted that exact rejection and exited 0. This is the evidence for “both former flags rejected.”
 - Final reruns: `bun run --cwd scout typecheck`, `bun scout/main_footage/planner_offline.test.ts`, `bun scout/main_footage/offline_acceptance.test.ts`, and serial `cargo test -p thoth-core --test planned_main_footage -- --test-threads=1` (3 passed) all exited 0.
+
+- Documentation correction: `docs/main-footage.md` now identifies the former environment-driven offline description as superseded, documents the production rejection code, and distinguishes the explicit test-only planner composition from production `scout/cli.ts`.

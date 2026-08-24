@@ -253,6 +253,14 @@ It exists because `scout/lib/env.ts` back-fills any falsy `process.env` entry fr
 repository `.env`: unsetting an API key in a child process does **not** make that process
 offline.
 
+**Correction (Task 15 corrective round):** the environment-controlled mode above has been
+removed. Production planning rejects either former flag, `THOTH_PLANNER_OFFLINE` or
+`THOTH_PLANNER_TEST_CONTEXT`, including values backfilled from `.env`, with
+`planner_offline_environment_not_supported`. Offline acceptance instead uses the explicit
+test-only `scout/main_footage/test_support/offline_plan_cli.ts` provider composition, which
+substitutes only model-facing embedding/ranking while retaining real file embeddings, candidate
+tiering, allocation, FFmpeg, FFprobe, and verification.
+
 ### 8.4 What this feature's gate does not cover
 
 The Rust acceptance test now covers the import → plan → render seam:
@@ -261,6 +269,11 @@ runs the real planner CLI, verifies the cuts through the durability gate, render
 FFprobes the output's duration and audio/video streams. Its model-facing ranking ports are
 the only offline test double; media acquisition artifacts, FFmpeg, FFprobe, import and the
 renderer are production paths.
+
+**Correction (Task 15 corrective round):** this test now invokes the explicit test-only
+planner composition rather than `scout/cli.ts`; the planner implementation itself, all media
+ports, the durability gate, and rendering remain real. Only the two model-facing providers are
+substituted.
 
 What remains uncovered is the Rust-side changed-narration `v001` → `v002` resume/immutability
 case. The Scout acceptance test covers unchanged-rerun resume through cuts, but not that
