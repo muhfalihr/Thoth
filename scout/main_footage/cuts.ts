@@ -16,6 +16,8 @@ import {
   type PlanningMode,
   type SceneEvidenceV1,
   type SourcePackageV1,
+  type ExternalSourcesV1,
+  type ExternalSourceV1,
   type SourceTechnicalMetadata,
 } from './contracts.ts';
 import { atomicPublish, nextVersion, resolveContained } from './paths.ts';
@@ -138,6 +140,9 @@ export interface MaterializePlanDeps {
   narrationTimelinePath: string;
   sourcePackageFingerprint: string;
   narrationFingerprint: string;
+  externalSources?: ExternalSourcesV1;
+  externalSourcesPath?: string;
+  externalSourcesFingerprint?: string;
   candidates:
     | ReadonlyMap<string, readonly RankedCandidate[]>
     | Readonly<Record<string, readonly RankedCandidate[]>>;
@@ -184,6 +189,7 @@ export interface ActivePlanExpectation {
   sourcePackageFingerprint: string;
   narrationFingerprint: string;
   coverageTarget: number;
+  externalSourcesFingerprint?: string;
 }
 
 export function readVerifiedActivePlan(
@@ -208,6 +214,7 @@ export function readVerifiedActivePlan(
       plan.narration_fingerprint !== active.narration_fingerprint ||
       plan.narration_fingerprint !== expected.narrationFingerprint ||
       plan.main_coverage_target !== expected.coverageTarget ||
+      plan.external_sources_fingerprint !== expected.externalSourcesFingerprint ||
       plan.fingerprint !== active.plan_fingerprint ||
       fingerprintCanonical({ ...plan, fingerprint: undefined }) !== active.plan_fingerprint
     ) {
@@ -267,8 +274,24 @@ function planVerificationFailed(): never {
   });
 }
 
-function assertItemWithinSource(item: AllocatedItemV1, pkg: SourcePackageV1): void {
-  if (item.asset_kind !== 'main_cut') return;
+function assertItemWithinSource(
+  item: AllocatedItemV1,
+  pkg: SourcePackageV1,
+  externalSources?: ExternalSourcesV1,
+): void {
+  if (item.asset_kind === 'external_cut') {
+    const source = externalSources?.sources.find((entry) => entry.id === item.source_id);
+    if (
+      !source ||
+      !Number.isFinite(item.source_in_sec) ||
+      !Number.isFinite(item.source_out_sec) ||
+      item.source_in_sec < source.trim_start_sec - 1e-6 ||
+      item.source_out_sec > source.technical.duration_sec + 1e-6
+    ) {
+      planVerificationFailed();
+    }
+    return;
+  }
   const source = pkg.sources.find((entry) => entry.id === item.source_id);
   const scene = sourceScene(pkg, item);
   if (
@@ -643,6 +666,42 @@ function sourceFor(pkg: SourcePackageV1, sourceId: string) {
   return source;
 }
 
+interface ResolvedSource {
+  source: SourcePackageV1['sources'][number] | ExternalSourceV1;
+  inputPath: string;
+  planPath: string;
+  floorSec: number;
+}
+
+function resolvedSourceFor(
+  item: AllocatedItemV1,
+  jobRoot: string,
+  deps: MaterializePlanDeps,
+): ResolvedSource {
+  if (item.asset_kind === 'external_cut') {
+    if (!deps.externalSources || !deps.externalSourcesPath) {
+      throw new Error('external_sources_invalid');
+    }
+    const source = deps.externalSources.sources.find((entry) => entry.id === item.source_id);
+    if (!source) throw new Error('external_sources_invalid');
+    const root = path.dirname(resolveContained(jobRoot, deps.externalSourcesPath));
+    return {
+      source,
+      inputPath: resolveContained(root, source.path),
+      planPath: path.posix.join(path.posix.dirname(deps.externalSourcesPath), source.path),
+      floorSec: source.trim_start_sec,
+    };
+  }
+  const source = sourceFor(deps.package, item.source_id);
+  const root = path.dirname(resolveContained(jobRoot, deps.sourcePackagePath));
+  return {
+    source,
+    inputPath: resolveContained(root, source.path),
+    planPath: path.posix.join(path.posix.dirname(deps.sourcePackagePath), source.path),
+    floorSec: 0,
+  };
+}
+
 function sourceScene(pkg: SourcePackageV1, item: AllocatedItemV1) {
   const sceneId = item.candidate_key.startsWith(`${item.source_id}:`)
     ? item.candidate_key.slice(item.source_id.length + 1)
@@ -658,10 +717,12 @@ async function publishCut(
   jobRoot: string,
   deps: MaterializePlanDeps,
 ): Promise<MainFootagePlanV1['timeline'][number]> {
-  const source = sourceFor(deps.package, item.source_id);
-  const packageRoot = path.dirname(resolveContained(jobRoot, deps.sourcePackagePath));
-  const inputPath = resolveContained(packageRoot, source.path);
-  const beforeMs = Math.max(0, Math.min(HANDLE_MS, Math.floor(item.source_in_sec * 1000)));
+  const resolved = resolvedSourceFor(item, jobRoot, deps);
+  const { source, inputPath } = resolved;
+  const beforeMs = Math.max(
+    0,
+    Math.min(HANDLE_MS, Math.floor((item.source_in_sec - resolved.floorSec) * 1000)),
+  );
   const afterMs = Math.max(
     0,
     Math.min(HANDLE_MS, Math.floor((source.technical.duration_sec - item.source_out_sec) * 1000)),
@@ -704,11 +765,11 @@ async function publishCut(
       }
       const digest = checksum(temp);
       atomicPublish(temp, destination);
-    return {
-      id: item.item_id,
-      asset_kind: item.asset_kind,
-      source_id: item.source_id,
-        source_path: path.posix.join(path.posix.dirname(deps.sourcePackagePath), source.path),
+      return {
+        id: item.item_id,
+        asset_kind: item.asset_kind,
+        source_id: item.source_id,
+        source_path: resolved.planPath,
         cut_path: relativeCut,
         checksum: digest,
         source_start_sec: item.source_in_sec,
@@ -740,14 +801,24 @@ export async function materializePlan(
   }
   resolveContained(resolvedRoot, deps.sourcePackagePath);
   resolveContained(resolvedRoot, deps.narrationTimelinePath);
+  if (
+    Boolean(deps.externalSources) !== Boolean(deps.externalSourcesPath) ||
+    Boolean(deps.externalSources) !== Boolean(deps.externalSourcesFingerprint)
+  ) {
+    throw new Error('external_sources_invalid');
+  }
+  if (deps.externalSourcesPath) resolveContained(resolvedRoot, deps.externalSourcesPath);
   if (allocation.error) throw Object.assign(new Error(allocation.error.code), allocation.error);
   assertValidAllocation(allocation);
-  for (const item of allocation.timeline) assertItemWithinSource(item, deps.package);
+  for (const item of allocation.timeline) {
+    assertItemWithinSource(item, deps.package, deps.externalSources);
+  }
 
   const reusable = readVerifiedActivePlan(resolvedRoot, {
     sourcePackageFingerprint: deps.sourcePackageFingerprint,
     narrationFingerprint: deps.narrationFingerprint,
     coverageTarget: allocation.coverage.target,
+    externalSourcesFingerprint: deps.externalSourcesFingerprint,
   });
   if (reusable) return reusable;
 
@@ -762,7 +833,7 @@ export async function materializePlan(
     if (item.asset_kind === 'main_cut' && !sourceScene(deps.package, item)) {
       throw new Error('source_package_invalid');
     }
-    assertItemWithinSource(item, deps.package);
+    assertItemWithinSource(item, deps.package, deps.externalSources);
     try {
       timeline.push(await publishCut(item, version, resolvedRoot, deps));
       itemIndex += 1;
@@ -788,7 +859,10 @@ export async function materializePlan(
   for (let index = 1; index < timeline.length; index += 1) {
     const previousScene = sourceScene(deps.package, current.timeline[index - 1]!);
     const currentScene = sourceScene(deps.package, current.timeline[index]!);
-    if (!previousScene || !currentScene) throw new Error('source_package_invalid');
+    if (!previousScene || !currentScene) {
+      timeline[index]!.transition = { kind: 'match_cut', duration_ms: 120 };
+      continue;
+    }
     const selected = selectTransition(
       previousScene,
       currentScene,
@@ -807,6 +881,12 @@ export async function materializePlan(
     narration_timeline_path: deps.narrationTimelinePath,
     source_package_fingerprint: deps.sourcePackageFingerprint,
     narration_fingerprint: deps.narrationFingerprint,
+    ...(deps.externalSourcesPath && deps.externalSourcesFingerprint
+      ? {
+          external_sources_path: deps.externalSourcesPath,
+          external_sources_fingerprint: deps.externalSourcesFingerprint,
+        }
+      : {}),
     main_coverage_target: current.coverage.target,
     timeline,
     diagnostics: {

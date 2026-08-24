@@ -167,6 +167,8 @@ export interface MainFootagePlanV1 {
   narration_timeline_path: string;
   source_package_fingerprint: string;
   narration_fingerprint: string;
+  external_sources_path?: string;
+  external_sources_fingerprint?: string;
   main_coverage_target: number;
   timeline: PlannedCutV1[];
   diagnostics: PlanDiagnosticsV1;
@@ -452,6 +454,11 @@ export function decodeMainFootagePlan(input: unknown): MainFootagePlanV1 {
   schema(value);
   const target = number(value.main_coverage_target, 'main_coverage_target');
   if (target < 0.60 || target > 1.00) throw new Error('main_coverage_target must be within [0.60, 1.00]');
+  const hasExternalPath = value.external_sources_path !== undefined;
+  const hasExternalFingerprint = value.external_sources_fingerprint !== undefined;
+  if (hasExternalPath !== hasExternalFingerprint) {
+    throw new Error('external sources identity is incomplete');
+  }
   const timeline = array(value.timeline, 'timeline').map((item, index) => {
     const cut = record(item, `timeline[${index}]`);
     range(cut, 'source_start_sec', 'source_end_sec', 'source cut');
@@ -486,6 +493,15 @@ export function decodeMainFootagePlan(input: unknown): MainFootagePlanV1 {
     narration_timeline_path: artifact(value.narration_timeline_path, 'narration_timeline_path'),
     source_package_fingerprint: string(value.source_package_fingerprint, 'source_package_fingerprint'),
     narration_fingerprint: string(value.narration_fingerprint, 'narration_fingerprint'),
+    ...(hasExternalPath
+      ? {
+          external_sources_path: artifact(value.external_sources_path, 'external_sources_path'),
+          external_sources_fingerprint: sha256Identity(
+            value.external_sources_fingerprint,
+            'external_sources_fingerprint',
+          ),
+        }
+      : {}),
     main_coverage_target: target,
     timeline,
     diagnostics: {

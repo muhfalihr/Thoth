@@ -672,4 +672,11 @@ diff. No production code changed.
   remain byte-identical.
 - GREEN verification so far: narration timeline suite 8 passed; coordinator suite 7
   passed; verifier suite 26 passed; focused real Rust→Scout v1→v2 acceptance 1 passed,
-  all serial and with 0 failures. Final group verification and commit are recorded below.
+ all serial and with 0 failures. Final group verification and commit are recorded below.
+
+## Task 15 external b-roll corrective round — Scout allocation and materialization binding
+
+- RED runtime: `bun test scout/main_footage/cuts.test.ts scout/main_footage/contracts.test.ts` exited 1 because the CLI fixture passed `--externals main-footage/external-footage/v001/manifest.json` without publishing that manifest (`ENOENT` in `planMainFootageJob`).
+- RED compiler: `bun run --cwd scout typecheck` exited 1 because `MainFootagePlanV1` omitted `external_sources_fingerprint` while the decoder, reuse gate, and mixed-cut test consumed it.
+- GREEN: the CLI fixture now publishes a checksum-bound local external source plus a canonical-fingerprint manifest, passes the same external path on reuse, and asserts the immutable plan binds both path and fingerprint. The plan contract requires both external identity fields or neither. Mixed materialization resolves external bytes only through the external registry, honors `trim_start_sec` as the head-handle floor, publishes job-relative `source_path`, preserves `external_cut`, and keeps forced-main coverage at exactly 0.60.
+- Verification: `bun test scout/main_footage/cuts.test.ts scout/main_footage/contracts.test.ts` exited 0 and printed `ok cuts`; `bun run --cwd scout typecheck` exited 0; `git diff --check` exited 0.

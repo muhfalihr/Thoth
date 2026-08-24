@@ -81,6 +81,26 @@ function fixture(name: string): unknown {
   );
 }
 
+// External cuts are durable only when the plan binds both halves of the immutable
+// registry identity; accepting one without the other makes resume ambiguous.
+{
+  const base = fixture('main-footage-plan.v1.json') as Record<string, unknown>;
+  const decoded = decodeMainFootagePlan({
+    ...base,
+    external_sources_path: 'main-footage/external-footage/v001/manifest.json',
+    external_sources_fingerprint: 'sha256:external-manifest',
+  });
+  assert.equal(decoded.external_sources_path, 'main-footage/external-footage/v001/manifest.json');
+  assert.equal(decoded.external_sources_fingerprint, 'sha256:external-manifest');
+  assert.throws(
+    () => decodeMainFootagePlan({
+      ...base,
+      external_sources_path: 'main-footage/external-footage/v001/manifest.json',
+    }),
+    /external sources identity is incomplete/,
+  );
+}
+
 {
   assert.throws(() => decodeMainFootagePlan({ schema_version: 2 }), /unsupported schema_version/);
   assert.throws(

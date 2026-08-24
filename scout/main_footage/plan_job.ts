@@ -1,11 +1,12 @@
 // plan_job.ts — internal coordinator for job-local narration planned footage.
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { embed } from '../lib/embed.ts';
 import { novitaKey } from '../lib/env.ts';
 import { fetchJsonWithTimeout } from '../lib/subtitle_vision.ts';
-import { allocateTimeline } from './allocator.ts';
+import { allocateTimeline, type ExternalCandidate } from './allocator.ts';
 import {
   buildBeatCandidates,
   type CandidateDeps,
@@ -14,10 +15,13 @@ import {
   type ShortlistEntry,
 } from './candidates.ts';
 import {
+  decodeExternalSources,
   decodeNarrationTimeline,
   decodeSourcePackage,
   fingerprintCanonical,
+  type ExternalSourcesV1,
   type MainFootagePlanV1,
+  type NarrationBeatV1,
 } from './contracts.ts';
 import {
   type CutCommand,
@@ -166,25 +170,38 @@ export async function planMainFootageJob(
   if (!fs.statSync(jobRoot).isDirectory()) throw new Error('path_outside_root');
   const packageFile = resolveContained(jobRoot, options.packagePath);
   const narrationFile = resolveContained(jobRoot, options.narrationPath);
+  const externalFile = options.externalSourcesPath
+    ? resolveContained(jobRoot, options.externalSourcesPath)
+    : undefined;
   const packageRoot = path.dirname(packageFile);
   const providers = injected ?? productionPlannerProviders(packageRoot);
   const emit = providers.emit ?? ((event: PlanProgress) => console.log(JSON.stringify(event)));
 
   const pkg = decodeSourcePackage(JSON.parse(fs.readFileSync(packageFile, 'utf8')));
   const narration = decodeNarrationTimeline(JSON.parse(fs.readFileSync(narrationFile, 'utf8')));
+  const externalSources = externalFile
+    ? decodeExternalSources(JSON.parse(fs.readFileSync(externalFile, 'utf8')))
+    : undefined;
   const sourceFingerprint = fingerprintCanonical(pkg);
   const narrationFingerprint = fingerprintCanonical(narration);
+  const externalSourcesFingerprint = externalSources
+    ? fingerprintCanonical(externalSources)
+    : undefined;
   if (pkg.fingerprint && pkg.fingerprint !== sourceFingerprint) {
     throw stableError('source_package_invalid');
   }
   if (narration.fingerprint && narration.fingerprint !== narrationFingerprint) {
     throw stableError('narration_generation_failed');
   }
+  if (externalSources && externalSources.fingerprint !== externalSourcesFingerprint) {
+    throw stableError('source_package_invalid');
+  }
   if (!narration.beats?.length) throw stableError('forced_main_narration_required');
   const reusable = readVerifiedActivePlan(jobRoot, {
     sourcePackageFingerprint: sourceFingerprint,
     narrationFingerprint,
     coverageTarget: options.coverageTarget,
+    externalSourcesFingerprint,
   });
   if (reusable) {
     emit({ stage: 'verifying_plan', pct: 100, message: 'active plan verified' });
@@ -204,10 +221,15 @@ export async function planMainFootageJob(
       ),
     );
   }
+  const externals =
+    externalSources && options.externalSourcesPath
+      ? buildExternalCandidates(narration.beats, externalSources, options.externalSourcesPath)
+      : [];
   const allocation = allocateTimeline({
     beats: narration.beats,
     candidates,
     coverageTarget: options.coverageTarget,
+    externals,
   });
   if (allocation.error) throw Object.assign(new Error(allocation.error.code), allocation.error);
 
@@ -218,6 +240,9 @@ export async function planMainFootageJob(
     narrationTimelinePath: options.narrationPath,
     sourcePackageFingerprint: sourceFingerprint,
     narrationFingerprint,
+    externalSources,
+    externalSourcesPath: options.externalSourcesPath,
+    externalSourcesFingerprint,
     candidates,
     ffmpeg: providers.ffmpeg,
     ffprobe: providers.ffprobe,
@@ -233,7 +258,9 @@ function parseArgs(args: readonly string[]): PlanMainFootageOptions {
     const flag = args[index];
     const value = args[index + 1];
     if (!flag?.startsWith('--') || value === undefined) throw new Error('invalid_arguments');
-    if (!['--job-root', '--package', '--narration', '--externals', '--coverage-target'].includes(flag)) {
+    if (
+      !['--job-root', '--package', '--narration', '--externals', '--coverage-target'].includes(flag)
+    ) {
       throw new Error('invalid_arguments');
     }
     values.set(flag, value);
@@ -262,6 +289,72 @@ function parseArgs(args: readonly string[]): PlanMainFootageOptions {
     ...(externalSourcesPath === undefined ? {} : { externalSourcesPath }),
     coverageTarget,
   };
+}
+
+const EXTERNAL_STOP_WORDS = new Set([
+  'yang',
+  'dan',
+  'dengan',
+  'untuk',
+  'dari',
+  'pada',
+  'atau',
+  'the',
+  'and',
+  'with',
+  'from',
+  'this',
+  'that',
+  'into',
+  'over',
+  'under',
+  'sebuah',
+  'para',
+  'saat',
+  'ketika',
+]);
+
+function relevanceTokens(value: string): Set<string> {
+  return new Set(
+    (
+      value
+        .normalize('NFC')
+        .toLowerCase()
+        .match(/[\p{L}\p{N}]+/gu) ?? []
+    ).filter((token) => token.length >= 3 && !EXTERNAL_STOP_WORDS.has(token)),
+  );
+}
+
+/** Builds only beat-relevant candidates from already local, declared artifacts. */
+export function buildExternalCandidates(
+  beats: readonly NarrationBeatV1[],
+  manifest: ExternalSourcesV1,
+  manifestPath: string,
+): ExternalCandidate[] {
+  const root = path.posix.dirname(manifestPath);
+  const candidates: ExternalCandidate[] = [];
+  for (const beat of beats) {
+    const beatTokens = relevanceTokens(beat.text);
+    if (!beatTokens.size) continue;
+    for (const source of manifest.sources) {
+      const contextTokens = relevanceTokens(`${source.query} ${source.description}`);
+      if (![...beatTokens].some((token) => contextTokens.has(token))) continue;
+      if (source.technical.duration_sec - source.trim_start_sec < 1.5) continue;
+      const identity = createHash('sha256')
+        .update(`${source.id}\0${beat.id}`)
+        .digest('hex')
+        .slice(0, 16);
+      candidates.push({
+        id: `external-${identity}`,
+        beat_id: beat.id,
+        source_id: source.id,
+        source_path: path.posix.join(root, source.path),
+        source_in_sec: source.trim_start_sec,
+        source_out_sec: source.technical.duration_sec,
+      });
+    }
+  }
+  return candidates;
 }
 
 /** Test-only seam: callers may inject all provider/process ports; CLI production omits it. */

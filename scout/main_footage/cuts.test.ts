@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import type { AllocationResult } from './allocator.ts';
 import type { RankedCandidate } from './candidates.ts';
-import type { SourcePackageV1 } from './contracts.ts';
+import type { ExternalSourcesV1, SourcePackageV1 } from './contracts.ts';
 import { fingerprintCanonical } from './contracts.ts';
 import {
   acquireActivePublicationLock,
@@ -462,6 +462,47 @@ try {
       path.join(cliRoot, 'narration', 'narration-timeline.json'),
       JSON.stringify(timeline, null, 2),
     );
+    const externalManifestPath = 'main-footage/external-footage/v001/manifest.json';
+    const externalSourcePath = path.join(
+      cliRoot,
+      'main-footage',
+      'external-footage',
+      'v001',
+      'sources',
+      'external-1.mp4',
+    );
+    const externalSourceBytes = Buffer.from('cli-external-source');
+    fs.mkdirSync(path.dirname(externalSourcePath), { recursive: true });
+    fs.writeFileSync(externalSourcePath, externalSourceBytes);
+    const unsignedExternalManifest: ExternalSourcesV1 = {
+      schema_version: 1,
+      sources: [
+        {
+          id: 'external-1',
+          path: 'sources/external-1.mp4',
+          checksum: `sha256:${createHash('sha256').update(externalSourceBytes).digest('hex')}`,
+          technical: {
+            container: 'mp4',
+            video_codec: 'h264',
+            duration_sec: 4,
+            width: 1280,
+            height: 720,
+            has_audio: true,
+          },
+          query: 'fixture narration',
+          description: 'Fixture narration b-roll.',
+          trim_start_sec: 0,
+        },
+      ],
+    };
+    const externalManifest: ExternalSourcesV1 = {
+      ...unsignedExternalManifest,
+      fingerprint: fingerprintCanonical(unsignedExternalManifest),
+    };
+    fs.writeFileSync(
+      path.join(cliRoot, ...externalManifestPath.split('/')),
+      JSON.stringify(externalManifest, null, 2),
+    );
     const progress: PlanProgress[] = [];
     let providerCalls = 0;
     const commands: CutCommand[] = [];
@@ -495,16 +536,18 @@ try {
         cliRoot,
         '--package',
         'main-footage/package.json',
-      '--narration',
-      'narration/narration-timeline.json',
-      '--externals',
-      'main-footage/external-footage/v001/manifest.json',
-      '--coverage-target',
+        '--narration',
+        'narration/narration-timeline.json',
+        '--externals',
+        externalManifestPath,
+        '--coverage-target',
         '0.60',
       ],
       providers,
     );
     assert.equal(planned.status, 'verified');
+    assert.equal(planned.external_sources_path, externalManifestPath);
+    assert.equal(planned.external_sources_fingerprint, externalManifest.fingerprint);
     assert.ok(providerCalls > 0, 'the injected provider seam must be used');
     assert.deepEqual(
       progress.map((event) => event.stage),
@@ -535,6 +578,8 @@ try {
         'main-footage/package.json',
         '--narration',
         'narration/narration-timeline.json',
+        '--externals',
+        externalManifestPath,
         '--coverage-target',
         '0.60',
       ],
@@ -927,6 +972,81 @@ try {
       !fs.existsSync(path.join(invalidDecodedRoot, 'plans', 'v001', 'main-footage-plan.json')),
     );
     assert.ok(!fs.existsSync(path.join(invalidDecodedRoot, 'plans', 'active.json')));
+  }
+  // Planned external b-roll must resolve through its own immutable registry,
+  // publish its discriminator, and leave forced-main coverage at exactly 60%.
+  {
+    const mixedRoot = tempJob();
+    const externalSource = path.join(
+      mixedRoot,
+      'main-footage',
+      'external-footage',
+      'generation-1',
+      'sources',
+      'external-1.mp4',
+    );
+    fs.mkdirSync(path.dirname(externalSource), { recursive: true });
+    fs.writeFileSync(externalSource, 'external-source');
+    const externalManifest: ExternalSourcesV1 = {
+      schema_version: 1,
+      sources: [
+        {
+          id: 'external-1',
+          path: 'sources/external-1.mp4',
+          checksum: 'sha256:external-source',
+          technical: {
+            container: 'mp4',
+            video_codec: 'h264',
+            duration_sec: 4,
+            width: 1280,
+            height: 720,
+            has_audio: true,
+          },
+          query: 'harbour rescue',
+          description: 'Rescue crews beside the harbour crane.',
+          trim_start_sec: 1,
+        },
+      ],
+      fingerprint: 'sha256:external-manifest',
+    };
+    const mixedAllocation: AllocationResult = {
+      timeline: [
+        allocation().timeline[0]!,
+        {
+          item_id: 'item-002',
+          beat_id: 'beat-2',
+          timeline_start_sec: 3,
+          timeline_end_sec: 5,
+          asset_kind: 'external_cut',
+          candidate_key: 'ext:external-1-beat-2',
+          source_id: 'external-1',
+          source_in_sec: 1.25,
+          source_out_sec: 3.25,
+          match_level: 'topic_only',
+          reuse_count: 0,
+        },
+      ],
+      coverage: { target: 0.6, actual: 0.6, main_sec: 3, total_sec: 5 },
+      candidate_count: 2,
+      warnings: [],
+    };
+    const commands: CutCommand[] = [];
+    const mixedDeps = deps(commands);
+    mixedDeps.externalSources = externalManifest;
+    mixedDeps.externalSourcesPath = 'main-footage/external-footage/generation-1/manifest.json';
+    mixedDeps.externalSourcesFingerprint = 'sha256:external-manifest';
+    const plan = await materializePlan(mixedAllocation, mixedRoot, mixedDeps);
+
+    assert.equal(commands[1]?.inputPath, externalSource);
+    assert.equal(commands[1]?.startSec, 1);
+    assert.equal(plan.timeline[1]?.asset_kind, 'external_cut');
+    assert.equal(
+      plan.timeline[1]?.source_path,
+      'main-footage/external-footage/generation-1/sources/external-1.mp4',
+    );
+    assert.equal(plan.summary.main_coverage_ratio, 0.6);
+    assert.deepEqual(plan.timeline[1]?.handles, { before_ms: 250, after_ms: 300 });
+    assert.equal(plan.external_sources_fingerprint, 'sha256:external-manifest');
   }
 } finally {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
