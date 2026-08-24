@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "post": {
+    "id": "CAPTURE1",
+    "canonical_url": "https://www.instagram.com/p/CAPTURE1/",
+    "platform": "instagram"
+  },
+  "analysis_identity": "forced-url-pool:79224cce83a49419",
+  "created_at": "2023-11-14T22:13:20.000Z",
+  "sources": [
+    {
+      "id": "source-CAPTURE1-1",
+      "media_index": 1,
+      "path": "sources/source-CAPTURE1-1.mp4",
+      "checksum": "sha256:434e69b8c60cc85483e4c407381d370677370455fe3162c59fa474a86eb47754",
+      "bytes": 128220,
+      "technical": {
+        "container": "mov,mp4,m4a,3gp,3g2,mj2",
+        "video_codec": "h264",
+        "duration_sec": 6,
+        "width": 320,
+        "height": 240,
+        "has_audio": true
+      },
+      "acquisition": {
+        "source": "direct-http",
+        "attempts": 1,
+        "elapsed_ms": 0
+      }
+    }
+  ],
+  "ignored": [
+    {
+      "id": "CAPTURE1:0",
+      "media_index": 0,
+      "code": "photo_slide_ignored"
+    }
+  ],
+  "unavailable": [],
+  "scene_indexes": [
+    {
+      "source_id": "source-CAPTURE1-1",
+      "path": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/index.json",
+      "checksum": "sha256:0d45cd3808db06b14f968b467251d7a842ed8a3701f40be82058440bf56a9c29",
+      "planning_mode": "vision",
+      "scenes": [
+        {
+          "id": "scene-0001",
+          "start_sec": 0,
+          "end_sec": 3,
+          "representative_frame": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/frames/scene-0001-mid.jpg",
+          "transcript_evidence": "the crane swings",
+          "vision_description": "{\"subject\":\"harbour\",\"action\":\"crane\",\"setting\":\"dock\",\"composition\":\"wide\",\"motion\":\"panning\",\"topic\":\"harbour\"}",
+          "embedding_path": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/embeddings/scene-0001.json",
+          "visual_metrics": {
+            "motion_score": 0.5,
+            "brightness": 0.5,
+            "scene_change_score": 0.5
+          }
+        },
+        {
+          "id": "scene-0002",
+          "start_sec": 3,
+          "end_sec": 6,
+          "representative_frame": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/frames/scene-0002-mid.jpg",
+          "transcript_evidence": "(no speech detected)",
+          "vision_description": "{\"subject\":\"harbour\",\"action\":\"crane\",\"setting\":\"dock\",\"composition\":\"wide\",\"motion\":\"panning\",\"topic\":\"harbour\"}",
+          "embedding_path": "scene-index/source-CAPTURE1-1/000c5a1cd99ddf5d/v001/embeddings/scene-0002.json",
+          "visual_metrics": {
+            "motion_score": 0.5,
+            "brightness": 0.5,
+            "scene_change_score": 0.5
+          }
+        }
+      ]
+    }
+  ],
+  "fingerprint": "sha256:97a215ebd32dfe3b665047c7dddf7369a50506b460a1e28972a57c9168f5d2ad"
+}

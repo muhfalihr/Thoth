@@ -18,6 +18,7 @@ use crate::main_footage::{
     fingerprint_canonical, MainFootageDescriptor, MainFootageError, MainFootageErrorCode,
     SourcePackageV1,
 };
+use thoth_types::main_footage::{PlanningMode, SceneEvidenceV1, SceneIndexV1};
 use crate::pipeline::job::JobContext;
 
 /// A forced source package the job now owns outright.
@@ -79,6 +80,50 @@ fn import_artifact(
 fn verify_checksum(path: &Path, expected: &str) -> Result<(), MainFootageError> {
     if sha256_file(path)? != expected {
         return Err(invalid("artifact_checksum_mismatch"));
+    }
+    Ok(())
+}
+
+/// The scene index file as Scout actually publishes it: the typed contract plus
+/// provenance fields decoders are meant to ignore, so this is deliberately not
+/// `deny_unknown_fields`.
+#[derive(serde::Deserialize)]
+struct PublishedSceneIndex {
+    source_id: String,
+    planning_mode: PlanningMode,
+    scenes: Vec<SceneEvidenceV1>,
+}
+
+/// Verifies the imported scene index file still describes the scenes the manifest
+/// declares.
+///
+/// `SceneIndexV1.checksum` is **not** the digest of `index.json`. Scout computes it
+/// as a content fingerprint over the source checksum, the planning mode, the
+/// projected scene evidence and the *bytes* of every artifact a scene declares —
+/// including the `-start.jpg`/`-end.jpg` siblings the typed contract never names
+/// (`scout/main_footage/scene_index.ts::computeIndexChecksum`). It exists so a
+/// rebuilt generation can be cache-validated, and it can never equal the digest of
+/// the file, which does not contain those inputs. Comparing the two rejected every
+/// genuine Scout package with `artifact_checksum_mismatch`.
+///
+/// What import has to establish is that the file this job now owns says the same
+/// thing the manifest says. Both sides are compared through Rust's own serializer,
+/// so a field Scout writes differently (an absent `vision_description` versus an
+/// explicit null) cannot masquerade as tampering.
+fn verify_index_contents(path: &Path, declared: &SceneIndexV1) -> Result<(), MainFootageError> {
+    let bytes = fs::read(path).map_err(|_| invalid("artifact_unreadable"))?;
+    let file: PublishedSceneIndex =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("scene_index_rejected"))?;
+    let same_scenes = serde_json::to_value(&file.scenes)
+        .map_err(|_| invalid("scene_index_not_serializable"))?
+        == serde_json::to_value(&declared.scenes)
+            .map_err(|_| invalid("scene_index_not_serializable"))?;
+    let same_mode = serde_json::to_value(file.planning_mode)
+        .map_err(|_| invalid("scene_index_not_serializable"))?
+        == serde_json::to_value(declared.planning_mode)
+            .map_err(|_| invalid("scene_index_not_serializable"))?;
+    if file.source_id != declared.source_id || !same_mode || !same_scenes {
+        return Err(invalid("scene_index_contents_mismatch"));
     }
     Ok(())
 }
@@ -193,7 +238,7 @@ pub fn import_package(
 
     for index in &package.scene_indexes {
         let imported = import_artifact(execution, package_root, &job_root, &index.path)?;
-        verify_checksum(&imported, &index.checksum)?;
+        verify_index_contents(&imported, index)?;
         for scene in &index.scenes {
             import_artifact(execution, package_root, &job_root, &scene.representative_frame)?;
             // A `degraded` scene with no evidence at all legitimately carries no
@@ -234,7 +279,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::{json, Value};
 
-    use super::{ImportedSourcePackage, import_package, invalid};
+    use super::{ImportedSourcePackage, import_package, invalid, sha256_file};
     use crate::execution::JobExecutionContext;
     use crate::main_footage::{MainFootageDescriptor, MainFootageError, MainFootageErrorCode};
     use crate::pipeline::job::JobContext;
@@ -256,6 +301,11 @@ mod tests {
         content_set: PathBuf,
         job_base: PathBuf,
     }
+
+    /// Stands in for `computeIndexChecksum`: a well-formed sha256 identity that is
+    /// *not* the digest of any file, which is exactly what Scout declares.
+    const INDEX_CONTENT_FINGERPRINT: &str =
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
     fn digest(bytes: &[u8]) -> String {
         use sha2::{Digest, Sha256};
@@ -285,9 +335,42 @@ mod tests {
         let embedding = package_dir.join("scene-index/source-0/cache-a/v002/embed-000.json");
         write(&embedding, b"[0.1,0.2]");
 
-        let index_bytes = br#"{"scenes":[{"id":"scene-0"}]}"#.to_vec();
+        let scenes = json!([{
+            "id": "scene-0",
+            "start_sec": 0,
+            "end_sec": 4,
+            "representative_frame": "scene-index/source-0/cache-a/v002/frame-000.jpg",
+            "transcript_evidence": "A person addresses the camera.",
+            "vision_description": "A person in a studio.",
+            "embedding_path": "scene-index/source-0/cache-a/v002/embed-000.json",
+            "visual_metrics": {
+                "motion_score": 0.2,
+                "brightness": 0.6,
+                "scene_change_score": 0.1
+            }
+        }]);
+        // Scout's own published shape: the typed index plus the `analyzer_identity`
+        // provenance field decoders are told to ignore. Its `checksum` is Scout's
+        // content fingerprint over the source digest, the planning mode, the scene
+        // projection and the *bytes* of every declared artifact — deliberately not the
+        // digest of these bytes, so this fixture must not be made to look like one.
+        let index_bytes = serde_json::to_vec_pretty(&json!({
+            "source_id": "source-0",
+            "path": "scene-index/source-0/cache-a/v002/index.json",
+            "checksum": INDEX_CONTENT_FINGERPRINT,
+            "planning_mode": "vision",
+            "scenes": scenes,
+            "analyzer_identity": "scene-index@2026-08-14"
+        }))
+        .unwrap();
         let index_path = package_dir.join("scene-index/source-0/cache-a/v002/index.json");
         write(&index_path, &index_bytes);
+        assert_ne!(
+            digest(&index_bytes),
+            INDEX_CONTENT_FINGERPRINT,
+            "the fixture must keep Scout's real semantics: the declared index checksum is a \
+             content fingerprint, never the digest of index.json"
+        );
 
         let package = json!({
             "schema_version": 1,
@@ -317,22 +400,9 @@ mod tests {
             "scene_indexes": [{
                 "source_id": "source-0",
                 "path": "scene-index/source-0/cache-a/v002/index.json",
-                "checksum": digest(&index_bytes),
+                "checksum": INDEX_CONTENT_FINGERPRINT,
                 "planning_mode": "vision",
-                "scenes": [{
-                    "id": "scene-0",
-                    "start_sec": 0,
-                    "end_sec": 4,
-                    "representative_frame": "scene-index/source-0/cache-a/v002/frame-000.jpg",
-                    "transcript_evidence": "A person addresses the camera.",
-                    "vision_description": "A person in a studio.",
-                    "embedding_path": "scene-index/source-0/cache-a/v002/embed-000.json",
-                    "visual_metrics": {
-                        "motion_score": 0.2,
-                        "brightness": 0.6,
-                        "scene_change_score": 0.1
-                    }
-                }]
+                "scenes": scenes
             }]
         });
         write(
@@ -357,6 +427,24 @@ mod tests {
         let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         mutate(&mut value);
         fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    }
+
+    /// Republishes `index.json` from whatever the manifest now declares — what Scout
+    /// does, since both are written from the same in-memory index. A test that changes
+    /// the declared scenes and wants a *valid* package has to move the file too.
+    fn republish_index(fixture: &Fixture) {
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(fixture.package_dir.join("source-package.json")).unwrap())
+                .unwrap();
+        let index = &manifest["scene_indexes"][0];
+        let mut published = index.clone();
+        published["analyzer_identity"] = json!("scene-index@2026-08-14");
+        write(
+            &fixture
+                .package_dir
+                .join("scene-index/source-0/cache-a/v002/index.json"),
+            &serde_json::to_vec_pretty(&published).unwrap(),
+        );
     }
 
     fn descriptor() -> MainFootageDescriptor {
@@ -656,6 +744,37 @@ mod tests {
         }
     }
 
+    /// Regression, found by Task 15's offline acceptance work: `SceneIndexV1.checksum`
+    /// is Scout's content fingerprint, not the digest of `index.json`, so verifying it
+    /// as a file digest rejected **every** real package with `artifact_checksum_mismatch`.
+    /// The whole fixture is now Scout-shaped, so the first half of this test is the
+    /// happy path; the second half is what stops the replacement check from being
+    /// vacuous — an index file that no longer says what the manifest says is rejected.
+    #[test]
+    fn a_scene_index_is_verified_against_its_declared_scenes_not_a_file_digest() {
+        let genuine = fixture();
+        let index_path = genuine
+            .package_dir
+            .join("scene-index/source-0/cache-a/v002/index.json");
+        assert_ne!(
+            sha256_file(&index_path).unwrap(),
+            INDEX_CONTENT_FINGERPRINT,
+            "fixture no longer reproduces Scout's checksum semantics"
+        );
+        run(&genuine).expect("a package carrying Scout's real index checksum must import");
+
+        let tampered = fixture();
+        let tampered_path = tampered
+            .package_dir
+            .join("scene-index/source-0/cache-a/v002/index.json");
+        let mut published: Value =
+            serde_json::from_slice(&fs::read(&tampered_path).unwrap()).unwrap();
+        published["scenes"][0]["end_sec"] = json!(9.0);
+        write(&tampered_path, &serde_json::to_vec_pretty(&published).unwrap());
+        let error = run(&tampered).expect_err("a rewritten index file must not import");
+        assert_eq!(package_error(&error).detail, "scene_index_contents_mismatch");
+    }
+
     #[test]
     fn a_degraded_scene_without_an_embedding_imports_faithfully() {
         let fixture = fixture();
@@ -667,8 +786,9 @@ mod tests {
                 .remove("embedding_path");
             value["scene_indexes"][0]["scenes"][0]["vision_description"] = Value::Null;
         });
-        // The index checksum in the manifest still describes the on-disk index
-        // file, which the mutation above did not touch.
+        // Scout writes the manifest and `index.json` from the same in-memory index, so a
+        // degraded index is degraded in both places.
+        republish_index(&fixture);
         let imported = run(&fixture).unwrap();
         let index = &imported.package.scene_indexes[0];
         assert_eq!(index.planning_mode, crate::main_footage::PlanningMode::Degraded);

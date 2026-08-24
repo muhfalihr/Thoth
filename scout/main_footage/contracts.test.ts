@@ -160,3 +160,25 @@ function fixture(name: string): unknown {
     /beat has an invalid time range/,
   );
 }
+
+// Production mutation caught: the Rust decoder is `deny_unknown_fields`, so a field Scout
+// starts (or stops) emitting is a silent cross-runtime break. The Rust suite decodes this
+// exact file; this block pins the other half of the contract — that the committed bytes are
+// still what Scout itself accepts, and that both runtimes derive the same fingerprint from
+// them. If Scout's package shape moves, re-capture the fixture instead of editing it by hand.
+{
+  const shared = path.resolve(
+    import.meta.dirname,
+    '../../crates/thoth-core/tests/fixtures/scout_source_package.v1.json',
+  );
+  const raw = JSON.parse(readFileSync(shared, 'utf8')) as Record<string, unknown>;
+  const pkg = decodeSourcePackage(raw);
+  assert.equal(
+    pkg.fingerprint,
+    fingerprintCanonical(raw),
+    'the captured package must still fingerprint to its own declared value',
+  );
+  assert.ok(pkg.sources.length > 0, 'the shared fixture must carry a usable source');
+  assert.ok(pkg.scene_indexes.length > 0, 'the shared fixture must carry a scene index');
+  assert.ok(pkg.ignored.length > 0, 'the shared fixture must keep a non-video outcome');
+}

@@ -137,13 +137,26 @@ export async function ffmpegCut(command: CutCommand): Promise<void> {
   if (result.error || result.status !== 0) throw new Error('ffmpeg_cut_failed');
 }
 
+/**
+ * Test-only offline switch (`THOTH_PLANNER_OFFLINE=1`).
+ *
+ * The two model-backed ports return exactly what they already return on a machine
+ * with no `THOTH_NOVITA_API_KEY` — a null beat vector and no planner ranking — so an
+ * end-to-end test can drive the real CLI without a network call and without depending
+ * on whether the repository `.env` happens to hold a key. Nothing else changes:
+ * ffmpeg, ffprobe and the on-disk embedding loader stay the production ports, and
+ * candidate selection still runs its real lexical/topic tiering.
+ */
+const plannerIsOffline = (): boolean => process.env.THOTH_PLANNER_OFFLINE === '1';
+
 function defaultProviders(packageRoot: string): PlanMainFootageProviders {
   const loadEmbedding = fileEmbeddingLoader(packageRoot);
   return {
     candidateDeps: {
-      embedText: async (text) => (await embed([text]))[0] ?? null,
+      embedText: async (text) => (plannerIsOffline() ? null : ((await embed([text]))[0] ?? null)),
       loadEmbedding,
-      rankShortlist: async (_beat, shortlist) => rankWithPlanner(shortlist),
+      rankShortlist: async (_beat, shortlist) =>
+        plannerIsOffline() ? [] : rankWithPlanner(shortlist),
     },
     ffmpeg: ffmpegCut,
     ffprobe: probeSourceVideo,
