@@ -433,9 +433,10 @@ mod tests {
     /// does, since both are written from the same in-memory index. A test that changes
     /// the declared scenes and wants a *valid* package has to move the file too.
     fn republish_index(fixture: &Fixture) {
-        let manifest: Value =
-            serde_json::from_slice(&fs::read(fixture.package_dir.join("source-package.json")).unwrap())
-                .unwrap();
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(fixture.package_dir.join("source-package.json")).unwrap(),
+        )
+        .unwrap();
         let index = &manifest["scene_indexes"][0];
         let mut published = index.clone();
         published["analyzer_identity"] = json!("scene-index@2026-08-14");
@@ -770,9 +771,15 @@ mod tests {
         let mut published: Value =
             serde_json::from_slice(&fs::read(&tampered_path).unwrap()).unwrap();
         published["scenes"][0]["end_sec"] = json!(9.0);
-        write(&tampered_path, &serde_json::to_vec_pretty(&published).unwrap());
+        write(
+            &tampered_path,
+            &serde_json::to_vec_pretty(&published).unwrap(),
+        );
         let error = run(&tampered).expect_err("a rewritten index file must not import");
-        assert_eq!(package_error(&error).detail, "scene_index_contents_mismatch");
+        assert_eq!(
+            package_error(&error).detail,
+            "scene_index_contents_mismatch"
+        );
     }
 
     #[test]
