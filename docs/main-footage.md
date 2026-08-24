@@ -187,16 +187,40 @@ Every gate command for this feature runs with `--test-threads=1`.
 
 This is a **disclosed constraint, not a claim of determinism**. Task 14 reported ten
 consecutive green parallel runs of `cargo test -p thoth-core --all-targets`. A reviewer ran
-twelve and saw **ten green and two red**. The parallel failures were not reproduced
-reliably and were not root-caused. Until they are:
+twelve and saw **ten green and two red**.
 
-- Treat a red parallel run as **unexplained**, not as proof of a regression.
+Task 15 reproduced it: eleven parallel runs of the same command produced **five red**. Every
+failure was in `execution::tests`, and the failing assertions were all about process
+liveness:
+
+```
+execution::tests::dropping_a_wait_future_does_not_orphan_the_process_tree
+  -> process 32096 is still alive
+execution::tests::immediately_exiting_roots_cannot_escape_job_ownership
+  -> assertion failed: process_is_alive(child_pid)
+execution::tests::immediately_exiting_roots_cannot_escape_job_ownership
+  -> liveness probe for process 30660 could not answer (exit Some(1))
+```
+
+The cause is the test harness, not the product. `process_is_alive` identifies a process by
+**PID alone** and answers by spawning a `powershell` child. Under parallel `cargo test` the
+suite spawns hundreds of those, so three things go wrong at once: Windows reuses a freed PID
+and an exited process looks alive; a just-spawned child is probed before it is schedulable
+and looks dead; and the interpreter itself sometimes fails to start under load, which is the
+`exit Some(1)` case. Closing this needs identity-aware probing — creation time and image
+name captured at spawn — not a wider timeout. The in-code note at
+`crates/thoth-core/src/execution.rs` records the same limitation.
+
+Until that lands:
+
+- The serial gate is the gate. A red parallel run is a **harness artefact in
+  `execution::tests`** unless the failure is somewhere else, in which case investigate it.
 - Do not "fix" a parallel failure by weakening an assertion.
 - Do not add a claim of parallel determinism to this document or to a release record.
 
-The known contributors to cross-test interference in this area are shared temp roots and
-process-global binary resolution; `PlannedFfmpegRenderer` deliberately keeps its resolved
-binary path as per-instance state for this reason.
+One related contributor is process-global state in binary resolution;
+`PlannedFfmpegRenderer` deliberately keeps its resolved binary path as per-instance state
+for that reason.
 
 ### 8.2 FFmpeg is required, never skipped
 

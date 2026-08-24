@@ -18,8 +18,8 @@ use crate::main_footage::{
     fingerprint_canonical, MainFootageDescriptor, MainFootageError, MainFootageErrorCode,
     SourcePackageV1,
 };
-use thoth_types::main_footage::{PlanningMode, SceneEvidenceV1, SceneIndexV1};
 use crate::pipeline::job::JobContext;
+use thoth_types::main_footage::{PlanningMode, SceneEvidenceV1, SceneIndexV1};
 
 /// A forced source package the job now owns outright.
 #[derive(Debug, Clone)]
