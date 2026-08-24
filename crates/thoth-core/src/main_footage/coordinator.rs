@@ -315,6 +315,22 @@ fn canonical_job_root(job: &JobContext) -> Result<PathBuf> {
     fs::canonicalize(job.root()).map_err(|_| verification_failed("job_root_unreadable"))
 }
 
+fn job_relative_artifact(root: &Path, artifact: &Path) -> Result<String> {
+    let canonical =
+        fs::canonicalize(artifact).map_err(|_| verification_failed("planner_input_unreadable"))?;
+    if !canonical.starts_with(root) || !canonical.is_file() {
+        return Err(verification_failed("planner_input_outside_job_root"));
+    }
+    let relative = canonical
+        .strip_prefix(root)
+        .map_err(|_| verification_failed("planner_input_outside_job_root"))?;
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    if relative.is_empty() {
+        return Err(verification_failed("planner_input_outside_job_root"));
+    }
+    Ok(relative)
+}
+
 fn read_active(job: &JobContext, root: &Path) -> Result<Option<MainFootageActiveV1>> {
     let path = job.plans_dir().join("active.json");
     if !path.exists() {
@@ -411,10 +427,11 @@ impl MainFootageCoordinator {
             }
         }
 
+        let package_path = job_relative_artifact(&root, &input.imported.manifest_path)?;
         planner
             .plan(
                 job,
-                "main-footage/source-package.json",
+                &package_path,
                 "narration/timeline.json",
                 input.coverage_target,
                 execution,
@@ -447,6 +464,7 @@ impl MainFootageCoordinator {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
@@ -536,6 +554,89 @@ mod tests {
 
     struct CancellingPlanner;
 
+    #[derive(Default)]
+    struct PathCapturingPlanner {
+        package_path: Mutex<Option<String>>,
+        narration_path: Mutex<Option<String>>,
+    }
+
+    struct SourceGenerationPublishingPlanner {
+        expected_package_path: String,
+        source_fingerprint: String,
+    }
+
+    #[async_trait]
+    impl PlannerPort for PathCapturingPlanner {
+        async fn plan(
+            &self,
+            _job: &crate::pipeline::job::JobContext,
+            package_path: &str,
+            narration_path: &str,
+            _coverage_target: f64,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<()> {
+            *self.package_path.lock().unwrap() = Some(package_path.to_owned());
+            *self.narration_path.lock().unwrap() = Some(narration_path.to_owned());
+            anyhow::bail!("stop_after_capturing_planner_paths")
+        }
+    }
+
+    #[async_trait]
+    impl PlannerPort for SourceGenerationPublishingPlanner {
+        async fn plan(
+            &self,
+            job: &crate::pipeline::job::JobContext,
+            package_path: &str,
+            narration_path: &str,
+            _coverage_target: f64,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<()> {
+            assert_eq!(package_path, self.expected_package_path);
+            let root = job.root();
+            let v1_path = root.join("plans/v001/main-footage-plan.json");
+            let mut plan: Value = serde_json::from_slice(&fs::read(v1_path)?)?;
+            plan["source_package_path"] = Value::String(package_path.to_owned());
+            plan["narration_timeline_path"] = Value::String(narration_path.to_owned());
+            plan["source_package_fingerprint"] = Value::String(self.source_fingerprint.clone());
+            let package_parent = std::path::Path::new(package_path)
+                .parent()
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            for index in 0..plan["timeline"].as_array().unwrap().len() {
+                let old_cut = plan["timeline"][index]["cut_path"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let new_cut = old_cut.replace("cuts/v001/", "cuts/v002/");
+                let destination = root.join(&new_cut);
+                fs::create_dir_all(destination.parent().unwrap())?;
+                fs::copy(root.join(&old_cut), &destination)?;
+                plan["timeline"][index]["cut_path"] = Value::String(new_cut);
+                plan["timeline"][index]["source_path"] =
+                    Value::String(format!("{package_parent}/sources/source-0.mp4"));
+            }
+            let plan_fingerprint = fingerprint_canonical(&plan).unwrap();
+            plan["fingerprint"] = Value::String(plan_fingerprint.clone());
+            let v2_path = root.join("plans/v002/main-footage-plan.json");
+            fs::create_dir_all(v2_path.parent().unwrap())?;
+            fs::write(&v2_path, serde_json::to_vec_pretty(&plan)?)?;
+            fs::write(
+                root.join("plans/active.json"),
+                serde_json::to_vec_pretty(&json!({
+                    "schema_version": 1,
+                    "status": "verified",
+                    "version": "v002",
+                    "plan_path": "plans/v002/main-footage-plan.json",
+                    "source_package_fingerprint": self.source_fingerprint,
+                    "narration_fingerprint": plan["narration_fingerprint"],
+                    "plan_fingerprint": plan_fingerprint
+                }))?,
+            )?;
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl PlannerPort for CancellingPlanner {
         async fn plan(
@@ -619,6 +720,128 @@ mod tests {
         assert_eq!(verified.version(), "v002");
         assert_eq!(planner.calls.load(Ordering::SeqCst), 1);
         assert_eq!(fs::read(&fixture.plan_path).unwrap(), v1_before);
+    }
+
+    /// Production mutation caught: replacing an imported package with an
+    /// immutable generation while still passing the legacy manifest path makes
+    /// Scout plan against v1 and publish an active identity Rust must reject.
+    #[tokio::test]
+    async fn changed_source_generation_passes_its_actual_manifest_to_the_planner() {
+        let mut fixture = fixture();
+        let generation = fixture
+            .root
+            .join("main-footage/packages/source-generation-v2");
+        fs::create_dir_all(&generation).unwrap();
+        fixture.imported.root = generation.clone();
+        fixture.imported.manifest_path = generation.join("source-package.json");
+        fixture.imported.fingerprint = format!("sha256:{}", "2".repeat(64));
+        fs::write(&fixture.imported.manifest_path, b"{}").unwrap();
+
+        let planner = PathCapturingPlanner::default();
+        let error = MainFootageCoordinator::prepare_with(
+            &fixture.job,
+            MainFootagePrepareInput {
+                imported: &fixture.imported,
+                coverage_target: 0.6,
+            },
+            &fixture.narration,
+            &JobExecutionContext::new(),
+            &planner,
+            &fixture.probe,
+        )
+        .await
+        .expect_err("capturing planner stops before publication");
+
+        assert!(
+            error
+                .to_string()
+                .contains("stop_after_capturing_planner_paths")
+        );
+        assert_eq!(
+            planner.package_path.lock().unwrap().as_deref(),
+            Some("main-footage/packages/source-generation-v2/source-package.json")
+        );
+        assert_eq!(
+            planner.narration_path.lock().unwrap().as_deref(),
+            Some("narration/timeline.json")
+        );
+    }
+
+    /// Production mutation caught: the source-change resume must bind the new
+    /// plan and active pointer to the imported v2 generation without rewriting
+    /// the already verified v1 plan.
+    #[tokio::test]
+    async fn changed_source_generation_activates_v2_and_preserves_v1() {
+        use sha2::{Digest, Sha256};
+
+        let mut fixture = fixture();
+        let v1_before = fs::read(&fixture.plan_path).unwrap();
+        let generation = fixture.root.join("main-footage/packages/source-v2");
+        let source_bytes = b"changed source generation bytes";
+        let source_path = generation.join("sources/source-0.mp4");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::write(&source_path, source_bytes).unwrap();
+        for relative in fixture
+            .imported
+            .package
+            .scene_indexes
+            .iter()
+            .flat_map(|index| {
+                std::iter::once(index.path.as_str()).chain(index.scenes.iter().flat_map(|scene| {
+                    std::iter::once(scene.representative_frame.as_str())
+                        .chain(scene.embedding_path.as_deref())
+                }))
+            })
+        {
+            let destination = generation.join(relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(
+                fixture.root.join("main-footage").join(relative),
+                destination,
+            )
+            .unwrap();
+        }
+        let source_checksum = format!("sha256:{:x}", Sha256::digest(source_bytes));
+        fixture.imported.package.sources[0].checksum = source_checksum;
+        fixture.imported.package.fingerprint = None;
+        let package_value = serde_json::to_value(&fixture.imported.package).unwrap();
+        let source_fingerprint = fingerprint_canonical(&package_value).unwrap();
+        fixture.imported.package.fingerprint = Some(source_fingerprint.clone());
+        fixture.imported.root = fs::canonicalize(&generation).unwrap();
+        fixture.imported.manifest_path = generation.join("source-package.json");
+        fixture.imported.fingerprint = source_fingerprint.clone();
+        fs::write(
+            &fixture.imported.manifest_path,
+            serde_json::to_vec_pretty(&fixture.imported.package).unwrap(),
+        )
+        .unwrap();
+
+        let package_path = "main-footage/packages/source-v2/source-package.json";
+        let verified = MainFootageCoordinator::prepare_with(
+            &fixture.job,
+            MainFootagePrepareInput {
+                imported: &fixture.imported,
+                coverage_target: 0.6,
+            },
+            &fixture.narration,
+            &JobExecutionContext::new(),
+            &SourceGenerationPublishingPlanner {
+                expected_package_path: package_path.into(),
+                source_fingerprint: source_fingerprint.clone(),
+            },
+            &fixture.probe,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.version(), "v002");
+        assert_eq!(verified.source_package_fingerprint(), source_fingerprint);
+        assert_eq!(fs::read(&fixture.plan_path).unwrap(), v1_before);
+        let active: Value =
+            serde_json::from_slice(&fs::read(fixture.root.join("plans/active.json")).unwrap())
+                .unwrap();
+        assert_eq!(active["version"], "v002");
+        assert_eq!(active["source_package_fingerprint"], source_fingerprint);
     }
 
     /// Production mutation caught: checking cancellation only before the planner
