@@ -107,6 +107,12 @@ struct PlannerTerminalWire {
     warning: String,
 }
 
+#[derive(Deserialize)]
+struct ActivePlanExternalIdentityWire {
+    external_sources_path: Option<String>,
+    external_sources_fingerprint: Option<String>,
+}
+
 fn terminal_code(value: &str) -> Option<MainFootageErrorCode> {
     match value {
         "forced_main_no_usable_video" => Some(MainFootageErrorCode::ForcedMainNoUsableVideo),
@@ -362,6 +368,20 @@ fn read_active(job: &JobContext, root: &Path) -> Result<Option<MainFootageActive
         .map_err(|_| verification_failed("active_pointer_rejected"))
 }
 
+fn read_active_external_identity(
+    root: &Path,
+    active: &MainFootageActiveV1,
+) -> Result<ActivePlanExternalIdentityWire> {
+    let path = root.join(&active.plan_path);
+    let canonical =
+        fs::canonicalize(path).map_err(|_| verification_failed("active_plan_unreadable"))?;
+    if !canonical.starts_with(root) || !canonical.is_file() {
+        return Err(verification_failed("active_plan_outside_job_root"));
+    }
+    let bytes = fs::read(canonical).map_err(|_| verification_failed("active_plan_unreadable"))?;
+    serde_json::from_slice(&bytes).map_err(|_| verification_failed("active_plan_rejected"))
+}
+
 fn narration_fingerprint(narration: &NarrationTimelineV1) -> Result<String> {
     let value = serde_json::to_value(narration)
         .map_err(|_| verification_failed("narration_timeline_rejected"))?;
@@ -433,28 +453,38 @@ impl MainFootageCoordinator {
             return Err(verification_failed("narration_fingerprint_mismatch"));
         }
         let narration_path = job_relative_artifact(&root, &narration_artifact)?;
-        if let Some(active) = read_active(job, &root)? {
-            if active.source_package_fingerprint == input.imported.fingerprint
-                && active.narration_fingerprint == narration_fingerprint
-            {
-                let plan_path = root.join(&active.plan_path);
-                let verified =
-                    verify_plan_with_probe(job, input.imported, narration, &plan_path, probe)
-                        .await?;
-                if (verified.metrics().coverage_target - input.coverage_target).abs() <= 1e-9 {
-                    execution.check_cancelled()?;
-                    return Ok(verified);
-                }
-            }
-        }
-
-        let package_path = job_relative_artifact(&root, &input.imported.manifest_path)?;
         let external_path = input
             .imported
             .external_sources
             .as_ref()
             .map(|external| job_relative_artifact(&root, &external.manifest_path))
             .transpose()?;
+        if let Some(active) = read_active(job, &root)? {
+            if active.source_package_fingerprint == input.imported.fingerprint
+                && active.narration_fingerprint == narration_fingerprint
+            {
+                let active_external = read_active_external_identity(&root, &active)?;
+                if active_external.external_sources_path == external_path
+                    && active_external.external_sources_fingerprint.as_deref()
+                        == input
+                            .imported
+                            .external_sources
+                            .as_ref()
+                            .map(|external| external.fingerprint.as_str())
+                {
+                    let plan_path = root.join(&active.plan_path);
+                    let verified =
+                        verify_plan_with_probe(job, input.imported, narration, &plan_path, probe)
+                            .await?;
+                    if (verified.metrics().coverage_target - input.coverage_target).abs() <= 1e-9 {
+                        execution.check_cancelled()?;
+                        return Ok(verified);
+                    }
+                }
+            }
+        }
+
+        let package_path = job_relative_artifact(&root, &input.imported.manifest_path)?;
         planner
             .plan(
                 job,
@@ -596,6 +626,37 @@ mod tests {
         source_fingerprint: String,
     }
 
+    struct ExternalGenerationPublishingPlanner {
+        calls: AtomicUsize,
+        expected_external_path: String,
+        external_fingerprint: String,
+    }
+
+    fn write_empty_external_generation(
+        root: &std::path::Path,
+        version: &str,
+        created_at: &str,
+    ) -> crate::main_footage::import::ImportedExternalSources {
+        let external_root = root.join("main-footage/external-footage").join(version);
+        fs::create_dir_all(&external_root).unwrap();
+        let mut value = json!({
+            "schema_version": 1,
+            "sources": [],
+            "created_at": created_at
+        });
+        let fingerprint = fingerprint_canonical(&value).unwrap();
+        value["fingerprint"] = Value::String(fingerprint.clone());
+        let manifest = serde_json::from_value(value.clone()).unwrap();
+        let manifest_path = external_root.join("manifest.json");
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        crate::main_footage::import::ImportedExternalSources {
+            root: fs::canonicalize(external_root).unwrap(),
+            manifest_path,
+            fingerprint,
+            manifest,
+        }
+    }
+
     #[async_trait]
     impl PlannerPort for PathCapturingPlanner {
         async fn plan(
@@ -663,6 +724,58 @@ mod tests {
                     "version": "v002",
                     "plan_path": "plans/v002/main-footage-plan.json",
                     "source_package_fingerprint": self.source_fingerprint,
+                    "narration_fingerprint": plan["narration_fingerprint"],
+                    "plan_fingerprint": plan_fingerprint
+                }))?,
+            )?;
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl PlannerPort for ExternalGenerationPublishingPlanner {
+        async fn plan(
+            &self,
+            job: &crate::pipeline::job::JobContext,
+            _package_path: &str,
+            _narration_path: &str,
+            external_path: Option<&str>,
+            _coverage_target: f64,
+            _execution: &JobExecutionContext,
+        ) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(external_path, Some(self.expected_external_path.as_str()));
+            let root = job.root();
+            let v1_path = root.join("plans/v001/main-footage-plan.json");
+            let mut plan: Value = serde_json::from_slice(&fs::read(v1_path)?)?;
+            plan["external_sources_path"] =
+                Value::String(self.expected_external_path.clone());
+            plan["external_sources_fingerprint"] =
+                Value::String(self.external_fingerprint.clone());
+            for index in 0..plan["timeline"].as_array().unwrap().len() {
+                let old_cut = plan["timeline"][index]["cut_path"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let new_cut = old_cut.replace("cuts/v001/", "cuts/v002/");
+                let destination = root.join(&new_cut);
+                fs::create_dir_all(destination.parent().unwrap())?;
+                fs::copy(root.join(&old_cut), &destination)?;
+                plan["timeline"][index]["cut_path"] = Value::String(new_cut);
+            }
+            let plan_fingerprint = fingerprint_canonical(&plan).unwrap();
+            plan["fingerprint"] = Value::String(plan_fingerprint.clone());
+            let v2_path = root.join("plans/v002/main-footage-plan.json");
+            fs::create_dir_all(v2_path.parent().unwrap())?;
+            fs::write(&v2_path, serde_json::to_vec_pretty(&plan)?)?;
+            fs::write(
+                root.join("plans/active.json"),
+                serde_json::to_vec_pretty(&json!({
+                    "schema_version": 1,
+                    "status": "verified",
+                    "version": "v002",
+                    "plan_path": "plans/v002/main-footage-plan.json",
+                    "source_package_fingerprint": plan["source_package_fingerprint"],
                     "narration_fingerprint": plan["narration_fingerprint"],
                     "plan_fingerprint": plan_fingerprint
                 }))?,
@@ -755,6 +868,95 @@ mod tests {
         assert_eq!(verified.version(), "v002");
         assert_eq!(planner.calls.load(Ordering::SeqCst), 1);
         assert_eq!(fs::read(&fixture.plan_path).unwrap(), v1_before);
+    }
+
+    /// Production mutation caught: source/narration-only reuse verifies the stale
+    /// v1 plan against external v2 and terminal-fails before Scout can publish v2.
+    #[tokio::test]
+    async fn external_identity_change_replans_to_v2_and_preserves_v1() {
+        let mut fixture = fixture();
+        let external_v1 = write_empty_external_generation(
+            &fixture.root,
+            "v001",
+            "2026-08-25T00:00:00.000Z",
+        );
+        let external_v1_fingerprint = external_v1.fingerprint.clone();
+        fixture.imported.external_sources = Some(external_v1);
+
+        let mut plan: Value =
+            serde_json::from_slice(&fs::read(&fixture.plan_path).unwrap()).unwrap();
+        plan["external_sources_path"] =
+            json!("main-footage/external-footage/v001/manifest.json");
+        plan["external_sources_fingerprint"] = json!(external_v1_fingerprint);
+        let plan_fingerprint = fingerprint_canonical(&plan).unwrap();
+        plan["fingerprint"] = Value::String(plan_fingerprint.clone());
+        fs::write(
+            &fixture.plan_path,
+            serde_json::to_vec_pretty(&plan).unwrap(),
+        )
+        .unwrap();
+        let active_path = fixture.root.join("plans/active.json");
+        let mut active: Value =
+            serde_json::from_slice(&fs::read(&active_path).unwrap()).unwrap();
+        active["plan_fingerprint"] = Value::String(plan_fingerprint);
+        fs::write(&active_path, serde_json::to_vec_pretty(&active).unwrap()).unwrap();
+
+        let v1_plan_before = fs::read(&fixture.plan_path).unwrap();
+        let v1_cuts_before = plan["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|cut| {
+                let path = fixture.root.join(cut["cut_path"].as_str().unwrap());
+                (path.clone(), fs::read(path).unwrap())
+            })
+            .collect::<Vec<_>>();
+
+        let external_v2 = write_empty_external_generation(
+            &fixture.root,
+            "v002",
+            "2026-08-25T00:00:01.000Z",
+        );
+        let external_v2_fingerprint = external_v2.fingerprint.clone();
+        fixture.imported.external_sources = Some(external_v2);
+        let planner = ExternalGenerationPublishingPlanner {
+            calls: AtomicUsize::new(0),
+            expected_external_path: "main-footage/external-footage/v002/manifest.json".into(),
+            external_fingerprint: external_v2_fingerprint.clone(),
+        };
+
+        let verified = MainFootageCoordinator::prepare_with(
+            &fixture.job,
+            MainFootagePrepareInput {
+                imported: &fixture.imported,
+                coverage_target: 0.6,
+            },
+            &fixture.narration,
+            &JobExecutionContext::new(),
+            &planner,
+            &fixture.probe,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(planner.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(verified.version(), "v002");
+        assert_eq!(fs::read(&fixture.plan_path).unwrap(), v1_plan_before);
+        for (path, bytes) in v1_cuts_before {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        let active: Value = serde_json::from_slice(&fs::read(active_path).unwrap()).unwrap();
+        assert_eq!(active["version"], "v002");
+        let v2_plan: Value =
+            serde_json::from_slice(&fs::read(verified.plan_path()).unwrap()).unwrap();
+        assert_eq!(
+            v2_plan["external_sources_path"],
+            "main-footage/external-footage/v002/manifest.json"
+        );
+        assert_eq!(
+            v2_plan["external_sources_fingerprint"],
+            external_v2_fingerprint
+        );
     }
 
     /// Production mutation caught: replacing an imported package with an

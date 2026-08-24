@@ -784,3 +784,21 @@ Remaining disclosed limitations:
  the publisher's foreign generation and manifest survived. The focused test passed three
  consecutive runs; `bun run --cwd scout typecheck` and `git diff --check` exited 0.
  `build_cuda.bat` was not run.
+
+## Ruling BH corrective round — external-only coordinator invalidation
+
+- Root cause: the Rust coordinator treated source-package and narration fingerprints as the whole
+ active-plan reuse identity. When only the imported external manifest changed, it verified stale v1
+ against external v2 and terminal-failed before Scout could replan.
+- RED: `external_identity_change_replans_to_v2_and_preserves_v1` failed with
+ `plan_verification_failed: external_manifest_path_mismatch`; the publishing planner was never
+ reached.
+- GREEN: before reusing an otherwise matching active pointer, the coordinator safely reopens its
+ contained plan and compares both external manifest path and fingerprint with the current imported
+ external identity. A mismatch bypasses stale verification and invokes the planner. Missing external
+ identity on both sides remains reusable.
+- Lifecycle proof: the regression binds v1 to external v1, changes only the imported external
+ generation, observes one planner call, activates external-bound plan v2, and proves the v1 plan and
+ all v1 cut bytes are unchanged. Serial coordinator suite passed 8/8;
+ `cargo check -p thoth-core --all-targets` and `git diff --check` exited 0.
+ `build_cuda.bat` was not run.
