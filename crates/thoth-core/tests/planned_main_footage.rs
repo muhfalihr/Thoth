@@ -109,7 +109,10 @@ fn the_captured_index_checksum_is_not_the_digest_of_the_index_file() {
         .expect("the captured index file must be readable");
     assert_ne!(
         index.checksum,
-        format!("sha256:{:x}", <sha2::Sha256 as sha2::Digest>::digest(&index_bytes)),
+        format!(
+            "sha256:{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(&index_bytes)
+        ),
         "a scene index checksum that equals the digest of its own file means the \
          semantics moved — the code that assumed this was the third defect on this seam"
     );
@@ -234,7 +237,13 @@ fn narration_timeline(job: &JobContext, ffmpeg: &Path) -> NarrationTimelineV1 {
         serde_json::to_vec_pretty(&timeline).expect("serializable"),
     )
     .expect("the planner reads the timeline from disk");
-    timeline
+    std::fs::remove_file(job.narration_timeline()).expect("remove legacy narration fixture");
+    thoth_core::narration::timeline::write_narration_timeline(job, &timeline)
+        .expect("the versioned narration must publish");
+    thoth_core::narration::timeline::read_narration_timeline(job)
+        .expect("the active narration pointer must be readable")
+        .expect("the active narration timeline must exist")
+        .1
 }
 
 /// The one test that runs the real forced-URL seam end to end: a package Scout wrote
@@ -332,7 +341,70 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
     );
     assert!(report.contains("\"video\""), "{report}");
     assert!(report.contains("\"audio\""), "{report}");
-    assert!(report.contains("1080") && report.contains("1920"), "{report}");
+    assert!(
+        report.contains("1080") && report.contains("1920"),
+        "{report}"
+    );
+
+    let plan_v1_path = root.join("plans/v001/main-footage-plan.json");
+    let timeline_v1_path = root.join("narration/v001/timeline.json");
+    let audio_v1_path = root.join("narration/v001/narration.mp3");
+    let plan_v1_bytes = std::fs::read(&plan_v1_path).expect("v1 plan");
+    let timeline_v1_bytes = std::fs::read(&timeline_v1_path).expect("v1 timeline");
+    let audio_v1_bytes = std::fs::read(&audio_v1_path).expect("v1 audio");
+
+    let staging_audio = job.narration_mp3();
+    run_tool(
+        &ffmpeg,
+        &[
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=6",
+            staging_audio.to_str().unwrap(),
+        ],
+    );
+    let mut narration_v2 = narration.clone();
+    narration_v2.audio_path = "narration/narration.mp3".to_owned();
+    narration_v2.audio_checksum = format!(
+        "sha256:{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(
+            std::fs::read(&staging_audio).expect("changed narration audio")
+        )
+    );
+    narration_v2.words[0].text = "updated harbour crane swings over dock".to_owned();
+    narration_v2.beats[0].text = "updated harbour crane swings over dock".to_owned();
+    narration_v2.fingerprint = None;
+    narration_v2.fingerprint = Some(
+        fingerprint_canonical(&serde_json::to_value(&narration_v2).expect("serializable"))
+            .expect("fingerprintable"),
+    );
+    thoth_core::narration::timeline::write_narration_timeline(&job, &narration_v2)
+        .expect("changed narration must publish v2");
+    let narration_v2 = thoth_core::narration::timeline::read_narration_timeline(&job)
+        .expect("active v2 pointer must be readable")
+        .expect("active v2 timeline must exist")
+        .1;
+
+    let verified_v2 = MainFootageCoordinator::prepare_with_test_only_planner_script(
+        &job,
+        MainFootagePrepareInput {
+            imported: &imported,
+            coverage_target: descriptor.coverage_target,
+        },
+        &narration_v2,
+        &execution,
+        &test_only_offline_planner_script(),
+    )
+    .await
+    .expect("changed narration must plan and verify v2 through Scout");
+
+    assert_eq!(verified_v2.version(), "v002");
+    assert_eq!(std::fs::read(&plan_v1_path).unwrap(), plan_v1_bytes);
+    assert_eq!(std::fs::read(&timeline_v1_path).unwrap(), timeline_v1_bytes);
+    assert_eq!(std::fs::read(&audio_v1_path).unwrap(), audio_v1_bytes);
+    assert_eq!(narration_v2.audio_path, "narration/v002/narration.mp3");
 
     let _ = std::fs::remove_dir_all(&root);
 }

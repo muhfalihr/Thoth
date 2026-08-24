@@ -412,6 +412,13 @@ impl MainFootageCoordinator {
         }
         let root = canonical_job_root(job)?;
         let narration_fingerprint = narration_fingerprint(narration)?;
+        let (narration_artifact, published_narration) =
+            crate::narration::timeline::read_narration_timeline(job)?
+                .ok_or_else(|| verification_failed("narration_timeline_missing"))?;
+        if published_narration.fingerprint.as_deref() != Some(narration_fingerprint.as_str()) {
+            return Err(verification_failed("narration_fingerprint_mismatch"));
+        }
+        let narration_path = job_relative_artifact(&root, &narration_artifact)?;
         if let Some(active) = read_active(job, &root)? {
             if active.source_package_fingerprint == input.imported.fingerprint
                 && active.narration_fingerprint == narration_fingerprint
@@ -432,7 +439,7 @@ impl MainFootageCoordinator {
             .plan(
                 job,
                 &package_path,
-                "narration/timeline.json",
+                &narration_path,
                 input.coverage_target,
                 execution,
             )
@@ -728,6 +735,13 @@ mod tests {
     #[tokio::test]
     async fn changed_source_generation_passes_its_actual_manifest_to_the_planner() {
         let mut fixture = fixture();
+        fs::remove_file(fixture.job.narration_timeline()).unwrap();
+        crate::narration::timeline::write_narration_timeline(&fixture.job, &fixture.narration)
+            .unwrap();
+        fixture.narration = crate::narration::timeline::read_narration_timeline(&fixture.job)
+            .unwrap()
+            .unwrap()
+            .1;
         let generation = fixture
             .root
             .join("main-footage/packages/source-generation-v2");
@@ -763,7 +777,7 @@ mod tests {
         );
         assert_eq!(
             planner.narration_path.lock().unwrap().as_deref(),
-            Some("narration/timeline.json")
+            Some("narration/v001/timeline.json")
         );
     }
 

@@ -610,22 +610,8 @@ impl<R: PlannedMainRenderer> PlannedMainStagePort for ProductionPlannedMainStage
     }
 
     fn load_narration(&self, job: &JobContext) -> Result<Option<Self::Narration>> {
-        let path = job.narration_timeline();
-        if !path.is_file() {
-            return Ok(None);
-        }
-        let timeline: crate::main_footage::NarrationTimelineV1 = serde_json::from_slice(
-            &std::fs::read(path).map_err(|_| timeline_error("narration_timeline_unreadable"))?,
-        )
-        .map_err(|_| timeline_error("narration_timeline_unreadable"))?;
-        let value = serde_json::to_value(&timeline)
-            .map_err(|_| timeline_error("narration_timeline_unreadable"))?;
-        let fingerprint = crate::main_footage::fingerprint_canonical(&value)
-            .map_err(|_| timeline_error("narration_fingerprint_failed"))?;
-        if timeline.fingerprint.as_deref() != Some(fingerprint.as_str()) {
-            return Err(timeline_error("narration_fingerprint_mismatch"));
-        }
-        Ok(Some(timeline))
+        Ok(crate::narration::timeline::read_narration_timeline(job)?
+            .map(|(_, timeline)| timeline))
     }
 
     async fn generate_narration(
@@ -639,7 +625,9 @@ impl<R: PlannedMainRenderer> PlannedMainStagePort for ProductionPlannedMainStage
             crate::narration::timeline::BeatPolicy::default(),
         )?;
         crate::narration::timeline::write_narration_timeline(job, &timeline)?;
-        Ok(timeline)
+        crate::narration::timeline::read_narration_timeline(job)?
+            .map(|(_, timeline)| timeline)
+            .ok_or_else(|| timeline_error("narration_timeline_missing"))
     }
 
     fn narration_fingerprint<'b>(&self, narration: &'b Self::Narration) -> &'b str {

@@ -78,17 +78,23 @@ a job that already imported it.
     scene-index/<source-id>/<cache-key>/<generation>/index.json
     packages/<fingerprint>/      # a *changed* package is imported beside the old one
   narration/
-    narration.mp3
-    timeline.json                # words + derived beats
+    narration.mp3                       # mutable generation staging only
+    active.json                         # selected immutable narration generation
+    v001/
+      narration.mp3                     # immutable voiceover bytes
+      timeline.json              # words + derived beats
   cuts/v001/<cut-id>.mp4         # immutable materialized cuts
   plans/v001/main-footage-plan.json
   plans/active.json              # the resume pointer
   planned_main.mp4               # the render
 ```
 
-**Immutability rule.** Published cuts and plans are never rewritten. A new narration
-produces `v002` beside `v001`; `v001` stays byte-identical. `plans/active.json` is the only
-mutable file, and it only ever points at a plan that has already been verified.
+**Immutability rule.** Published narration audio, timelines, cuts, and plans are never
+rewritten. Changed narration first publishes `narration/v002/` beside `v001`, then
+atomically replaces `narration/active.json`; planning likewise publishes `plans/v002/`
+and replaces `plans/active.json` only after the plan is verified. Both v1 generations
+stay byte-identical. Existing jobs with `narration/timeline.json` remain readable through
+the legacy fallback, but new narration publication uses the versioned layout.
 
 ---
 
@@ -267,10 +273,10 @@ planner composition rather than `scout/cli.ts`; the planner implementation itsel
 ports, the durability gate, and rendering remain real. Only the two model-facing providers are
 substituted.
 
-What remains uncovered is the Rust-side changed-narration `v001` → `v002` resume/immutability
-case. The Scout acceptance test covers unchanged-rerun resume through cuts, but not that
-cross-runtime version transition. Live-platform smoke tests also remain a human release action
-(see section 9).
+The Rust-to-Scout acceptance now covers a changed narration `v001` → `v002` transition:
+it changes both audio and words, publishes and selects the versioned timeline, invokes the
+real Scout planner, verifies `plans/v002`, and asserts the v1 plan, timeline, and audio stay
+byte-identical. Live-platform smoke tests remain a human release action (see section 9).
 
 ### 8.5 Latent invariant: failure-detail redaction
 

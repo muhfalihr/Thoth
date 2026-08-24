@@ -598,7 +598,14 @@ pub(crate) async fn verify_plan_with_probe<P: MediaProbe>(
         return Err(invalid("source_package_path_mismatch"));
     }
 
-    let narration_path = canonical_file(&root, &job.narration_timeline())?;
+    let (selected_narration_path, _) = crate::narration::timeline::read_narration_timeline(job)
+        .map_err(|_| invalid("narration_timeline_rejected"))?
+        .ok_or_else(|| invalid("narration_timeline_missing"))?;
+    let selected_narration_path = canonical_file(&root, &selected_narration_path)?;
+    let narration_path = canonical_file(&root, &root.join(&plan.narration_timeline_path))?;
+    if narration_path != selected_narration_path {
+        return Err(invalid("narration_timeline_path_mismatch"));
+    }
     let narration_bytes = file_bytes(&narration_path)?;
     let published_narration: NarrationTimelineV1 = serde_json::from_slice(&narration_bytes)
         .map_err(|_| invalid("narration_timeline_rejected"))?;
@@ -1127,6 +1134,35 @@ pub(crate) mod tests {
         assert_eq!(verified.timeline().len(), 2);
         assert_eq!(verified.narration_duration_sec(), 10.0);
         assert!(verified.retained_bytes() > 0);
+    }
+
+    /// Production mutation caught: resolving only the legacy narration path
+    /// rejects a plan that Scout correctly bound to the active immutable version.
+    #[tokio::test]
+    async fn durability_gate_verifies_the_active_versioned_narration_timeline() {
+        let mut fixture = fixture();
+        fs::remove_file(fixture.job.narration_timeline()).unwrap();
+        crate::narration::timeline::write_narration_timeline(&fixture.job, &fixture.narration)
+            .unwrap();
+        fixture.narration = crate::narration::timeline::read_narration_timeline(&fixture.job)
+            .unwrap()
+            .unwrap()
+            .1;
+        rewrite_plan(&fixture, |plan| {
+            plan["narration_timeline_path"] = json!("narration/v001/timeline.json");
+        });
+
+        let verified = verify_plan_with_probe(
+            &fixture.job,
+            &fixture.imported,
+            &fixture.narration,
+            &fixture.plan_path,
+            &fixture.probe,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verified.version(), "v001");
     }
 
     /// Production mutation caught: replacing the streaming loop with

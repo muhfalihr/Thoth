@@ -593,3 +593,61 @@ prose. It now states that production rejects both former flags and that `scout/c
 the internal rejection to `cut_planning_failed`; the explicit test-only offline planner path
 remains documented. Verified with targeted `rg`, `git diff --check`, and the documentation-only
 diff. No production code changed.
+
+## Task 15 final-review fix — imported source generation path
+
+- Root cause: `import_package` correctly retained changed source packages under
+  `main-footage/packages/<fingerprint>/source-package.json`, but
+  `MainFootageCoordinator` discarded `ImportedSourcePackage.manifest_path` and always
+  passed `main-footage/source-package.json` to Scout.
+- RED: `changed_source_generation_passes_its_actual_manifest_to_the_planner` expected
+  `main-footage/packages/source-generation-v2/source-package.json`; the planner captured
+  the legacy manifest path.
+- GREEN: the coordinator canonicalizes the selected imported manifest, rejects files
+  outside the job root, and passes its slash-separated job-relative path. A real changed
+  source identity/byte generation now creates and verifies plan `v002` while preserving
+  the byte-identical `v001` plan.
+- Verification: `rtk cargo test -p thoth-core main_footage::coordinator --
+  --test-threads=1` → 7 passed, 0 failed. Commit: `f1d60e9`.
+
+## Task 15 final-review fix — cross-runtime narration Unicode parity
+
+- Root cause: Scout normalizes narration word text to NFC before canonical hashing;
+  Rust collapsed whitespace but did not normalize Unicode, so composed `café` and
+  decomposed `cafe\u0301` signed differently.
+- RED: the shared composed/decomposed fixture produced distinct Rust SHA-256 identities.
+- GREEN: Rust now applies NFC before whitespace normalization. Both runtimes consume
+  `tests/fixtures/main-footage/contracts/narration-unicode-equivalence.v1.json`.
+- Verification: focused Rust parity test passed; `rtk cargo test -p thoth-types
+  main_footage::tests -- --test-threads=1` → 15 passed, 0 failed; `rtk bun test
+  scout/main_footage/contracts.test.ts` exited 0 (top-level assertions, Bun reports zero
+  registered tests). Commit: `0bb8c30`.
+
+## Task 15 final-review fix — immutable versioned narration
+
+- Root cause trace: production reuse loaded only `narration/timeline.json`;
+  `write_narration_timeline` rejected a changed audio checksum; the coordinator passed
+  the same fixed path to Scout; the verifier also reopened that fixed path. Versioning
+  only the JSON would still let overwritten `narration/narration.mp3` mutate v1.
+- RED 1: `changed_narration_activates_a_new_immutable_timeline_and_audio_version`
+  expected `narration/v001/timeline.json`; the writer returned the legacy timeline.
+- RED 2: the coordinator path-capture test expected
+  `narration/v001/timeline.json`; it captured `narration/timeline.json`.
+- RED 3: the durability gate received an otherwise-valid plan bound to the active
+  versioned timeline and failed `declared_artifact_missing` because it reopened the
+  removed legacy path.
+- GREEN: narration publication validates the supplied fingerprint and staging-audio
+  checksum, copies audio into an immutable `vNNN` generation, writes the immutable
+  timeline with its versioned audio path, and atomically replaces
+  `narration/active.json`. Re-publishing the active identity reuses its version. The
+  reader validates the active pointer/timeline and retains a legacy fallback. Production
+  loading, generation, coordinator planning, verification, and rendering now share that
+  selected version.
+- Immutability proof: the focused writer test publishes changed audio/words as `v002`
+  and asserts v1 audio and timeline bytes are unchanged. The real Rust→Scout acceptance
+  publishes v1, renders it, changes both narration audio and words, publishes v2, invokes
+  the real Scout planner, verifies `plans/v002`, and asserts the v1 plan/timeline/audio
+  remain byte-identical.
+- GREEN verification so far: narration timeline suite 8 passed; coordinator suite 7
+  passed; verifier suite 26 passed; focused real Rust→Scout v1→v2 acceptance 1 passed,
+  all serial and with 0 failures. Final group verification and commit are recorded below.
