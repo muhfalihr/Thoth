@@ -704,9 +704,10 @@ async function publishCut(
       }
       const digest = checksum(temp);
       atomicPublish(temp, destination);
-      return {
-        id: item.item_id,
-        source_id: item.source_id,
+    return {
+      id: item.item_id,
+      asset_kind: item.asset_kind,
+      source_id: item.source_id,
         source_path: path.posix.join(path.posix.dirname(deps.sourcePackagePath), source.path),
         cut_path: relativeCut,
         checksum: digest,

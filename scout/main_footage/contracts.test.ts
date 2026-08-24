@@ -63,6 +63,24 @@ function fixture(name: string): unknown {
   assert.equal(decodeMainFootagePlan(fixture('main-footage-plan.v1.json')).timeline.length, 1);
 }
 
+// External b-roll is part of the primary planned timeline, but it must remain
+// distinguishable from forced-post footage so both runtimes compute coverage identically.
+{
+  const base = fixture('main-footage-plan.v1.json') as Record<string, any>;
+  const decoded = decodeMainFootagePlan({
+    ...base,
+    timeline: [{ ...base.timeline[0], asset_kind: 'external_cut' }],
+  });
+  assert.equal(decoded.timeline[0]?.asset_kind, 'external_cut');
+  assert.throws(
+    () => decodeMainFootagePlan({
+      ...base,
+      timeline: [{ ...base.timeline[0], asset_kind: 'remote_cut' }],
+    }),
+    /asset_kind is invalid/,
+  );
+}
+
 {
   assert.throws(() => decodeMainFootagePlan({ schema_version: 2 }), /unsupported schema_version/);
   assert.throws(
@@ -87,11 +105,13 @@ function fixture(name: string): unknown {
     decodeMainFootageDescriptor({
       mode: 'forced_url_pool',
       package_manifest: 'packages/source-package.json',
+      external_sources_manifest: 'external-footage/v001/manifest.json',
       coverage_target: 0.6,
     }),
     {
       mode: 'forced_url_pool',
       package_manifest: 'packages/source-package.json',
+      external_sources_manifest: 'external-footage/v001/manifest.json',
       coverage_target: 0.6,
     },
   );

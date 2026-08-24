@@ -8,7 +8,7 @@
 // The result is structurally complete but deliberately carries no `cut_path` and no
 // checksum — materialization (Task 10) is what turns a decision into a file.
 import { candidateId, type RankedCandidate } from './candidates.ts';
-import type { MainFootageWarningCode, MatchLevel, NarrationBeatV1 } from './contracts.ts';
+import type { AssetKind, MainFootageWarningCode, MatchLevel, NarrationBeatV1 } from './contracts.ts';
 import { assertArtifactPath } from './paths.ts';
 
 /** Shortest cut the renderer accepts; below this a shot reads as a flicker. */
@@ -19,8 +19,6 @@ export const MAX_CUT_SEC = 6;
 export const MIN_REUSE_GAP_SEC = 8;
 
 const EPS = 1e-9;
-
-export type AssetKind = 'main_cut' | 'external_cut';
 
 /**
  * External b-roll already materialized inside the job. `source_path` must be a job-local

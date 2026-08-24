@@ -5,6 +5,7 @@ import type { AcquisitionSource } from '../acquisition/types.ts';
 export const MAIN_FOOTAGE_SCHEMA_VERSION = 1 as const;
 export type TransitionKind = 'match_cut' | 'cross_dissolve' | 'fade_through_black';
 export type MatchLevel = 'exact' | 'topic_only';
+export type AssetKind = 'main_cut' | 'external_cut';
 export type PlanningMode = 'vision' | 'degraded';
 export type MainFootageMode = 'forced_url_pool';
 export type MainFootagePlanStatus = 'verified';
@@ -131,6 +132,7 @@ export interface CutHandlesV1 {
 
 export interface PlannedCutV1 {
   id: string;
+  asset_kind: AssetKind;
   source_id: string;
   source_path: string;
   cut_path: string;
@@ -188,6 +190,7 @@ export interface MainFootageActiveV1 {
 export interface MainFootageDescriptor {
   mode: MainFootageMode;
   package_manifest: string;
+  external_sources_manifest?: string;
   coverage_target: number;
 }
 
@@ -365,13 +368,21 @@ export function decodeSourcePackage(input: unknown): SourcePackageV1 {
 export function decodeMainFootageDescriptor(input: unknown): MainFootageDescriptor {
   const value = record(input, 'main_footage');
   for (const key of Object.keys(value)) {
-    if (!['mode', 'package_manifest', 'coverage_target'].includes(key)) {
+    if (!['mode', 'package_manifest', 'external_sources_manifest', 'coverage_target'].includes(key)) {
       throw new Error(`unexpected main_footage field: ${key}`);
     }
   }
   return {
     mode: enumValue(value.mode, 'mode', ['forced_url_pool']),
     package_manifest: descriptorManifest(value.package_manifest, 'package_manifest'),
+    ...(value.external_sources_manifest === undefined
+      ? {}
+      : {
+          external_sources_manifest: descriptorManifest(
+            value.external_sources_manifest,
+            'external_sources_manifest',
+          ),
+        }),
     coverage_target: coverageTarget(value.coverage_target, 'coverage_target'),
   };
 }
@@ -433,7 +444,12 @@ export function decodeMainFootagePlan(input: unknown): MainFootagePlanV1 {
     const transitionDuration = number(transition.duration_ms, 'transition.duration_ms', 0);
     if (transitionDuration < 120 || transitionDuration > 300) throw new Error('transition.duration_ms must be within [120, 300]');
     return {
-      id: string(cut.id, 'cut.id'), source_id: string(cut.source_id, 'cut.source_id'),
+      id: string(cut.id, 'cut.id'),
+      asset_kind:
+        cut.asset_kind === undefined
+          ? 'main_cut'
+          : enumValue(cut.asset_kind, 'asset_kind', ['main_cut', 'external_cut']),
+      source_id: string(cut.source_id, 'cut.source_id'),
       source_path: artifact(cut.source_path, 'cut.source_path'), cut_path: artifact(cut.cut_path, 'cut_path'),
       checksum: string(cut.checksum, 'cut.checksum'),
       source_start_sec: number(cut.source_start_sec, 'source_start_sec', 0), source_end_sec: number(cut.source_end_sec, 'source_end_sec', 0),

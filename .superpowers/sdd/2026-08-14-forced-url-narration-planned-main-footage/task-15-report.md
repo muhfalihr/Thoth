@@ -610,6 +610,14 @@ diff. No production code changed.
 - Verification: `rtk cargo test -p thoth-core main_footage::coordinator --
   --test-threads=1` → 7 passed, 0 failed. Commit: `f1d60e9`.
 
+## Task 15 external b-roll corrective round — shared cut contract
+
+- Root cause: the allocator already distinguishes `main_cut` and `external_cut`, but the published TypeScript/Rust `PlannedCutV1` contract dropped that discriminator. Rust therefore had no sound way to exclude external duration from forced-main coverage. The strict forced descriptor also had no path for an immutable external-source manifest.
+- RED (Scout): `bun test scout/main_footage/contracts.test.ts` failed because decoding an explicit `external_cut` returned `asset_kind: undefined`.
+- RED (Rust): the focused `thoth-types` test failed to compile with missing `AssetKind`, `PlannedCutV1.asset_kind`, and `MainFootageDescriptor.external_sources_manifest`.
+- GREEN: both runtimes now share `main_cut | external_cut`; legacy schema-v1 plans without the field decode as `main_cut`, newly published cuts always include it, unknown kinds fail closed, and `external_sources_manifest` is an optional contained descriptor path.
+- Verification: `bun test scout/main_footage/contracts.test.ts`; `bun test scout/main_footage/cuts.test.ts scout/main_footage/allocator.test.ts`; `cargo test -p thoth-types main_footage -- --test-threads=1` (17 passed); and `git diff --check` all exited 0.
+
 ## Task 15 final-review fix — cross-runtime narration Unicode parity
 
 - Root cause: Scout normalizes narration word text to NFC before canonical hashing;

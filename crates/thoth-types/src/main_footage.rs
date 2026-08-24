@@ -407,6 +407,14 @@ pub enum MatchLevel {
     TopicOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetKind {
+    #[default]
+    MainCut,
+    ExternalCut,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanningMode {
@@ -774,6 +782,7 @@ pub struct CutHandlesV1 {
 #[serde(try_from = "PlannedCutWire")]
 pub struct PlannedCutV1 {
     pub id: String,
+    pub asset_kind: AssetKind,
     pub source_id: String,
     #[serde(deserialize_with = "deserialize_artifact_path")]
     pub source_path: String,
@@ -794,6 +803,8 @@ pub struct PlannedCutV1 {
 #[serde(deny_unknown_fields)]
 struct PlannedCutWire {
     id: String,
+    #[serde(default)]
+    asset_kind: AssetKind,
     source_id: String,
     #[serde(deserialize_with = "deserialize_artifact_path")]
     source_path: String,
@@ -830,6 +841,7 @@ impl TryFrom<PlannedCutWire> for PlannedCutV1 {
         }
         Ok(Self {
             id: value.id,
+            asset_kind: value.asset_kind,
             source_id: value.source_id,
             source_path: value.source_path,
             cut_path: value.cut_path,
@@ -957,6 +969,8 @@ pub struct MainFootageDescriptor {
     pub mode: MainFootageMode,
     #[serde(deserialize_with = "deserialize_artifact_path")]
     pub package_manifest: String,
+    #[serde(default, deserialize_with = "deserialize_optional_artifact_path")]
+    pub external_sources_manifest: Option<String>,
     #[serde(deserialize_with = "deserialize_coverage_target")]
     pub coverage_target: f64,
 }
@@ -966,7 +980,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        MainFootageActiveV1, MainFootageDescriptor, MainFootageMode, MainFootagePlanV1,
+        AssetKind, MainFootageActiveV1, MainFootageDescriptor, MainFootageMode, MainFootagePlanV1,
         NarrationTimelineV1, SourcePackageV1, fingerprint_canonical,
     };
 
@@ -1022,10 +1036,15 @@ mod tests {
         let descriptor: MainFootageDescriptor = serde_json::from_value(json!({
             "mode": "forced_url_pool",
             "package_manifest": "packages/source-package.json",
+            "external_sources_manifest": "external-footage/v001/manifest.json",
             "coverage_target": 0.6
         }))
         .unwrap();
         assert_eq!(descriptor.mode, MainFootageMode::ForcedUrlPool);
+        assert_eq!(
+            descriptor.external_sources_manifest.as_deref(),
+            Some("external-footage/v001/manifest.json")
+        );
         assert!(serde_json::from_value::<MainFootageDescriptor>(json!({
             "mode": "forced",
             "source_package_path": "sources.json",
@@ -1054,6 +1073,18 @@ mod tests {
             "../../../tests/fixtures/main-footage/contracts/main-footage-plan.v1.json"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn planned_cuts_preserve_their_asset_kind_and_reject_unknown_kinds() {
+        let mut external = plan_fixture();
+        external["timeline"][0]["asset_kind"] = json!("external_cut");
+        let decoded: MainFootagePlanV1 = serde_json::from_value(external).unwrap();
+        assert_eq!(decoded.timeline[0].asset_kind, AssetKind::ExternalCut);
+
+        let mut invalid = plan_fixture();
+        invalid["timeline"][0]["asset_kind"] = json!("remote_cut");
+        assert!(serde_json::from_value::<MainFootagePlanV1>(invalid).is_err());
     }
 
     #[test]
