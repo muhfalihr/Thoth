@@ -331,26 +331,17 @@ fn fingerprint_projection(value: &Value) -> Result<Value, String> {
     Ok(Value::Object(projected))
 }
 
-/// Prints a number the way `JSON.stringify` does.
+/// Prints a number with ECMAScript's `Number::toString` algorithm.
 ///
-/// The canonical form is a cross-runtime protocol, so "the same value" has to
-/// produce the same bytes in both runtimes. `serde_json` prints an integral `f64`
-/// as `6.0` where JavaScript prints `6`, which meant every value Rust
-/// *re-serialized* — the job-owned manifest, a narration timeline Rust built —
-/// fingerprinted differently on the two sides, and the Scout planner rejected the
-/// manifest Rust had just handed it. Integers already print identically; only the
-/// float branch needs the correction, and only below JavaScript's 1e21 exponential
-/// threshold.
+/// Canonical bytes cross the Scout (JavaScript) ↔ Rust protocol boundary, so use
+/// an implementation of ECMAScript's formatter rather than approximating its
+/// thresholds with Rust's general-purpose number serialization.
 fn canonical_number(number: &serde_json::Number) -> String {
     if !number.is_f64() {
         return number.to_string();
     }
-    match number.as_f64() {
-        // JavaScript prints negative zero as `0`.
-        Some(value) if value == 0.0 => "0".to_string(),
-        Some(value) if value.fract() == 0.0 && value.abs() < 1e21 => format!("{value:.0}"),
-        _ => number.to_string(),
-    }
+    let mut buffer = ryu_js::Buffer::new();
+    buffer.format(number.as_f64().expect("f64 number")).to_string()
 }
 
 fn canonical_json(value: &Value) -> Result<String, String> {
@@ -1241,5 +1232,23 @@ mod tests {
             fingerprint_canonical(&excluded_fields_changed).unwrap(),
             fingerprint_canonical(&accepted_metadata_changed).unwrap(),
         );
+    }
+
+    #[test]
+    fn canonical_json_numbers_match_json_stringify_at_ecmascript_boundaries() {
+        // These are literal JSON.stringify outputs, not values produced by Rust's
+        // formatter. Each catches a real cross-runtime fingerprint divergence.
+        for (input, expected) in [
+            ("-0", "0"),
+            ("1e-7", "1e-7"),
+            ("0.000001", "0.000001"),
+            ("1e-6", "0.000001"),
+            ("1e20", "100000000000000000000"),
+            ("1e21", "1e+21"),
+            ("-1e21", "-1e+21"),
+        ] {
+            let value: Value = serde_json::from_str(input).unwrap();
+            assert_eq!(super::canonical_json(&value).unwrap(), expected, "{input}");
+        }
     }
 }
