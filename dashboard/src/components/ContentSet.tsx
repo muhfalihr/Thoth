@@ -4,14 +4,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { LogPane, type LogLine } from "@/components/LogPane";
+import { CleanupButton } from "@/components/CleanupButton";
 import {
+  cleanupPackage,
+  describeCode,
+  formatBytes,
   getContentSetData,
+  getPackageSummary,
+  packageIdFromManifestPath,
   putContentSet,
   scoutImageUrl,
   scoutValidate,
   scoutStatus,
   streamScout,
   type ContentSetData,
+  type PackageSummary,
   type ScoutLogLine,
 } from "@/api";
 
@@ -79,6 +86,26 @@ export function ContentSet({
 
   // Close any stream on unmount.
   useEffect(() => () => esRef.current?.close(), []);
+
+  // Forced-main package facts, keyed off the content-set's own descriptor.
+  const packageId = content?.main_footage?.mode === "forced_url_pool"
+    ? packageIdFromManifestPath(String(content.main_footage.package_manifest ?? ""))
+    : null;
+  const [pkg, setPkg] = useState<PackageSummary | null>(null);
+  const [pkgNonce, setPkgNonce] = useState(0);
+  useEffect(() => {
+    if (!packageId) {
+      setPkg(null);
+      return;
+    }
+    let alive = true;
+    getPackageSummary(packageId)
+      .then((summary) => alive && setPkg(summary))
+      .catch(() => alive && setPkg(null));
+    return () => {
+      alive = false;
+    };
+  }, [packageId, pkgNonce]);
 
   const outputRoot = data?.output_root ?? "";
   const imgSrc = (p?: string) => (p ? scoutImageUrl(p, outputRoot) : undefined);
@@ -227,6 +254,56 @@ export function ContentSet({
             </div>
           </CardContent>
         </Card>
+
+        {/* Forced main footage — retained Scout package facts + explicit cleanup */}
+        {packageId && (
+          <Card size="sm" className="gap-2">
+            <CardHeader>
+              <CardTitle className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+                Forced main ({packageId})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {!pkg ? (
+                <p className="text-xs text-muted-foreground">
+                  Package facts unavailable — it may already have been deleted.
+                </p>
+              ) : (
+                <div className="space-y-2 text-xs" data-testid="forced-main-facts">
+                  <div className="text-muted-foreground">
+                    {pkg.platform} · {pkg.usable_count} usable · {pkg.skipped_count} skipped ·{" "}
+                    {pkg.ignored_count} ignored
+                  </div>
+                  <div className="text-muted-foreground">
+                    {pkg.total_duration_sec.toFixed(1)}s · {formatBytes(pkg.total_bytes)} across{" "}
+                    {pkg.file_count} files
+                  </div>
+                  <div className="font-mono text-muted-foreground">
+                    mode: {pkg.analysis_mode ?? "unknown"} · fingerprint:{" "}
+                    {(pkg.fingerprint ?? "—").replace(/^sha256:/, "").slice(0, 12)}
+                  </div>
+                  {pkg.warnings.length > 0 && (
+                    <ul className="space-y-1 text-muted-foreground">
+                      {pkg.warnings.map((code) => (
+                        <li key={code}>{describeCode(code)}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              <div className="mt-2">
+                <CleanupButton
+                  id={packageId}
+                  trigger="Delete package"
+                  disabled={running}
+                  disabledReason="Scout is running and may still be writing into this package"
+                  onCleanup={cleanupPackage}
+                  onDone={() => setPkgNonce((n) => n + 1)}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Footage */}
         <Card size="sm" className="gap-2">

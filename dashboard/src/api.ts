@@ -85,17 +85,142 @@ export async function fetchArtifact(jobId: string, relPath: string): Promise<Blo
   return r.blob();
 }
 
+/** Post-plan facts for a forced-main run. Hand-synced to
+ *  `crates/thoth-server/src/routes.rs::MainFootageJobFacts` — no path members,
+ *  by design: artifacts are addressed through the Manifest relpaths instead. */
+export type MainFootageJobFacts = {
+  active_plan_version: string;
+  planning_mode: string;
+  coverage_target: number;
+  coverage_actual: number;
+  coverage_sec: number;
+  total_duration_sec: number;
+  beat_count: number;
+  cut_count: number;
+  reuse_count: number;
+  candidate_count: number;
+  transitions: Record<string, number>;
+  warnings: string[];
+  retained_bytes: number;
+};
+
 export type Manifest = {
   video?: string;
   thumbnail?: string;
   moments?: string;
   narration?: string;
   transcript?: string;
+  narration_timeline?: string;
+  source_package?: string;
+  active_plan?: string;
+  cuts?: string;
+  main_footage?: MainFootageJobFacts;
 };
 
 export async function getManifest(id: string): Promise<Manifest> {
   const r = await fetch(`/api/jobs/${id}/manifest`, { headers: H });
   return r.ok ? r.json() : {};
+}
+
+// ---- Retained main-footage: safe facts + explicit, confirmed cleanup ----
+// Hand-synced to crates/thoth-server/src/routes.rs::PackageSummary /
+// CleanupReport. Neither carries a filesystem path: the only URL a summary
+// exposes is the post's own public canonical URL.
+
+export type PackageSummary = {
+  package_id: string;
+  platform: string;
+  canonical_url: string;
+  analysis_mode?: string;
+  fingerprint?: string;
+  usable_count: number;
+  skipped_count: number;
+  ignored_count: number;
+  total_duration_sec: number;
+  total_bytes: number;
+  file_count: number;
+  warnings: string[];
+};
+
+export type CleanupReport = {
+  removed_files: number;
+  removed_bytes: number;
+  /** Always false — cleanup is a delete, not an archive. */
+  recoverable: boolean;
+};
+
+export async function getPackageSummary(packageId: string): Promise<PackageSummary | null> {
+  const r = await fetch(`/api/scout/packages/${encodeURIComponent(packageId)}/summary`, {
+    headers: H,
+  });
+  return r.ok ? r.json() : null;
+}
+
+/** The confirmation IS the feature server-side: the body must repeat the id. */
+async function confirmCleanup(what: string, url: string, id: string): Promise<CleanupReport> {
+  const r = await fetch(url, { method: "POST", headers: H, body: JSON.stringify({ confirm: id }) });
+  if (!r.ok) {
+    const body = await r.json().catch(() => null);
+    throw new Error(`${what}: ${body?.error?.code ?? `HTTP ${r.status}`}`);
+  }
+  return r.json();
+}
+
+export function cleanupPackage(packageId: string): Promise<CleanupReport> {
+  return confirmCleanup(
+    "cleanupPackage",
+    `/api/scout/packages/${encodeURIComponent(packageId)}/cleanup`,
+    packageId,
+  );
+}
+
+export function cleanupJob(jobId: string): Promise<CleanupReport> {
+  return confirmCleanup("cleanupJob", `/api/jobs/${encodeURIComponent(jobId)}/cleanup`, jobId);
+}
+
+/** Human copy for the server's stable warning/error codes. The raw code is kept
+ *  in the rendered string so a diagnosis never depends on this table being
+ *  complete — an unknown code is returned verbatim rather than swallowed. */
+const CODE_COPY: Record<string, string> = {
+  vision_degraded: "Vision analysis degraded; scenes were planned from transcript and metrics only",
+  photo_slide_ignored: "Photo slides in the post were ignored; only video can be cut",
+  source_video_skipped: "A source video could not be acquired and was skipped",
+  exact_scene_reused: "A scene was reused to cover a beat no fresh scene matched",
+  topic_only_match: "A beat matched on topic only, not on exact content",
+  transition_fallback: "A planned transition was unavailable and fell back to a cut",
+  forced_main_no_usable_video: "The post carried no usable video, so no main footage could be built",
+  forced_main_narration_required: "Forced main footage needs narration enabled",
+  source_package_invalid: "The Scout package could not be read as a valid source package",
+  job_not_terminal: "The job is still running; finish or cancel it before deleting its artifacts",
+  scout_busy: "Scout is running and may still be writing into this package",
+};
+
+export function describeCode(code: string): string {
+  const copy = CODE_COPY[code];
+  return copy ? `${copy} (${code})` : code;
+}
+
+/** The generation id inside a `main-footage/<id>/…` package manifest path, or
+ *  null when the path is not one. Separator-agnostic (Scout writes POSIX, the
+ *  content-set may have been hand-edited on Windows) and refuses traversal. */
+export function packageIdFromManifestPath(manifestPath: string): string | null {
+  const parts = manifestPath.replace(/\\/g, "/").split("/");
+  const at = parts.indexOf("main-footage");
+  const id = at === -1 ? undefined : parts[at + 1];
+  if (!id || id === "." || id === "..") return null;
+  return id;
+}
+
+/** Binary size, matching how disk usage is reported everywhere else. */
+export function formatBytes(bytes: number): string {
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return unit === 0 ? `${value} bytes` : `${value.toFixed(1)} ${units[unit]}`;
 }
 
 // Per-run knobs the dashboard sends in JobSpec.params. Mirrors the flag mapping

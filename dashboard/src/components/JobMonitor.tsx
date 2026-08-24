@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelJob,
+  cleanupJob,
+  describeCode,
+  formatBytes,
   getJob,
+  getManifest,
   streamJob,
   type JobRecord,
+  type Manifest,
 } from "@/api";
+import { CleanupButton } from "@/components/CleanupButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -19,11 +25,31 @@ function nextId() {
   return `${Date.now()}-${seq}`;
 }
 
+const pct = (ratio: number) => `${Math.round(ratio * 100)}%`;
+
 /** Watches one job over SSE: stage/progress/status, cancel, artifact links, and feeds LogPane. */
 export function JobMonitor({ jobId }: { jobId: string | null }) {
   const [record, setRecord] = useState<JobRecord | null>(null);
   const [lines, setLines] = useState<LogLine[]>([]);
+  const [manifest, setManifest] = useState<Manifest>({});
+  const [manifestNonce, setManifestNonce] = useState(0);
   const esRef = useRef<EventSource | null>(null);
+
+  // Artifact facts are re-read on every terminal transition and after a cleanup,
+  // so the panel never claims artifacts that are no longer on disk.
+  useEffect(() => {
+    if (!jobId) {
+      setManifest({});
+      return;
+    }
+    let alive = true;
+    getManifest(jobId)
+      .then((m) => alive && setManifest(m))
+      .catch(() => alive && setManifest({}));
+    return () => {
+      alive = false;
+    };
+  }, [jobId, manifestNonce]);
 
   useEffect(() => {
     esRef.current?.close();
@@ -60,6 +86,8 @@ export function JobMonitor({ jobId }: { jobId: string | null }) {
         }
         es.close();
         getJob(jobId).then((rec) => !cancelled && setRecord(rec));
+        // The run just produced (or stopped producing) artifacts — re-read them.
+        if (!cancelled) setManifestNonce((n) => n + 1);
       }
     });
     // Connection drop (not a terminal event) — native EventSource retries on
@@ -89,6 +117,11 @@ export function JobMonitor({ jobId }: { jobId: string | null }) {
   }
 
   const cancellable = record?.status === "queued" || record?.status === "running";
+  // Cleanup is only offered once the worker can no longer be writing into the
+  // tree. An unknown record is treated as live — refusing is the safe default.
+  const terminal =
+    record !== null && record.status !== "queued" && record.status !== "running";
+  const facts = manifest.main_footage;
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -111,6 +144,55 @@ export function JobMonitor({ jobId }: { jobId: string | null }) {
           {record?.error && <p className="text-sm text-destructive">{record.error}</p>}
         </CardContent>
       </Card>
+
+      {facts && (
+        <Card className="gap-2 py-3">
+          <CardHeader className="px-3">
+            <CardTitle className="font-mono text-xs uppercase tracking-wide text-muted-foreground">
+              Main footage plan
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-3">
+            <div className="space-y-1 text-xs text-muted-foreground" data-testid="main-footage-metrics">
+              <div>
+                plan {facts.active_plan_version} · mode {facts.planning_mode}
+              </div>
+              <div>
+                coverage {pct(facts.coverage_actual)} of {pct(facts.coverage_target)} target ·{" "}
+                {facts.coverage_sec.toFixed(1)}s of {facts.total_duration_sec.toFixed(1)}s
+              </div>
+              <div>
+                {facts.beat_count} beats · {facts.cut_count} cuts · {facts.reuse_count} reuse ·{" "}
+                {facts.candidate_count} candidates
+              </div>
+              <div className="font-mono">
+                {Object.entries(facts.transitions)
+                  .map(([kind, count]) => `${kind}×${count}`)
+                  .join(" · ") || "no transitions"}
+              </div>
+              {facts.warnings.length > 0 && (
+                <ul className="space-y-1">
+                  {facts.warnings.map((code) => (
+                    <li key={code}>{describeCode(code)}</li>
+                  ))}
+                </ul>
+              )}
+              <div>retained {formatBytes(facts.retained_bytes)}</div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {jobId && (
+        <CleanupButton
+          id={jobId}
+          trigger="Delete artifacts"
+          disabled={!terminal}
+          disabledReason="The job is still running; finish or cancel it first"
+          onCleanup={cleanupJob}
+          onDone={() => setManifestNonce((n) => n + 1)}
+        />
+      )}
 
       {record?.status === "succeeded" && jobId && <ReviewPanel jobId={jobId} />}
 
