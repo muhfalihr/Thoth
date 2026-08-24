@@ -827,3 +827,8 @@ Remaining disclosed limitations:
   empty-narration-model default-LLM/secret v001→v002 regression remains green.
 - Verification: the two new focused tests passed 2/2; retained default-model regression passed
   1/1; serial `planned_main_orchestration_tests` passed 25/25; `git diff --check` exited 0.
+\n+## Ruling BL corrective round — malformed endpoint credential sanitization
+\n+- Root cause: parse-failure fallback returned raw endpoint text, allowing malformed user-info, query, or fragment material into narration identity.
+- GREEN: parse failures now drop query/fragment text and strip user-info from a `scheme://authority` prefix while retaining safe routing text.
+- Regression: malformed percent-encoded credentials with rotated query/fragment values produce the same safe `https://llm.example:8443/openai` identity and expose none of the secret markers.
+- Verification: malformed endpoint regression 1/1; existing production endpoint regressions 2/2; `git diff --check` exit 0.

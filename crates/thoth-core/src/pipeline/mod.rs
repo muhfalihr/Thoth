@@ -685,13 +685,42 @@ fn effective_narration_model<'a>(
 fn endpoint_identity(endpoint: &str) -> String {
     let endpoint = endpoint.trim();
     let Ok(mut url) = reqwest::Url::parse(endpoint) else {
-        return endpoint.trim_end_matches('/').to_owned();
+        return sanitize_malformed_endpoint(endpoint);
     };
     let _ = url.set_username("");
     let _ = url.set_password(None);
     url.set_query(None);
     url.set_fragment(None);
     url.to_string().trim_end_matches('/').to_owned()
+}
+
+fn sanitize_malformed_endpoint(endpoint: &str) -> String {
+    // Keep malformed endpoints useful for routing identity, but never let
+    // URL-like credential/query material become part of narration identity.
+    let cutoff = endpoint
+        .char_indices()
+        .find_map(|(index, ch)| matches!(ch, '?' | '#').then_some(index))
+        .unwrap_or(endpoint.len());
+    let endpoint = &endpoint[..cutoff];
+    let Some(scheme_end) = endpoint.find("://") else {
+        return endpoint.trim_end_matches('/').to_owned();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = endpoint[authority_start..]
+        .find('/')
+        .map_or(endpoint.len(), |offset| authority_start + offset);
+    let authority = &endpoint[authority_start..authority_end];
+    let Some(user_info_end) = authority.rfind('@') else {
+        return endpoint.trim_end_matches('/').to_owned();
+    };
+    format!(
+        "{}{}{}",
+        &endpoint[..authority_start],
+        &authority[user_info_end + 1..],
+        &endpoint[authority_end..]
+    )
+    .trim_end_matches('/')
+    .to_owned()
 }
 
 fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -> String {
@@ -2051,6 +2080,7 @@ mod ocr_pipeline_tests {
 /// before Stage 5.5.
 #[cfg(test)]
 mod planned_main_orchestration_tests {
+    use super::endpoint_identity;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -2674,6 +2704,21 @@ mod planned_main_orchestration_tests {
             production_narration_input_fingerprint(&config, &provider, &job)
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_endpoint_identity_excludes_credentials_query_and_fragment() {
+        let first = endpoint_identity(
+            "https://first-user:token%zz@llm.example:8443/openai?access_token=one#route",
+        );
+        let rotated = endpoint_identity(
+            "https://rotated-user:other%yy@llm.example:8443/openai?access_token=two#other",
+        );
+        assert_eq!(first, "https://llm.example:8443/openai");
+        assert_eq!(first, rotated);
+        assert!(!first.contains("token"));
+        assert!(!first.contains("access_token"));
+        assert!(!first.contains("route"));
     }
 
     #[tokio::test]
