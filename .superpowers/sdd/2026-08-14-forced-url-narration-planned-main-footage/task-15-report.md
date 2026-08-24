@@ -697,3 +697,32 @@ diff. No production code changed.
 - Durability and render proof: the acceptance copies the captured Scout tree, publishes a checksum-bound external registry, imports both packages, deletes the copied Scout tree, then runs the real planner, verifier, and renderer. It asserts both `main_cut` and `external_cut`, a job-relative retained external source, main coverage at least 0.60 but below 1.0, a materialized external cut that survives rendering, and a playable nine-second audio/video output.
 - GREEN acceptance evidence: focused mixed acceptance passed 1/1; `cargo test -p thoth-core --test planned_main_footage -- --test-threads=1` passed 3/3. Final scoped verification is recorded below after documentation and formatting checks.
 - Final scoped verification: `cargo test -p thoth-core main_footage::verify -- --test-threads=1` passed 29/29; `cargo test -p thoth-core --test planned_main_footage -- --test-threads=1` passed 3/3; `cargo check -p thoth-core --all-targets` exited 0; `git diff --check` exited 0.
+
+## Task 15 final-fix checkpoint — external footage chain
+
+Commits landed in this corrective chain:
+
+- `04e1f9f feat(main-footage): classify planned external cuts`
+- `0644d6d feat(main-footage): package external b-roll locally`
+- `c82f788 feat(main-footage): import external sources into jobs`
+- `c5da78b feat(main-footage): bind external cuts to local sources`
+- `af9421b feat(main-footage): verify external cut durability`
+- `2d98846 fix(main-footage): accept mixed external render plans`
+
+Exact final-fix evidence:
+
+- RED acceptance: `cargo test -p thoth-core --test planned_main_footage a_captured_scout_package_imports_plans_and_renders_a_playable_file -- --test-threads=1` exited 1 with `plan_verification_failed: plan_summary_mismatch` for Scout's mixed `6 / 9` plan serialized as `0.666667`.
+- RED verifier regression: `cargo test -p thoth-core scout_rounded_coverage_ratio_matches_rust_recomputation -- --test-threads=1` exited 1 with the same `plan_summary_mismatch` (0 passed, 1 failed).
+- GREEN verifier regression: the same focused verifier command passed 1/1 after aligning Rust with Scout's six-decimal serialization tolerance.
+- GREEN focused acceptance: the same focused acceptance command passed 1/1 and rendered the nine-second mixed plan.
+- Final verifier suite: `cargo test -p thoth-core main_footage::verify -- --test-threads=1` passed 29/29 with 330 filtered out.
+- Final real acceptance suite: `cargo test -p thoth-core --test planned_main_footage -- --test-threads=1` passed 3/3.
+- Compile gate: `cargo check -p thoth-core --all-targets` exited 0.
+- Diff gate: `git diff --check` exited 0 before the implementation commit.
+
+Remaining disclosed limitations:
+
+- Live-platform smoke tests remain the human release action documented in `docs/main-footage.md`; this offline round used no authenticated session or network acquisition.
+- The external acceptance fixture reuses the committed captured MP4 with deterministic external query/description metadata. It proves registry selection, import, binding, durability, and rendering, but not a third-party external media provider.
+- This corrective round ran the scoped Rust verifier/acceptance/check matrix above, not the entire Scout/dashboard/workspace release matrix. The final release gate must retain the broader Task 15 commands.
+- `build_cuda.bat` was not run, as required.
