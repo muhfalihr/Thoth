@@ -462,7 +462,8 @@ fn validate_summary(plan: &MainFootagePlanV1, narration: &NarrationTimelineV1) -
         || actual + f64::EPSILON < plan.main_coverage_target
         || milliseconds(plan.summary.main_coverage_sec)? != main_ms
         || milliseconds(plan.summary.total_duration_sec)? != total_ms
-        || (plan.summary.main_coverage_ratio - actual).abs() > 1e-9
+        // Scout publishes allocator values rounded to six decimal places.
+        || (plan.summary.main_coverage_ratio - actual).abs() > 1e-6
         || plan.summary.selected_cut_count as usize != plan.timeline.len()
     {
         return Err(invalid("plan_summary_mismatch"));
@@ -917,13 +918,13 @@ pub(crate) mod tests {
 
     use super::{
         HASH_BUFFER_BYTES, MediaMetadata, MediaProbe, checksum, checksum_reader,
-        decode_ffprobe_metadata, duration_matches, validate_source_bindings,
+        decode_ffprobe_metadata, duration_matches, validate_source_bindings, validate_summary,
         validate_timeline_coverage, verify_plan_with_probe,
     };
     use crate::main_footage::import::ImportedExternalSources;
     use crate::main_footage::{ImportedSourcePackage, fingerprint_canonical};
     use crate::pipeline::job::JobContext;
-    use thoth_types::main_footage::{AssetKind, ExternalSourcesV1};
+    use thoth_types::main_footage::{AssetKind, ExternalSourcesV1, MainFootagePlanV1};
 
     fn digest(bytes: &[u8]) -> String {
         let mut hash = Sha256::new();
@@ -1356,6 +1357,26 @@ pub(crate) mod tests {
             .downcast_ref::<crate::main_footage::MainFootageError>()
             .unwrap_or_else(|| panic!("expected MainFootageError, got {error:#}"))
             .code
+    }
+
+    #[test]
+    fn scout_rounded_coverage_ratio_matches_rust_recomputation() {
+        let mut fixture = fixture();
+        rewrite_plan(&mut fixture, |plan| {
+            plan["timeline"][0]["output_end_sec"] = json!(6.0);
+            plan["timeline"][1]["asset_kind"] = json!("external_cut");
+            plan["timeline"][1]["output_start_sec"] = json!(6.0);
+            plan["timeline"][1]["output_end_sec"] = json!(9.0);
+            plan["summary"]["main_coverage_sec"] = json!(6.0);
+            plan["summary"]["main_coverage_ratio"] = json!(0.666667);
+            plan["summary"]["total_duration_sec"] = json!(9.0);
+        });
+        fixture.narration.duration_sec = 9.0;
+        let plan: MainFootagePlanV1 =
+            serde_json::from_slice(&fs::read(&fixture.plan_path).unwrap()).unwrap();
+
+        validate_summary(&plan, &fixture.narration)
+            .expect("Scout's six-decimal ratio must match Rust's exact recomputation");
     }
 
     #[tokio::test]

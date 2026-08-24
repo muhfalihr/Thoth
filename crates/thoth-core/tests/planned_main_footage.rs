@@ -30,8 +30,8 @@ use thoth_core::main_footage::{MainFootageCoordinator, MainFootagePrepareInput, 
 use thoth_core::pipeline::PlannedMainRenderer;
 use thoth_core::pipeline::job::JobContext;
 use thoth_types::main_footage::{
-    MainFootageDescriptor, MainFootageMode, NarrationTimelineV1, PlanningMode, SourcePackageV1,
-    fingerprint_canonical,
+    AssetKind, MainFootageDescriptor, MainFootageMode, NarrationTimelineV1, PlanningMode,
+    SourcePackageV1, fingerprint_canonical,
 };
 
 fn fixture_root() -> PathBuf {
@@ -40,6 +40,58 @@ fn fixture_root() -> PathBuf {
 
 fn fixture_path() -> PathBuf {
     fixture_root().join("main-footage/v001/package.json")
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).expect("fixture destination");
+    for entry in std::fs::read_dir(source).expect("fixture directory") {
+        let entry = entry.expect("fixture entry");
+        let target = destination.join(entry.file_name());
+        if entry.file_type().expect("fixture type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy fixture artifact");
+        }
+    }
+}
+
+fn publish_external_fixture(scout_root: &Path) -> String {
+    let source = scout_root.join("main-footage/v001/sources/source-CAPTURE1-1.mp4");
+    let external_root = scout_root.join("main-footage/external-footage/v001");
+    let external_source = external_root.join("sources/external-1.mp4");
+    std::fs::create_dir_all(external_source.parent().unwrap()).expect("external source dir");
+    std::fs::copy(&source, &external_source).expect("external video fixture");
+    let source_bytes = std::fs::read(&external_source).expect("external video bytes");
+    let mut manifest = serde_json::json!({
+        "schema_version": 1,
+        "sources": [{
+            "id": "external-1",
+            "path": "sources/external-1.mp4",
+            "checksum": format!(
+                "sha256:{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(&source_bytes)
+            ),
+            "technical": {
+                "container": "mov,mp4,m4a,3gp,3g2,mj2",
+                "video_codec": "h264",
+                "duration_sec": 6.0,
+                "width": 320,
+                "height": 240,
+                "has_audio": true
+            },
+            "query": "mountain rescue helicopter",
+            "description": "Mountain rescue team beside a helicopter.",
+            "trim_start_sec": 0.0
+        }]
+    });
+    let fingerprint = fingerprint_canonical(&manifest).expect("external fingerprint");
+    manifest["fingerprint"] = serde_json::Value::String(fingerprint);
+    std::fs::write(
+        external_root.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).expect("external manifest"),
+    )
+    .expect("publish external manifest");
+    "main-footage/external-footage/v001/manifest.json".to_owned()
 }
 
 fn test_only_offline_planner_script() -> PathBuf {
@@ -200,7 +252,7 @@ fn narration_timeline(job: &JobContext, ffmpeg: &Path) -> NarrationTimelineV1 {
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=220:duration=6",
+            "sine=frequency=220:duration=9",
             audio.to_str().unwrap(),
         ],
     );
@@ -212,16 +264,19 @@ fn narration_timeline(job: &JobContext, ffmpeg: &Path) -> NarrationTimelineV1 {
         {"id": "beat-0001", "start_sec": 0.0, "end_sec": 3.0,
          "text": "the harbour crane swings over the dock"},
         {"id": "beat-0002", "start_sec": 3.0, "end_sec": 6.0,
-         "text": "a wide panning shot of the harbour dock"}
+         "text": "a wide panning shot of the harbour dock"},
+        {"id": "beat-0003", "start_sec": 6.0, "end_sec": 9.0,
+         "text": "mountain rescue helicopter"}
     ]);
     let mut timeline: NarrationTimelineV1 = serde_json::from_value(serde_json::json!({
         "schema_version": 1,
         "audio_path": "narration/narration.mp3",
         "audio_checksum": checksum,
-        "duration_sec": 6.0,
+        "duration_sec": 9.0,
         "words": [
             {"text": "the harbour crane swings over the dock", "start_sec": 0.0, "end_sec": 3.0},
-            {"text": "a wide panning shot of the harbour dock", "start_sec": 3.0, "end_sec": 6.0}
+            {"text": "a wide panning shot of the harbour dock", "start_sec": 3.0, "end_sec": 6.0},
+            {"text": "mountain rescue helicopter", "start_sec": 6.0, "end_sec": 9.0}
         ],
         "beats": beats,
     }))
@@ -271,6 +326,9 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
 
     let root = std::env::temp_dir().join(format!("mf-acceptance-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).expect("job root");
+    let scout_root = root.join("scout-output");
+    copy_tree(&fixture_root(), &scout_root);
+    let external_sources_manifest = publish_external_fixture(&scout_root);
     let job = JobContext::new_flat("acceptance".into(), root.clone()).expect("job context");
     let execution = JobExecutionContext::new();
     let narration = narration_timeline(&job, &ffmpeg);
@@ -278,19 +336,33 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
     let descriptor = MainFootageDescriptor {
         mode: MainFootageMode::ForcedUrlPool,
         package_manifest: "main-footage/v001/package.json".to_owned(),
-        external_sources_manifest: None,
+        external_sources_manifest: Some(external_sources_manifest),
         coverage_target: 0.6,
     };
-    // Only the Content Set's *directory* is used, to resolve the manifest the way a
-    // real run does; the fixture tree is read, never written.
+    // Resolve through a copied Content Set exactly as a real run does. The committed
+    // fixture stays read-only, while the copied Scout tree can be removed after import.
     let imported = import_package(
-        &fixture_root().join("content-set.json"),
+        &scout_root.join("content-set.json"),
         &descriptor,
         &job,
-        &fixture_root(),
+        &scout_root,
         &execution,
     )
     .expect("Rust must import a package Scout actually wrote");
+
+    let retained_external_source = {
+        let external = imported
+            .external_sources
+            .as_ref()
+            .expect("the declared external registry must be imported");
+        external.root.join(&external.manifest.sources[0].path)
+    };
+    assert!(retained_external_source.is_file());
+    std::fs::remove_dir_all(&scout_root).expect("remove the original Scout output");
+    assert!(
+        retained_external_source.is_file(),
+        "the imported external source must not depend on Scout output"
+    );
 
     let verified = MainFootageCoordinator::prepare_with_test_only_planner_script(
         &job,
@@ -309,6 +381,43 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
         verified.metrics().main_coverage_ratio >= descriptor.coverage_target,
         "the verified plan must meet the coverage it was asked for: {:?}",
         verified.metrics()
+    );
+    assert!(
+        verified
+            .timeline()
+            .iter()
+            .any(|cut| cut.asset_kind == AssetKind::MainCut),
+        "the mixed plan must retain forced main footage"
+    );
+    assert!(
+        verified.metrics().main_coverage_ratio < 1.0,
+        "external cuts must not inflate main coverage: {:?}",
+        verified.metrics()
+    );
+    let external_cut_path = {
+        let external_cut = verified
+            .timeline()
+            .iter()
+            .find(|cut| cut.asset_kind == AssetKind::ExternalCut)
+            .expect("the mixed plan must select the relevant external source");
+        assert!(!Path::new(&external_cut.source_path).is_absolute());
+        assert!(
+            external_cut
+                .source_path
+                .starts_with("main-footage/external-footage/"),
+            "external source must be job-relative: {}",
+            external_cut.source_path
+        );
+        assert_eq!(
+            std::fs::canonicalize(root.join(&external_cut.source_path))
+                .expect("planned external source"),
+            std::fs::canonicalize(&retained_external_source).expect("retained external source")
+        );
+        root.join(&external_cut.cut_path)
+    };
+    assert!(
+        external_cut_path.is_file(),
+        "the planner must materialize the external cut before verification returns"
     );
 
     let renderer = PlannedFfmpegRenderer::new(&FfmpegConfig {
@@ -331,6 +440,10 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
     )
     .await
     .expect("the verified plan must render");
+    assert!(
+        external_cut_path.is_file(),
+        "rendering must retain the materialized external cut"
+    );
 
     let clip = &result.output_clips[0];
     assert!(clip.path.is_file(), "{}", clip.path.display());
@@ -362,7 +475,7 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:duration=6",
+            "sine=frequency=440:duration=9",
             staging_audio.to_str().unwrap(),
         ],
     );

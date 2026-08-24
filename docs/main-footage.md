@@ -36,6 +36,7 @@ The mode is requested by the **Content Set**, not by a CLI flag. Scout writes a
   "main_footage": {
     "mode": "forced_url_pool",
     "package_manifest": "main-footage/<post-id>/source-package.json",
+    "external_sources_manifest": "main-footage/external-footage/<generation>/manifest.json",
     "coverage_target": 0.8
   }
 }
@@ -51,7 +52,24 @@ The mode is requested by the **Content Set**, not by a CLI flag. Scout writes a
 Narration is mandatory in this mode. A run with narration disabled fails immediately with
 `forced_main_narration_required` rather than silently falling back to clip mode.
 
-### 2.1 Readiness
+### 2.1 External b-roll enrichment
+
+`external_sources_manifest` is optional. When present, it is resolved relative to the
+Content Set, must remain inside Scout's configured output root, and is imported with every
+referenced source into an immutable job-owned generation. Planning and rendering therefore
+do not depend on Scout's cache or the original external download after import.
+
+Relevant enrichment may appear in the plan as `external_cut`; forced package footage remains
+`main_cut`. Only `main_cut` duration counts toward `coverage_target`. External cuts may fill a
+narration beat, but cannot make an under-covered forced source pass the durability gate. Scout
+publishes the coverage ratio to six decimal places, and Rust recomputes it from the timeline
+with the same serialization precision before accepting the plan.
+
+The plan binds the external manifest by a paired job-relative path and SHA-256 fingerprint.
+Both values must be present, and resume reuses an active plan only while that imported
+fingerprint still matches.
+
+### 2.2 Readiness
 
 `GET /api/scout/status` reports `main_footage_ready`. It is false when the server is paired
 with a Scout tree that has no `scout/main_footage/plan_job.ts` — the planner module the run
@@ -267,6 +285,12 @@ runs the real planner CLI, verifies the cuts through the durability gate, render
 FFprobes the output's duration and audio/video streams. Its model-facing ranking ports are
 the only offline test double; media acquisition artifacts, FFmpeg, FFprobe, import and the
 renderer are production paths.
+
+The same seam includes a job-owned external registry and a nine-second mixed plan: six seconds
+of forced `main_cut` footage plus a relevant three-second `external_cut`. The test deletes the
+copied Scout output immediately after import, checks that the external source and materialized
+cut remain job-relative and durable through rendering, and proves external duration does not
+inflate main coverage.
 
 **Correction (Task 15 corrective round):** this test now invokes the explicit test-only
 planner composition rather than `scout/cli.ts`; the planner implementation itself, all media
