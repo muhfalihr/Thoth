@@ -256,6 +256,7 @@ async fn a_captured_scout_package_imports_plans_and_renders_a_playable_file() {
         std::env::set_var("THOTH_FFPROBE", &ffprobe);
         std::env::set_var("THOTH_FFMPEG", &ffmpeg);
         std::env::set_var("THOTH_PLANNER_OFFLINE", "1");
+        std::env::set_var("THOTH_PLANNER_TEST_CONTEXT", "1");
     }
 
     let root = std::env::temp_dir().join(format!("mf-acceptance-{}", uuid::Uuid::new_v4()));

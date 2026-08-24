@@ -147,7 +147,15 @@ export async function ffmpegCut(command: CutCommand): Promise<void> {
  * ffmpeg, ffprobe and the on-disk embedding loader stay the production ports, and
  * candidate selection still runs its real lexical/topic tiering.
  */
-const plannerIsOffline = (): boolean => process.env.THOTH_PLANNER_OFFLINE === '1';
+export function plannerIsOffline(): boolean {
+  if (process.env.THOTH_PLANNER_OFFLINE !== '1') return false;
+  if (process.env.THOTH_PLANNER_TEST_CONTEXT !== '1') {
+    throw new Error(
+      'THOTH_PLANNER_OFFLINE is test-only; refusing degraded planning outside test context',
+    );
+  }
+  return true;
+}
 
 function defaultProviders(packageRoot: string): PlanMainFootageProviders {
   const loadEmbedding = fileEmbeddingLoader(packageRoot);

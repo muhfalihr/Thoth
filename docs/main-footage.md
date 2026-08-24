@@ -245,7 +245,9 @@ a summary line, and this feature's whole output is media.
 `THOTH_PLANNER_OFFLINE=1` makes the planner's two model-backed ports return exactly what a
 machine with no API key returns — a null beat vector and no planner ranking — so an
 end-to-end run needs no network. Candidate tiering, allocation, cutting and verification all
-still run for real. Do not set it in production.
+still run for real. It is refused unless `THOTH_PLANNER_TEST_CONTEXT=1` is also present:
+`THOTH_PLANNER_OFFLINE` must never silently degrade a production plan. The refusal names the
+flag and states that degraded planning is not permitted outside a test context.
 
 It exists because `scout/lib/env.ts` back-fills any falsy `process.env` entry from the
 repository `.env`: unsetting an API key in a child process does **not** make that process
@@ -253,16 +255,17 @@ offline.
 
 ### 8.4 What this feature's gate does not cover
 
-Two pieces of the plan are **not** implemented and are not covered by any test here:
+The Rust acceptance test now covers the import → plan → render seam:
+`crates/thoth-core/tests/planned_main_footage.rs` imports a committed package Scout produced,
+runs the real planner CLI, verifies the cuts through the durability gate, renders, and
+FFprobes the output's duration and audio/video streams. Its model-facing ranking ports are
+the only offline test double; media acquisition artifacts, FFmpeg, FFprobe, import and the
+renderer are production paths.
 
-- **No Rust end-to-end render test.** `crates/thoth-core/tests/planned_main_footage.rs`
-  proves the cross-runtime *contract* — a package Scout really wrote decodes in Rust and
-  fingerprints to the same value. It does not import that package into a job, render it and
-  FFprobe the result, and it does not exercise the `v001` / `v002` immutability rule from
-  the Rust side. The Scout-side equivalent
-  (`scout/main_footage/offline_acceptance.test.ts`) does cover acquisition through cuts and
-  the unchanged-rerun resume, so the untested seam is specifically *import → render*.
-- **Live-platform smoke tests** — see section 9.
+What remains uncovered is the Rust-side changed-narration `v001` → `v002` resume/immutability
+case. The Scout acceptance test covers unchanged-rerun resume through cuts, but not that
+cross-runtime version transition. Live-platform smoke tests also remain a human release action
+(see section 9).
 
 ### 8.5 Latent invariant: failure-detail redaction
 
