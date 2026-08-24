@@ -102,7 +102,12 @@ async function rankWithPlanner(shortlist: ShortlistEntry[]): Promise<PlannerRank
   }
 }
 
-async function ffmpegCut(command: CutCommand): Promise<void> {
+/**
+ * Production cut port. Exported so the offline acceptance test can drive the real
+ * command builder instead of a hand-written double — a fake here would let the
+ * argument list drift without a single test noticing.
+ */
+export async function ffmpegCut(command: CutCommand): Promise<void> {
   if (!path.isAbsolute(command.inputPath) || /^[a-z][a-z0-9+.-]*:\/\//i.test(command.inputPath)) {
     throw new Error('artifact_path_must_be_local');
   }
