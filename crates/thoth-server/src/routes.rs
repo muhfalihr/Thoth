@@ -1474,6 +1474,41 @@ fn accepted() -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::ACCEPTED, Json(serde_json::json!({ "ok": true })))
 }
 
+/// Validate a Scout run before reserving the single supervisor slot.
+///
+/// Forced main footage has no legacy fallback: starting it without the planner would
+/// reserve the slot, perform acquisition, and then die when planning begins. Keep the
+/// deployment check here at the API boundary as well as in the dashboard.
+fn validate_scout_run(
+    req: &RunReq,
+    planner: &FsPath,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if req.url.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "url required" })),
+        ));
+    }
+    if let Some(coverage) = req.main_coverage_target {
+        if !coverage.is_finite() || !(0.60..=1.00).contains(&coverage) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid_main_coverage_target" })),
+            ));
+        }
+    }
+    if req.use_input_as_main && !planner_is_installed(planner) {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "main_footage_unavailable",
+                "detail": "forced main footage requires the Scout planner module"
+            })),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn scout_browser_start(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -1501,19 +1536,8 @@ pub async fn scout_run(
     State(state): State<AppState>,
     Json(req): Json<RunReq>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    if req.url.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "url required" })),
-        );
-    }
-    if let Some(coverage) = req.main_coverage_target {
-        if !coverage.is_finite() || !(0.60..=1.00).contains(&coverage) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "invalid_main_coverage_target" })),
-            );
-        }
+    if let Err(error) = validate_scout_run(&req, FsPath::new(SCOUT_PLANNER)) {
+        return error;
     }
     // Remember where this run writes its content-set BEFORE spawning.
     let cs = scout::resolve_content_set(req.out.as_deref());
@@ -1714,7 +1738,8 @@ pub async fn scout_output_file(
 
 #[cfg(test)]
 mod readiness_tests {
-    use super::{SCOUT_PLANNER, planner_is_installed};
+    use axum::http::StatusCode;
+    use super::{RunReq, SCOUT_PLANNER, planner_is_installed, validate_scout_run};
     use std::path::{Path as FsPath, PathBuf};
 
     fn scratch() -> PathBuf {
@@ -1762,5 +1787,19 @@ mod readiness_tests {
             planner_is_installed(&repo_root.join(SCOUT_PLANNER)),
             "SCOUT_PLANNER no longer points at a module in this repository"
         );
+    }
+
+    #[test]
+    fn forced_main_request_is_rejected_when_the_planner_is_unavailable() {
+        let request = RunReq {
+            url: "https://example.test/post".to_owned(),
+            use_input_as_main: true,
+            ..Default::default()
+        };
+
+        let error = validate_scout_run(&request, FsPath::new("missing-plan_job.ts"))
+            .expect_err("forced main must be rejected before the Scout process starts");
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error.1 .0["error"], "main_footage_unavailable");
     }
 }
