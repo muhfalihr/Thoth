@@ -750,3 +750,19 @@ Remaining disclosed limitations:
 - GREEN verification: serial planned orchestration 22/22; narration timeline 8/8; import
   17/17; real `planned_main_footage` acceptance 3/3; `cargo check -p thoth-core --all-targets`
   exit 0; `git diff --check` exit 0. `build_cuda.bat` was not run.
+
+## Ruling BH corrective round — Scout six-decimal coverage semantics
+
+- Root cause: Rust compared recomputed binary `f64` coverage directly against Scout's six-decimal
+ persisted target. An exact `6 / 9` plan therefore fell infinitesimally below persisted `0.666667`
+ even though Scout had rounded both values to the same micro-unit.
+- RED: `persisted_target_accepts_precise_six_of_nine_for_requested_fraction` failed
+ `plan_summary_mismatch` for exact `6 / 9` against persisted target `0.666667`. The discriminator
+ `persisted_target_rejects_a_true_six_decimal_shortfall` already passed for persisted actual
+ `0.666666`, proving a blanket tolerance would be too permissive.
+- GREEN: the coverage-target gate now converts both recomputed actual and persisted target with
+ Scout-equivalent `Math.round(value * 1e6)` semantics before comparing integer micro-units. Exact
+ `6 / 9` is accepted; a true one-micro-unit shortfall remains rejected.
+- GREEN verification: both focused regressions passed 1/1; serial verifier suite passed 31/31;
+ `cargo check -p thoth-core --all-targets` exited 0; `git diff --check` exited 0.
+ `build_cuda.bat` was not run.

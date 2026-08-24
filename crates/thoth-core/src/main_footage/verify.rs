@@ -444,6 +444,10 @@ fn validate_source_bindings(
     Ok(())
 }
 
+fn scout_six_decimal_units(value: f64) -> i64 {
+    (value * 1_000_000.0).round() as i64
+}
+
 fn validate_summary(plan: &MainFootagePlanV1, narration: &NarrationTimelineV1) -> Result<()> {
     let total_ms = milliseconds(narration.duration_sec)?;
     let main_ms = plan.timeline.iter().try_fold(0_i64, |sum, cut| {
@@ -459,7 +463,7 @@ fn validate_summary(plan: &MainFootagePlanV1, narration: &NarrationTimelineV1) -
     };
     if plan.main_coverage_target < 0.60
         || plan.main_coverage_target > 1.0
-        || actual + f64::EPSILON < plan.main_coverage_target
+        || scout_six_decimal_units(actual) < scout_six_decimal_units(plan.main_coverage_target)
         || milliseconds(plan.summary.main_coverage_sec)? != main_ms
         || milliseconds(plan.summary.total_duration_sec)? != total_ms
         // Scout publishes allocator values rounded to six decimal places.
@@ -1357,6 +1361,52 @@ pub(crate) mod tests {
             .downcast_ref::<crate::main_footage::MainFootageError>()
             .unwrap_or_else(|| panic!("expected MainFootageError, got {error:#}"))
             .code
+    }
+
+    #[test]
+    fn persisted_target_accepts_precise_six_of_nine_for_requested_fraction() {
+        let mut fixture = fixture();
+        rewrite_plan(&fixture, |plan| {
+            plan["main_coverage_target"] = json!(0.666667);
+            plan["timeline"][0]["output_end_sec"] = json!(6.0);
+            plan["timeline"][1]["asset_kind"] = json!("external_cut");
+            plan["timeline"][1]["output_start_sec"] = json!(6.0);
+            plan["timeline"][1]["output_end_sec"] = json!(9.0);
+            plan["summary"]["main_coverage_sec"] = json!(6.0);
+            plan["summary"]["main_coverage_ratio"] = json!(0.666667);
+            plan["summary"]["total_duration_sec"] = json!(9.0);
+        });
+        fixture.narration.duration_sec = 9.0;
+        let plan: MainFootagePlanV1 =
+            serde_json::from_slice(&fs::read(&fixture.plan_path).unwrap()).unwrap();
+
+        assert!(6.0 / 9.0 >= 0.6666666666, "the precise plan meets the request");
+        validate_summary(&plan, &fixture.narration)
+            .expect("six-decimal Scout target must accept the precise 6/9 plan");
+    }
+
+    #[test]
+    fn persisted_target_rejects_a_true_six_decimal_shortfall() {
+        let mut fixture = fixture();
+        rewrite_plan(&fixture, |plan| {
+            plan["main_coverage_target"] = json!(0.666667);
+            plan["timeline"][0]["output_end_sec"] = json!(666.666);
+            plan["timeline"][1]["asset_kind"] = json!("external_cut");
+            plan["timeline"][1]["output_start_sec"] = json!(666.666);
+            plan["timeline"][1]["output_end_sec"] = json!(1000.0);
+            plan["summary"]["main_coverage_sec"] = json!(666.666);
+            plan["summary"]["main_coverage_ratio"] = json!(0.666666);
+            plan["summary"]["total_duration_sec"] = json!(1000.0);
+        });
+        fixture.narration.duration_sec = 1000.0;
+        let plan: MainFootagePlanV1 =
+            serde_json::from_slice(&fs::read(&fixture.plan_path).unwrap()).unwrap();
+
+        let error = validate_summary(&plan, &fixture.narration).unwrap_err();
+        assert_eq!(
+            error_code(&error),
+            thoth_types::main_footage::MainFootageErrorCode::PlanVerificationFailed
+        );
     }
 
     #[test]
