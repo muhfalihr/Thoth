@@ -1800,6 +1800,6 @@ mod readiness_tests {
         let error = validate_scout_run(&request, FsPath::new("missing-plan_job.ts"))
             .expect_err("forced main must be rejected before the Scout process starts");
         assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(error.1 .0["error"], "main_footage_unavailable");
+        assert_eq!(error.1.0["error"], "main_footage_unavailable");
     }
 }
