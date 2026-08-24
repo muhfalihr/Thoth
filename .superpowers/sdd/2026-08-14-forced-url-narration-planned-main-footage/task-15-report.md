@@ -586,3 +586,10 @@ identified one line added in this resume (`error.1 .0`); that line was corrected
 - Final reruns: `bun run --cwd scout typecheck`, `bun scout/main_footage/planner_offline.test.ts`, `bun scout/main_footage/offline_acceptance.test.ts`, and serial `cargo test -p thoth-core --test planned_main_footage -- --test-threads=1` (3 passed) all exited 0.
 
 - Documentation correction: `docs/main-footage.md` now identifies the former environment-driven offline description as superseded, documents the production rejection code, and distinguishes the explicit test-only planner composition from production `scout/cli.ts`.
+## Task 15 documentation correction
+
+Updated `docs/main-footage.md` §8.3 to remove obsolete environment-authorized offline-planning
+prose. It now states that production rejects both former flags and that `scout/cli.ts` maps
+the internal rejection to `cut_planning_failed`; the explicit test-only offline planner path
+remains documented. Verified with targeted `rg`, `git diff --check`, and the documentation-only
+diff. No production code changed.

@@ -242,23 +242,15 @@ a summary line, and this feature's whole output is media.
 
 ### 8.3 Offline planning
 
-`THOTH_PLANNER_OFFLINE=1` makes the planner's two model-backed ports return exactly what a
-machine with no API key returns — a null beat vector and no planner ranking — so an
-end-to-end run needs no network. Candidate tiering, allocation, cutting and verification all
-still run for real. It is refused unless `THOTH_PLANNER_TEST_CONTEXT=1` is also present:
-`THOTH_PLANNER_OFFLINE` must never silently degrade a production plan. The refusal names the
-flag and states that degraded planning is not permitted outside a test context.
+Production does not support environment-authorized offline planning. It rejects either former
+flag, `THOTH_PLANNER_OFFLINE` or `THOTH_PLANNER_TEST_CONTEXT`, including values backfilled from
+`.env`, before composing planner providers. The internal rejection is mapped by `scout/cli.ts`
+to the outward, response-safe `cut_planning_failed` code; operators should not expect
+`planner_offline_environment_not_supported` from the production CLI.
 
-It exists because `scout/lib/env.ts` back-fills any falsy `process.env` entry from the
-repository `.env`: unsetting an API key in a child process does **not** make that process
-offline.
-
-**Correction (Task 15 corrective round):** the environment-controlled mode above has been
-removed. Production planning rejects either former flag, `THOTH_PLANNER_OFFLINE` or
-`THOTH_PLANNER_TEST_CONTEXT`, including values backfilled from `.env`, with
-`planner_offline_environment_not_supported`. Offline acceptance instead uses the explicit
-test-only `scout/main_footage/test_support/offline_plan_cli.ts` provider composition, which
-substitutes only model-facing embedding/ranking while retaining real file embeddings, candidate
+Offline acceptance instead uses the explicit test-only
+`scout/main_footage/test_support/offline_plan_cli.ts` provider composition. It substitutes only
+the model-facing embedding/ranking providers while retaining real file embeddings, candidate
 tiering, allocation, FFmpeg, FFprobe, and verification.
 
 ### 8.4 What this feature's gate does not cover
