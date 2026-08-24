@@ -617,6 +617,79 @@ struct ProductionPlannedMainStages<'a, 'b, R> {
     renderer: &'a R,
 }
 
+/// The non-secret subset of the provider selection that reaches narration's
+/// LLM request. API keys deliberately do not participate in resumability.
+#[derive(serde::Serialize)]
+struct NarrationGenerationIdentity {
+    provider: String,
+    model: String,
+    endpoint: String,
+}
+
+fn effective_narration_model<'a>(
+    configured: &'a str,
+    narration_model: &'a str,
+    supports_override: bool,
+) -> &'a str {
+    if supports_override && !narration_model.is_empty() {
+        narration_model
+    } else {
+        configured
+    }
+}
+
+fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -> String {
+    let narration_model = config.narration.model.trim();
+    let (model, endpoint) = match provider {
+        LlmProviderName::Groq => (
+            effective_narration_model(&config.llm.groq_model, narration_model, false),
+            "https://api.groq.com/openai/v1/chat/completions".to_owned(),
+        ),
+        LlmProviderName::Openai => (
+            effective_narration_model(&config.llm.openai_model, narration_model, true),
+            "https://api.openai.com/v1/chat/completions".to_owned(),
+        ),
+        LlmProviderName::Claude => (
+            effective_narration_model(&config.llm.claude_model, narration_model, true),
+            "https://api.anthropic.com/v1/messages".to_owned(),
+        ),
+        LlmProviderName::Gemini => (
+            effective_narration_model(&config.llm.gemini_model, narration_model, true),
+            "https://generativelanguage.googleapis.com/v1beta".to_owned(),
+        ),
+        LlmProviderName::Vllm => (
+            effective_narration_model(&config.llm.vllm_model, narration_model, true),
+            config.llm.vllm_base_url.trim_end_matches('/').to_owned(),
+        ),
+        LlmProviderName::Ollama => (
+            effective_narration_model(&config.llm.ollama_model, narration_model, false),
+            config.llm.ollama_base_url.trim_end_matches('/').to_owned(),
+        ),
+        LlmProviderName::Novita => (
+            effective_narration_model(&config.llm.novita_model, narration_model, true),
+            if config.llm.novita_base_url.is_empty() {
+                "https://api.novita.ai/openai".to_owned()
+            } else {
+                config.llm.novita_base_url.trim_end_matches('/').to_owned()
+            },
+        ),
+        LlmProviderName::Together => (
+            effective_narration_model(&config.llm.together_model, narration_model, false),
+            "https://api.together.xyz".to_owned(),
+        ),
+        LlmProviderName::Fireworks => (
+            effective_narration_model(&config.llm.fireworks_model, narration_model, false),
+            "https://api.fireworks.ai/inference".to_owned(),
+        ),
+    };
+    serde_json::to_string(&NarrationGenerationIdentity {
+        provider: provider.to_string(),
+        model: model.to_owned(),
+        endpoint,
+    })
+    .expect("narration generation identity is serializable")
+}
+
 fn timeline_error(detail: &'static str) -> anyhow::Error {
     crate::main_footage::MainFootageError::new(
         crate::main_footage::MainFootageErrorCode::NarrationGenerationFailed,
@@ -682,8 +755,8 @@ impl<R: PlannedMainRenderer> PlannedMainStagePort for ProductionPlannedMainStage
         imported: &Self::Imported,
     ) -> Result<String> {
         let settings_identity = format!(
-            "provider={};narration={:?};reaction={:?};news={:?};vector_db={:?}",
-            self.provider,
+            "narration_generation={};narration={:?};reaction={:?};news={:?};vector_db={:?}",
+            narration_settings_identity(self.runner.config, self.provider),
             self.runner.config.narration,
             self.runner.config.reaction,
             self.runner.config.news,
@@ -1904,6 +1977,7 @@ mod planned_main_orchestration_tests {
 
     use super::{
         PlannedMainInput, PlannedMainStagePort, fingerprint_narration_inputs,
+        narration_settings_identity,
         run_planned_main_with,
     };
     use crate::edit::service::{ClipOutput, EditResult};
@@ -2390,6 +2464,82 @@ mod planned_main_orchestration_tests {
         .unwrap();
         assert_eq!(active["version"], "v002");
         assert_eq!(active["input_fingerprint"], "sha256:input-v2");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn default_llm_model_change_publishes_v002_instead_of_reusing_narration() {
+        let _guard = planned_test_lock();
+        let (root, job, mut state, planned) = fixture();
+        let provider = crate::cli::LlmProviderName::Groq;
+        let mut config = crate::config::AppConfig::load().unwrap();
+        config.narration.model.clear();
+        config.llm.groq_model = "narration-model-v1".into();
+        config.llm.groq_api_key = "must-not-hash-secret".into();
+        let v1_settings = narration_settings_identity(&config, &provider);
+        assert!(!v1_settings.contains("must-not-hash-secret"));
+        let v1_input: &'static str = Box::leak(
+            fingerprint_narration_inputs(
+                &job,
+                "sha256:source",
+                &v1_settings,
+            )
+            .unwrap()
+            .into_boxed_str(),
+        );
+
+        config.llm.groq_model = "narration-model-v2".into();
+        let v2_settings = narration_settings_identity(&config, &provider);
+        let v2_input: &'static str = Box::leak(
+            fingerprint_narration_inputs(
+                &job,
+                "sha256:source",
+                &v2_settings,
+            )
+            .unwrap()
+            .into_boxed_str(),
+        );
+
+        let mut v1 = FakeStages::success();
+        v1.publish_narration = true;
+        v1.narration_input_fingerprint = v1_input;
+        v1.narration_text = "first narration";
+        v1.narration_audio = b"narration audio v1";
+        v1.active_version = "v001";
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &v1,
+        )
+        .await
+        .unwrap();
+
+        let mut v2 = FakeStages::success();
+        v2.publish_narration = true;
+        v2.reuse_narration = true;
+        v2.narration_input_fingerprint = v2_input;
+        v2.narration_text = "changed narration";
+        v2.narration_audio = b"narration audio v2";
+        v2.active_version = "v002";
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &v2,
+        )
+        .await
+        .unwrap();
+
+        assert!(v2.calls().contains(&"narration"));
+        let active: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(job.narration_dir().join("active.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(active["version"], "v002");
+        assert_eq!(active["input_fingerprint"], v2_input);
         let _ = std::fs::remove_dir_all(root);
     }
 

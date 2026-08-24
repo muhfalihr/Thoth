@@ -802,3 +802,11 @@ Remaining disclosed limitations:
  all v1 cut bytes are unchanged. Serial coordinator suite passed 8/8;
  `cargo check -p thoth-core --all-targets` and `git diff --check` exited 0.
  `build_cuda.bat` was not run.
+
+## Ruling BI corrective round — effective LLM narration identity
+
+- Root cause: with empty `[narration].model`, the production identity omitted the selected `[llm]` model and effective provider endpoint used by narration generation, allowing v001 reuse after a default-model change.
+- RED: `cargo test -p thoth-core default_llm_model_change_publishes_v002_instead_of_reusing_narration -- --test-threads=1` failed before the production identity helper existed.
+- GREEN: a typed, JSON-encoded `NarrationGenerationIdentity` records provider, effective model, and effective endpoint for every supported provider without API keys. The existing presentation-only reaction/news over-invalidation Minor remains deliberately deferred.
+- Regression: empty `[narration].model` plus only `config.llm.groq_model` changing drives the versioned publication path from v001 to v002, proves narration regeneration, and asserts an injected API key is excluded.
+- Verification: focused regression 1/1; serial `planned_main_orchestration_tests` 23/23; serial `narration::timeline` 8/8; `git diff --check` exit 0. Workspace-wide `cargo fmt --check` remains baseline-noisy and no broad formatter output is retained.
