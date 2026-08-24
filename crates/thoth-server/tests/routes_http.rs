@@ -3470,17 +3470,26 @@ fn tree_inventory(root: &std::path::Path) -> (u64, u64) {
 /// FAILS rather than skipping if the link cannot be made — an escape guard no
 /// test ever exercises has zero coverage however green the suite is.
 fn link_dir(target: &std::path::Path, link: &std::path::Path) {
+    if let Some(parent) = link.parent() {
+        std::fs::create_dir_all(parent).expect("link parent must exist before linking");
+    }
     #[cfg(windows)]
     {
-        let status = std::process::Command::new("cmd")
+        // `cmd` reads a leading `/` as a switch, so a path joined with forward
+        // slashes ("…/escaped") makes mklink fail with `Invalid switch`.
+        // Re-collecting the components rewrites them with the platform separator.
+        let link: std::path::PathBuf = link.components().collect();
+        let output = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
-            .arg(link)
+            .arg(&link)
             .arg(target)
-            .status()
+            .output()
             .expect("mklink must be runnable to test link escapes");
         assert!(
-            status.success(),
-            "could not create a directory junction at {link:?} — the escape guard is untested"
+            output.status.success(),
+            "could not create a directory junction at {link:?} — the escape guard is untested\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     #[cfg(not(windows))]

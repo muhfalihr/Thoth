@@ -86,6 +86,15 @@ pub fn build_router(state: AppState) -> Router {
             get(routes::scout_content_set).put(routes::scout_content_set_save),
         )
         .route("/scout/content-set/data", get(routes::scout_content_set_data))
+        .route(
+            "/scout/packages/:package_id/summary",
+            get(routes::scout_package_summary),
+        )
+        .route(
+            "/scout/packages/:package_id/cleanup",
+            post(routes::cleanup_scout_package),
+        )
+        .route("/jobs/:id/cleanup", post(routes::cleanup_job))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,
