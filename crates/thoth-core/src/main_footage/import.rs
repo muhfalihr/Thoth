@@ -596,7 +596,15 @@ mod tests {
             Err(invalid("stop_after_real_import").into())
         }
 
-        fn load_narration(&self, _job: &JobContext) -> anyhow::Result<Option<Self::Narration>> {
+        fn narration_input_fingerprint(
+            &self,
+            _job: &JobContext,
+            _imported: &Self::Imported,
+        ) -> anyhow::Result<String> {
+            unreachable!("validation deliberately stops adapter")
+        }
+
+        fn load_narration(&self, _job: &JobContext, _input_fingerprint: &str) -> anyhow::Result<Option<Self::Narration>> {
             unreachable!("validation deliberately stops this adapter")
         }
 
@@ -604,6 +612,7 @@ mod tests {
             &self,
             _job: &JobContext,
             _execution: &JobExecutionContext,
+            _input_fingerprint: &str,
         ) -> anyhow::Result<Self::Narration> {
             unreachable!("validation deliberately stops this adapter")
         }

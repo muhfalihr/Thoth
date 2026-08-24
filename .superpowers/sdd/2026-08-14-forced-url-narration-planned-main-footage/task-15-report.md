@@ -726,3 +726,27 @@ Remaining disclosed limitations:
 - The external acceptance fixture reuses the committed captured MP4 with deterministic external query/description metadata. It proves registry selection, import, binding, durability, and rendering, but not a third-party external media provider.
 - This corrective round ran the scoped Rust verifier/acceptance/check matrix above, not the entire Scout/dashboard/workspace release matrix. The final release gate must retain the broader Task 15 commands.
 - `build_cuda.bat` was not run, as required.
+
+## Ruling BH corrective round — production narration regeneration
+
+- Root cause: `run_planned_main_with` loaded any active narration before asking whether the
+  inputs used to generate it were still current. The immutable writer could publish v002, but
+  no production lifecycle decision could reach it once v001 existed.
+- RED 1: the versioned narration test failed to compile because there was no input-bound active
+  reader/writer. RED 2: the planned state-machine test failed because its port exposed no
+  narration-input identity and could only load-first. RED 3: the production-branch fixture
+  failed with missing publication controls, proving the required v001 → v002 effect was not
+  asserted by the existing fake-stage tests.
+- GREEN: production hashes a length-delimited identity over the imported source fingerprint,
+  transcript, main context, comments, video descriptions, moments, enrichment descriptor, and
+  narration/provider settings. `active.json` binds the immutable narration generation to that
+  identity. A mismatch returns no reusable narration, so the real planned stage calls the
+  generator and input-bound writer before replanning.
+- Production-path proof: `production_narration_branch_publishes_v002_and_preserves_v001` runs
+  `run_planned_main_with` twice. The second run changes the generation input and audio/words,
+  observes the narration stage, activates v002, and asserts v001 timeline/audio bytes are
+  unchanged. The focused input-identity test separately proves both grounding-sidecar and
+  imported-source changes alter the trigger.
+- GREEN verification: serial planned orchestration 22/22; narration timeline 8/8; import
+  17/17; real `planned_main_footage` acceptance 3/3; `cargo check -p thoth-core --all-targets`
+  exit 0; `git diff --check` exit 0. `build_cuda.bat` was not run.

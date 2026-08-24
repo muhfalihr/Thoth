@@ -217,6 +217,8 @@ struct NarrationActiveV1 {
     version: String,
     timeline_path: String,
     narration_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_fingerprint: Option<String>,
 }
 
 fn validated_fingerprint(timeline: &NarrationTimelineV1) -> Result<String, MainFootageError> {
@@ -357,16 +359,58 @@ pub fn read_narration_timeline(
     Ok(Some((path.clone(), read_timeline(&path)?)))
 }
 
+/// Reads the active immutable narration only when it was generated from the
+/// current production input identity. Legacy pointers have no such binding and
+/// deliberately regenerate once before they become reusable.
+pub fn read_narration_timeline_for_input(
+    job: &JobContext,
+    input_fingerprint: &str,
+) -> Result<Option<(PathBuf, NarrationTimelineV1)>, MainFootageError> {
+    let Some(active) = read_active(job)? else {
+        return Ok(None);
+    };
+    if active.input_fingerprint.as_deref() != Some(input_fingerprint) {
+        return Ok(None);
+    }
+    read_narration_timeline(job)
+}
+
 /// Publishes narration audio and its timeline as an immutable generation, then
 /// atomically selects it. Re-publishing the active identity reuses that version.
 pub fn write_narration_timeline(
     job: &JobContext,
     timeline: &NarrationTimelineV1,
 ) -> Result<PathBuf, MainFootageError> {
+    write_narration_timeline_with_input(job, timeline, None)
+}
+
+/// Publishes narration and binds the active pointer to the inputs that caused
+/// generation, so a changed production request cannot silently reuse it.
+pub fn write_narration_timeline_for_input(
+    job: &JobContext,
+    timeline: &NarrationTimelineV1,
+    input_fingerprint: &str,
+) -> Result<PathBuf, MainFootageError> {
+    write_narration_timeline_with_input(job, timeline, Some(input_fingerprint))
+}
+
+fn write_narration_timeline_with_input(
+    job: &JobContext,
+    timeline: &NarrationTimelineV1,
+    input_fingerprint: Option<&str>,
+) -> Result<PathBuf, MainFootageError> {
     let fingerprint = validated_fingerprint(timeline)?;
     if let Some((path, published)) = read_narration_timeline(job)? {
         if published.fingerprint.as_deref() == Some(fingerprint.as_str()) {
-            return Ok(path);
+            if let Some(input_fingerprint) = input_fingerprint {
+                if let Some(mut active) = read_active(job)? {
+                    active.input_fingerprint = Some(input_fingerprint.to_owned());
+                    publish_active(job, &active)?;
+                    return Ok(path);
+                }
+            } else {
+                return Ok(path);
+            }
         }
     }
 
@@ -397,6 +441,7 @@ pub fn write_narration_timeline(
             version,
             timeline_path: active_timeline_path,
             narration_fingerprint: fingerprint,
+            input_fingerprint: input_fingerprint.map(str::to_owned),
         },
     )?;
     Ok(timeline_path)
@@ -407,7 +452,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{BeatPolicy, build_narration_timeline, write_narration_timeline};
+    use super::{
+        BeatPolicy, build_narration_timeline, read_narration_timeline_for_input,
+        write_narration_timeline_for_input,
+    };
     use crate::main_footage::{MainFootageErrorCode, NarrationTimelineV1};
     use crate::narration::Narration;
     use crate::pipeline::job::JobContext;
@@ -591,8 +639,14 @@ mod tests {
         narration.mp3 = job.narration_mp3();
         let timeline_v1 = build_narration_timeline(&narration, BeatPolicy::default()).unwrap();
 
-        let path_v1 = write_narration_timeline(&job, &timeline_v1).unwrap();
+        let path_v1 =
+            write_narration_timeline_for_input(&job, &timeline_v1, "sha256:input-v1").unwrap();
         assert_eq!(path_v1, job.narration_dir().join("v001/timeline.json"));
+        assert!(
+            read_narration_timeline_for_input(&job, "sha256:input-v1")
+                .unwrap()
+                .is_some()
+        );
         let timeline_v1_bytes = fs::read(&path_v1).unwrap();
         let audio_v1_path = job.narration_dir().join("v001/narration.mp3");
         let audio_v1_bytes = fs::read(&audio_v1_path).unwrap();
@@ -604,7 +658,14 @@ mod tests {
         fs::write(job.narration_mp3(), b"narration audio v2").unwrap();
         narration.words[0].word = "Berubah".into();
         let timeline_v2 = build_narration_timeline(&narration, BeatPolicy::default()).unwrap();
-        let path_v2 = write_narration_timeline(&job, &timeline_v2).unwrap();
+        assert!(
+            read_narration_timeline_for_input(&job, "sha256:input-v2")
+                .unwrap()
+                .is_none(),
+            "changed generation input must not reuse the active narration"
+        );
+        let path_v2 =
+            write_narration_timeline_for_input(&job, &timeline_v2, "sha256:input-v2").unwrap();
         assert_eq!(path_v2, job.narration_dir().join("v002/timeline.json"));
         let published_v2: NarrationTimelineV1 =
             serde_json::from_slice(&fs::read(&path_v2).unwrap()).unwrap();
@@ -617,7 +678,7 @@ mod tests {
         assert_eq!(fs::read(&path_v1).unwrap(), timeline_v1_bytes);
         assert_eq!(fs::read(&audio_v1_path).unwrap(), audio_v1_bytes);
         assert_eq!(
-            write_narration_timeline(&job, &timeline_v2).unwrap(),
+            write_narration_timeline_for_input(&job, &timeline_v2, "sha256:input-v2").unwrap(),
             path_v2
         );
 
@@ -631,6 +692,7 @@ mod tests {
                 "version": "v002",
                 "timeline_path": "narration/v002/timeline.json",
                 "narration_fingerprint": timeline_v2.fingerprint.unwrap(),
+                "input_fingerprint": "sha256:input-v2",
             })
         );
     }

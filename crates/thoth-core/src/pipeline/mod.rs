@@ -181,12 +181,23 @@ pub(crate) trait PlannedMainStagePort: Sync {
 
     fn validate_scene_index(&self, job: &JobContext, imported: &Self::Imported) -> Result<()>;
 
-    fn load_narration(&self, job: &JobContext) -> Result<Option<Self::Narration>>;
+    fn narration_input_fingerprint(
+        &self,
+        job: &JobContext,
+        imported: &Self::Imported,
+    ) -> Result<String>;
+
+    fn load_narration(
+        &self,
+        job: &JobContext,
+        input_fingerprint: &str,
+    ) -> Result<Option<Self::Narration>>;
 
     async fn generate_narration(
         &self,
         job: &JobContext,
         execution: &JobExecutionContext,
+        input_fingerprint: &str,
     ) -> Result<Self::Narration>;
 
     fn narration_fingerprint<'b>(&self, narration: &'b Self::Narration) -> &'b str;
@@ -423,10 +434,11 @@ pub(crate) async fn run_planned_main_with<P: PlannedMainStagePort>(
     emit_planned_checkpoint(MainFootageProgressStage::ValidatingSceneIndex, 0.05);
     execution.check_cancelled()?;
 
-    let narration = match port.load_narration(job)? {
+    let narration_input_fingerprint = port.narration_input_fingerprint(job, &imported)?;
+    let narration = match port.load_narration(job, &narration_input_fingerprint)? {
         Some(narration) => narration,
         None => port
-            .generate_narration(job, execution)
+            .generate_narration(job, execution, &narration_input_fingerprint)
             .await
             .map_err(|error| {
                 planned_error(
@@ -540,6 +552,61 @@ pub(crate) async fn run_planned_main_with<P: PlannedMainStagePort>(
     })
 }
 
+fn fingerprint_narration_inputs(
+    job: &JobContext,
+    source_fingerprint: &str,
+    settings_identity: &str,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    fn add_part(hash: &mut Sha256, label: &str, bytes: &[u8]) {
+        hash.update((label.len() as u64).to_le_bytes());
+        hash.update(label.as_bytes());
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    }
+
+    let mut hash = Sha256::new();
+    add_part(
+        &mut hash,
+        "protocol",
+        b"thoth:planned-narration-input:v1",
+    );
+    add_part(&mut hash, "source_package", source_fingerprint.as_bytes());
+    add_part(&mut hash, "settings", settings_identity.as_bytes());
+
+    let inputs = [
+        ("transcript", job.transcript_path()),
+        (
+            "main_context",
+            job.base_dir
+                .join(crate::ingest::content_search::MAIN_CONTEXT_FILE),
+        ),
+        (
+            "comments",
+            job.base_dir.join(crate::edit::comment_card::COMMENTS_FILE),
+        ),
+        ("video_descriptions", job.video_descriptions_path()),
+        ("moments", job.moments_path()),
+        (
+            "enrichment",
+            job.base_dir
+                .join(crate::edit::enrichment::ENRICHMENT_FILE),
+        ),
+    ];
+    for (label, path) in inputs {
+        match std::fs::read(path) {
+            Ok(bytes) => add_part(&mut hash, label, &bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                add_part(&mut hash, label, b"<missing>")
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Ok(format!("sha256:{:x}", hash.finalize()))
+}
+
 struct ProductionPlannedMainStages<'a, 'b, R> {
     runner: &'a PipelineRunner<'b>,
     provider: &'a LlmProviderName,
@@ -609,8 +676,31 @@ impl<R: PlannedMainRenderer> PlannedMainStagePort for ProductionPlannedMainStage
         Ok(())
     }
 
-    fn load_narration(&self, job: &JobContext) -> Result<Option<Self::Narration>> {
-        Ok(crate::narration::timeline::read_narration_timeline(job)?
+    fn narration_input_fingerprint(
+        &self,
+        job: &JobContext,
+        imported: &Self::Imported,
+    ) -> Result<String> {
+        let settings_identity = format!(
+            "provider={};narration={:?};reaction={:?};news={:?};vector_db={:?}",
+            self.provider,
+            self.runner.config.narration,
+            self.runner.config.reaction,
+            self.runner.config.news,
+            self.runner.config.vector_db,
+        );
+        fingerprint_narration_inputs(job, &imported.fingerprint, &settings_identity)
+    }
+
+    fn load_narration(
+        &self,
+        job: &JobContext,
+        input_fingerprint: &str,
+    ) -> Result<Option<Self::Narration>> {
+        Ok(crate::narration::timeline::read_narration_timeline_for_input(
+            job,
+            input_fingerprint,
+        )?
             .map(|(_, timeline)| timeline))
     }
 
@@ -618,13 +708,18 @@ impl<R: PlannedMainRenderer> PlannedMainStagePort for ProductionPlannedMainStage
         &self,
         job: &JobContext,
         _execution: &JobExecutionContext,
+        input_fingerprint: &str,
     ) -> Result<Self::Narration> {
         let narration = self.runner.generate_narration(job, self.provider).await?;
         let timeline = crate::narration::timeline::build_narration_timeline(
             &narration,
             crate::narration::timeline::BeatPolicy::default(),
         )?;
-        crate::narration::timeline::write_narration_timeline(job, &timeline)?;
+        crate::narration::timeline::write_narration_timeline_for_input(
+            job,
+            &timeline,
+            input_fingerprint,
+        )?;
         crate::narration::timeline::read_narration_timeline(job)?
             .map(|(_, timeline)| timeline)
             .ok_or_else(|| timeline_error("narration_timeline_missing"))
@@ -1807,7 +1902,10 @@ mod planned_main_orchestration_tests {
 
     use async_trait::async_trait;
 
-    use super::{PlannedMainInput, PlannedMainStagePort, run_planned_main_with};
+    use super::{
+        PlannedMainInput, PlannedMainStagePort, fingerprint_narration_inputs,
+        run_planned_main_with,
+    };
     use crate::edit::service::{ClipOutput, EditResult};
     use crate::execution::JobExecutionContext;
     use crate::main_footage::{MainFootageError, MainFootageErrorCode, PlanningMode};
@@ -1828,12 +1926,18 @@ mod planned_main_orchestration_tests {
     struct FakeStages {
         calls: Mutex<Vec<&'static str>>,
         source_fingerprint: &'static str,
+        narration_input_fingerprint: &'static str,
+        stored_narration_input_fingerprint: &'static str,
         narration_fingerprint: &'static str,
         plan_fingerprint: &'static str,
         fail: Option<&'static str>,
         cancel_after_import: bool,
         cancel_after_narration: bool,
         reuse_narration: bool,
+        publish_narration: bool,
+        narration_text: &'static str,
+        narration_audio: &'static [u8],
+        active_version: &'static str,
         render_path: Option<PathBuf>,
     }
 
@@ -1842,12 +1946,18 @@ mod planned_main_orchestration_tests {
             Self {
                 calls: Mutex::new(Vec::new()),
                 source_fingerprint: "sha256:source",
+                narration_input_fingerprint: "sha256:narration-input",
+                stored_narration_input_fingerprint: "sha256:narration-input",
                 narration_fingerprint: "sha256:narration",
                 plan_fingerprint: "sha256:plan",
                 fail: None,
                 cancel_after_import: false,
                 cancel_after_narration: false,
                 reuse_narration: false,
+                publish_narration: false,
+                narration_text: "narration",
+                narration_audio: b"narration audio",
+                active_version: "v001",
                 render_path: None,
             }
         }
@@ -1865,7 +1975,7 @@ mod planned_main_orchestration_tests {
                 source_package_fingerprint: self.source_fingerprint.into(),
                 narration_fingerprint: self.narration_fingerprint.into(),
                 plan_fingerprint: self.plan_fingerprint.into(),
-                active_version: "v001".into(),
+                active_version: self.active_version.into(),
                 render_settings_fingerprint: None,
                 planning_mode: PlanningMode::Vision,
                 coverage_target: 0.6,
@@ -1925,16 +2035,40 @@ mod planned_main_orchestration_tests {
             Ok(())
         }
 
-        fn load_narration(&self, _job: &JobContext) -> anyhow::Result<Option<Self::Narration>> {
-            Ok(self.reuse_narration.then(|| Artifact {
-                fingerprint: self.narration_fingerprint.into(),
-            }))
+        fn narration_input_fingerprint(
+            &self,
+            _job: &JobContext,
+            _imported: &Self::Imported,
+        ) -> anyhow::Result<String> {
+            Ok(self.narration_input_fingerprint.into())
+        }
+
+        fn load_narration(
+            &self,
+            job: &JobContext,
+            input_fingerprint: &str,
+        ) -> anyhow::Result<Option<Self::Narration>> {
+            if self.publish_narration {
+                return Ok(crate::narration::timeline::read_narration_timeline_for_input(
+                    job,
+                    input_fingerprint,
+                )?
+                .map(|(_, timeline)| Artifact {
+                    fingerprint: timeline.fingerprint.unwrap(),
+                }));
+            }
+            Ok((self.reuse_narration
+                && self.stored_narration_input_fingerprint == input_fingerprint)
+                .then(|| Artifact {
+                    fingerprint: self.narration_fingerprint.into(),
+                }))
         }
 
         async fn generate_narration(
             &self,
-            _job: &JobContext,
+            job: &JobContext,
             execution: &JobExecutionContext,
+            input_fingerprint: &str,
         ) -> anyhow::Result<Self::Narration> {
             self.push("narration");
             if self.fail == Some("narration") {
@@ -1942,6 +2076,34 @@ mod planned_main_orchestration_tests {
             }
             if self.cancel_after_narration {
                 execution.cancel();
+            }
+            if self.publish_narration {
+                std::fs::create_dir_all(job.narration_dir())?;
+                std::fs::write(job.narration_mp3(), self.narration_audio)?;
+                let narration = crate::narration::Narration {
+                    mp3: job.narration_mp3(),
+                    words: vec![crate::transcribe::model::WordTimestamp {
+                        word: self.narration_text.into(),
+                        start_ms: 0,
+                        end_ms: 1_000,
+                        probability: 1.0,
+                    }],
+                    duration_secs: 1.0,
+                    hook: self.narration_text.into(),
+                    text: self.narration_text.into(),
+                };
+                let timeline = crate::narration::timeline::build_narration_timeline(
+                    &narration,
+                    crate::narration::timeline::BeatPolicy::default(),
+                )?;
+                crate::narration::timeline::write_narration_timeline_for_input(
+                    job,
+                    &timeline,
+                    input_fingerprint,
+                )?;
+                return Ok(Artifact {
+                    fingerprint: timeline.fingerprint.unwrap(),
+                });
             }
             Ok(Artifact {
                 fingerprint: self.narration_fingerprint.into(),
@@ -1968,7 +2130,7 @@ mod planned_main_orchestration_tests {
             _job: &JobContext,
             _planned: &PlannedMainInput,
             _imported: &Self::Imported,
-            _narration: &Self::Narration,
+            narration: &Self::Narration,
             _execution: &JobExecutionContext,
         ) -> anyhow::Result<Self::Verified> {
             self.push("planning");
@@ -1991,7 +2153,9 @@ mod planned_main_orchestration_tests {
                 )
                 .into());
             }
-            Ok(self.stage_result())
+            let mut result = self.stage_result();
+            result.narration_fingerprint = narration.fingerprint.clone();
+            Ok(result)
         }
 
         fn verified_state(&self, verified: &Self::Verified) -> MainFootageStageResult {
@@ -2064,6 +2228,29 @@ mod planned_main_orchestration_tests {
         (root, job, state, planned)
     }
 
+    #[test]
+    fn narration_input_identity_tracks_grounding_sidecars_and_source() {
+        let (root, job, _state, _planned) = fixture();
+        std::fs::create_dir_all(job.transcribe_dir()).unwrap();
+        std::fs::write(job.transcript_path(), br#"{"segments":[]}"#).unwrap();
+        let first = fingerprint_narration_inputs(&job, "sha256:source-v1", "settings-v1")
+            .unwrap();
+
+        std::fs::write(
+            root.join(crate::ingest::content_search::MAIN_CONTEXT_FILE),
+            br#"{"title":"changed narration grounding"}"#,
+        )
+        .unwrap();
+        let changed_grounding =
+            fingerprint_narration_inputs(&job, "sha256:source-v1", "settings-v1").unwrap();
+        let changed_source =
+            fingerprint_narration_inputs(&job, "sha256:source-v2", "settings-v1").unwrap();
+
+        assert_ne!(first, changed_grounding);
+        assert_ne!(changed_grounding, changed_source);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn code(error: &anyhow::Error) -> MainFootageErrorCode {
         error
             .downcast_ref::<MainFootageError>()
@@ -2108,6 +2295,101 @@ mod planned_main_orchestration_tests {
         );
         assert!(state.stages.transcribe.is_none());
         assert!(state.stages.analyze.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn changed_narration_input_regenerates_before_replanning() {
+        let _guard = planned_test_lock();
+        let (root, job, mut state, planned) = fixture();
+        let mut stages = FakeStages::success();
+        stages.reuse_narration = true;
+        stages.stored_narration_input_fingerprint = "sha256:input-v1";
+        stages.narration_input_fingerprint = "sha256:input-v2";
+        let mut old = stages.stage_result();
+        old.narration_fingerprint = "sha256:narration-v1".into();
+        state.stages.main_footage = Some(old);
+
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &stages,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            stages.calls(),
+            [
+                "import",
+                "validate",
+                "narration",
+                "planning",
+                "materialization",
+                "verification",
+                "render"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn production_narration_branch_publishes_v002_and_preserves_v001() {
+        let _guard = planned_test_lock();
+        let (root, job, mut state, planned) = fixture();
+
+        let mut v1 = FakeStages::success();
+        v1.publish_narration = true;
+        v1.narration_input_fingerprint = "sha256:input-v1";
+        v1.narration_text = "first narration";
+        v1.narration_audio = b"narration audio v1";
+        v1.active_version = "v001";
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &v1,
+        )
+        .await
+        .unwrap();
+        let v1_timeline = job.narration_dir().join("v001/timeline.json");
+        let v1_audio = job.narration_dir().join("v001/narration.mp3");
+        let v1_timeline_bytes = std::fs::read(&v1_timeline).unwrap();
+        let v1_audio_bytes = std::fs::read(&v1_audio).unwrap();
+
+        let mut v2 = FakeStages::success();
+        v2.publish_narration = true;
+        v2.reuse_narration = true;
+        v2.narration_input_fingerprint = "sha256:input-v2";
+        v2.narration_text = "changed narration";
+        v2.narration_audio = b"narration audio v2";
+        v2.active_version = "v002";
+        run_planned_main_with(
+            &job,
+            &mut state,
+            &planned,
+            &JobExecutionContext::new(),
+            &v2,
+        )
+        .await
+        .unwrap();
+
+        assert!(v2.calls().contains(&"narration"));
+        assert_eq!(std::fs::read(&v1_timeline).unwrap(), v1_timeline_bytes);
+        assert_eq!(std::fs::read(&v1_audio).unwrap(), v1_audio_bytes);
+        assert_eq!(
+            std::fs::read(job.narration_dir().join("v002/narration.mp3")).unwrap(),
+            b"narration audio v2"
+        );
+        let active: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(job.narration_dir().join("active.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(active["version"], "v002");
+        assert_eq!(active["input_fingerprint"], "sha256:input-v2");
         let _ = std::fs::remove_dir_all(root);
     }
 
