@@ -341,7 +341,9 @@ fn canonical_number(number: &serde_json::Number) -> String {
         return number.to_string();
     }
     let mut buffer = ryu_js::Buffer::new();
-    buffer.format(number.as_f64().expect("f64 number")).to_string()
+    buffer
+        .format(number.as_f64().expect("f64 number"))
+        .to_string()
 }
 
 fn canonical_json(value: &Value) -> Result<String, String> {
