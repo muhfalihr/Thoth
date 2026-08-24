@@ -481,6 +481,49 @@ mod tests {
         }
     }
 
+    /// Every fixture in this repo is Rust-constructed, so the strict decoder has
+    /// only ever been shown manifests the Rust serializer wrote. Scout writes two
+    /// further members on **every** source it emits — `bytes` and `acquisition`
+    /// (`scout/main_footage/source_package.ts:140-156`) — and `SourceVideoV1` is
+    /// `deny_unknown_fields`. Without this case a genuine Scout package dies at
+    /// import with `package_manifest_rejected` while the whole suite is green.
+    #[test]
+    fn import_accepts_the_source_members_scout_actually_writes() {
+        let fixture = fixture();
+        remanifest(&fixture, |value| {
+            let source = &mut value["sources"][0];
+            source["bytes"] = json!(28);
+            source["acquisition"] = json!({
+                "source": "yt-dlp",
+                "attempts": 1,
+                "elapsed_ms": 1234,
+            });
+        });
+
+        let imported = run(&fixture).unwrap_or_else(|error| {
+            panic!("a package in Scout's own shape must import: {error:#}")
+        });
+        let source = &imported.package.sources[0];
+        assert_eq!(source.bytes, Some(28));
+        let acquisition = source
+            .acquisition
+            .as_ref()
+            .expect("Scout's acquisition provenance must survive the import");
+        assert_eq!(acquisition.source, "yt-dlp");
+        assert_eq!(acquisition.attempts, 1);
+        assert_eq!(acquisition.elapsed_ms, 1234);
+    }
+
+    /// A package written before Scout emitted those members must still import —
+    /// they are optional in `scout/main_footage/contracts.ts` too.
+    #[test]
+    fn import_accepts_a_source_without_scouts_optional_members() {
+        let fixture = fixture();
+        let imported = run(&fixture).unwrap();
+        assert_eq!(imported.package.sources[0].bytes, None);
+        assert!(imported.package.sources[0].acquisition.is_none());
+    }
+
     #[test]
     fn valid_package_becomes_job_owned_artifacts_and_a_manifest() {
         let fixture = fixture();

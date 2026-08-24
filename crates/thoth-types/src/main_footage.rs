@@ -447,6 +447,22 @@ pub struct SourceTechnicalMetadata {
     pub has_audio: bool,
 }
 
+/// How Scout obtained one source. Provenance only — nothing downstream plans
+/// against it, but it is written on every source Scout emits, so the strict
+/// decoder has to know about it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAcquisitionV1 {
+    /// Free-form because Scout's `AcquisitionSource` union is kebab-case
+    /// (`public-metadata`, `gallery-dl`, `yt-dlp`, `direct-http`) and grows on
+    /// the Scout side; mirroring it as a Rust enum would re-create the very
+    /// drift this field exists to close.
+    #[serde(deserialize_with = "deserialize_non_blank")]
+    pub source: String,
+    pub attempts: u32,
+    pub elapsed_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceVideoV1 {
@@ -457,7 +473,14 @@ pub struct SourceVideoV1 {
     pub path: String,
     #[serde(deserialize_with = "deserialize_sha256_identity")]
     pub checksum: String,
+    /// Size of the published source file. Optional in
+    /// `scout/main_footage/contracts.ts`, so a package written before Scout
+    /// emitted it still decodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
     pub technical: SourceTechnicalMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<SourceAcquisitionV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

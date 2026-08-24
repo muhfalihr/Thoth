@@ -1473,6 +1473,13 @@ fn write_forced_main_fixture(root: &std::path::Path) -> PathBuf {
                 "media_index": 0,
                 "path": "sources/source-0.mp4",
                 "checksum": "sha256:source0",
+                // `bytes` and `acquisition` are written on every source Scout
+                // emits (`scout/main_footage/source_package.ts:140-156`). The
+                // manifest this helper writes lives under the Scout output root
+                // and is strict-decoded by `inspect_main_footage_descriptor`, so
+                // it has to be in Scout's real shape or the whole forced-main
+                // validation suite is testing a shape production never sees.
+                "bytes": 4096,
                 "technical": {
                     "container": "mp4",
                     "video_codec": "h264",
@@ -1480,6 +1487,11 @@ fn write_forced_main_fixture(root: &std::path::Path) -> PathBuf {
                     "width": 1080,
                     "height": 1920,
                     "has_audio": true
+                },
+                "acquisition": {
+                    "source": "yt-dlp",
+                    "attempts": 1,
+                    "elapsed_ms": 1234
                 }
             }],
             "ignored": [],
