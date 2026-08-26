@@ -11,6 +11,10 @@ export type MainCandidate = Record<string, unknown> & {
   pageUrl?: string;
   isVideo?: boolean;
   is_video?: boolean;
+  /** Epoch seconds from the metadata probe. Absent when the extractor gave none. */
+  publishedAt?: number;
+  /** Media length in seconds from the metadata probe. Absent when unknown. */
+  durationSec?: number;
 };
 
 export type MainStoryEvidence = {

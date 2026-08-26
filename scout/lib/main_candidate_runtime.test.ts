@@ -207,13 +207,23 @@ const tiktok = await probeMainCandidateVideo(
     uploader: 'creator',
   },
   {
-    probeVideo: () => {
-      throw new Error('TikTok must retain its existing no-probe path');
-    },
+    postShape: () => ({
+      ok: true,
+      shape: 'video',
+      slides: [{ index: 1, kind: 'video', duration: 30 }],
+      caption: 'creator content',
+      thumbnail: 'https://cdn.example/tiktok.jpg',
+      time: 1700000000,
+      uploader: 'creator',
+      webpageUrl: 'https://www.tiktok.com/@creator/video/1',
+    }),
   },
 );
 assert.equal(tiktok.isVideo, true);
 assert.equal(tiktok.candidate.uploader, 'creator');
+assert.equal(tiktok.candidate.thumbnail, 'https://cdn.example/tiktok.jpg');
+assert.equal(tiktok.candidate.publishedAt, 1700000000);
+assert.equal(tiktok.candidate.durationSec, 30);
 
 const score = await scoreMainCandidateSimilarity(
   'actor selling food',
@@ -324,5 +334,46 @@ assert.equal(tiktokUnresolvable, null);
   );
   assert.equal(media?.status, 'resolved', 'no video slide must fall back, not reject');
 }
+
+const tiktokProbed = await probeMainCandidateVideo(
+  {
+    url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+    platform: 'tiktok',
+    caption: '',
+    thumbnail: '',
+    isVideo: true,
+  },
+  {
+    postShape: () => ({
+      ok: true,
+      shape: 'video',
+      slides: [{ index: 1, kind: 'video', duration: 124 }],
+      caption: '',
+      thumbnail: 'https://cdn.example/cover.jpg',
+      time: 1787472811,
+      uploader: 'vincentius.christ76',
+      webpageUrl: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+    }),
+  },
+);
+assert.equal(
+  tiktokProbed.candidate.thumbnail,
+  'https://cdn.example/cover.jpg',
+  'without a thumbnail describeEvidence returns "" and an empty-caption source is unscoreable',
+);
+assert.equal(tiktokProbed.candidate.publishedAt, 1787472811);
+assert.equal(tiktokProbed.candidate.durationSec, 124);
+assert.equal(tiktokProbed.candidate.uploader, 'vincentius.christ76');
+
+const tiktokProbeFailed = await probeMainCandidateVideo(
+  { url: 'https://www.tiktok.com/@x/video/1', platform: 'tiktok', isVideo: true },
+  { postShape: () => ({ ok: false, shape: '', slides: [], caption: '' }) },
+);
+assert.equal(
+  tiktokProbeFailed.available,
+  true,
+  'fail open: resolveMainCandidateMedia has its own TikTok direct-url fallback',
+);
+assert.equal(tiktokProbeFailed.isVideo, true);
 
 console.log('ok main_candidate_runtime');
