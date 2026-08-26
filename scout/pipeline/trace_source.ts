@@ -16,13 +16,18 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { AcquisitionRunContext, PostRecord } from '../acquisition/index.ts';
+import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 import {
   evaluateMainSuitability,
   type MainCandidate,
   type MainCandidateOrigin,
   type MainStoryEvidence,
 } from '../lib/main_candidate.ts';
-import { appendMainCandidateDiagnostic } from '../lib/main_candidate_diagnostics.ts';
+import {
+  appendMainCandidateDiagnostic,
+  formatMainGateSummary,
+} from '../lib/main_candidate_diagnostics.ts';
 import { createMainCandidateRuntimeDeps } from '../lib/main_candidate_runtime.ts';
 import { chooseInputOrReplacement, rankAcceptedMainCandidates } from '../lib/main_gate.ts';
 import { admitSearchCandidates } from '../lib/main_search_candidates.ts';
@@ -33,16 +38,16 @@ import {
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
+import { tikwmLookup } from '../lib/tikwm.ts';
 import { matchesTopic } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
 import { resolveSource, tightenQuery } from './resolve_source.ts';
+import { scanSourceCredit } from './source_credit_scan.ts';
 import {
   readVisionSignals,
   selectTraceVisionInput,
   visionInputDataUrl,
 } from './trace_source_vision.ts';
-import type { AcquisitionRunContext, PostRecord } from '../acquisition/index.ts';
-import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
 export interface TraceSourceOptions {
   file: string;
@@ -84,7 +89,7 @@ const VIDEO = new Set(['tiktok', 'youtube']);
 // threads can't be probed by yt-dlp (page = "Unsupported URL") → confirmed via its fbcdn video src.
 const DLABLE = new Set(['tiktok', 'youtube', 'twitter', 'instagram', 'facebook', 'threads']);
 
-import { novitaKey } from '../lib/env.ts';
+import { chatCompletion, chatKey } from '../lib/llm.ts';
 import { ui } from '../lib/ui.ts';
 
 const cleanUser = (u) =>
@@ -118,23 +123,19 @@ async function visionHeadline(imgUrl, key, model) {
 DAN kredit/watermark akun kecil bila ada (mis. "@akun", "cr: ...", logo channel). Kembalikan HANYA
 teksnya apa adanya (gabung jadi 1-2 baris), atau "" kalau tak ada teks.`;
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({
-        model,
-        max_tokens: 200,
-        temperature: 0,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: dataUrl } },
-            ],
-          },
-        ],
-      }),
+    const resp = await chatCompletion({
+      model,
+      max_tokens: 200,
+      temperature: 0,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
     });
     if (!resp.ok) return '';
     const d = await resp.json();
@@ -160,23 +161,19 @@ APA ADANYA (itu sinyal topik paling menentukan untuk membedakan klip mirip). Lal
 AKSI/kegiatan spesifik yang terjadi (apa yang sedang dilakukan), objek, dan lokasi — bukan cuma siapa
 orangnya. Format: "<teks overlay>. <aksi/scene singkat>". Bahasa Indonesia, tanpa tanda kutip.`;
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({
-        model,
-        max_tokens: 160,
-        temperature: 0,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: dataUrl } },
-            ],
-          },
-        ],
-      }),
+    const resp = await chatCompletion({
+      model,
+      max_tokens: 160,
+      temperature: 0,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ],
+        },
+      ],
     });
     if (!resp.ok) return '';
     const d = await resp.json();
@@ -218,23 +215,19 @@ async function visionCoverKind(imgUrl, key, model) {
      podcast, kartu teks/meme, slideshow, split-screen reaksi.
 Contoh: {"desc":"...", "kind":"footage"}`;
   try {
-    const response = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model,
-        max_tokens: 220,
-        temperature: 0,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: `data:${ct};base64,${b64}` } },
-            ],
-          },
-        ],
-      }),
+    const response = await chatCompletion({
+      model,
+      max_tokens: 220,
+      temperature: 0,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: `data:${ct};base64,${b64}` } },
+          ],
+        },
+      ],
     });
     if (!response.ok) return { desc: '', kind: '' };
     const data = await response.json();
@@ -277,6 +270,21 @@ function handleMatch(url, u) {
   return !!h && normHandle(h) === want;
 }
 
+// Direct media URL for the first-second credit scan, or '' when getting one would cost a download.
+// The cover scan runs for every platform regardless; this only adds the in-video frames when the
+// media is one already-gated lookup away. A page URL is useless here — ffmpeg cannot seek into it.
+async function creditScanVideoSrc(
+  main: { platform?: string; url?: string },
+  record: PostRecord | null,
+  context: AcquisitionRunContext,
+): Promise<string> {
+  const captured = record?.media?.find((asset) => asset.kind === 'video' && asset.ephemeral_url);
+  if (captured?.ephemeral_url) return captured.ephemeral_url;
+  if (main.platform !== 'tiktok' || !main.url) return '';
+  const resolved = await resolveTiktokCdn(main.url, context);
+  return resolved?.url || '';
+}
+
 // Resolve a TikTok page URL to a direct downloadable CDN mp4 url. tikwm.com mirror API first (plain
 // HTTP, no browser); CDP fallback reads the page's own <video> element through the ONE sanctioned
 // navigation seam (context.service.browse) instead of a raw CDP connection. Mirrors the old
@@ -285,20 +293,14 @@ async function resolveTiktokCdn(
   pageUrl: string,
   context: AcquisitionRunContext,
 ): Promise<{ url: string; via: string } | null> {
-  try {
-    const r = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(pageUrl)}&hd=1`, {
-      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (r.ok) {
-      const j: any = await r.json();
-      let p = j?.data?.hdplay || j?.data?.play || j?.data?.wmplay;
-      if (p) {
-        if (!/^https?:\/\//.test(p)) p = `https://www.tikwm.com${p}`;
-        return { url: p, via: 'tikwm' };
-      }
-    }
-  } catch (e) {}
+  // Shared gate, not a private fetch: this run calls tikwm again later to localize media for
+  // the required OCR stage, and tikwm's free tier allows one request per second.
+  const data = await tikwmLookup(pageUrl);
+  let p = data?.hdplay || data?.play || data?.wmplay;
+  if (p) {
+    if (!/^https?:\/\//.test(p)) p = `https://www.tikwm.com${p}`;
+    return { url: p, via: 'tikwm' };
+  }
   try {
     const src = await context.service.browse('tiktok', pageUrl, async (client) => {
       await new Promise((r) => setTimeout(r, 3500));
@@ -838,18 +840,33 @@ export async function runTraceSource(
       log: (line) => console.log(line),
     });
     const signals = await readVisionSignals(selectedCover.input, {
-      headline: (input) => visionHeadline(input, novitaKey(), model),
-      scene: (input) => visionCover(input, novitaKey(), model),
+      headline: (input) => visionHeadline(input, chatKey('vision'), model),
+      scene: (input) => visionCover(input, chatKey('vision'), model),
     });
     headline = signals.headline;
     scene = signals.scene;
     console.log(`[1] caption: ${(caption || '(kosong)').slice(0, 60)}`);
     console.log(`[2] headline(vision): ${(headline || '(kosong)').slice(0, 70)}`);
     console.log(`[2b] scene(vision): ${(scene || '(kosong)').slice(0, 70)}`);
+    // Kredit sumber sering cuma ada di PIXEL: "@akun" tercetak di cover / detik pertama, atau
+    // sekadar ikon platform tanpa kata. Dibaca sebelum LLM memutuskan, lalu diberikan sebagai bukti.
+    const creditScan = await scanSourceCredit(
+      {
+        coverInput: selectedCover.input,
+        videoSrc: await creditScanVideoSrc(main, record, context),
+      },
+      { log: (line) => console.log(line) },
+    );
     const res = await resolveSource({
       description: main.description || main.title || '',
       caption,
       headline: [headline, scene].filter(Boolean).join(' — '),
+      credit: {
+        handles: creditScan.handles,
+        frameText: creditScan.frameText,
+        logoPlatform: creditScan.platform,
+        poster: urlHandle(main.url),
+      },
     });
     console.log(
       `[3] LLM → source: ${res.source ? '@' + res.source.account + (res.source.platform ? '/' + res.source.platform : '') : 'null'} | keywords: ${res.keywords.join(', ') || '-'}`,
@@ -907,11 +924,11 @@ export async function runTraceSource(
   const runtimeDeps = createMainCandidateRuntimeDeps({
     describeEvidence: async (candidate) => {
       if (!candidate.thumbnail) return '';
-      const result = await visionCoverKind(candidate.thumbnail, novitaKey(), model);
+      const result = await visionCoverKind(candidate.thumbnail, chatKey('vision'), model);
       return result.desc || '';
     },
     classifyImage: async (image) => {
-      const result = await visionCoverKind(image, novitaKey(), model);
+      const result = await visionCoverKind(image, chatKey('vision'), model);
       return result.kind === 'footage' || result.kind === 'commentary' ? result.kind : 'unknown';
     },
   });
@@ -928,31 +945,57 @@ export async function runTraceSource(
     isVideo: main.is_video !== false,
   };
 
-  const decision = await chooseInputOrReplacement(inputCandidate, storyEvidence, {
-    evaluate,
-    // No credited account (step 3 came back empty, or with the "@akun" placeholder resolve_source
-    // now strips): the search had nothing to aim at, so an empty result is not evidence against the
-    // input post. Keep it as main instead of failing the run.
-    retainInputWhenUncredited: !username,
-    appendDiagnostic: appendMainCandidateDiagnostic,
-    search: () =>
-      discoverReplacementCandidates({
-        username,
-        platHint,
-        searchTopic,
-        keywords,
-        storyText: storyCtx,
-        query: '',
-        cliKeywords,
-        context,
-      }),
-    rankAccepted: (results) =>
-      rankAcceptedMainCandidates(results, {
-        credited: username,
-        repostHandle: urlHandle(main.url),
-        preferFootage: process.env.THOTH_SOURCE_PREFER_FOOTAGE !== '0',
-      }),
-  });
+  // The per-candidate ledger only ever reached a jsonl file, so on screen the gate was a silence
+  // between "[3] LLM → source" and either a replacement or a dead run — with no way to tell a search
+  // that found nothing from candidates that were all rejected, and no way to see WHY they were.
+  const gateTally = { accepted: 0, rejected: {} as Record<string, number> };
+  const reportGate = () => {
+    if (gateTally.accepted || Object.keys(gateTally.rejected).length)
+      console.log(`    · kandidat pengganti: ${formatMainGateSummary(gateTally)}`);
+  };
+  // finally, not after: an empty search throws MainCandidateNotFoundError, and that is exactly the
+  // run where the tally is the only explanation the user gets.
+  let decision: Awaited<ReturnType<typeof chooseInputOrReplacement>>;
+  try {
+    decision = await chooseInputOrReplacement(inputCandidate, storyEvidence, {
+      evaluate,
+      // No credited account (step 3 came back empty, or with the "@akun" placeholder resolve_source
+      // now strips): the search had nothing to aim at, so an empty result is not evidence against the
+      // input post. Keep it as main instead of failing the run.
+      retainInputWhenUncredited: !username,
+      appendDiagnostic: (record) => {
+        if (record.origin === 'search') {
+          if (record.status === 'accepted') gateTally.accepted += 1;
+          // `detail` when present: 'media_unavailable' alone cannot separate a stream that would not
+          // resolve from an OCR that could not read the file it was handed.
+          else if (record.status === 'rejected') {
+            const key = String(record.detail || record.reason || 'unknown');
+            gateTally.rejected[key] = (gateTally.rejected[key] || 0) + 1;
+          }
+        }
+        appendMainCandidateDiagnostic(record);
+      },
+      search: () =>
+        discoverReplacementCandidates({
+          username,
+          platHint,
+          searchTopic,
+          keywords,
+          storyText: storyCtx,
+          query: '',
+          cliKeywords,
+          context,
+        }),
+      rankAccepted: (results) =>
+        rankAcceptedMainCandidates(results, {
+          credited: username,
+          repostHandle: urlHandle(main.url),
+          preferFootage: process.env.THOTH_SOURCE_PREFER_FOOTAGE !== '0',
+        }),
+    });
+  } finally {
+    reportGate();
+  }
 
   if (keywords.length) set.main.source_keywords = keywords;
   if (decision.status === 'retain') {
