@@ -8,6 +8,7 @@ import type {
 import type { PersistedOcrFields } from './ocr_contract.ts';
 
 type AcceptedSuitability = Extract<MainSuitability, { status: 'accepted' }>;
+type IndeterminateSuitability = Extract<MainSuitability, { status: 'indeterminate' }>;
 
 export type MainGateDecision =
   | {
@@ -22,7 +23,7 @@ export type MainGateDecision =
       status: 'replace';
       candidate: MainCandidate & PersistedOcrFields;
       confidence: 'high' | 'low';
-      suitability: 'accepted';
+      suitability: 'accepted' | 'indeterminate';
     };
 
 export class MainCandidateNotFoundError extends Error {
@@ -140,13 +141,27 @@ export async function chooseInputOrReplacement(
 
   const discovered = await deps.search();
   const acceptedResults: AcceptedSuitability[] = [];
+  const indeterminateResults: IndeterminateSuitability[] = [];
   for (const candidate of discovered) {
     const result = await deps.evaluate(candidate, story, 'search');
     appendEvaluationDiagnostic(deps, candidate, 'search', result);
     if (result.status === 'accepted') acceptedResults.push(result);
+    else if (result.status === 'indeterminate') indeterminateResults.push(result);
   }
   const selected = (deps.rankAccepted ?? ((results) => results[0] || null))(acceptedResults);
   if (!selected) {
+    // A candidate nobody could score is not a candidate anybody rejected. The gate already
+    // retains an indeterminate INPUT; refusing to replace with an indeterminate SEARCH result
+    // is what turned "found the credited account" into "took no video at all".
+    const fallback = indeterminateResults[0];
+    if (fallback) {
+      return {
+        status: 'replace',
+        candidate: fallback.candidate,
+        confidence: 'low',
+        suitability: 'indeterminate',
+      };
+    }
     if (!deps.retainInputWhenUncredited) throw new MainCandidateNotFoundError();
     return { status: 'retain', candidate: input, confidence: 'low', suitability: 'unverified' };
   }

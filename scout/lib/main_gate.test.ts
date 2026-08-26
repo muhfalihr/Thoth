@@ -6,6 +6,7 @@ import {
   rankAcceptedMainCandidates,
 } from './main_gate.ts';
 import { OCR_ANALYZER_VERSION } from './ocr_contract.ts';
+import type { PersistedOcrFields } from './ocr_contract.ts';
 
 const input: MainCandidate = {
   url: 'https://www.instagram.com/p/INPUT/',
@@ -21,6 +22,20 @@ const story = {
   storyText: 'headline scene description',
 } satisfies MainStoryEvidence;
 
+const ocrFields: PersistedOcrFields = {
+  ocr_schema_version: 1,
+  ocr_status: 'analyzed',
+  ocr_model: 'deepseek/deepseek-ocr',
+  ocr_analyzer_version: OCR_ANALYZER_VERSION,
+  ocr_analyzed_at: '2026-07-29T00:00:00.000Z',
+  ocr_requested_frames: 1,
+  ocr_valid_frames: 1,
+  ocr_outcome: 'clean',
+  trim_start: 0,
+  mute_audio: false,
+  subtitle_blur: [],
+};
+
 const accepted = (
   value: MainCandidate,
   similarity: number,
@@ -31,17 +46,7 @@ const accepted = (
   confidence: 'high',
   candidate: {
     ...value,
-    ocr_schema_version: 1,
-    ocr_status: 'analyzed',
-    ocr_model: 'deepseek/deepseek-ocr',
-    ocr_analyzer_version: OCR_ANALYZER_VERSION,
-    ocr_analyzed_at: '2026-07-29T00:00:00.000Z',
-    ocr_requested_frames: 1,
-    ocr_valid_frames: 1,
-    ocr_outcome: 'clean',
-    trim_start: 0,
-    mute_audio: false,
-    subtitle_blur: [],
+    ...ocrFields,
   },
 });
 
@@ -197,6 +202,42 @@ const accepted = (
   assert.equal(decision.candidate.url, input.url);
   assert.equal(decision.suitability, 'unverified');
   assert.equal(decision.confidence, 'low');
+}
+
+{
+  const decision = await chooseInputOrReplacement(
+    { url: 'https://www.tiktok.com/@detikjatim/video/7677496203042360594', platform: 'tiktok' },
+    story,
+    {
+      evaluate: async (candidate, _story, origin) =>
+        origin === 'input'
+          ? { status: 'rejected', reason: 'curated_aggregator' }
+          : {
+              status: 'indeterminate',
+              reason: 'similarity_unavailable',
+              confidence: 'low',
+              kind: 'footage',
+              candidate: { ...candidate, ...ocrFields },
+            },
+      search: async () => [
+        {
+          url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+          platform: 'tiktok',
+        },
+      ],
+    },
+  );
+  assert.equal(
+    decision.status,
+    'replace',
+    'an unscored candidate is not a rejected one — dropping it took no video at all',
+  );
+  assert.equal(decision.suitability, 'indeterminate');
+  assert.equal(decision.confidence, 'low');
+  assert.equal(
+    decision.candidate.url,
+    'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+  );
 }
 
 console.log('ok main_gate');
