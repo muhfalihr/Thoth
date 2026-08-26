@@ -5,7 +5,11 @@ import {
   type MainCandidateEvaluatorDeps,
   type MainStoryEvidence,
 } from './main_candidate.ts';
-import type { PersistedOcrFields } from './ocr_contract.ts';
+import {
+  OCR_ANALYZER_VERSION,
+  OcrAnalysisError,
+  type PersistedOcrFields,
+} from './ocr_contract.ts';
 
 const candidate: MainCandidate = {
   url: 'https://www.instagram.com/creator/reel/GOOD/',
@@ -29,7 +33,7 @@ const ocrFields: PersistedOcrFields = {
   ocr_schema_version: 1,
   ocr_status: 'analyzed',
   ocr_model: 'deepseek/deepseek-ocr',
-  ocr_analyzer_version: 'deepseek-ocr-v2',
+  ocr_analyzer_version: OCR_ANALYZER_VERSION,
   ocr_analyzed_at: '2026-07-29T00:00:00.000Z',
   ocr_requested_frames: 12,
   ocr_valid_frames: 12,
@@ -200,6 +204,43 @@ assert.deepEqual(unavailable, {
   reason: 'media_unavailable',
   similarity: 0.67,
 });
+
+// OCR that cannot fetch its media is ONE candidate's problem, not grounds to end the run.
+// `attachVideoOcr` throws hard on purpose — the main that was finally chosen MUST carry OCR — but
+// while GRADING candidates that throw used to travel straight through the gate and kill
+// trace_source on the second replacement, so a source video that had already been found was never
+// taken.
+const ocrThrew = await evaluateMainSuitability(
+  candidate,
+  story,
+  'input',
+  evaluatorDeps({
+    attachOcr: async () => {
+      throw new OcrAnalysisError('media_access_failed', 'OCR media could not be localized safely');
+    },
+  }),
+);
+assert.deepEqual(ocrThrew, {
+  status: 'rejected',
+  reason: 'media_unavailable',
+  detail: 'media_access_failed',
+  similarity: 0.67,
+});
+
+// A NON-OCR failure still propagates: swallowing it would disguise a bug as "no candidate found".
+await assert.rejects(
+  evaluateMainSuitability(
+    candidate,
+    story,
+    'input',
+    evaluatorDeps({
+      attachOcr: async () => {
+        throw new TypeError('bug');
+      },
+    }),
+  ),
+  TypeError,
+);
 
 const subtitle = await evaluateMainSuitability(
   candidate,

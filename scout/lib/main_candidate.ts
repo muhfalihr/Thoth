@@ -1,5 +1,5 @@
 import type { MediaResolutionResult } from './media_resolution.ts';
-import type { PersistedOcrFields } from './ocr_contract.ts';
+import { OcrAnalysisError, type PersistedOcrFields } from './ocr_contract.ts';
 
 export type MainCandidate = Record<string, unknown> & {
   url: string;
@@ -55,6 +55,8 @@ export type MainSuitability =
   | {
       status: 'rejected';
       reason: MainRejectionReason;
+      /** Original failure code, for when `reason` alone does not name the broken component. */
+      detail?: string;
       similarity?: number;
     }
   | {
@@ -132,7 +134,26 @@ export async function evaluateMainSuitability(
     };
   }
 
-  const analyzed = await deps.attachOcr(candidate, resolvedMedia);
+  // `attachVideoOcr` treats OCR as REQUIRED and throws — the right contract for the main that was
+  // finally chosen, the wrong one for a candidate still being graded. Left uncaught, one TikTok whose
+  // CDN url would not localize (`media_access_failed`) aborted the whole trace_source stage on the
+  // second replacement candidate, so the correctly credited source account was found and then no
+  // video was taken at all. A candidate whose media cannot be read is simply unusable: reject it and
+  // move to the next one, exactly as build_footage already does for its own candidates.
+  let analyzed: MainCandidate & PersistedOcrFields;
+  try {
+    analyzed = await deps.attachOcr(candidate, resolvedMedia);
+  } catch (error) {
+    // Only OCR failures. Anything else is a bug, and hiding it here would resurface as the far more
+    // confusing "no acceptable candidate".
+    if (!(error instanceof OcrAnalysisError)) throw error;
+    return {
+      status: 'rejected',
+      reason: 'media_unavailable',
+      detail: error.code,
+      ...(similarity !== null ? { similarity } : {}),
+    };
+  }
   if (analyzed.ocr_outcome === 'subtitle') {
     return {
       status: 'rejected',
