@@ -5,6 +5,7 @@ import {
   MainCandidateNotFoundError,
   rankAcceptedMainCandidates,
 } from './main_gate.ts';
+import { OCR_ANALYZER_VERSION } from './ocr_contract.ts';
 
 const input: MainCandidate = {
   url: 'https://www.instagram.com/p/INPUT/',
@@ -33,7 +34,7 @@ const accepted = (
     ocr_schema_version: 1,
     ocr_status: 'analyzed',
     ocr_model: 'deepseek/deepseek-ocr',
-    ocr_analyzer_version: 'deepseek-ocr-v2',
+    ocr_analyzer_version: OCR_ANALYZER_VERSION,
     ocr_analyzed_at: '2026-07-29T00:00:00.000Z',
     ocr_requested_frames: 1,
     ocr_valid_frames: 1,

@@ -66,6 +66,9 @@ function appendEvaluationDiagnostic(
     status: result.status,
     reason:
       result.status === 'rejected' || result.status === 'indeterminate' ? result.reason : undefined,
+    // 'media_unavailable' covers both a stream that would not resolve and an OCR that could not read
+    // the media it was given; without the code the two are one indistinguishable line in the ledger.
+    detail: result.status === 'rejected' ? result.detail : undefined,
     similarity:
       result.status === 'accepted' || result.status === 'rejected' ? result.similarity : undefined,
     visual_kind:
