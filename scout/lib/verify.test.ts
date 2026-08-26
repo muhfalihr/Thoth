@@ -208,4 +208,23 @@ import {
   }
 }
 
+const shapeWithThumb = parseShape(
+  JSON.stringify({
+    title: 'clip',
+    duration: 124,
+    ext: 'mp4',
+    timestamp: 1787472811,
+    thumbnails: [{ url: 'https://cdn.example/small.jpg' }, { url: 'https://cdn.example/big.jpg' }],
+  }),
+);
+assert.equal(
+  shapeWithThumb.thumbnail,
+  'https://cdn.example/big.jpg',
+  'the last thumbnail is the largest — the gate grades the best cover it can get',
+);
+assert.equal(shapeWithThumb.time, 1787472811);
+
+const shapeNoThumb = parseShape(JSON.stringify({ title: 'clip', duration: 124, ext: 'mp4' }));
+assert.equal(shapeNoThumb.thumbnail, '', 'a missing thumbnail must be "" — never undefined');
+
 console.log('ok verify');

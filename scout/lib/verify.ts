@@ -304,6 +304,10 @@ function parseShape(jsonText: string): any {
     .slice(0, 300);
   const time =
     (d && d.timestamp) || (Array.isArray(d.entries) && d.entries[0] && d.entries[0].timestamp) || 0;
+  const thumbs = Array.isArray(d.thumbnails) ? d.thumbnails : [];
+  const thumbnail = String(
+    d.thumbnail || entry?.thumbnail || thumbs[thumbs.length - 1]?.url || '',
+  );
   if (Array.isArray(d.entries) && d.entries.length > 1) {
     const slides = d.entries.map((e, i) => ({
       index: i + 1,
@@ -313,7 +317,7 @@ function parseShape(jsonText: string): any {
       kind: (e && e.ext === 'mp4') || (e && e.duration) ? 'video' : 'photo',
       duration: (e && e.duration) || 0,
     }));
-    return { ok: true, shape: 'carousel', slides, caption, time, uploader, webpageUrl };
+    return { ok: true, shape: 'carousel', slides, caption, time, uploader, webpageUrl, thumbnail };
   }
   const one = (Array.isArray(d.entries) && d.entries[0]) || d;
   const kind = (one && one.ext === 'mp4') || (one && one.duration) ? 'video' : 'photo';
@@ -325,6 +329,7 @@ function parseShape(jsonText: string): any {
     time,
     uploader,
     webpageUrl,
+    thumbnail,
   };
 }
 // A failed shape probe surfaces to the main gate as `probe.available === false` → a
