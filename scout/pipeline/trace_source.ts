@@ -39,7 +39,7 @@ import {
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
 import { tikwmLookup } from '../lib/tikwm.ts';
-import { matchesTopic, postShape } from '../lib/verify.ts';
+import { matchesTopic } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
 import { resolveSource, tightenQuery } from './resolve_source.ts';
 import { scanSourceCredit } from './source_credit_scan.ts';
@@ -944,10 +944,11 @@ export async function runTraceSource(
     caption,
     isVideo: main.is_video !== false,
   };
-  const repostShape = postShape(main.url);
+  const probeInput = runtimeDeps.probeVideo;
+  const repostProbe = await probeInput(inputCandidate);
   const sourceWindow = {
-    repostTime: repostShape.ok ? repostShape.time || undefined : undefined,
-    repostDuration: repostShape.ok ? repostShape.slides[0]?.duration || undefined : undefined,
+    repostTime: repostProbe.candidate.publishedAt || undefined,
+    repostDuration: repostProbe.candidate.durationSec || undefined,
   };
 
   // The per-candidate ledger only ever reached a jsonl file, so on screen the gate was a silence
