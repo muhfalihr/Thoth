@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import type { MainCandidate, MainStoryEvidence, MainSuitability } from './main_candidate.ts';
 import {
   chooseInputOrReplacement,
+  isPlausibleSource,
   MainCandidateNotFoundError,
   rankAcceptedMainCandidates,
 } from './main_gate.ts';
@@ -237,6 +238,65 @@ const accepted = (
   assert.equal(
     decision.candidate.url,
     'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+  );
+}
+
+{
+  const REPOST_TIME = 1787556392; // detikjatim, 2026-08-24
+  const window = { repostTime: REPOST_TIME, repostDuration: 90 };
+  assert.equal(
+    isPlausibleSource(
+      { url: 'u', platform: 'tiktok', publishedAt: 1787472811, durationSec: 124 },
+      window,
+    ),
+    true,
+    '23.2 h earlier and longer — measured source',
+  );
+  assert.equal(
+    isPlausibleSource(
+      { url: 'u', platform: 'tiktok', publishedAt: REPOST_TIME + 3600, durationSec: 124 },
+      window,
+    ),
+    false,
+    'published after repost — cannot be its source',
+  );
+  assert.equal(
+    isPlausibleSource(
+      {
+        url: 'u',
+        platform: 'tiktok',
+        publishedAt: REPOST_TIME - 40 * 86400,
+        durationSec: 124,
+      },
+      window,
+    ),
+    false,
+    'older than 14-day window',
+  );
+  assert.equal(
+    isPlausibleSource(
+      { url: 'u', platform: 'tiktok', publishedAt: 1787472811, durationSec: 30 },
+      window,
+    ),
+    false,
+    'repost cuts, does not add footage',
+  );
+  assert.equal(
+    isPlausibleSource({ url: 'u', platform: 'tiktok' }, window),
+    true,
+    'no metadata not evidence against candidate',
+  );
+  const ranked = rankAcceptedMainCandidates(
+    [
+      accepted({ url: 'later', platform: 'tiktok', publishedAt: REPOST_TIME + 3600, durationSec: 124 }, 0.9),
+      accepted({ url: 'source', platform: 'tiktok', publishedAt: 1787472811, durationSec: 124 }, 0.4),
+    ],
+    { credited: '', repostHandle: '', preferFootage: false, ...window },
+  );
+  assert.equal(
+    ranked?.candidate.url,
+    'source',
+    'plausibility must outrank similarity — source clip one with no caption to score',
   );
 }
 

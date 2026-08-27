@@ -39,7 +39,7 @@ import {
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
 import { tikwmLookup } from '../lib/tikwm.ts';
-import { matchesTopic } from '../lib/verify.ts';
+import { matchesTopic, postShape } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
 import { resolveSource, tightenQuery } from './resolve_source.ts';
 import { scanSourceCredit } from './source_credit_scan.ts';
@@ -944,6 +944,11 @@ export async function runTraceSource(
     caption,
     isVideo: main.is_video !== false,
   };
+  const repostShape = postShape(main.url);
+  const sourceWindow = {
+    repostTime: repostShape.ok ? repostShape.time || undefined : undefined,
+    repostDuration: repostShape.ok ? repostShape.slides[0]?.duration || undefined : undefined,
+  };
 
   // The per-candidate ledger only ever reached a jsonl file, so on screen the gate was a silence
   // between "[3] LLM → source" and either a replacement or a dead run — with no way to tell a search
@@ -963,6 +968,7 @@ export async function runTraceSource(
       // now strips): the search had nothing to aim at, so an empty result is not evidence against the
       // input post. Keep it as main instead of failing the run.
       retainInputWhenUncredited: !username,
+      sourceWindow,
       appendDiagnostic: (record) => {
         if (record.origin === 'search') {
           if (record.status === 'accepted') gateTally.accepted += 1;
@@ -991,6 +997,7 @@ export async function runTraceSource(
           credited: username,
           repostHandle: urlHandle(main.url),
           preferFootage: process.env.THOTH_SOURCE_PREFER_FOOTAGE !== '0',
+          ...sourceWindow,
         }),
     });
   } finally {

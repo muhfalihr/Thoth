@@ -10,6 +10,29 @@ import type { PersistedOcrFields } from './ocr_contract.ts';
 type AcceptedSuitability = Extract<MainSuitability, { status: 'accepted' }>;
 type IndeterminateSuitability = Extract<MainSuitability, { status: 'indeterminate' }>;
 
+// A source that is much older is likely a different story, while reposts cut or re-caption
+// footage rather than adding it. The duration margin allows for re-encoding and text cards.
+const MAX_SOURCE_AGE_SEC = 14 * 24 * 3600;
+const MIN_SOURCE_DURATION_RATIO = 0.9;
+
+export type SourceWindow = {
+  repostTime?: number;
+  repostDuration?: number;
+};
+
+export function isPlausibleSource(candidate: MainCandidate, window: SourceWindow): boolean {
+  const published = Number(candidate.publishedAt || 0);
+  if (window.repostTime && published) {
+    const gap = window.repostTime - published;
+    if (gap <= 0 || gap > MAX_SOURCE_AGE_SEC) return false;
+  }
+  const duration = Number(candidate.durationSec || 0);
+  if (window.repostDuration && duration) {
+    if (duration < window.repostDuration * MIN_SOURCE_DURATION_RATIO) return false;
+  }
+  return true;
+}
+
 export type MainGateDecision =
   | {
       status: 'retain';
@@ -43,6 +66,7 @@ export type MainGateDeps = {
   ) => Promise<MainSuitability>;
   search: () => Promise<MainCandidate[]>;
   rankAccepted?: (candidates: AcceptedSuitability[]) => AcceptedSuitability | null;
+  sourceWindow?: SourceWindow;
   // Set when step 3 credited no account at all (the model omitted it, or answered with the "@akun"
   // placeholder). The search then had no handle to aim at, so finding nothing says nothing about
   // the input post — keep it as main rather than aborting the run. With a real credited handle this
@@ -88,7 +112,7 @@ export function rankAcceptedMainCandidates(
     credited: string;
     repostHandle: string;
     preferFootage: boolean;
-  },
+  } & SourceWindow,
 ): AcceptedSuitability | null {
   const credited = normHandle(options.credited);
   const repost = normHandle(options.repostHandle);
@@ -104,7 +128,9 @@ export function rankAcceptedMainCandidates(
     return 1;
   };
   const score = (result: AcceptedSuitability): number =>
-    result.similarity + (options.preferFootage && result.kind === 'footage' ? 1 : 0);
+    result.similarity +
+    (options.preferFootage && result.kind === 'footage' ? 1 : 0) +
+    (isPlausibleSource(result.candidate, options) ? 2 : 0);
 
   for (const currentTier of [0, 1, 2]) {
     const pool = candidates
@@ -153,7 +179,10 @@ export async function chooseInputOrReplacement(
     // A candidate nobody could score is not a candidate anybody rejected. The gate already
     // retains an indeterminate INPUT; refusing to replace with an indeterminate SEARCH result
     // is what turned "found the credited account" into "took no video at all".
-    const fallback = indeterminateResults[0];
+    const fallback =
+      indeterminateResults.find((result) =>
+        isPlausibleSource(result.candidate, deps.sourceWindow ?? {}),
+      ) ?? indeterminateResults[0];
     if (fallback) {
       return {
         status: 'replace',
