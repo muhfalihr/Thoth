@@ -34,6 +34,7 @@ export type CandidateProbe = {
   available: boolean;
   isVideo: boolean;
   candidate: MainCandidate;
+  detail?: string;
 };
 
 export type MainRejectionReason =
@@ -98,8 +99,9 @@ export async function evaluateMainSuitability(
   deps: MainCandidateEvaluatorDeps,
 ): Promise<MainSuitability> {
   const probe = await deps.probeVideo(rawCandidate);
-  if (!probe.available) return { status: 'rejected', reason: 'media_unavailable' };
-  if (!probe.isVideo) return { status: 'rejected', reason: 'not_video' };
+  const probeDetail = probe.detail ? { detail: probe.detail } : {};
+  if (!probe.available) return { status: 'rejected', reason: 'media_unavailable', ...probeDetail };
+  if (!probe.isVideo) return { status: 'rejected', reason: 'not_video', ...probeDetail };
   const candidate = { ...probe.candidate, isVideo: true, is_video: true };
   if (deps.isCurated(candidate)) {
     return { status: 'rejected', reason: 'curated_aggregator' };

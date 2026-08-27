@@ -37,6 +37,7 @@ type ProbeRuntimeDeps = {
     thumbnail: string;
     uploader: string;
     webpageUrl: string;
+    error?: string;
   };
 };
 
@@ -94,6 +95,7 @@ export async function probeMainCandidateVideo(
   return {
     available: true,
     isVideo: probed.isVideo,
+    ...(probed.error ? { detail: probed.error } : {}),
     candidate: {
       ...candidate,
       caption: probed.caption || candidate.caption || '',

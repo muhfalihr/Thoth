@@ -88,6 +88,19 @@ function ytdlpCookieArgs() {
   return browser ? ['--cookies-from-browser', browser] : [];
 }
 
+// The gate diagnostic only accepts allowlisted snake_case codes. yt-dlp stderr can contain
+// signed URLs or tokens, so classify it into a fixed vocabulary before it leaves this module.
+function classifyProbeFailure(stderr: string): string {
+  const text = String(stderr || '');
+  if (/log ?in|sign ?in|private|not comfortable|age.?restrict/i.test(text)) return 'login_required';
+  if (/429|rate.?limit|too many requests/i.test(text)) return 'rate_limited';
+  if (/unexpected response|unable (?:extract|download)|no video formats/i.test(text)) {
+    return 'unavailable_response';
+  }
+  if (/etimedout|timed? ?out/i.test(text)) return 'probe_timeout';
+  return 'probe_failed';
+}
+
 function probeVideo(url) {
   const YTDLP = process.env.YTDLP || 'yt-dlp';
   const args = [
@@ -101,7 +114,7 @@ function probeVideo(url) {
   ];
   try {
     const out = execFileSync(YTDLP, args, {
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: PROBE_TIMEOUT,
       maxBuffer: PROBE_MAXBUF,
     });
@@ -128,9 +141,25 @@ function probeVideo(url) {
       '',
     );
     const webpageUrl = String((d && d.webpage_url) || '');
-    return { isVideo, caption, thumbnail, uploader, webpageUrl };
-  } catch (_) {
-    return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: '' };
+    return { isVideo, caption, thumbnail, uploader, webpageUrl, error: '' };
+  } catch (err: any) {
+    const raw = String(err?.stderr || '') || String(err?.message || '');
+    const code = classifyProbeFailure(raw);
+    try {
+      const safeDetail = sanitizeResolverDetail(raw);
+      fs.appendFileSync(
+        outPath('probe_video_debug.jsonl'),
+        `${JSON.stringify({
+          at: new Date().toISOString(),
+          source_id: createHash('sha256').update(String(url)).digest('hex').slice(0, 16),
+          ok: false,
+          safe_code: code,
+          ...(safeDetail ? { safe_detail: safeDetail } : {}),
+        })}\n`,
+        'utf8',
+      );
+    } catch {}
+    return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: '', error: code };
   }
 }
 
@@ -434,6 +463,7 @@ async function verifyTikTok(url, keywords = []) {
 }
 
 export {
+  classifyProbeFailure,
   directStreamArgs,
   directStreamUrl,
   dropCoverSlide,

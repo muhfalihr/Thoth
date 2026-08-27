@@ -83,7 +83,12 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
     story,
     'input',
     evaluatorDeps({
-      probeVideo: async (value) => ({ available: true, isVideo: false, candidate: value }),
+      probeVideo: async (value) => ({
+        available: true,
+        isVideo: false,
+        candidate: value,
+        detail: 'login_required',
+      }),
       describeEvidence: async () => {
         expensiveCalls++;
         return '';
@@ -94,7 +99,11 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
       },
     }),
   );
-  assert.deepEqual(notVideo, { status: 'rejected', reason: 'not_video' });
+  assert.deepEqual(notVideo, {
+    status: 'rejected',
+    reason: 'not_video',
+    detail: 'login_required',
+  });
   assert.equal(expensiveCalls, 0);
 }
 
@@ -109,6 +118,7 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
         available: false,
         isVideo: false,
         candidate: value,
+        detail: 'probe_timeout',
       }),
       describeEvidence: async () => {
         expensiveCalls++;
@@ -120,7 +130,11 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
       },
     }),
   );
-  assert.deepEqual(unavailableProbe, { status: 'rejected', reason: 'media_unavailable' });
+  assert.deepEqual(unavailableProbe, {
+    status: 'rejected',
+    reason: 'media_unavailable',
+    detail: 'probe_timeout',
+  });
   assert.equal(expensiveCalls, 0);
 }
 

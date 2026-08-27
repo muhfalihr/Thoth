@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { WORKSPACE } from './paths.ts';
 import {
+  classifyProbeFailure,
   directStreamArgs,
   dropCoverSlide,
   parseShape,
@@ -226,5 +227,19 @@ assert.equal(shapeWithThumb.time, 1787472811);
 
 const shapeNoThumb = parseShape(JSON.stringify({ title: 'clip', duration: 124, ext: 'mp4' }));
 assert.equal(shapeNoThumb.thumbnail, '', 'a missing thumbnail must be "" — never undefined');
+
+assert.equal(classifyProbeFailure('ERROR: [TikTok] 1: Log in for access.'), 'login_required');
+assert.equal(classifyProbeFailure('ERROR: HTTP Error 429: Too Many Requests'), 'rate_limited');
+assert.equal(
+  classifyProbeFailure('ERROR: [TikTok] 1: Unexpected response webpage request'),
+  'unavailable_response',
+);
+assert.equal(classifyProbeFailure('spawnSync ETIMEDOUT'), 'probe_timeout');
+assert.equal(classifyProbeFailure('something else'), 'probe_failed');
+assert.match(
+  classifyProbeFailure('something --private-token sk-private-token https://cdn/x?sig=abc'),
+  /^[a-z][a-z0-9_]{0,63}$/,
+  'probe failures must expose only a safe diagnostic code',
+);
 
 console.log('ok verify');
