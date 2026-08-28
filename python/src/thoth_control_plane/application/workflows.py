@@ -1,5 +1,7 @@
 """Workflow lifecycle application service."""
 
+from asyncio import Lock
+
 from thoth_control_plane.application.ports import ApprovalSubmission, WorkflowGateway
 from thoth_control_plane.domain import Actor, StylePreset, WorkflowRequest, WorkflowSummary
 
@@ -83,6 +85,7 @@ class WorkflowService:
     def __init__(self, gateway: WorkflowGateway) -> None:
         self._gateway = gateway
         self._starts: dict[tuple[str, str], tuple[str, WorkflowSummary]] = {}
+        self._start_locks: dict[tuple[str, str], Lock] = {}
 
     async def list_style_presets(self, *, actor: Actor) -> list[StylePreset]:
         return await self._gateway.list_style_presets(actor=actor)
@@ -96,19 +99,21 @@ class WorkflowService:
     ) -> WorkflowSummary:
         cache_key = (actor.actor_id, idempotency_key)
         fingerprint = request.model_dump_json()
-        cached = self._starts.get(cache_key)
-        if cached is not None:
-            if cached[0] != fingerprint:
-                raise IdempotencyConflict
-            return cached[1]
+        lock = self._start_locks.setdefault(cache_key, Lock())
+        async with lock:
+            cached = self._starts.get(cache_key)
+            if cached is not None:
+                if cached[0] != fingerprint:
+                    raise IdempotencyConflict
+                return cached[1]
 
-        summary = await self._gateway.start(
-            request,
-            actor=actor,
-            idempotency_key=idempotency_key,
-        )
-        self._starts[cache_key] = (fingerprint, summary)
-        return summary
+            summary = await self._gateway.start(
+                request,
+                actor=actor,
+                idempotency_key=idempotency_key,
+            )
+            self._starts[cache_key] = (fingerprint, summary)
+            return summary
 
     async def get(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         return await self._gateway.get(workflow_id, actor=actor)

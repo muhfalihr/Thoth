@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -84,6 +85,32 @@ class StartGateway:
         return summary.model_copy(update={"status": "running"})
 
 
+class OverlappingStartGateway(StartGateway):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.entered = 0
+
+    async def start(
+        self,
+        request: WorkflowRequest,
+        *,
+        actor: Actor,
+        idempotency_key: str,
+    ) -> WorkflowSummary:
+        self.entered += 1
+        call_number = self.entered
+        self.started.set()
+        await self.release.wait()
+        summary = await super().start(
+            request,
+            actor=actor,
+            idempotency_key=idempotency_key,
+        )
+        return summary.model_copy(update={"workflow_id": f"wf_{call_number:03d}"})
+
+
 @pytest.mark.asyncio
 async def test_start_reuses_a_matching_idempotency_key() -> None:
     gateway = StartGateway()
@@ -105,6 +132,77 @@ async def test_start_reuses_a_matching_idempotency_key() -> None:
     second = await service.start(request, actor=actor, idempotency_key="create-001")
 
     assert second.workflow_id == first.workflow_id
+    assert gateway.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_matching_starts_create_only_one_workflow() -> None:
+    gateway = OverlappingStartGateway()
+    service = WorkflowService(gateway)
+    actor = Actor(actor_id="owner", actor_type="user")
+    request = WorkflowRequest.model_validate(
+        {
+            "source": {
+                "url": "https://example.test/post",
+                "intent": "identify_original",
+            },
+            "style": {"preset_id": "news-vertical"},
+            "output": {"format": "vertical_video", "language": "id"},
+            "review": {"require_publish_approval": True},
+        }
+    )
+
+    first_task = asyncio.create_task(
+        service.start(request, actor=actor, idempotency_key="create-001")
+    )
+    await gateway.started.wait()
+    second_task = asyncio.create_task(
+        service.start(request, actor=actor, idempotency_key="create-001")
+    )
+    await asyncio.sleep(0)
+    gateway.release.set()
+
+    first, second = await asyncio.gather(first_task, second_task)
+
+    assert {first.workflow_id, second.workflow_id} == {"wf_001"}
+    assert gateway.start_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_different_body_conflicts_without_a_second_start() -> None:
+    gateway = OverlappingStartGateway()
+    service = WorkflowService(gateway)
+    actor = Actor(actor_id="owner", actor_type="user")
+    request = WorkflowRequest.model_validate(
+        {
+            "source": {
+                "url": "https://example.test/post",
+                "intent": "identify_original",
+            },
+            "style": {"preset_id": "news-vertical"},
+            "output": {"format": "vertical_video", "language": "id"},
+            "review": {"require_publish_approval": True},
+        }
+    )
+    changed = request.model_copy(
+        update={"output": request.output.model_copy(update={"language": "en"})}
+    )
+
+    first_task = asyncio.create_task(
+        service.start(request, actor=actor, idempotency_key="create-001")
+    )
+    await gateway.started.wait()
+    second_task = asyncio.create_task(
+        service.start(changed, actor=actor, idempotency_key="create-001")
+    )
+    await asyncio.sleep(0)
+    gateway.release.set()
+
+    first, second = await asyncio.gather(first_task, second_task, return_exceptions=True)
+
+    assert isinstance(first, WorkflowSummary)
+    assert first.workflow_id == "wf_001"
+    assert isinstance(second, IdempotencyConflict)
     assert gateway.start_calls == 1
 
 

@@ -214,11 +214,71 @@ async def test_approval_input_rejects_provider_payloads(client: httpx.AsyncClien
 
 
 def test_route_modules_do_not_depend_on_a_process_runner() -> None:
-    source = Path("src/thoth_control_plane/api/routes/workflows.py").read_text(encoding="utf-8")
+    routes = Path("src/thoth_control_plane/api/routes")
+    source = "\n".join(path.read_text(encoding="utf-8") for path in routes.glob("*.py"))
+    lowered = source.lower()
 
-    assert "subprocess" not in source
-    assert "scout/cli.ts" not in source.lower()
-    assert "stdout" not in source.lower()
+    assert "Command(" not in source
+    assert "subprocess" not in lowered
+    assert "bun" not in lowered
+    assert "scout" not in lowered
+    assert "stdout" not in lowered
+    assert '"thoth"' not in lowered
+    assert "'thoth'" not in lowered
+    assert "thoth.exe" not in lowered
+
+
+def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
+    document = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway).openapi()
+    http_methods = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+    actual = {
+        (path, method)
+        for path, item in document["paths"].items()
+        for method in item
+        if method in http_methods
+    }
+
+    assert actual == {
+        ("/api/v1/style-presets", "get"),
+        ("/api/v1/workflows", "post"),
+        ("/api/v1/workflows/{workflow_id}", "get"),
+        ("/api/v1/workflows/{workflow_id}/cancel", "post"),
+        ("/api/v1/workflows/{workflow_id}/retry", "post"),
+        ("/api/v1/workflows/{workflow_id}/approve", "post"),
+        ("/healthz", "get"),
+        ("/readyz", "get"),
+    }
+
+
+def test_openapi_declares_workflow_create_as_accepted(gateway) -> None:
+    document = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway).openapi()
+    responses = document["paths"]["/api/v1/workflows"]["post"]["responses"]
+
+    assert "202" in responses
+    assert "200" not in responses
+
+
+def test_openapi_approval_and_retry_inputs_are_narrow(gateway) -> None:
+    document = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway).openapi()
+    schemas = document["components"]["schemas"]
+    approval_operation = document["paths"]["/api/v1/workflows/{workflow_id}/approve"]["post"]
+    retry_operation = document["paths"]["/api/v1/workflows/{workflow_id}/retry"]["post"]
+
+    assert approval_operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApprovalSubmission"
+    }
+    assert set(schemas["ApprovalSubmission"]["properties"]) == {
+        "approval_id",
+        "decision",
+        "note",
+    }
+    assert schemas["ApprovalSubmission"]["additionalProperties"] is False
+    assert set(schemas["ApprovalSubmission"]["required"]) == {"approval_id", "decision"}
+    assert retry_operation["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/RetryRequest"
+    }
+    assert set(schemas["RetryRequest"]["properties"]) == {"from_stage"}
+    assert schemas["RetryRequest"]["additionalProperties"] is False
 
 
 @pytest.mark.asyncio
