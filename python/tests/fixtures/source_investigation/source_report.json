@@ -1,0 +1,8 @@
+{
+  "artifact_id": "art_source_report_001",
+  "kind": "source_report",
+  "label": "Source investigation report",
+  "media_type": "application/json",
+  "location": "reports/source-investigation-001.json",
+  "checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
