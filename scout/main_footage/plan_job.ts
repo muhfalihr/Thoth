@@ -4,8 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { embed } from '../lib/embed.ts';
-import { novitaKey } from '../lib/env.ts';
-import { fetchJsonWithTimeout } from '../lib/subtitle_vision.ts';
+import { chatCompletion, chatContent, chatReady } from '../lib/llm.ts';
 import { allocateTimeline, type ExternalCandidate } from './allocator.ts';
 import {
   buildBeatCandidates,
@@ -72,18 +71,13 @@ function parseRanking(value: unknown): PlannerRanking[] {
 }
 
 async function rankWithPlanner(shortlist: ShortlistEntry[]): Promise<PlannerRanking[]> {
-  const key = novitaKey();
-  if (!key || shortlist.length === 0) return [];
+  if (!chatReady() || shortlist.length === 0) return [];
   try {
-    const { response, data } = await fetchJsonWithTimeout(
-      'https://api.novita.ai/v3/openai/chat/completions',
+    const response = await chatCompletion(
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: process.env.THOTH_PLANNER_MODEL || 'openai/gpt-oss-20b',
-          temperature: 0,
-          max_tokens: 1000,
+        model: process.env.THOTH_PLANNER_MODEL || 'openai/gpt-oss-20b',
+        temperature: 0,
+        max_tokens: 1000,
           messages: [
             {
               role: 'user',
@@ -93,12 +87,11 @@ async function rankWithPlanner(shortlist: ShortlistEntry[]): Promise<PlannerRank
                 JSON.stringify(shortlist),
             },
           ],
-        }),
       },
-      30_000,
+      { timeoutMs: 30_000 },
     );
     if (!response.ok) return [];
-    const content = (data as any)?.choices?.[0]?.message?.content;
+    const content = chatContent(await response.json());
     if (typeof content !== 'string') return [];
     const match = /\[[\s\S]*\]/.exec(content);
     return match ? parseRanking(JSON.parse(match[0])) : [];

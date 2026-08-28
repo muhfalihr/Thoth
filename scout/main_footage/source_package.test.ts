@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fingerprintCanonical } from './contracts.ts';
+import { decodeSourcePackage, fingerprintCanonical } from './contracts.ts';
 import { buildSourcePackage } from './source_package.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-source-package-'));
@@ -103,6 +103,14 @@ try {
   assert.deepEqual(
     result.package.scene_indexes.map((index) => index.source_id),
     result.package.sources.map((source) => source.id),
+  );
+  // The manifest this writer publishes must satisfy the reader every consumer uses. Without
+  // this, a producer-side field can violate the contract (a materializer reporting attempts:0
+  // did) and only surface much later as an opaque `source_package_invalid` at validation.
+  assert.deepEqual(
+    decodeSourcePackage(JSON.parse(result.packageJson)),
+    result.package,
+    'the published manifest must round-trip through decodeSourcePackage',
   );
   assert.match(result.package.fingerprint, /^sha256:[0-9a-f]{64}$/);
   // Ruling A, behaviorally: the published fingerprint really is the fingerprint of the

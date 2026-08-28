@@ -16,8 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { embed as embedNovita } from '../lib/embed.ts';
-import { novitaKey } from '../lib/env.ts';
-import { fetchJsonWithTimeout } from '../lib/subtitle_vision.ts';
+import { chatCompletion, chatContent, chatReady } from '../lib/llm.ts';
 import type {
   MainFootageWarningCode,
   PlanningMode,
@@ -426,7 +425,14 @@ export async function indexPackage(
       const index = await indexSource(source, packageRoot, budgeted.deps);
       scene_indexes.push(index);
       if (index.planning_mode === 'degraded') warnings.push('vision_degraded');
-    } catch {
+    } catch (error) {
+      // Without this the only trace a skipped source leaves is a warning code, which says
+      // nothing about why ffmpeg/vision/embedding gave up.
+      console.warn(
+        `[main-footage] scene index failed for ${source.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
       warnings.push('source_video_skipped');
     }
   }
@@ -472,21 +478,52 @@ export async function detectScenesWithFfmpeg(
   return [...text.matchAll(/pts_time:([\d.]+)/g)].map((m) => Number(m[1]));
 }
 
+/** How far before a requested sample the fallback sweep starts looking for a frame. */
+const FRAME_FALLBACK_WINDOW_SEC = 10;
+
 export async function extractFramesWithFfmpeg(
   sourcePath: string,
   atSeconds: number[],
 ): Promise<string[]> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'thoth-scene-frame-'));
   return atSeconds.map((t, i) => {
+    const at = Math.max(0, t);
     const out = path.join(dir, `frame-${i}.jpg`);
-    ffmpegOrThrow(
-      spawnSync(
-        ffmpegBin(),
-        ['-y', '-ss', String(Math.max(0, t)), '-i', sourcePath, '-frames:v', '1', '-q:v', '4', out],
-        { timeout: 30_000 },
-      ),
-      'extract_frame',
+    const seeked = spawnSync(
+      ffmpegBin(),
+      ['-y', '-ss', String(at), '-i', sourcePath, '-frames:v', '1', '-q:v', '4', out],
+      { timeout: 30_000 },
     );
+    if (seeked.status !== 0 || !fs.existsSync(out)) {
+      // A sample can land in the gap after the final video pts: the probed duration is the
+      // container's (an audio stream outlasting the video pushes it past the last frame), and a
+      // low-fps source has a frame interval wider than the back-off indexSource applies. Accurate
+      // input seek then drops every frame and ffmpeg writes nothing. Sweep the window ending at
+      // the sample instead and keep the last frame written — the frame at or before `at`, which
+      // is what the caller wanted. Bounded by `-t` so a genuinely broken read still fails here.
+      const from = Math.max(0, at - FRAME_FALLBACK_WINDOW_SEC);
+      ffmpegOrThrow(
+        spawnSync(
+          ffmpegBin(),
+          [
+            '-y',
+            '-ss',
+            String(from),
+            '-i',
+            sourcePath,
+            '-t',
+            String(at - from),
+            '-update',
+            '1',
+            '-q:v',
+            '4',
+            out,
+          ],
+          { timeout: 30_000 },
+        ),
+        'extract_frame',
+      );
+    }
     if (!fs.existsSync(out)) throw new Error('ffmpeg_extract_frame_missing_output');
     return out;
   });
@@ -505,36 +542,30 @@ const VISION_PROMPT =
   'subject, action, setting, composition, motion, topic. No prose outside the JSON.';
 
 export async function describeSceneWithVision(framePath: string): Promise<VisionDescription> {
-  const key = novitaKey();
-  if (!key) throw new Error('novita_api_key_missing');
+  if (!chatReady('vision')) throw new Error('vision_api_key_missing');
   const b64 = fs.readFileSync(framePath).toString('base64');
-  const { response, data } = await fetchJsonWithTimeout(
-    'https://api.novita.ai/v3/openai/chat/completions',
+  const response = await chatCompletion(
     {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        max_tokens: 512,
-        temperature: 0,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: VISION_PROMPT },
-              {
-                type: 'image_url',
-                image_url: { url: `data:image/jpeg;base64,${b64}`, detail: 'high' },
-              },
-            ],
-          },
-        ],
-      }),
+      model: VISION_MODEL,
+      max_tokens: 512,
+      temperature: 0,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: VISION_PROMPT },
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${b64}`, detail: 'high' },
+            },
+          ],
+        },
+      ],
     },
-    30_000,
+    { timeoutMs: 30_000 },
   );
   if (!response.ok) throw new Error(`vision_http_${response.status}`);
-  const content = (data as any)?.choices?.[0]?.message?.content;
+  const content = chatContent(await response.json());
   const match = typeof content === 'string' ? /\{[\s\S]*\}/.exec(content) : null;
   if (!match) throw new Error('vision_response_unparseable');
   const parsed = JSON.parse(match[0]);

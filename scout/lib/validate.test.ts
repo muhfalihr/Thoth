@@ -7,6 +7,11 @@ import type { ContentSet } from './types.ts';
 import { lintContentSet } from './validate.ts';
 import { validateMainFootageDescriptor } from '../pipeline/validate_content_set.ts';
 
+// The OCR model is an env contract (THOTH_SUBTITLE_OCR_MODEL, read by scout AND thoth-core), so
+// these DEFAULT_OCR_MODEL fixtures only match on a machine that configured none — the moment one is
+// set, every record below reads as analyzed by a stale model. Pin it to what the fixtures state.
+process.env.THOTH_SUBTITLE_OCR_MODEL = DEFAULT_OCR_MODEL;
+
 const analyzed = (
   outcome: 'clean' | 'cover' | 'subtitle' = 'clean',
   model = DEFAULT_OCR_MODEL,

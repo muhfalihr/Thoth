@@ -4,6 +4,7 @@ use serde_json::json;
 use tracing::debug;
 
 use crate::analyze::error::AnalyzeError;
+use crate::endpoints;
 
 use super::LlmProvider;
 
@@ -40,7 +41,7 @@ impl LlmProvider for GroqProvider {
 
         let resp = self
             .client
-            .post("https://api.groq.com/openai/v1/chat/completions")
+            .post(endpoints::groq_chat_completions())
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()

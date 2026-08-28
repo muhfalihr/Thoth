@@ -35,6 +35,8 @@ export interface MaterializerDeps {
 interface AttemptResult {
   local: LocalAsset | null;
   attempts: number;
+  /** Secret-free reason this source produced nothing — never stderr, never a signed URL. */
+  note?: string;
 }
 
 export class Materializer {
@@ -60,14 +62,41 @@ export class Materializer {
       .digest('hex')
       .slice(0, 16);
 
+    // The output path is content-addressed by (platform, asset id, purpose), so a file already
+    // sitting there is this exact asset from an earlier run and re-downloading buys nothing.
+    // Skipping the check is what turns a momentary extractor outage into a failed run for media
+    // we already hold on disk.
+    const alreadyOnDisk = findMaterialized(this.deps.root, assetHash);
+    if (alreadyOnDisk) {
+      return {
+        ...toLocalAsset(alreadyOnDisk, asset.kind, 'cache'),
+        // The disk lookup is itself the attempt that succeeded. Reporting 0 would break the
+        // `attempts >= 1` invariant every consumer of a materialized asset relies on; `source`
+        // already says no downloader ran.
+        attempts: 1,
+        elapsed_ms: clock() - startedAt,
+      };
+    }
+
     let attempts = 0;
+    const notes: string[] = [];
     for (const source of chain) {
       const result = await this.tryOne(source, asset, assetHash);
       attempts += result.attempts;
       if (result.local) {
         return { ...result.local, attempts, elapsed_ms: clock() - startedAt };
       }
+      notes.push(`${source}=${result.note ?? 'unavailable'}`);
     }
+
+    // The thrown error stays deliberately cause-free so no stderr or signed URL can leak through
+    // it. Without this line the caller only ever learns that materialization failed, never which
+    // source gave up or how — the chain is otherwise entirely opaque from the outside.
+    console.warn(
+      `[acquisition] no source produced media ${asset.index} of ${asset.canonical_post_url}: ${
+        notes.join(', ') || 'no source available'
+      }`,
+    );
 
     throw new AcquisitionError('media materialization failed', {
       status: 'unavailable',
@@ -91,19 +120,20 @@ export class Materializer {
     asset: MediaAsset,
     assetHash: string,
   ): Promise<AttemptResult> {
-    if (source === 'gallery-dl') {
-      return { local: await this.runGalleryDl(asset, assetHash), attempts: 1 };
-    }
-    if (source === 'yt-dlp') {
-      return { local: await this.runYtDlp(asset, assetHash), attempts: 1 };
-    }
-    if (source === 'direct-http') {
-      return this.runDirectHttp(asset, assetHash);
-    }
-    return { local: null, attempts: 0 };
+    if (source === 'gallery-dl') return this.runGalleryDl(asset, assetHash);
+    if (source === 'yt-dlp') return this.runYtDlp(asset, assetHash);
+    if (source === 'direct-http') return this.runDirectHttp(asset, assetHash);
+    return { local: null, attempts: 0, note: 'not-materializable' };
   }
 
-  private async runGalleryDl(asset: MediaAsset, assetHash: string): Promise<LocalAsset | null> {
+  /** Secret-free summary of a downloader run, safe to log. */
+  private static subprocessNote(result: MaterializerRunResult | null): string {
+    if (!result) return 'spawn-failed';
+    if (result.timedOut) return 'timed-out';
+    return result.exitCode === 0 ? 'no-output-file' : `exit-${result.exitCode}`;
+  }
+
+  private async runGalleryDl(asset: MediaAsset, assetHash: string): Promise<AttemptResult> {
     const args = [
       '--directory',
       this.deps.root,
@@ -114,12 +144,15 @@ export class Materializer {
       asset.canonical_post_url,
     ];
     const result = await this.runSubprocess(this.config.galleryDl, args);
-    if (result?.exitCode !== 0) return null;
-    const found = findMaterialized(this.deps.root, assetHash);
-    return found ? toLocalAsset(found, asset.kind, 'gallery-dl') : null;
+    const found = result?.exitCode === 0 ? findMaterialized(this.deps.root, assetHash) : undefined;
+    return {
+      local: found ? toLocalAsset(found, asset.kind, 'gallery-dl') : null,
+      attempts: 1,
+      note: Materializer.subprocessNote(result),
+    };
   }
 
-  private async runYtDlp(asset: MediaAsset, assetHash: string): Promise<LocalAsset | null> {
+  private async runYtDlp(asset: MediaAsset, assetHash: string): Promise<AttemptResult> {
     const outputTemplate = path.join(this.deps.root, `${assetHash}.%(ext)s`);
     const args = [
       '--no-warnings',
@@ -130,9 +163,12 @@ export class Materializer {
       asset.canonical_post_url,
     ];
     const result = await this.runSubprocess(this.config.ytdlp, args);
-    if (result?.exitCode !== 0) return null;
-    const found = findMaterialized(this.deps.root, assetHash);
-    return found ? toLocalAsset(found, asset.kind, 'yt-dlp') : null;
+    const found = result?.exitCode === 0 ? findMaterialized(this.deps.root, assetHash) : undefined;
+    return {
+      local: found ? toLocalAsset(found, asset.kind, 'yt-dlp') : null,
+      attempts: 1,
+      note: Materializer.subprocessNote(result),
+    };
   }
 
   private async runSubprocess(
@@ -147,7 +183,7 @@ export class Materializer {
   }
 
   private async runDirectHttp(asset: MediaAsset, assetHash: string): Promise<AttemptResult> {
-    if (!asset.ephemeral_url) return { local: null, attempts: 0 };
+    if (!asset.ephemeral_url) return { local: null, attempts: 0, note: 'no-ephemeral-url' };
     const url = asset.ephemeral_url;
     const maxAttempts = Math.max(1, this.config.transportAttempts ?? 1);
     let attempts = 0;
@@ -163,13 +199,23 @@ export class Materializer {
         // retry within budget; loop continues
       }
     }
-    return { local: null, attempts };
+    return { local: null, attempts, note: 'fetch-failed' };
   }
 }
 
+/** Downloader scratch files, which share the asset's name prefix but hold a partial asset. */
+const INCOMPLETE_SUFFIXES = ['.part', '.ytdl', '.tmp', '.temp', '.download'];
+
 function findMaterialized(root: string, assetHash: string): string | undefined {
+  if (!fs.existsSync(root)) return undefined;
   const prefix = `${assetHash}.`;
-  const match = fs.readdirSync(root).find((name) => name.startsWith(prefix));
+  const match = fs
+    .readdirSync(root)
+    .find(
+      (name) =>
+        name.startsWith(prefix) &&
+        !INCOMPLETE_SUFFIXES.some((suffix) => name.toLowerCase().endsWith(suffix)),
+    );
   return match ? path.join(root, match) : undefined;
 }
 

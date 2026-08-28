@@ -4,6 +4,7 @@ use serde_json::json;
 use tracing::debug;
 
 use crate::analyze::error::AnalyzeError;
+use crate::endpoints;
 
 use super::LlmProvider;
 
@@ -40,7 +41,7 @@ impl LlmProvider for OpenAiProvider {
 
         let resp = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(endpoints::openai_chat_completions())
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()

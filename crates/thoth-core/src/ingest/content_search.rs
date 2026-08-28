@@ -17,7 +17,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 pub const OCR_SCHEMA_VERSION: u32 = 1;
-pub const OCR_ANALYZER_VERSION: &str = "deepseek-ocr-v2";
+pub const OCR_ANALYZER_VERSION: &str = "deepseek-ocr-v3";
 pub const DEFAULT_OCR_MODEL: &str = "deepseek/deepseek-ocr";
 
 const fn default_is_video() -> bool {
@@ -868,7 +868,7 @@ mod tests {
                 "ocr_schema_version":1,
                 "ocr_status":"analyzed",
                 "ocr_model":"deepseek/deepseek-ocr",
-                "ocr_analyzer_version":"deepseek-ocr-v2",
+                "ocr_analyzer_version":"deepseek-ocr-v3",
                 "ocr_analyzed_at":"2026-07-23T00:00:00Z",
                 "ocr_requested_frames":4,
                 "ocr_valid_frames":4,
@@ -897,7 +897,7 @@ mod tests {
                 "ocr_schema_version": 1,
                 "ocr_status": "analyzed",
                 "ocr_model": "deepseek/deepseek-ocr",
-                "ocr_analyzer_version": "deepseek-ocr-v2",
+                "ocr_analyzer_version": "deepseek-ocr-v3",
                 "ocr_analyzed_at": "2026-07-23T00:00:00Z",
                 "ocr_requested_frames": 4,
                 "ocr_valid_frames": 4,

@@ -1,5 +1,12 @@
 # Thoth — Project Instructions for Claude
 
+## Bahasa
+
+- **Balasan chat ke user: SELALU bahasa Indonesia.** Termasuk penjelasan, ringkasan,
+  pertanyaan klarifikasi, dan laporan hasil build/test.
+- **Artefak tetap bahasa Inggris:** kode, komentar & docstring, nama variabel, pesan commit,
+  plan, spec, dokumen desain/ADR, isu GitHub, dan seluruh file di `docs/`.
+
 ## Context Memory
 
 **WAJIB DIBACA di setiap sesi:** `BLUEPRINT.md` di root project ini.

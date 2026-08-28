@@ -4,6 +4,7 @@ use serde_json::json;
 use tracing::debug;
 
 use crate::analyze::error::AnalyzeError;
+use crate::endpoints;
 
 use super::LlmProvider;
 
@@ -36,10 +37,7 @@ impl GeminiProvider {
 impl LlmProvider for GeminiProvider {
     async fn chat_completion(&self, system: &str, user: &str) -> Result<String, AnalyzeError> {
         // Gemini uses system_instruction (separate from contents) for the system prompt
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            self.model, self.api_key
-        );
+        let url = endpoints::gemini_generate_content(&self.model, &self.api_key);
 
         let body = json!({
             "system_instruction": {

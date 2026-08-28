@@ -154,8 +154,13 @@ export async function buildSourcePackage(
           elapsed_ms: local.elapsed_ms ?? (deps.now ?? Date.now)() - startedAt,
         },
       });
-    } catch {
+    } catch (error) {
       if (temp && fs.existsSync(temp)) fs.unlinkSync(temp);
+      console.warn(
+        `[main-footage] media ${asset.index} unusable: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
       unavailable.push({ id: asset.id, media_index: asset.index, code: 'source_video_skipped' });
     }
   }
@@ -189,11 +194,17 @@ export async function buildSourcePackage(
         await indexSource(sourceEntry, packageRoot, budgeted.deps, post.text ?? ''),
       );
       indexed.push(sourceEntry);
-    } catch {
+    } catch (error) {
       // Ruling K: one unindexable source is skipped like an unavailable one; the rest of
       // the package still publishes. A source with no scene index is dropped from the
       // manifest entirely — carrying it would promise downstream planning candidates
-      // that do not exist.
+      // that do not exist. Skipping it silently, though, is what turns the last source
+      // failing into a bare `forced_main_no_usable_video` with no cause attached.
+      console.warn(
+        `[main-footage] scene index failed for ${sourceEntry.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
       const asset = videos.find((candidate) => candidate.index === sourceEntry.media_index);
       unavailable.push({
         id: asset?.id ?? sourceEntry.id,

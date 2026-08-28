@@ -34,6 +34,7 @@ import { runCollectComments, type CollectCommentsOptions } from './collect_comme
 import { runTopicDossier } from '../enrich/topic_dossier.ts';
 import { runBuildFootage, type BuildFootageOptions } from './build_footage.ts';
 import { runExtractFigures } from './extract_figures.ts';
+import { runMainOcr } from './main_ocr.ts';
 import { runValidateContentSet } from './validate_content_set.ts';
 
 type FileStageOptions = { file: string };
@@ -61,6 +62,7 @@ export interface RunPipelineDeps {
     input: { post: PostRecord; contentSetPath: string; coverageTarget: number },
     context: AcquisitionRunContext,
   ): Promise<Pick<SourcePackageResult, 'descriptor' | 'excludedMediaIds'>>;
+  analyzeMainOcr?(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
   writeSeed(file: string, seed: ContentSet): Promise<void>;
   traceSource(options: TraceSourceOptions, context: AcquisitionRunContext): Promise<void>;
   collectComments(options: CollectCommentsOptions, context: AcquisitionRunContext): Promise<void>;
@@ -225,6 +227,12 @@ export async function runPipelineWithDeps(
       () =>
         deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
       TRACE_SOURCE_TIMEOUT_MS,
+    );
+  } else {
+    // trace_source also OCRs the main it resolves. A forced main is never resolved, so this is the
+    // only stage that gives it the ocr_status both the lint and the Rust video safety gate demand.
+    await runStage('main_ocr (subtitle/trim main terkunci)', true, () =>
+      (deps.analyzeMainOcr ?? ((stageOptions) => runMainOcr(stageOptions)))({ file }, context),
     );
   }
 

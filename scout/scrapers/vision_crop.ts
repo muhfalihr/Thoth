@@ -21,14 +21,17 @@ import { ui } from '../lib/ui.ts';
 const FFMPEG =
   process.env.THOTH_FFMPEG || 'C:\\Users\\mfr\\Documents\\MyTools\\CLIPPER\\ffmpeg.exe';
 import * as env from '../lib/env.ts';
+import { chatCompletion, chatReady } from '../lib/llm.ts';
 // Override with env THOTH_VISION_MODEL — a larger qwen3-vl (e.g. qwen/qwen3-vl-235b-a22b-instruct)
 // isolates posts far better. (8b deprecated di Novita 2026-07 → default 30b-a3b.)
 const VISION_MODEL = process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
 
-function novitaKey() {
-  const k = env.novitaKey();
-  if (!k) throw new Error(`THOTH_NOVITA_API_KEY kosong — isi di ${env.ENV_FILE}`);
-  return k;
+function requireVisionKey() {
+  if (!chatReady('vision')) {
+    throw new Error(
+      `key provider vision (${env.providerFor('vision')}) kosong — isi di ${env.ENV_FILE}`,
+    );
+  }
 }
 
 // Read PNG dimensions from the IHDR chunk (bytes 16..24).
@@ -96,10 +99,8 @@ async function main() {
   // 2. Vision: get the bounding box that isolates the main post.
   const b64 = fs.readFileSync(resized).toString('base64');
   console.log(`[2/3] Vision (${VISION_MODEL})…`);
-  const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + novitaKey() },
-    body: JSON.stringify({
+  requireVisionKey();
+  const resp = await chatCompletion({
       model: VISION_MODEL,
       messages: [
         {
@@ -112,8 +113,7 @@ async function main() {
       ],
       max_tokens: 700,
       temperature: 0.05,
-    }),
-  });
+    });
   const data = await resp.json();
   const raw = data.choices?.[0]?.message?.content || '';
   const m = raw.match(/\{[\s\S]*\}/);

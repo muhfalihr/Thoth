@@ -68,6 +68,9 @@ except Exception:
 
 import requests  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib.endpoints import groq_audio_transcriptions, novita  # noqa: E402
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover
@@ -93,7 +96,7 @@ def load_env():
 def load_config() -> dict:
     """Read provider/cookie settings from config.toml (graceful defaults)."""
     cfg = {
-        "novita_base_url": "https://api.novita.ai/openai",
+        "novita_base_url": novita(),
         "novita_model": "qwen/qwen-2.5-72b-instruct",
         "embed_model": "qwen/qwen3-embedding-8b",
         "ytdlp_path": "yt-dlp",
@@ -236,7 +239,7 @@ def transcribe_groq(audio: Path, model: str, language: str):
     if size_mb > 24:
         log(f"  ! audio is {size_mb:.1f} MB (Groq free limit ~25 MB) — "
             f"lower --max-audio-sec if this fails")
-    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    url = groq_audio_transcriptions()
     with audio.open("rb") as fh:
         files = {"file": (audio.name, fh, "audio/mpeg")}
         # verbose_json → per-segment timestamps so the LLM can assign beat windows.

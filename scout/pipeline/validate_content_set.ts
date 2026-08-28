@@ -36,8 +36,17 @@ export function validateMainFootageDescriptor(
     const sourcePackage = decodeSourcePackage(JSON.parse(fs.readFileSync(packagePath, 'utf8')));
     if (sourcePackage.post.canonical_url !== set.main.url) throw new Error('canonical_url_mismatch');
     return sourcePackage;
-  } catch {
-    throw new Error('source_package_invalid');
+  } catch (cause) {
+    // The stable code is what cli.ts whitelists, so it stays the message — but PipelineStepError
+    // sanitizes a failure down to message+stack, so an attached cause never reaches the operator.
+    // Print it here or a decoder rejection ("sources[0].acquisition.attempts must be a finite
+    // number") is indistinguishable from a missing manifest file.
+    console.warn(
+      `[main-footage] source package rejected: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+    throw new Error('source_package_invalid', { cause });
   }
 }
 

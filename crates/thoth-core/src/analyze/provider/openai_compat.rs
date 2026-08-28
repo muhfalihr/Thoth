@@ -4,11 +4,9 @@
 ///   POST {base_url}/v1/chat/completions
 ///   Authorization: Bearer {api_key}
 ///
-/// Built-in aliases (pre-configured base URLs):
-///   novita   → https://api.novita.ai/v3/openai
-///   together → https://api.together.xyz
-///   fireworks→ https://api.fireworks.ai/inference
-///   anyscale → https://api.endpoints.anyscale.com/v1
+/// Built-in aliases (novita / together / fireworks) take their base URL from
+/// [`crate::endpoints`] — the only place a provider host is written, and overridable per
+/// `THOTH_*_BASE_URL`.
 ///
 /// Can also be used directly with any custom base URL.
 
@@ -18,12 +16,13 @@ use serde_json::{json, Value};
 use tracing::{debug, warn};
 
 use crate::analyze::error::AnalyzeError;
+use crate::endpoints;
 
 use super::LlmProvider;
 
 pub struct OpenAiCompatProvider {
     client:       Client,
-    base_url:     String,   // e.g. "https://api.novita.ai/v3/openai"
+    base_url:     String,   // provider root, from `crate::endpoints` or config
     api_key:      String,
     model:        String,
     provider_tag: String,   // for logs: "novita", "together", etc.
@@ -156,7 +155,7 @@ impl LlmProvider for OpenAiCompatProvider {
 /// Get key: https://novita.ai/settings#key-management
 pub fn novita(api_key: String, model: String) -> OpenAiCompatProvider {
     OpenAiCompatProvider::new(
-        "https://api.novita.ai/openai".into(),
+        endpoints::novita(),
         api_key, model, "novita".into(),
     )
 }
@@ -164,7 +163,7 @@ pub fn novita(api_key: String, model: String) -> OpenAiCompatProvider {
 /// Together AI — wide model selection.
 pub fn together(api_key: String, model: String) -> OpenAiCompatProvider {
     OpenAiCompatProvider::new(
-        "https://api.together.xyz".into(),
+        endpoints::together(),
         api_key, model, "together".into(),
     )
 }
@@ -172,7 +171,7 @@ pub fn together(api_key: String, model: String) -> OpenAiCompatProvider {
 /// Fireworks AI — fast open-source model serving.
 pub fn fireworks(api_key: String, model: String) -> OpenAiCompatProvider {
     OpenAiCompatProvider::new(
-        "https://api.fireworks.ai/inference".into(),
+        endpoints::fireworks(),
         api_key, model, "fireworks".into(),
     )
 }

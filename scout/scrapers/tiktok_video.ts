@@ -11,6 +11,7 @@
 //   await downloadTiktok(pageUrl, 'output/tt_123.mp4')            → local path | ''
 
 import fs from 'node:fs';
+import { tikwmLookup } from '../lib/tikwm.ts';
 
 const DEFAULT_MEDIA_TIMEOUT_MS = 15_000;
 
@@ -24,6 +25,7 @@ type TikTokMediaDescriptor = {
 type TikTokVideoDeps = {
   fetch?: typeof fetch;
   timeoutMs?: number;
+  minGapMs?: number;
   cdpResolver?: (pageUrl: string) => Promise<TikTokMediaDescriptor | null>;
 };
 
@@ -40,40 +42,25 @@ export async function withDeadline<T>(
   }
 }
 
-// --- tikwm.com: GET /api/?url=<tiktok> → { data:{ play, hdplay, wmplay, title, duration } } ---
+// --- tikwm.com: { play, hdplay, wmplay, title, duration } through the shared rate gate ---
 async function viaTikwm(
   pageUrl: string,
   deps: TikTokVideoDeps,
 ): Promise<TikTokMediaDescriptor | null> {
-  try {
-    const fetchImpl = deps.fetch ?? fetch;
-    const j = await withDeadline(
-      async (signal) => {
-        const r = await fetchImpl(
-          'https://www.tikwm.com/api/?url=' + encodeURIComponent(pageUrl) + '&hd=1',
-          {
-            headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-            signal,
-          },
-        );
-        if (!r.ok) return null;
-        return await r.json();
-      },
-      deps.timeoutMs ?? DEFAULT_MEDIA_TIMEOUT_MS,
-    );
-    if (!j || j.code !== 0 || !j.data) return null;
-    let p = j.data.hdplay || j.data.play || j.data.wmplay;
-    if (!p) return null;
-    if (!/^https?:\/\//.test(p)) p = 'https://www.tikwm.com' + p; // tikwm sometimes returns a relative path
-    return {
-      url: p,
-      title: (j.data.title || '').trim(),
-      duration: j.data.duration || 0,
-      via: 'tikwm',
-    };
-  } catch (e) {
-    return null;
-  }
+  const data = await tikwmLookup(pageUrl, {
+    fetch: deps.fetch,
+    timeoutMs: deps.timeoutMs ?? DEFAULT_MEDIA_TIMEOUT_MS,
+    minGapMs: deps.minGapMs,
+  });
+  let p = data?.hdplay || data?.play || data?.wmplay;
+  if (!p) return null;
+  if (!/^https?:\/\//.test(p)) p = `https://www.tikwm.com${p}`; // tikwm sometimes returns a relative path
+  return {
+    url: p,
+    title: (data?.title || '').trim(),
+    duration: data?.duration || 0,
+    via: 'tikwm',
+  };
 }
 
 // --- CDP fallback: open the page in the relay browser, read <video>.currentSrc. Only usable when the

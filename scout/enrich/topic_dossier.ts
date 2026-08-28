@@ -22,12 +22,12 @@ import fs from 'node:fs';
 import * as ckb from './ckb.ts';
 import { parseDossier } from './dossier_parse.ts';
 
-import { novitaKey } from '../lib/env.ts';
+import { chatCompletion, chatKey } from '../lib/llm.ts';
 import { ui } from '../lib/ui.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
-const KEY = novitaKey();
+const KEY = chatKey();
 const MODEL = process.env.THOTH_CONTEXT_MODEL || 'deepseek/deepseek-v3.1'; // reasoner teks utk subteks/sentimen ID (current-event di-ground di Fase 2)
 
 const PROMPT = (
@@ -97,16 +97,12 @@ async function enrich(set) {
 
   let txt = '';
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
-      body: JSON.stringify({
+    const resp = await chatCompletion({
         model: MODEL,
         max_tokens: 4000,
         temperature: 0.2,
         messages: [{ role: 'user', content: PROMPT(main.title, main.description, promptComments) }],
-      }),
-    });
+      });
     if (!resp.ok) {
       console.log(ui.amber(`  ${ui.WARN} LLM ${resp.status} → skip`));
       return false;
@@ -282,16 +278,12 @@ ${blocks}
 Keluarkan HANYA JSON: {"items":[{"term":"","summary":"","as_of_date":""}]}`;
   let txt = '';
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
-      body: JSON.stringify({
+    const resp = await chatCompletion({
         model: MODEL,
         max_tokens: 900,
         temperature: 0.1,
         messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+      });
     if (!resp.ok) return [];
     const d = await resp.json();
     txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';

@@ -26,9 +26,9 @@ const TTL_DAYS = parseFloat(getFlag('--ttl', '30'));
 const MIN_FREQ = parseInt(getFlag('--min-freq', '2'), 10); // term must recur across ≥N videos to count as trending
 const SRC = getFlag('--src', outPath('reel_topics.json'));
 
-import { novitaKey } from '../lib/env.ts';
+import { chatCompletion, chatKey } from '../lib/llm.ts';
 import { ui } from '../lib/ui.ts';
-const KEY = novitaKey();
+const KEY = chatKey();
 const MODEL = process.env.THOTH_CONTEXT_MODEL || 'deepseek/deepseek-v3.1';
 
 const SCRIPT = {
@@ -119,16 +119,12 @@ ${corpus.slice(0, 6000)}
 
 Keluarkan HANYA JSON: {"terms":[{"term":"","kind":""}],"register":[""]}`;
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
-      body: JSON.stringify({
+    const resp = await chatCompletion({
         model: MODEL,
         max_tokens: 1000,
         temperature: 0.2,
         messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+      });
     if (!resp.ok) return empty;
     const d = await resp.json();
     const txt =

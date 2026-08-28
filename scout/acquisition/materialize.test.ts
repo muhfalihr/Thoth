@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -102,6 +103,53 @@ try {
   });
   assert.ok(!serialized.includes(secretToken));
   console.log('ok acquisition_materialize_privacy');
+
+  // An asset already materialized on disk is served from there. Regression: a TikTok post whose
+  // media had already been downloaded still failed the whole run, because the chain was executed
+  // unconditionally and every source happened to be down at that moment (no ephemeral_url left in
+  // the cached post record, yt-dlp's extractor broken) even though the file was sitting in root.
+  {
+    const asset = {
+      id: 'https://www.tiktok.com/@idntimes/video/7677122351166655765#1',
+      kind: 'video' as const,
+      index: 1,
+      canonical_post_url: 'https://www.tiktok.com/@idntimes/video/7677122351166655765',
+    };
+    const assetHash = createHash('sha256')
+      .update(`tiktok:${asset.id}:main`)
+      .digest('hex')
+      .slice(0, 16);
+    const everySourceDown = {
+      run: async () => ({ exitCode: 1, stderr: 'extractor down', timedOut: false }),
+      fetchBytes: async () => {
+        throw new Error('network down');
+      },
+      root,
+    };
+
+    // A half-written download must not pass as a materialized asset.
+    fs.writeFileSync(path.join(root, `${assetHash}.mp4.part`), Buffer.from('partial'));
+    await assert.rejects(
+      () => new Materializer({ galleryDl: 'gallery-dl', ytdlp: 'yt-dlp' } as any, everySourceDown)
+        .materialize(asset, 'main'),
+      AcquisitionError,
+      'an interrupted download left behind as a .part file is not a materialized asset',
+    );
+
+    fs.writeFileSync(path.join(root, `${assetHash}.mp4`), Buffer.from('already downloaded'));
+    const reused = await new Materializer(
+      { galleryDl: 'gallery-dl', ytdlp: 'yt-dlp' } as any,
+      everySourceDown,
+    ).materialize(asset, 'main');
+    assert.equal(reused.source, 'cache');
+    assert.equal(reused.path, path.join(root, `${assetHash}.mp4`));
+    assert.equal(reused.bytes, 'already downloaded'.length);
+    assert.ok(
+      reused.attempts >= 1,
+      'a materialized asset reports at least one attempt — SourcePackageV1 rejects attempts < 1',
+    );
+    console.log('ok acquisition_materialize_reuse');
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

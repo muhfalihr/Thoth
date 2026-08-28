@@ -12,12 +12,12 @@
 
 import fs from 'node:fs';
 
-import { novitaKey } from '../lib/env.ts';
+import { chatCompletion, chatKey } from '../lib/llm.ts';
 import { ui } from '../lib/ui.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 
-const KEY = novitaKey();
+const KEY = chatKey();
 const MODEL = process.env.THOTH_LLM_MODEL || 'deepseek/deepseek-v3.1'; // text reasoning (diskriminasi tokoh) — reasoner teks, bukan model vision
 const TYPES = ['person', 'organization', 'community'];
 
@@ -54,16 +54,12 @@ async function figuresFrom({
   if (!(title || description || caption || headline)) return [];
   let txt = '';
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({
+    const resp = await chatCompletion({
         model,
         max_tokens: 500,
         temperature: 0,
         messages: [{ role: 'user', content: PROMPT({ title, description, caption, headline }) }],
-      }),
-    });
+      });
     if (!resp.ok) return [];
     const d = await resp.json();
     txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';

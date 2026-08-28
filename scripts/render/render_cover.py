@@ -26,6 +26,10 @@ import os
 import sys
 import time
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib.endpoints import novita, novita_api, openrouter_chat_completions  # noqa: E402
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -191,7 +195,7 @@ def translate_to_scene(spec):
     if not key or not model:
         return None
     import requests
-    base = (spec.get("chat_base_url") or "https://api.novita.ai/openai").rstrip("/")
+    base = (spec.get("chat_base_url") or novita()).rstrip("/")
     headline = (spec.get("headline_text") or "").strip()
     topic = (spec.get("topic_desc") or "").strip()
     if not headline and not topic:
@@ -278,7 +282,7 @@ def describe_frame(spec, frame_path):
         return None
     import requests
     base = (spec.get("vision_base_url") or spec.get("chat_base_url")
-            or "https://api.novita.ai/openai").rstrip("/")
+            or novita()).rstrip("/")
     try:
         img = Image.open(frame_path).convert("RGB")
         img.thumbnail((768, 768))
@@ -383,7 +387,7 @@ def cover_matches_topic(spec, img):
     if not key or not model or not topic:
         return True
     base = (spec.get("vision_base_url") or spec.get("chat_base_url")
-            or "https://api.novita.ai/openai").rstrip("/")
+            or novita()).rstrip("/")
     try:
         im = img.convert("RGB"); im.thumbnail((768, 768))
         buf = io.BytesIO(); im.save(buf, format="JPEG", quality=85)
@@ -475,7 +479,7 @@ def gen_cover_openrouter(spec, W, H):
     body = {"model": model, "messages": [{"role": "user", "content": content}], "modalities": ["image", "text"]}
     try:
         t = time.time()
-        r = requests.post("https://openrouter.ai/api/v1/chat/completions",
+        r = requests.post(openrouter_chat_completions(),
                           headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
                                    "HTTP-Referer": "https://github.com/thoth", "X-Title": "Thoth"},
                           json=body, timeout=180)
@@ -531,7 +535,7 @@ def gen_background(spec, W, H):
     }
     try:
         t = time.time()
-        r = requests.post("https://api.novita.ai/v3beta/flux-1-schnell",
+        r = requests.post(f"{novita_api()}/v3beta/flux-1-schnell",
                           headers={"Authorization": f"Bearer {key}",
                                    "Content-Type": "application/json"},
                           json=body, timeout=150)
@@ -742,7 +746,7 @@ def merge_face(target_img, face_path):
         import requests
         tgt_b64 = _encode_capped(target_img, 1920)
         face_b64 = _encode_capped(face_path, 1024)
-        r = requests.post("https://api.novita.ai/v3/merge-face",
+        r = requests.post(f"{novita_api()}/v3/merge-face",
                           headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                           json={"image_file": tgt_b64, "face_image_file": face_b64}, timeout=120)
         if r.status_code != 200:

@@ -45,7 +45,8 @@ saja. Panggil script pakai path folder: `bun pipeline/discover_reels.ts`,
 
 | File | Fungsi |
 |---|---|
-| `lib/env.ts` | **Credential terpusat**: parse `.env` ROOT repo sekali → `process.env` (shell env menang). `novitaKey()`, `groqKey()`, `supabaseUrl()`, `get()`. |
+| `lib/env.ts` | **Credential + registry provider terpusat**: parse `.env` ROOT repo sekali → `process.env` (shell env menang). `PROVIDERS` (10 provider yang sama dengan crates Rust), `providerFor(peran)`, `providerChatUrl()`, `providerKey()`, `groqTranscriptionsUrl()`, `supabaseUrl()`, `get()`. **Satu-satunya file yang boleh menulis host provider** (dijaga test). |
+| `lib/llm.ts` | **Panggilan LLM lintas provider**: call-site menulis satu bentuk (ala OpenAI), `chatCompletion()` menerjemahkannya ke wire format keluarga `openai` / `anthropic` / `gemini` lalu menormalkan balasannya kembali. `chatKey()`, `chatReady()`, `chatContent()`. Peran `vision` dipilih otomatis kalau pesan memuat gambar. |
 | `lib/browser.ts` | **Standalone CDP host** — launch Brave/Chrome/Edge sendiri (`--remote-debugging-port` + profil khusus) di **port 18800**. CLI: `start`/`status`/`stop`/`path`/`env`. |
 | `lib/cdp.ts` | Koneksi Chrome DevTools Protocol ke managed browser **port 18800** (override `THOTH_CDP`). Semua otomasi browser lewat sini. |
 | `lib/paths.ts` | Konvensi lokasi tulis: `output/` (JSON) + `output/crops/` (PNG). |
@@ -58,7 +59,11 @@ saja. Panggil script pakai path folder: `bun pipeline/discover_reels.ts`,
 | `scrapers/tiktok_video.ts` | Resolve TikTok page → **URL CDN mp4** (tikwm → fallback CDP). yt-dlp TikTok rusak; ini jalan keluarnya. |
 | `scrapers/threads_video.ts` | Ekstrak `<video>.src` fbcdn dari post Threads. |
 | `scrapers/crop_post.ts` | Crop post X/IG/FB/Threads pixel-perfect dari DOM (quoted-tweet disembunyikan). |
-| `pipeline/resolve_source.ts` | LLM: tentukan SUMBER ASLI video repost dari deskripsi/caption/headline. |
+| `pipeline/resolve_source.ts` | LLM: tentukan SUMBER ASLI video repost dari deskripsi/caption/headline **+ kredit visual** (handle ber-`@`, teks OCR mentah, ikon platform, akun pengunggah). Jawaban model disaring: prefix balasan ("Membalas @x") bukan kredit, akun PENGUNGGAH repost-nya sendiri dibuang, handle yang tak tertulis di mana pun dibuang, platform tanpa jejak teks dibuang. |
+| `lib/source_credit.ts` | Aturan tunggal soal teks kredit: panen `@handle` (`extractHandles`) + bukti akun/platform. Dipakai oleh caption MAUPUN hasil OCR frame, jadi sasaran balasan tak pernah jadi sumber di kedua jalur. |
+| `lib/platform_logo.ts` | Menamai platform dari **deskripsi ikon** lewat tabel Supabase `platform_logos` (1 SELECT, embedding teks; query mengembalikan baris terbaik **per platform**, bukan top-N varian). Tiga gerbang: baris umpan `__none__` menang = "bukan logo", skor absolut, margin atas platform lain. Tak ada key / tak ada `pg` / tabel belum di-seed → `null`. |
+| `lib/main_candidate.ts` | Menilai SATU kandidat main: video? aggregator? on-topic? footage atau komentar? subtitle bawaan? Kegagalan OCR di sini menolak kandidatnya saja (`media_unavailable` + `detail` kode aslinya) — `attachVideoOcr` sengaja melempar keras untuk main yang sudah terpilih, dan lemparan itu dulu ikut membunuh seluruh run trace_source di kandidat pengganti yang medianya tak bisa diunduh. |
+| `lib/main_gate.ts` | Putusan main: pertahankan input, atau evaluasi semua kandidat pengganti lalu pilih yang terbaik (`rankAcceptedMainCandidates`: akun terkredit dulu, baru bukan-aggregator). Tanpa satu pun yang lolos → `MainCandidateNotFoundError`, kecuali step 3 memang tak mengkredit akun apa pun. |
 | `lib/footage_objects.ts` | LLM: ekstrak SUBJECT/OBJECT/PEOPLE (query b-roll majemuk) dari teks + komentar. |
 | `enrich/web_grounding.ts` | Headline Google News (CDP, text-only) → status entitas TERKINI. Dipakai `enrich_context`. |
 | `enrich/ckb.ts` | Cultural Knowledge Base: cache referensi/meme + pulse di **Supabase** (fallback lokal `ckb.json`). Butuh `bun add pg` + URL Supabase. |
@@ -67,7 +72,8 @@ saja. Panggil script pakai path folder: `bun pipeline/discover_reels.ts`,
 
 | File | Peran |
 |---|---|
-| `pipeline/trace_source.ts` | Anti re-wrap: cari video SUMBER ASLI dari kredit (`tt/user`, 📸 @user, dll) → ganti `main`. TikTok otomatis di-resolve ke CDN + backup mp4 lokal. |
+| `pipeline/trace_source.ts` | Anti re-wrap: cari video SUMBER ASLI dari kredit (`tt/user`, 📸 @user, dll) → ganti `main`. TikTok otomatis di-resolve ke CDN + backup mp4 lokal. Hasil gate diringkas ke layar (`· kandidat pengganti: accepted=N rejected(...)`), termasuk saat gate melempar — sebelumnya alasan penolakan hanya ada di `output/main_candidate_debug.jsonl`. |
+| `pipeline/source_credit_scan.ts` | Baca kredit sumber dari **cover + detik pertama**: OCR teks `@akun` yang tercetak di frame **plus teks OCR mentahnya** (`frameText` — watermark TikTok mencetak username TANPA `@`, jadi handle saja membuang kredit yang paling sering muncul), plus deskripsi ikon platform (vision) yang dinamai lewat katalog logo. Ikon dicari di cover **lalu frame berikutnya** (maks 2 panggilan vision) — cover TikTok itu thumbnail terpisah yang sering tak membawa watermark, jadi cover-saja melaporkan "tak ada ikon" untuk video yang jelas punya. Hasilnya masuk prompt `resolve_source` sebagai bukti pixel. Dipanggil `trace_source`. |
 | `pipeline/build_footage.ts` | Footage dari OBJEK cerita (per objek: video+post, di-gate relevansi) + reel relevan dari profil creator + story-gate embedding. |
 | `pipeline/extract_figures.ts` | LLM: tokoh/organisasi subjek cerita → `figures[]`. |
 | `pipeline/collect_comments.ts` | Komentar multi-sumber (main + footage + `--extra`), dedupe, sort likes, cap. **Krusial untuk narasi.** |
@@ -117,6 +123,14 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
    profil `~/.clipper/browser-profile`, jadi cukup sekali.
 3. **Credential di `.env` ROOT repo** (tidak di-commit; dibaca `lib/env.ts`):
    `THOTH_NOVITA_API_KEY` (LLM/vision/embedding), `THOTH_GROQ_API_KEY` (Whisper fallback discovery).
+   - **Provider lain (opsional):** scout mendukung provider yang sama dengan crates Rust —
+     `groq | openai | claude | gemini | novita | openrouter | together | fireworks | vllm | ollama`.
+     Setel `THOTH_SCOUT_PROVIDER` (atau per-peran: `THOTH_SCOUT_CHAT_PROVIDER`,
+     `THOTH_SCOUT_VISION_PROVIDER`, `THOTH_SCOUT_EMBED_PROVIDER`) + key provider itu
+     (`THOTH_<PROVIDER>_API_KEY`); `vllm`/`ollama` jalan tanpa key. Kosong = novita (perilaku lama).
+     Host tiap provider bisa diarahkan ke gateway lewat `THOTH_<PROVIDER>_BASE_URL` — variabel yang
+     SAMA dipakai Rust & skrip Python. Ganti provider berarti ganti model juga (`THOTH_LLM_MODEL`,
+     `THOTH_VISION_MODEL`, `THOTH_EMBED_MODEL`, …) — default-nya masih ID model Novita.
    - **CKB (Cultural Knowledge Base) — opsional, untuk `enrich_context`/`pulse_harvest`:** Supabase
      Postgres. Sediakan `THOTH_SUPABASE_URL` di `.env` root, lalu: `bun add pg`.
      Tanpa ini, CKB degrade ke cache lokal-JSON (`ckb.json`) — tetap jalan, tapi tidak lintas-mesin.
@@ -130,6 +144,25 @@ Semua file deprecated sudah dipatch (`require('../...')`) jadi tetap bisa dijala
    `THOTH_NOVITA_API_KEY` (env Thoth, sudah ada) dipakai juga untuk: generate background cover
    (FLUX), deskripsi vision frame, dan pemilihan meme. **Tanpa Python/Pillow** → cover dilewati &
    hook title fallback ke libass (graceful, run tetap jalan).
+6. **Katalog logo platform — opsional, sekali seed.** Repost sering hanya mengkredit sumbernya
+   dengan IKON (not musik TikTok, kamera IG, tanda X) tanpa satu kata pun. Model vision cuma
+   diminta MENDESKRIPSIKAN ikon itu; penamaan platform-nya datang dari tabel, bukan dari tebakan
+   model. Isi tabelnya sekali, **sebelum** menjalankan Thoth — tak ada Python yang dipanggil dari
+   dalam pipeline:
+   ```powershell
+   # 1. taruh potongan logo di assets/platform_logos/<platform>/<varian>.png
+   #    (lihat assets/platform_logos/README.md — crop dari postingan asli > logo press-kit)
+   python -m pip install torch transformers psycopg2-binary
+   python scripts/vision/embed_platform_logos.py seed          # --dry-run untuk cek dulu
+   python scripts/vision/embed_platform_logos.py report        # kohesi per platform + pasangan rawan tertukar
+   ```
+   Butuh `THOTH_SUPABASE_URL` + `THOTH_NOVITA_API_KEY` (keduanya dibaca dari `.env` root oleh
+   skripnya) + `bun add pg` di sisi scout. Seeder juga menulis baris umpan `__none__` (bug stasiun
+   TV, chyron berita, jam layar, isi adegan) — tanpa itu setiap deskripsi dipaksa memilih salah satu
+   dari enam platform dan logo bulat stasiun TV terbaca `youtube 0.595`. **Tanpa seed ini semuanya
+   tetap jalan** — jalur ikon diam, kredit berbasis teks (OCR + caption) tetap aktif.
+   Knob: `THOTH_LOGO_CLIP_MODEL`, `THOTH_LOGO_MATCH_MIN` (default `0.55`),
+   `THOTH_LOGO_MATCH_MARGIN` (default `0.03`), `THOTH_CREDIT_SCAN_TIMES` (default `0.2,0.8,1.5`).
 
 ---
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { OcrAnalysisError } from './ocr_contract.ts';
+import { OCR_ANALYZER_VERSION, OcrAnalysisError } from './ocr_contract.ts';
 import { attachFootageOcrCandidate } from './footage_candidate_ocr.ts';
 
 const record = {
@@ -50,7 +50,7 @@ const analyzed = {
   ocr_schema_version: 1,
   ocr_status: 'analyzed' as const,
   ocr_model: 'deepseek/deepseek-ocr',
-  ocr_analyzer_version: 'deepseek-ocr-v2',
+  ocr_analyzer_version: OCR_ANALYZER_VERSION,
   ocr_analyzed_at: '2026-07-27T00:00:00.000Z',
   ocr_requested_frames: 12,
   ocr_valid_frames: 12,
