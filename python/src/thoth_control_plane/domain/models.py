@@ -14,7 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, mod
 OPAQUE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]{0,127}$"
 SHA256_PATTERN = r"^sha256:[0-9a-fA-F]{64}$"
 SENSITIVE_KEY_PARTS = frozenset(
-    {"token", "secret", "cookie", "authorization", "signed_url", "provider_payload"}
+    {"token", "secret", "cookie", "authorization", "signedurl", "providerpayload"}
+)
+RFC3339_TIMESTAMP_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
 
 OpaqueId = Annotated[str, Field(pattern=OPAQUE_ID_PATTERN)]
@@ -32,7 +35,8 @@ class StrictModel(BaseModel):
 
 
 def _redact(value: Any, *, key: str | None = None) -> Any:
-    if key is not None and any(part in key.lower() for part in SENSITIVE_KEY_PARTS):
+    normalized_key = re.sub(r"[^a-z0-9]", "", key.lower()) if key is not None else ""
+    if any(part in normalized_key for part in SENSITIVE_KEY_PARTS):
         return "[REDACTED]"
     if isinstance(value, dict):
         return {
@@ -40,6 +44,19 @@ def _redact(value: Any, *, key: str | None = None) -> Any:
         }
     if isinstance(value, list):
         return [_redact(item) for item in value]
+    return value
+
+
+def _parse_rfc3339_timestamp(value: datetime | str) -> datetime:
+    if isinstance(value, str):
+        if not RFC3339_TIMESTAMP_PATTERN.fullmatch(value):
+            raise ValueError("timestamp must be RFC 3339")
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("timestamp must be RFC 3339") from error
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("timestamp must be RFC 3339 with a timezone offset")
     return value
 
 
@@ -161,12 +178,10 @@ class WorkflowEvent(StrictModel):
     def validate_kind(cls, kind: EventKind | str) -> EventKind:
         return EventKind(kind)
 
-    @field_validator("occurred_at")
+    @field_validator("occurred_at", mode="before")
     @classmethod
-    def validate_timestamp(cls, occurred_at: datetime) -> datetime:
-        if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
-            raise ValueError("timestamp must be RFC 3339 with a timezone offset")
-        return occurred_at
+    def validate_timestamp(cls, occurred_at: datetime | str) -> datetime:
+        return _parse_rfc3339_timestamp(occurred_at)
 
     @model_validator(mode="after")
     def validate_event_payload(self) -> WorkflowEvent:
@@ -209,12 +224,10 @@ class ApprovalSignal(StrictModel):
     actor: ActorSnapshot
     decided_at: datetime
 
-    @field_validator("decided_at")
+    @field_validator("decided_at", mode="before")
     @classmethod
-    def validate_timestamp(cls, timestamp: datetime) -> datetime:
-        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-            raise ValueError("timestamp must be RFC 3339 with a timezone offset")
-        return timestamp
+    def validate_timestamp(cls, timestamp: datetime | str) -> datetime:
+        return _parse_rfc3339_timestamp(timestamp)
 
 
 class WorkflowFailure(StrictModel):
@@ -261,12 +274,10 @@ class WorkflowSummary(StrictModel):
     def validate_status(cls, status: WorkflowStatus | str) -> WorkflowStatus:
         return WorkflowStatus(status)
 
-    @field_validator("created_at", "updated_at")
+    @field_validator("created_at", "updated_at", mode="before")
     @classmethod
-    def validate_timestamp(cls, timestamp: datetime) -> datetime:
-        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-            raise ValueError("timestamp must be RFC 3339 with a timezone offset")
-        return timestamp
+    def validate_timestamp(cls, timestamp: datetime | str) -> datetime:
+        return _parse_rfc3339_timestamp(timestamp)
 
 
 class SourceInvestigationInput(StrictModel):

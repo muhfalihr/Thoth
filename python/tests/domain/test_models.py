@@ -8,10 +8,12 @@ from pydantic import ValidationError
 
 from thoth_control_plane.domain.models import (
     ApprovalDecision,
+    ApprovalSignal,
     ArtifactRef,
     SourceInvestigationResult,
     WorkflowEvent,
     WorkflowRequest,
+    WorkflowSummary,
 )
 
 VALID_REQUEST = {
@@ -121,20 +123,68 @@ def test_event_requires_a_positive_sequence_and_known_kind() -> None:
         )
 
 
+def test_public_timestamp_fields_accept_rfc3339_strings() -> None:
+    timestamp = "2026-08-28T08:00:00Z"
+
+    event = WorkflowEvent.model_validate(
+        {
+            "workflow_id": "wf_1",
+            "event_id": "evt_1",
+            "sequence": 1,
+            "kind": "workflow.started",
+            "occurred_at": timestamp,
+        }
+    )
+    summary = WorkflowSummary.model_validate(
+        {
+            "workflow_id": "wf_1",
+            "status": "queued",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "source": {"display_url": "https://example.test/post", "platform": "tiktok"},
+            "stages": [],
+        }
+    )
+    signal = ApprovalSignal.model_validate(
+        {
+            "approval_id": "apr_1",
+            "decision": {"decision": "approve"},
+            "actor": {"actor_id": "usr_1", "actor_type": "user"},
+            "decided_at": timestamp,
+        }
+    )
+
+    assert event.occurred_at.isoformat() == "2026-08-28T08:00:00+00:00"
+    assert summary.created_at == event.occurred_at
+    assert signal.decided_at == event.occurred_at
+
+
 def test_redacted_dict_scrubs_sensitive_diagnostic_values() -> None:
     decision = ApprovalDecision.model_validate(
         {
             "decision": "approve",
             "note": "looks good",
             "provider_payload": {"authorization": "Bearer private"},
-            "metadata": {"api_token": "private", "public": "keep"},
+            "metadata": {
+                "api_token": "private",
+                "signedUrl": "distinctive-signed-url",
+                "providerPayload": "distinctive-provider-payload",
+                "signed-url": "distinctive-hyphenated-url",
+                "public": "keep",
+            },
         }
     )
     assert decision.redacted_dict() == {
         "decision": "approve",
         "note": "looks good",
         "provider_payload": "[REDACTED]",
-        "metadata": {"api_token": "[REDACTED]", "public": "keep"},
+        "metadata": {
+            "api_token": "[REDACTED]",
+            "signedUrl": "[REDACTED]",
+            "providerPayload": "[REDACTED]",
+            "signed-url": "[REDACTED]",
+            "public": "keep",
+        },
     }
 
 
