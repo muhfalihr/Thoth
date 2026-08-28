@@ -258,19 +258,22 @@ const accepted = (
             },
       search: async () => [
         {
-          url: 'https://www.tiktok.com/@vincentius.christ76/video/7678367150007930130',
+          url: 'https://www.tiktok.com/@vincentius.christ76/video/7676961801011072274',
           platform: 'tiktok',
           uploader: 'vincentius.christ76',
-          views: 485,
+          publishedAt: 1787431957,
+          views: 180400,
         },
         {
           url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
           platform: 'tiktok',
           uploader: 'vincentius.christ76',
+          publishedAt: 1787472803,
           views: 78000,
         },
       ],
       creditedHandle: '@Vincentius.Christ76',
+      sourceWindow: { repostTime: 1787556382 },
     },
   );
   assert.equal(decision.status, 'replace');
@@ -279,7 +282,7 @@ const accepted = (
   assert.equal(
     decision.candidate.url,
     'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
-    'credited indeterminate candidates without metadata must prefer the highest-view source',
+    'credited indeterminate candidates must prefer the latest plausible source before views',
   );
 }
 

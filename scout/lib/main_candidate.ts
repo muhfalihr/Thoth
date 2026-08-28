@@ -19,6 +19,34 @@ export type MainCandidate = Record<string, unknown> & {
   views?: number;
 };
 
+const MIN_PLAUSIBLE_UNIX_SECOND = 946684800; // 2000-01-01T00:00:00Z
+const MAX_PLAUSIBLE_UNIX_SECOND = 4102444800; // 2100-01-01T00:00:00Z
+
+/** Decodes TikTok's Snowflake-style video ID timestamp from a canonical post URL. */
+export function tiktokPublishedAtFromUrl(url: string): number | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'https:' || !/^(?:www\.)?tiktok\.com$/i.test(parsed.hostname)) {
+    return undefined;
+  }
+  const match = parsed.pathname.match(/^\/@[\w.-]+\/video\/(\d+)\/?$/);
+  if (!match) return undefined;
+  try {
+    const publishedAt = Number(BigInt(match[1]) >> 32n);
+    return Number.isSafeInteger(publishedAt) &&
+      publishedAt >= MIN_PLAUSIBLE_UNIX_SECOND &&
+      publishedAt <= MAX_PLAUSIBLE_UNIX_SECOND
+      ? publishedAt
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export type MainStoryEvidence = {
   caption: string;
   headline: string;

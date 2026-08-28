@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   evaluateMainSuitability,
+  tiktokPublishedAtFromUrl,
   type MainCandidate,
   type MainCandidateEvaluatorDeps,
   type MainStoryEvidence,
@@ -10,6 +11,21 @@ import {
   OcrAnalysisError,
   type PersistedOcrFields,
 } from './ocr_contract.ts';
+
+assert.equal(
+  tiktokPublishedAtFromUrl('https://www.tiktok.com/@detikjatim/video/7677496203042360594'),
+  1787556382,
+);
+assert.equal(
+  tiktokPublishedAtFromUrl('https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752'),
+  1787472803,
+);
+assert.equal(
+  tiktokPublishedAtFromUrl('https://www.tiktok.com/@vincentius.christ76/video/7676961801011072274'),
+  1787431957,
+);
+assert.equal(tiktokPublishedAtFromUrl('https://example.test/video/7677137235434687752'), undefined);
+assert.equal(tiktokPublishedAtFromUrl('https://www.tiktok.com/@creator/video/not-an-id'), undefined);
 
 const candidate: MainCandidate = {
   url: 'https://www.instagram.com/creator/reel/GOOD/',

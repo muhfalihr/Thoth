@@ -27,6 +27,19 @@ assert.equal(
 );
 assert.equal(candidate.views, 78000, 'candidateFromDiscovery must preserve discovered view counts');
 
+const tiktokCandidate = candidateFromDiscovery(
+  profileRecord({
+    canonical_url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+    platform: 'tiktok',
+  }),
+  'vincentius.christ76',
+);
+assert.equal(
+  tiktokCandidate.publishedAt,
+  1787472803,
+  'TikTok profile discovery must infer a source time when the extractor provides none',
+);
+
 // findOriginalInstagramCandidates must actually return candidates for an account with reels.
 const context = {
   runId: 'test',

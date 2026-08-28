@@ -20,6 +20,7 @@ import type { AcquisitionRunContext, PostRecord } from '../acquisition/index.ts'
 import { createStandaloneAcquisitionContext, runAcquisitionCli } from '../acquisition/index.ts';
 import {
   evaluateMainSuitability,
+  tiktokPublishedAtFromUrl,
   type MainCandidate,
   type MainCandidateOrigin,
   type MainStoryEvidence,
@@ -414,6 +415,12 @@ async function findOriginalThreads(username, keywords = [], context: Acquisition
 // describeEvidence's vision-evidence step degrades to '' for these two sources. Upgrade path: an
 // adapter-level poster field, or a capped per-candidate captureSocialCard if that cost is worth it.
 export function candidateFromDiscovery(record: PostRecord, uploader: string): MainCandidate {
+  const extractedPublishedAt = Date.parse(record.published_at || '') / 1000;
+  const publishedAt = Number.isFinite(extractedPublishedAt) && extractedPublishedAt > 0
+    ? extractedPublishedAt
+    : record.platform === 'tiktok'
+      ? tiktokPublishedAtFromUrl(record.canonical_url)
+      : undefined;
   return {
     url: record.canonical_url,
     platform: record.platform,
@@ -421,6 +428,7 @@ export function candidateFromDiscovery(record: PostRecord, uploader: string): Ma
     thumbnail: '',
     uploader: record.owner_handle || uploader,
     views: record.engagement?.views,
+    ...(publishedAt === undefined ? {} : { publishedAt }),
     // `record.media` is always [] for profile-discovery PostRecords (adapters don't populate it
     // there -- see reelToPostRecord/videoToPostRecord) so it cannot be used as a video signal.
     // Both callers of this function only ever discover video/reel entries by construction.
@@ -948,7 +956,8 @@ export async function runTraceSource(
   const probeInput = runtimeDeps.probeVideo;
   const repostProbe = await probeInput(inputCandidate);
   const sourceWindow = {
-    repostTime: repostProbe.candidate.publishedAt || undefined,
+    repostTime:
+      repostProbe.candidate.publishedAt ?? tiktokPublishedAtFromUrl(inputCandidate.url),
     repostDuration: repostProbe.candidate.durationSec || undefined,
   };
 

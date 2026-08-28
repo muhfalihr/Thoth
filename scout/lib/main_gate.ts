@@ -49,6 +49,11 @@ function viewCount(candidate: MainCandidate): number {
   return Number.isFinite(views) && views >= 0 ? views : 0;
 }
 
+function sourcePublishedAt(candidate: MainCandidate): number | undefined {
+  const publishedAt = Number(candidate.publishedAt);
+  return Number.isFinite(publishedAt) && publishedAt > 0 ? publishedAt : undefined;
+}
+
 export type MainGateDecision =
   | {
       status: 'retain';
@@ -205,6 +210,7 @@ export async function chooseInputOrReplacement(
           (a, b) =>
             creditedFallbackTier(a.candidate, deps.sourceWindow ?? {}) -
               creditedFallbackTier(b.candidate, deps.sourceWindow ?? {}) ||
+            (sourcePublishedAt(b.candidate) ?? 0) - (sourcePublishedAt(a.candidate) ?? 0) ||
             viewCount(b.candidate) - viewCount(a.candidate),
         )
         .find((result) => creditedFallbackTier(result.candidate, deps.sourceWindow ?? {}) < 2)
