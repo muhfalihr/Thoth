@@ -66,6 +66,7 @@ export type MainGateDeps = {
   ) => Promise<MainSuitability>;
   search: () => Promise<MainCandidate[]>;
   rankAccepted?: (candidates: AcceptedSuitability[]) => AcceptedSuitability | null;
+  creditedHandle?: string;
   sourceWindow?: SourceWindow;
   // Set when step 3 credited no account at all (the model omitted it, or answered with the "@akun"
   // placeholder). The search then had no handle to aim at, so finding nothing says nothing about
@@ -77,6 +78,14 @@ export type MainGateDeps = {
 
 const AGGREGATOR_MARKERS =
   /(news|berita|media|infotainment|seleb|gosip|viral|update|terkini|trending|repost|kabar|warta|portal|redaksi|jurnal|koran|radar|grid|tempo|detik|kompas|tribun|cnnindo|cnbc|official)$/i;
+
+function candidateHandle(candidate: MainCandidate): string {
+  return (
+    normHandle(String(candidate.uploader || '')) ||
+    normHandle(urlHandle(candidate.pageUrl || '')) ||
+    normHandle(urlHandle(candidate.url))
+  );
+}
 
 function appendEvaluationDiagnostic(
   deps: MainGateDeps,
@@ -117,11 +126,7 @@ export function rankAcceptedMainCandidates(
   const credited = normHandle(options.credited);
   const repost = normHandle(options.repostHandle);
   const tier = (result: AcceptedSuitability): number => {
-    const handle = normHandle(
-      String(
-        result.candidate.uploader || urlHandle(result.candidate.pageUrl || result.candidate.url),
-      ),
-    );
+    const handle = candidateHandle(result.candidate);
     if (credited && handle === credited) return 0;
     if (!handle) return 1;
     if (handle === repost || AGGREGATOR_MARKERS.test(handle)) return 2;
@@ -173,6 +178,25 @@ export async function chooseInputOrReplacement(
     appendEvaluationDiagnostic(deps, candidate, 'search', result);
     if (result.status === 'accepted') acceptedResults.push(result);
     else if (result.status === 'indeterminate') indeterminateResults.push(result);
+  }
+  const credited = normHandle(deps.creditedHandle);
+  const hasAcceptedCredited =
+    !!credited && acceptedResults.some((result) => candidateHandle(result.candidate) === credited);
+  const creditedFallback =
+    !hasAcceptedCredited && credited
+      ? indeterminateResults.find(
+          (result) =>
+            candidateHandle(result.candidate) === credited &&
+            isPlausibleSource(result.candidate, deps.sourceWindow ?? {}),
+        )
+      : undefined;
+  if (creditedFallback) {
+    return {
+      status: 'replace',
+      candidate: creditedFallback.candidate,
+      confidence: 'low',
+      suitability: 'indeterminate',
+    };
   }
   const selected = (deps.rankAccepted ?? ((results) => results[0] || null))(acceptedResults);
   if (!selected) {

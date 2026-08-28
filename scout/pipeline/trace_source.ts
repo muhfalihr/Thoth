@@ -969,6 +969,7 @@ export async function runTraceSource(
       // now strips): the search had nothing to aim at, so an empty result is not evidence against the
       // input post. Keep it as main instead of failing the run.
       retainInputWhenUncredited: !username,
+      creditedHandle: username,
       sourceWindow,
       appendDiagnostic: (record) => {
         if (record.origin === 'search') {

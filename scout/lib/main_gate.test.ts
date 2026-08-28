@@ -242,6 +242,50 @@ const accepted = (
 }
 
 {
+  const creditedSource = {
+    url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+    pageUrl: 'https://example.test/captured-source',
+    platform: 'tiktok',
+    publishedAt: 1787472811,
+    durationSec: 124,
+  };
+  const unrelatedAccepted = {
+    url: 'https://www.tiktok.com/@kohdennies/video/7677481234567890123',
+    platform: 'tiktok',
+    uploader: 'kohdennies',
+  };
+  const decision = await chooseInputOrReplacement(input, story, {
+    evaluate: async (candidate, _story, origin) => {
+      if (origin === 'input') {
+        return { status: 'rejected', reason: 'curated_aggregator' };
+      }
+      if (candidate.url === creditedSource.url) {
+        return {
+          status: 'indeterminate',
+          reason: 'similarity_unavailable',
+          confidence: 'low',
+          kind: 'footage',
+          candidate: { ...candidate, ...ocrFields },
+        };
+      }
+      return accepted(candidate, 0.659);
+    },
+    search: async () => [unrelatedAccepted, creditedSource],
+    creditedHandle: '@Vincentius.Christ76',
+    sourceWindow: { repostTime: 1787556392, repostDuration: 90 },
+    rankAccepted: (results) => results[0] ?? null,
+  });
+  assert.equal(
+    decision.status === 'replace' && decision.candidate.url,
+    creditedSource.url,
+    'a plausible credited source without similarity must beat an unrelated accepted result',
+  );
+  assert.equal(decision.suitability, 'indeterminate');
+  assert.equal(decision.confidence, 'low');
+  assert.equal(decision.status === 'replace' && decision.candidate.ocr_outcome, 'clean');
+}
+
+{
   const REPOST_TIME = 1787556392; // detikjatim, 2026-08-24
   const window = { repostTime: REPOST_TIME, repostDuration: 90 };
   assert.equal(
