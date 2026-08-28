@@ -19,12 +19,13 @@ function profileRecord(overrides: Partial<PostRecord> = {}): PostRecord {
 }
 
 // candidateFromDiscovery must treat profile-discovery records as video even though media is empty.
-const candidate = candidateFromDiscovery(profileRecord(), 'somecreator');
+const candidate = candidateFromDiscovery(profileRecord({ engagement: { views: 78000 } }), 'somecreator');
 assert.equal(
   candidate.isVideo,
   true,
   'candidateFromDiscovery must mark profile-discovery posts as video',
 );
+assert.equal(candidate.views, 78000, 'candidateFromDiscovery must preserve discovered view counts');
 
 // findOriginalInstagramCandidates must actually return candidates for an account with reels.
 const context = {

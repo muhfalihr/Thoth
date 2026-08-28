@@ -33,6 +33,22 @@ export function isPlausibleSource(candidate: MainCandidate, window: SourceWindow
   return true;
 }
 
+function hasKnownSourceMetadata(candidate: MainCandidate): boolean {
+  return [candidate.publishedAt, candidate.durationSec].some(
+    (value) => Number.isFinite(Number(value)) && Number(value) > 0,
+  );
+}
+
+function creditedFallbackTier(candidate: MainCandidate, window: SourceWindow): number {
+  if (!hasKnownSourceMetadata(candidate)) return 1;
+  return isPlausibleSource(candidate, window) ? 0 : 2;
+}
+
+function viewCount(candidate: MainCandidate): number {
+  const views = Number(candidate.views);
+  return Number.isFinite(views) && views >= 0 ? views : 0;
+}
+
 export type MainGateDecision =
   | {
       status: 'retain';
@@ -182,14 +198,17 @@ export async function chooseInputOrReplacement(
   const credited = normHandle(deps.creditedHandle);
   const hasAcceptedCredited =
     !!credited && acceptedResults.some((result) => candidateHandle(result.candidate) === credited);
-  const creditedFallback =
-    !hasAcceptedCredited && credited
-      ? indeterminateResults.find(
-          (result) =>
-            candidateHandle(result.candidate) === credited &&
-            isPlausibleSource(result.candidate, deps.sourceWindow ?? {}),
+  const creditedFallback = !hasAcceptedCredited && credited
+    ? indeterminateResults
+        .filter((result) => candidateHandle(result.candidate) === credited)
+        .sort(
+          (a, b) =>
+            creditedFallbackTier(a.candidate, deps.sourceWindow ?? {}) -
+              creditedFallbackTier(b.candidate, deps.sourceWindow ?? {}) ||
+            viewCount(b.candidate) - viewCount(a.candidate),
         )
-      : undefined;
+        .find((result) => creditedFallbackTier(result.candidate, deps.sourceWindow ?? {}) < 2)
+    : undefined;
   if (creditedFallback) {
     return {
       status: 'replace',
@@ -203,10 +222,17 @@ export async function chooseInputOrReplacement(
     // A candidate nobody could score is not a candidate anybody rejected. The gate already
     // retains an indeterminate INPUT; refusing to replace with an indeterminate SEARCH result
     // is what turned "found the credited account" into "took no video at all".
+    const fallbackPool = credited
+      ? indeterminateResults.filter(
+          (result) =>
+            candidateHandle(result.candidate) !== credited ||
+            creditedFallbackTier(result.candidate, deps.sourceWindow ?? {}) < 2,
+        )
+      : indeterminateResults;
     const fallback =
-      indeterminateResults.find((result) =>
+      fallbackPool.find((result) =>
         isPlausibleSource(result.candidate, deps.sourceWindow ?? {}),
-      ) ?? indeterminateResults[0];
+      ) ?? fallbackPool[0];
     if (fallback) {
       return {
         status: 'replace',

@@ -15,6 +15,8 @@ export type MainCandidate = Record<string, unknown> & {
   publishedAt?: number;
   /** Media length in seconds from the metadata probe. Absent when unknown. */
   durationSec?: number;
+  /** View count from discovery metadata. Absent when unavailable. */
+  views?: number;
 };
 
 export type MainStoryEvidence = {

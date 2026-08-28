@@ -242,6 +242,48 @@ const accepted = (
 }
 
 {
+  const decision = await chooseInputOrReplacement(
+    { url: 'https://www.tiktok.com/@detikjatim/video/7677496203042360594', platform: 'tiktok' },
+    story,
+    {
+      evaluate: async (candidate, _story, origin) =>
+        origin === 'input'
+          ? { status: 'rejected', reason: 'curated_aggregator' }
+          : {
+              status: 'indeterminate',
+              reason: 'similarity_unavailable',
+              confidence: 'low',
+              kind: 'footage',
+              candidate: { ...candidate, ...ocrFields },
+            },
+      search: async () => [
+        {
+          url: 'https://www.tiktok.com/@vincentius.christ76/video/7678367150007930130',
+          platform: 'tiktok',
+          uploader: 'vincentius.christ76',
+          views: 485,
+        },
+        {
+          url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+          platform: 'tiktok',
+          uploader: 'vincentius.christ76',
+          views: 78000,
+        },
+      ],
+      creditedHandle: '@Vincentius.Christ76',
+    },
+  );
+  assert.equal(decision.status, 'replace');
+  assert.equal(decision.suitability, 'indeterminate');
+  assert.equal(decision.confidence, 'low');
+  assert.equal(
+    decision.candidate.url,
+    'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+    'credited indeterminate candidates without metadata must prefer the highest-view source',
+  );
+}
+
+{
   const creditedSource = {
     url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
     pageUrl: 'https://example.test/captured-source',

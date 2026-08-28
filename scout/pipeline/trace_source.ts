@@ -420,6 +420,7 @@ export function candidateFromDiscovery(record: PostRecord, uploader: string): Ma
     caption: record.text || '',
     thumbnail: '',
     uploader: record.owner_handle || uploader,
+    views: record.engagement?.views,
     // `record.media` is always [] for profile-discovery PostRecords (adapters don't populate it
     // there -- see reelToPostRecord/videoToPostRecord) so it cannot be used as a video signal.
     // Both callers of this function only ever discover video/reel entries by construction.
