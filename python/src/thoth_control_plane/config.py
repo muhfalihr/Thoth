@@ -1,7 +1,16 @@
 """Configuration for the Thoth control plane."""
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class SettingsValidationError(ValueError):
+    """Safe settings validation error that does not retain constructor inputs."""
+
+    def errors(self) -> list[dict[str, str]]:
+        """Provide a Pydantic-like sanitized error shape without input values."""
+
+        return [{"type": "value_error", "msg": str(self)}]
 
 
 class Settings(BaseSettings):
@@ -16,12 +25,12 @@ class Settings(BaseSettings):
     THOTH_LEGACY_API_BASE_URL: str | None = None
     THOTH_LEGACY_API_KEY: SecretStr | None = None
 
-    @model_validator(mode="after")
-    def validate_legacy_gateway_pair(self) -> "Settings":
-        """Require both legacy gateway settings together, or neither."""
-
+    def __init__(self, **values: object) -> None:
+        """Load settings, then reject an incomplete gateway pair without retaining inputs."""
+        super().__init__(**values)
         has_base_url = self.THOTH_LEGACY_API_BASE_URL is not None
         has_api_key = self.THOTH_LEGACY_API_KEY is not None
         if has_base_url != has_api_key:
-            raise ValueError("legacy gateway base URL and API key must be configured together")
-        return self
+            raise SettingsValidationError(
+                "legacy gateway base URL and API key must be configured together"
+            )
