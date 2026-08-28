@@ -734,19 +734,19 @@ fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -
     let (model, endpoint) = match provider {
         LlmProviderName::Groq => (
             effective_narration_model(&config.llm.groq_model, narration_model, false),
-            "https://api.groq.com/openai/v1/chat/completions".to_owned(),
+            crate::endpoints::groq_chat_completions(),
         ),
         LlmProviderName::Openai => (
             effective_narration_model(&config.llm.openai_model, narration_model, true),
-            "https://api.openai.com/v1/chat/completions".to_owned(),
+            crate::endpoints::openai_chat_completions(),
         ),
         LlmProviderName::Claude => (
             effective_narration_model(&config.llm.claude_model, narration_model, true),
-            "https://api.anthropic.com/v1/messages".to_owned(),
+            crate::endpoints::claude_messages(),
         ),
         LlmProviderName::Gemini => (
             effective_narration_model(&config.llm.gemini_model, narration_model, true),
-            "https://generativelanguage.googleapis.com/v1beta".to_owned(),
+            crate::endpoints::gemini(),
         ),
         LlmProviderName::Vllm => (
             effective_narration_model(&config.llm.vllm_model, narration_model, true),
@@ -759,18 +759,18 @@ fn narration_settings_identity(config: &AppConfig, provider: &LlmProviderName) -
         LlmProviderName::Novita => (
             effective_narration_model(&config.llm.novita_model, narration_model, true),
             if config.llm.novita_base_url.is_empty() {
-                "https://api.novita.ai/openai".to_owned()
+                crate::endpoints::novita()
             } else {
                 config.llm.novita_base_url.trim_end_matches('/').to_owned()
             },
         ),
         LlmProviderName::Together => (
             effective_narration_model(&config.llm.together_model, narration_model, false),
-            "https://api.together.xyz".to_owned(),
+            crate::endpoints::together(),
         ),
         LlmProviderName::Fireworks => (
             effective_narration_model(&config.llm.fireworks_model, narration_model, false),
-            "https://api.fireworks.ai/inference".to_owned(),
+            crate::endpoints::fireworks(),
         ),
     };
     let endpoint = endpoint_identity(&endpoint);

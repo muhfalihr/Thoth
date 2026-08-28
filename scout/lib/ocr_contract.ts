@@ -1,7 +1,7 @@
 import type { ClipVerdict } from './subtitle_vision.ts';
 
 export const OCR_SCHEMA_VERSION = 1;
-export const OCR_ANALYZER_VERSION = 'deepseek-ocr-v2';
+export const OCR_ANALYZER_VERSION = 'deepseek-ocr-v3';
 export const DEFAULT_OCR_MODEL = 'deepseek/deepseek-ocr';
 
 export type OcrEnvironment = Record<string, string | undefined>;

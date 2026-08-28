@@ -3,6 +3,7 @@ import {
   type AnalyzedOcrAnalysis,
   analysisFields,
   configuredOcrModel,
+  OCR_ANALYZER_VERSION,
   OCR_SCHEMA_VERSION,
   type OcrAnalysis,
   OcrAnalysisError,
@@ -83,7 +84,7 @@ assert.equal(
     ocr_status: 'analyzed',
     provider: 'novita',
     model: 'deepseek/deepseek-ocr',
-    analyzer_version: 'deepseek-ocr-v2',
+    analyzer_version: OCR_ANALYZER_VERSION,
     requested_frames: 4,
     valid_frames: 4,
     analyzed_at: '2026-07-23T00:00:00.000Z',
@@ -98,7 +99,7 @@ assert.equal(
     ocr_schema_version: OCR_SCHEMA_VERSION,
     ocr_status: 'analyzed',
     ocr_model: 'deepseek/deepseek-ocr',
-    ocr_analyzer_version: 'deepseek-ocr-v2',
+    ocr_analyzer_version: OCR_ANALYZER_VERSION,
     ocr_analyzed_at: '2026-07-23T00:00:00.000Z',
     ocr_requested_frames: 4,
     ocr_valid_frames: 4,
@@ -113,7 +114,7 @@ assert.equal(
     ocr_status: 'failed',
     provider: 'novita',
     model: 'deepseek/deepseek-ocr',
-    analyzer_version: 'deepseek-ocr-v2',
+    analyzer_version: OCR_ANALYZER_VERSION,
     requested_frames: 4,
     valid_frames: 3,
     analyzed_at: '2026-07-23T00:00:00.000Z',
@@ -607,6 +608,43 @@ const b = (text: string, x0: number, y0: number, x1: number, y1: number): OcrBox
 });
 const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
 
+// Localized one-glyph CJK captions remain subtitle evidence when their geometry
+// is ordinary and the text changes across samples.
+{
+  const cjkCaptions = classifyOcrFrames(
+    [
+      f(1, b('啊', 0.18, 0.72, 0.82, 0.8)),
+      f(3, b('呢', 0.18, 0.72, 0.82, 0.8)),
+      f(5, b('哦', 0.18, 0.72, 0.82, 0.8)),
+    ],
+    8,
+  );
+  assert.equal(cjkCaptions.outcome, 'subtitle');
+  assert.ok(cjkCaptions.subtitle_blur.length > 0);
+}
+
+// Sparse OCR glyphs with implausibly large boxes are hallucinations from visual
+// noise, not captions. The recorded source produced these at both the lower
+// band and nearly full-frame scale; together they must not reject the clip.
+{
+  const phantomOcr = classifyOcrFrames(
+    [
+      f(0.5, b('三', 0, 0.77, 0.424, 0.84)),
+      f(1, b('1', 0, 0.75, 0.499, 0.808)),
+      f(2, b('#', 0, 0.64, 0.66, 0.712)),
+      f(3, b('#', 0, 0.75, 0.65, 0.844)),
+      f(4, b('#', 0, 0.8, 0.6, 0.884)),
+      f(5, b('#', 0.12, 0.777, 0.76, 0.852)),
+      f(64.733334, b('福', 0, 0, 0.997, 0.997)),
+      f(84.644445, b('福', 0, 0, 0.996, 0.996)),
+      f(104.555556, b('1', 0, 0, 0.995, 0.999)),
+    ],
+    110,
+  );
+  assert.equal(phantomOcr.outcome, 'clean');
+  assert.deepEqual(phantomOcr.subtitle_blur, []);
+}
+
 // A headline and later captions are independent actions: trim the former and
 // retain output-relative blur windows for the latter.
 {
@@ -754,6 +792,34 @@ const f = (t: number, ...boxes: OcrBox[]) => ({ t, boxes });
     10,
   );
   assert.equal(watermark.outcome, 'clean');
+}
+
+// OCR re-measures geometry on every frame, so a banner sitting right on the 2%-of-frame cutoff
+// reads 0.0192 on one sample and 0.0202 on the next. Judging each box on its own area punished
+// that twice — the over-cutoff samples escaped the filter AND stopped counting toward stability,
+// so every sample survived into the headline scan and the banner's last sample read as a headline
+// vanishing. On a real IDN Times chyron that discarded 47s of an 89s video.
+{
+  const banner = (t: number, y1: number) => f(t, b('IDN TIMES', 0.25, 0.8, 0.75, y1));
+  const jitter = classifyOcrFrames(
+    [banner(1, 0.8384), banner(2, 0.8404), banner(3, 0.8384), banner(4, 0.8404), banner(5, 0.8384)],
+    20,
+  );
+  assert.equal(jitter.outcome, 'clean');
+  assert.equal(jitter.trim_start, 0);
+
+  // The banner genuinely leaving is still a headline: the median only decides whether the box is
+  // furniture, it must not make a real cover undetectable.
+  const realCover = classifyOcrFrames(
+    [
+      f(1, b('BREAKING STORY HEADLINE', 0.2, 0.3, 0.8, 0.42)),
+      f(3, b('BREAKING STORY HEADLINE', 0.2, 0.3, 0.8, 0.42)),
+      f(5),
+    ],
+    20,
+  );
+  assert.equal(realCover.outcome, 'cover');
+  assert.equal(realCover.trim_start, 4);
 }
 
 // Cover-only headline clears before body footage.

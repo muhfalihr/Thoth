@@ -468,7 +468,7 @@ impl<'a> TranscribeService<'a> {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post("https://api.groq.com/openai/v1/audio/transcriptions")
+            .post(crate::endpoints::groq_audio_transcriptions())
             .bearer_auth(&self.config.llm.groq_api_key)
             .multipart(form)
             .send()

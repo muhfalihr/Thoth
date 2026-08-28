@@ -464,10 +464,7 @@ impl<'a> VisualAnalyzer<'a> {
             anyhow::bail!("THOTH_GEMINI_API_KEY is not set");
         }
         let model = &self.llm_config.gemini_model;
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            model, api_key
-        );
+        let url = crate::endpoints::gemini_generate_content(model, api_key);
 
         // Build parts: inline image data for each frame, then text
         let mut parts: Vec<Value> = frames.iter().map(|f| {
@@ -508,7 +505,7 @@ impl<'a> VisualAnalyzer<'a> {
             anyhow::bail!("THOTH_OPENAI_API_KEY is not set");
         }
         let model = &self.llm_config.openai_model;
-        let url   = "https://api.openai.com/v1/chat/completions";
+        let url   = crate::endpoints::openai_chat_completions();
 
         // Build user content: images (detail=low → ~85 tokens each) + text
         let mut content: Vec<Value> = frames.iter().map(|f| {
@@ -725,7 +722,7 @@ impl<'a> VisualAnalyzer<'a> {
             anyhow::bail!("THOTH_CLAUDE_API_KEY is not set");
         }
         let model = &self.llm_config.claude_model;
-        let url   = "https://api.anthropic.com/v1/messages";
+        let url   = crate::endpoints::claude_messages();
 
         // Build content: base64 image blocks then text
         let mut content: Vec<Value> = frames.iter().map(|f| {

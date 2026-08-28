@@ -147,8 +147,9 @@ const rankCmp = (a, b) =>
   scoreOf(b) - scoreOf(a) || Date.parse(b.time || 0) - Date.parse(a.time || 0);
 
 import * as env from '../lib/env.ts';
+import { chatCompletion, chatKey } from '../lib/llm.ts';
 import { ui } from '../lib/ui.ts';
-const NOVITA_KEY = env.novitaKey();
+const VISION_KEY = chatKey('vision');
 const GROQ_KEY = env.groqKey();
 const YTDLP = process.env.YTDLP || 'yt-dlp';
 // Cookies so yt-dlp can fetch login-walled IG audio (voiceover fallback). Prefer cookies.txt via
@@ -172,10 +173,7 @@ async function visionHook(b64, key, model) {
 (judul atau pancingan cerita) di atas video. Baca teks hook itu apa adanya. Kembalikan HANYA teksnya
 (1 kalimat ringkas, tanpa tanda kutip), atau string kosong kalau memang tak ada teks overlay.`;
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({
+    const resp = await chatCompletion({
         model,
         max_tokens: 120,
         temperature: 0,
@@ -188,8 +186,7 @@ async function visionHook(b64, key, model) {
             ],
           },
         ],
-      }),
-    });
+      });
     if (!resp.ok) {
       if (!visionFailLogged) {
         visionFailLogged = true;
@@ -254,7 +251,7 @@ async function audioTopic(reelUrl: string, slideIndex?: number) {
     fd.append('file', new Blob([buf]), 'a.mp3');
     fd.append('model', 'whisper-large-v3-turbo');
     fd.append('response_format', 'text');
-    const r = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    const r = await fetch(env.groqTranscriptionsUrl(), {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + GROQ_KEY },
       body: fd,
@@ -593,7 +590,7 @@ runAcquisitionCli(async () => {
         console.log(`    ⏹  ${kind} >${HOURS}h → stop ${kind} akun ini`);
         continue;
       } // newest-first per list
-      let topic = cleanTopic(await visionHook(fr.frameB64, NOVITA_KEY, MODEL));
+      let topic = cleanTopic(await visionHook(fr.frameB64, VISION_KEY, MODEL));
       let via = 'hook';
       let shape = ''; // stays '' when the vision hook already produced the topic (unchanged)
       if (topic.length < 8) {

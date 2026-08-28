@@ -19,11 +19,25 @@ function profileRecord(overrides: Partial<PostRecord> = {}): PostRecord {
 }
 
 // candidateFromDiscovery must treat profile-discovery records as video even though media is empty.
-const candidate = candidateFromDiscovery(profileRecord(), 'somecreator');
+const candidate = candidateFromDiscovery(profileRecord({ engagement: { views: 78000 } }), 'somecreator');
 assert.equal(
   candidate.isVideo,
   true,
   'candidateFromDiscovery must mark profile-discovery posts as video',
+);
+assert.equal(candidate.views, 78000, 'candidateFromDiscovery must preserve discovered view counts');
+
+const tiktokCandidate = candidateFromDiscovery(
+  profileRecord({
+    canonical_url: 'https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752',
+    platform: 'tiktok',
+  }),
+  'vincentius.christ76',
+);
+assert.equal(
+  tiktokCandidate.publishedAt,
+  1787472803,
+  'TikTok profile discovery must infer a source time when the extractor provides none',
 );
 
 // findOriginalInstagramCandidates must actually return candidates for an account with reels.

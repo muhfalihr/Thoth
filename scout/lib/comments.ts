@@ -8,6 +8,7 @@
 // and EXCLUDES neighbouring comments, indented replies, the video, nav, and the compose box.
 
 import fs from 'node:fs';
+import { chatCompletion } from './llm.ts';
 
 const VISION_MODEL = process.env.THOTH_VISION_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct'; // konsisten dgn cropper lain (8b deprecated Novita 2026-07)
 
@@ -84,10 +85,7 @@ function normalizeLikes(v) {
 // coordinate space of the image passed (size W x H).
 async function detectComments({ imagePath, key, model = VISION_MODEL, W, H }) {
   const b64 = fs.readFileSync(imagePath).toString('base64');
-  const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-    body: JSON.stringify({
+  const resp = await chatCompletion({
       model,
       messages: [
         {
@@ -100,8 +98,7 @@ async function detectComments({ imagePath, key, model = VISION_MODEL, W, H }) {
       ],
       max_tokens: 4000,
       temperature: 0.05,
-    }),
-  });
+    });
   const data = await resp.json();
   const raw = data.choices?.[0]?.message?.content || '';
   const m = raw.match(/\[[\s\S]*\]/);

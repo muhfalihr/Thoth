@@ -42,6 +42,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib.endpoints import novita_chat_completions, openrouter_chat_completions  # noqa: E402
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).parent.parent.parent  # repo root (scripts/media/ is two deep)
@@ -80,14 +83,14 @@ ENERGY = {"low", "medium", "high"}
 # ── Backend defaults ──────────────────────────────────────────────────────────
 BACKENDS = {
     "novita": {
-        "url": "https://api.novita.ai/openai/chat/completions",
+        "url": novita_chat_completions(),
         "key_env": "THOTH_NOVITA_API_KEY",
         "vision_model": "qwen/qwen3-vl-235b-a22b-instruct",
         "text_model": "deepseek/deepseek-v3.1",
         "json_mode": True,
     },
     "openrouter": {
-        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "url": openrouter_chat_completions(),
         "key_env": "THOTH_OPENROUTER_API_KEY",
         "vision_model": "google/gemini-2.5-flash",
         "text_model": "google/gemini-2.5-flash",

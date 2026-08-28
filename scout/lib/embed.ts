@@ -1,4 +1,5 @@
-// embed.js — semantic similarity via Novita embeddings (qwen3-embedding-8b).
+// embed.js — semantic similarity via the configured embedding provider (default: novita
+// qwen3-embedding-8b; see THOTH_SCOUT_EMBED_PROVIDER / THOTH_EMBED_MODEL).
 // Used to rank a creator's reels by how well their caption matches the story topic, so we can pick
 // the SPECIFIC source video (and relevant profile footage) by MEANING — literal keyword overlap fails
 // when the news-style repost caption ("pedagang buah Jatinangor") shares no words with the creator's
@@ -8,16 +9,47 @@
 //   const ranked = await rankBySimilarity('pedagang buah hidup sehat', reels, r => r.caption);
 //   → reels sorted by sim desc, each annotated with .sim (0..1); [] / null-safe.
 
-import fs from 'node:fs';
-import path from 'node:path';
+import {
+  providerEmbeddingsUrl,
+  providerFor,
+  providerKey,
+  providerReady,
+  providerSpec,
+} from './env.ts';
 
-import { novitaKey } from './env.ts';
-const KEY = novitaKey();
 const MODEL = process.env.THOTH_EMBED_MODEL || 'qwen/qwen3-embedding-8b';
+
+// Provider embedding dipilih lewat THOTH_SCOUT_EMBED_PROVIDER (default: sama seperti dulu, novita).
+// Gemini bukan OpenAI-compatible di sini: satu teks per request, ke `:embedContent`, dan key-nya
+// ikut di query string — jadi bentuk request/response-nya dipisah, bukan dipaksa seragam.
+const PROVIDER = providerFor('embed');
+
+async function embedGemini(input, idx, texts) {
+  const out = texts.map(() => null);
+  const key = providerKey(PROVIDER);
+  const url = `${providerEmbeddingsUrl(PROVIDER, process.env, MODEL)}?key=${encodeURIComponent(key)}`;
+  await Promise.all(
+    input.map(async (text, k) => {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: `models/${MODEL}`,
+          content: { parts: [{ text }] },
+        }),
+      });
+      if (!resp.ok) return;
+      const d = await resp.json();
+      const values = d?.embedding?.values;
+      if (Array.isArray(values)) out[idx[k]] = values;
+    }),
+  );
+  return out;
+}
 
 // Embed an array of strings → array of vectors (same order). Empty strings → null slot.
 async function embed(texts) {
-  if (!KEY) return texts.map(() => null);
+  if (!providerReady(PROVIDER)) return texts.map(() => null);
   const idx = [];
   const input = [];
   texts.forEach((t, i) => {
@@ -29,9 +61,14 @@ async function embed(texts) {
   });
   if (!input.length) return texts.map(() => null);
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/embeddings', {
+    if (providerSpec(PROVIDER).family === 'gemini') return await embedGemini(input, idx, texts);
+    const key = providerKey(PROVIDER);
+    const resp = await fetch(providerEmbeddingsUrl(PROVIDER), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      },
       body: JSON.stringify({ model: MODEL, input }),
     });
     if (!resp.ok) return texts.map(() => null);
@@ -72,4 +109,4 @@ async function rankBySimilarity(query, items, getText) {
   return scored;
 }
 
-export { embed, cosine, rankBySimilarity };
+export { cosine, embed, rankBySimilarity };

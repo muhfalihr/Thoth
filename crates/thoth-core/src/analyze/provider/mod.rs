@@ -117,7 +117,7 @@ pub fn build_llm_provider(
                 });
             }
             let base_url = if config.llm.novita_base_url.is_empty() {
-                "https://api.novita.ai/openai".to_owned()
+                crate::endpoints::novita()
             } else {
                 config.llm.novita_base_url.clone()
             };

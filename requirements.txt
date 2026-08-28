@@ -26,3 +26,8 @@ requests==2.34.2
 # scripts/narration/analyze_narration_structure.py — narration_structures RAG corpus builder
 psycopg2-binary          # optional — only needed when writing to Supabase
 json-repair              # optional — tolerant LLM-JSON repair; has a regex fallback
+
+# scripts/vision/embed_platform_logos.py — platform_logos catalog seeder. Run ONCE before Thoth,
+# never from the pipeline, so these stay out of the hot path. CPU wheels are enough.
+torch==2.12.1            # only for `seed`/`report`; CLIP image grouping
+transformers==5.12.1     # only for `seed`/`report`; CLIPVisionModelWithProjection

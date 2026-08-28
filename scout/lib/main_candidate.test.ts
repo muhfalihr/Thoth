@@ -1,11 +1,31 @@
 import assert from 'node:assert/strict';
 import {
   evaluateMainSuitability,
+  tiktokPublishedAtFromUrl,
   type MainCandidate,
   type MainCandidateEvaluatorDeps,
   type MainStoryEvidence,
 } from './main_candidate.ts';
-import type { PersistedOcrFields } from './ocr_contract.ts';
+import {
+  OCR_ANALYZER_VERSION,
+  OcrAnalysisError,
+  type PersistedOcrFields,
+} from './ocr_contract.ts';
+
+assert.equal(
+  tiktokPublishedAtFromUrl('https://www.tiktok.com/@detikjatim/video/7677496203042360594'),
+  1787556382,
+);
+assert.equal(
+  tiktokPublishedAtFromUrl('https://www.tiktok.com/@vincentius.christ76/video/7677137235434687752'),
+  1787472803,
+);
+assert.equal(
+  tiktokPublishedAtFromUrl('https://www.tiktok.com/@vincentius.christ76/video/7676961801011072274'),
+  1787431957,
+);
+assert.equal(tiktokPublishedAtFromUrl('https://example.test/video/7677137235434687752'), undefined);
+assert.equal(tiktokPublishedAtFromUrl('https://www.tiktok.com/@creator/video/not-an-id'), undefined);
 
 const candidate: MainCandidate = {
   url: 'https://www.instagram.com/creator/reel/GOOD/',
@@ -29,7 +49,7 @@ const ocrFields: PersistedOcrFields = {
   ocr_schema_version: 1,
   ocr_status: 'analyzed',
   ocr_model: 'deepseek/deepseek-ocr',
-  ocr_analyzer_version: 'deepseek-ocr-v2',
+  ocr_analyzer_version: OCR_ANALYZER_VERSION,
   ocr_analyzed_at: '2026-07-29T00:00:00.000Z',
   ocr_requested_frames: 12,
   ocr_valid_frames: 12,
@@ -79,7 +99,12 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
     story,
     'input',
     evaluatorDeps({
-      probeVideo: async (value) => ({ available: true, isVideo: false, candidate: value }),
+      probeVideo: async (value) => ({
+        available: true,
+        isVideo: false,
+        candidate: value,
+        detail: 'login_required',
+      }),
       describeEvidence: async () => {
         expensiveCalls++;
         return '';
@@ -90,7 +115,11 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
       },
     }),
   );
-  assert.deepEqual(notVideo, { status: 'rejected', reason: 'not_video' });
+  assert.deepEqual(notVideo, {
+    status: 'rejected',
+    reason: 'not_video',
+    detail: 'login_required',
+  });
   assert.equal(expensiveCalls, 0);
 }
 
@@ -105,6 +134,7 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
         available: false,
         isVideo: false,
         candidate: value,
+        detail: 'probe_timeout',
       }),
       describeEvidence: async () => {
         expensiveCalls++;
@@ -116,7 +146,11 @@ assert.equal(accepted.status === 'accepted' && accepted.candidate.ocr_status, 'a
       },
     }),
   );
-  assert.deepEqual(unavailableProbe, { status: 'rejected', reason: 'media_unavailable' });
+  assert.deepEqual(unavailableProbe, {
+    status: 'rejected',
+    reason: 'media_unavailable',
+    detail: 'probe_timeout',
+  });
   assert.equal(expensiveCalls, 0);
 }
 
@@ -200,6 +234,43 @@ assert.deepEqual(unavailable, {
   reason: 'media_unavailable',
   similarity: 0.67,
 });
+
+// OCR that cannot fetch its media is ONE candidate's problem, not grounds to end the run.
+// `attachVideoOcr` throws hard on purpose — the main that was finally chosen MUST carry OCR — but
+// while GRADING candidates that throw used to travel straight through the gate and kill
+// trace_source on the second replacement, so a source video that had already been found was never
+// taken.
+const ocrThrew = await evaluateMainSuitability(
+  candidate,
+  story,
+  'input',
+  evaluatorDeps({
+    attachOcr: async () => {
+      throw new OcrAnalysisError('media_access_failed', 'OCR media could not be localized safely');
+    },
+  }),
+);
+assert.deepEqual(ocrThrew, {
+  status: 'rejected',
+  reason: 'media_unavailable',
+  detail: 'media_access_failed',
+  similarity: 0.67,
+});
+
+// A NON-OCR failure still propagates: swallowing it would disguise a bug as "no candidate found".
+await assert.rejects(
+  evaluateMainSuitability(
+    candidate,
+    story,
+    'input',
+    evaluatorDeps({
+      attachOcr: async () => {
+        throw new TypeError('bug');
+      },
+    }),
+  ),
+  TypeError,
+);
 
 const subtitle = await evaluateMainSuitability(
   candidate,

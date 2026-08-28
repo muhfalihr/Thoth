@@ -4,6 +4,7 @@ use serde_json::json;
 use tracing::debug;
 
 use crate::analyze::error::AnalyzeError;
+use crate::endpoints;
 
 use super::LlmProvider;
 
@@ -45,7 +46,7 @@ impl LlmProvider for ClaudeProvider {
 
         let resp = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(endpoints::claude_messages())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")

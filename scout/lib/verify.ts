@@ -88,6 +88,19 @@ function ytdlpCookieArgs() {
   return browser ? ['--cookies-from-browser', browser] : [];
 }
 
+// The gate diagnostic only accepts allowlisted snake_case codes. yt-dlp stderr can contain
+// signed URLs or tokens, so classify it into a fixed vocabulary before it leaves this module.
+function classifyProbeFailure(stderr: string): string {
+  const text = String(stderr || '');
+  if (/log ?in|sign ?in|private|not comfortable|age.?restrict/i.test(text)) return 'login_required';
+  if (/429|rate.?limit|too many requests/i.test(text)) return 'rate_limited';
+  if (/unexpected response|unable (?:extract|download)|no video formats/i.test(text)) {
+    return 'unavailable_response';
+  }
+  if (/etimedout|timed? ?out/i.test(text)) return 'probe_timeout';
+  return 'probe_failed';
+}
+
 function probeVideo(url) {
   const YTDLP = process.env.YTDLP || 'yt-dlp';
   const args = [
@@ -101,7 +114,7 @@ function probeVideo(url) {
   ];
   try {
     const out = execFileSync(YTDLP, args, {
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: PROBE_TIMEOUT,
       maxBuffer: PROBE_MAXBUF,
     });
@@ -128,9 +141,25 @@ function probeVideo(url) {
       '',
     );
     const webpageUrl = String((d && d.webpage_url) || '');
-    return { isVideo, caption, thumbnail, uploader, webpageUrl };
-  } catch (_) {
-    return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: '' };
+    return { isVideo, caption, thumbnail, uploader, webpageUrl, error: '' };
+  } catch (err: any) {
+    const raw = String(err?.stderr || '') || String(err?.message || '');
+    const code = classifyProbeFailure(raw);
+    try {
+      const safeDetail = sanitizeResolverDetail(raw);
+      fs.appendFileSync(
+        outPath('probe_video_debug.jsonl'),
+        `${JSON.stringify({
+          at: new Date().toISOString(),
+          source_id: createHash('sha256').update(String(url)).digest('hex').slice(0, 16),
+          ok: false,
+          safe_code: code,
+          ...(safeDetail ? { safe_detail: safeDetail } : {}),
+        })}\n`,
+        'utf8',
+      );
+    } catch {}
+    return { isVideo: false, caption: '', thumbnail: '', uploader: '', webpageUrl: '', error: code };
   }
 }
 
@@ -304,6 +333,10 @@ function parseShape(jsonText: string): any {
     .slice(0, 300);
   const time =
     (d && d.timestamp) || (Array.isArray(d.entries) && d.entries[0] && d.entries[0].timestamp) || 0;
+  const thumbs = Array.isArray(d.thumbnails) ? d.thumbnails : [];
+  const thumbnail = String(
+    d.thumbnail || entry?.thumbnail || thumbs[thumbs.length - 1]?.url || '',
+  );
   if (Array.isArray(d.entries) && d.entries.length > 1) {
     const slides = d.entries.map((e, i) => ({
       index: i + 1,
@@ -313,7 +346,7 @@ function parseShape(jsonText: string): any {
       kind: (e && e.ext === 'mp4') || (e && e.duration) ? 'video' : 'photo',
       duration: (e && e.duration) || 0,
     }));
-    return { ok: true, shape: 'carousel', slides, caption, time, uploader, webpageUrl };
+    return { ok: true, shape: 'carousel', slides, caption, time, uploader, webpageUrl, thumbnail };
   }
   const one = (Array.isArray(d.entries) && d.entries[0]) || d;
   const kind = (one && one.ext === 'mp4') || (one && one.duration) ? 'video' : 'photo';
@@ -325,6 +358,7 @@ function parseShape(jsonText: string): any {
     time,
     uploader,
     webpageUrl,
+    thumbnail,
   };
 }
 // A failed shape probe surfaces to the main gate as `probe.available === false` → a
@@ -429,6 +463,7 @@ async function verifyTikTok(url, keywords = []) {
 }
 
 export {
+  classifyProbeFailure,
   directStreamArgs,
   directStreamUrl,
   dropCoverSlide,

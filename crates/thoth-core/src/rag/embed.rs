@@ -76,7 +76,7 @@ impl EmbedConfig {
             match provider.as_str() {
                 "novita" => config.llm.novita_base_url.clone(),
                 "vllm"   => config.llm.vllm_base_url.clone(),
-                "openai" => "https://api.openai.com".to_owned(),
+                "openai" => crate::endpoints::openai_versionless(),
                 _        => String::new(), // gemini: URL dibangun di dalam fungsi
             }
         };
@@ -197,10 +197,7 @@ async fn embed_via_gemini(
     }
 
     let model_name = if model.is_empty() { "text-embedding-004" } else { model };
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/\
-         {model_name}:embedContent?key={api_key}"
-    );
+    let url = crate::endpoints::gemini_embed_content(model_name, api_key);
 
     let body = json!({
         "model": format!("models/{model_name}"),
@@ -244,7 +241,7 @@ async fn embed_via_openai_compat(
     text:       &str,
     api_key:    &str,
     model:      &str,
-    endpoint:   &str,  // full URL, e.g. "https://api.novita.ai/openai/v1/embeddings"
+    endpoint:   &str,  // full URL: provider root (see crate::endpoints) + "/v1/embeddings"
     client:     &reqwest::Client,
 ) -> Option<Vec<f32>> {
     let body = json!({

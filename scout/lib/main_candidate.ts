@@ -1,5 +1,5 @@
 import type { MediaResolutionResult } from './media_resolution.ts';
-import type { PersistedOcrFields } from './ocr_contract.ts';
+import { OcrAnalysisError, type PersistedOcrFields } from './ocr_contract.ts';
 
 export type MainCandidate = Record<string, unknown> & {
   url: string;
@@ -11,7 +11,41 @@ export type MainCandidate = Record<string, unknown> & {
   pageUrl?: string;
   isVideo?: boolean;
   is_video?: boolean;
+  /** Epoch seconds from the metadata probe. Absent when the extractor gave none. */
+  publishedAt?: number;
+  /** Media length in seconds from the metadata probe. Absent when unknown. */
+  durationSec?: number;
+  /** View count from discovery metadata. Absent when unavailable. */
+  views?: number;
 };
+
+const MIN_PLAUSIBLE_UNIX_SECOND = 946684800; // 2000-01-01T00:00:00Z
+const MAX_PLAUSIBLE_UNIX_SECOND = 4102444800; // 2100-01-01T00:00:00Z
+
+/** Decodes TikTok's Snowflake-style video ID timestamp from a canonical post URL. */
+export function tiktokPublishedAtFromUrl(url: string): number | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== 'https:' || !/^(?:www\.)?tiktok\.com$/i.test(parsed.hostname)) {
+    return undefined;
+  }
+  const match = parsed.pathname.match(/^\/@[\w.-]+\/video\/(\d+)\/?$/);
+  if (!match) return undefined;
+  try {
+    const publishedAt = Number(BigInt(match[1]) >> 32n);
+    return Number.isSafeInteger(publishedAt) &&
+      publishedAt >= MIN_PLAUSIBLE_UNIX_SECOND &&
+      publishedAt <= MAX_PLAUSIBLE_UNIX_SECOND
+      ? publishedAt
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export type MainStoryEvidence = {
   caption: string;
@@ -30,6 +64,7 @@ export type CandidateProbe = {
   available: boolean;
   isVideo: boolean;
   candidate: MainCandidate;
+  detail?: string;
 };
 
 export type MainRejectionReason =
@@ -51,6 +86,8 @@ export type MainSuitability =
   | {
       status: 'rejected';
       reason: MainRejectionReason;
+      /** Original failure code, for when `reason` alone does not name the broken component. */
+      detail?: string;
       similarity?: number;
     }
   | {
@@ -92,8 +129,9 @@ export async function evaluateMainSuitability(
   deps: MainCandidateEvaluatorDeps,
 ): Promise<MainSuitability> {
   const probe = await deps.probeVideo(rawCandidate);
-  if (!probe.available) return { status: 'rejected', reason: 'media_unavailable' };
-  if (!probe.isVideo) return { status: 'rejected', reason: 'not_video' };
+  const probeDetail = probe.detail ? { detail: probe.detail } : {};
+  if (!probe.available) return { status: 'rejected', reason: 'media_unavailable', ...probeDetail };
+  if (!probe.isVideo) return { status: 'rejected', reason: 'not_video', ...probeDetail };
   const candidate = { ...probe.candidate, isVideo: true, is_video: true };
   if (deps.isCurated(candidate)) {
     return { status: 'rejected', reason: 'curated_aggregator' };
@@ -128,7 +166,26 @@ export async function evaluateMainSuitability(
     };
   }
 
-  const analyzed = await deps.attachOcr(candidate, resolvedMedia);
+  // `attachVideoOcr` treats OCR as REQUIRED and throws — the right contract for the main that was
+  // finally chosen, the wrong one for a candidate still being graded. Left uncaught, one TikTok whose
+  // CDN url would not localize (`media_access_failed`) aborted the whole trace_source stage on the
+  // second replacement candidate, so the correctly credited source account was found and then no
+  // video was taken at all. A candidate whose media cannot be read is simply unusable: reject it and
+  // move to the next one, exactly as build_footage already does for its own candidates.
+  let analyzed: MainCandidate & PersistedOcrFields;
+  try {
+    analyzed = await deps.attachOcr(candidate, resolvedMedia);
+  } catch (error) {
+    // Only OCR failures. Anything else is a bug, and hiding it here would resurface as the far more
+    // confusing "no acceptable candidate".
+    if (!(error instanceof OcrAnalysisError)) throw error;
+    return {
+      status: 'rejected',
+      reason: 'media_unavailable',
+      detail: error.code,
+      ...(similarity !== null ? { similarity } : {}),
+    };
+  }
   if (analyzed.ocr_outcome === 'subtitle') {
     return {
       status: 'rejected',

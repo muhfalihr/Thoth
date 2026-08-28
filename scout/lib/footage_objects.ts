@@ -17,8 +17,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { novitaKey } from './env.ts';
-const KEY = novitaKey();
+import { chatCompletion, chatKey } from './llm.ts';
+const KEY = chatKey();
 const MODEL = process.env.THOTH_LLM_MODEL || 'deepseek/deepseek-v3.1'; // text reasoning (brand-expansion) — pakai reasoner teks, bukan model vision
 
 const PROMPT = ({
@@ -61,16 +61,12 @@ async function footageObjects({
   if (!(description || caption || headline || comments)) return empty;
   let txt = '';
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({
+    const resp = await chatCompletion({
         model,
         max_tokens: 400,
         temperature: 0,
         messages: [{ role: 'user', content: PROMPT({ description, caption, headline, comments }) }],
-      }),
-    });
+      });
     if (!resp.ok) return empty;
     const d = await resp.json();
     txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';

@@ -8,6 +8,51 @@ import type {
 import type { PersistedOcrFields } from './ocr_contract.ts';
 
 type AcceptedSuitability = Extract<MainSuitability, { status: 'accepted' }>;
+type IndeterminateSuitability = Extract<MainSuitability, { status: 'indeterminate' }>;
+
+// A source that is much older is likely a different story, while reposts cut or re-caption
+// footage rather than adding it. The duration margin allows for re-encoding and text cards.
+const MAX_SOURCE_AGE_SEC = 14 * 24 * 3600;
+const MIN_SOURCE_DURATION_RATIO = 0.9;
+
+export type SourceWindow = {
+  repostTime?: number;
+  repostDuration?: number;
+};
+
+export function isPlausibleSource(candidate: MainCandidate, window: SourceWindow): boolean {
+  const published = Number(candidate.publishedAt || 0);
+  if (window.repostTime && published) {
+    const gap = window.repostTime - published;
+    if (gap <= 0 || gap > MAX_SOURCE_AGE_SEC) return false;
+  }
+  const duration = Number(candidate.durationSec || 0);
+  if (window.repostDuration && duration) {
+    if (duration < window.repostDuration * MIN_SOURCE_DURATION_RATIO) return false;
+  }
+  return true;
+}
+
+function hasKnownSourceMetadata(candidate: MainCandidate): boolean {
+  return [candidate.publishedAt, candidate.durationSec].some(
+    (value) => Number.isFinite(Number(value)) && Number(value) > 0,
+  );
+}
+
+function creditedFallbackTier(candidate: MainCandidate, window: SourceWindow): number {
+  if (!hasKnownSourceMetadata(candidate)) return 1;
+  return isPlausibleSource(candidate, window) ? 0 : 2;
+}
+
+function viewCount(candidate: MainCandidate): number {
+  const views = Number(candidate.views);
+  return Number.isFinite(views) && views >= 0 ? views : 0;
+}
+
+function sourcePublishedAt(candidate: MainCandidate): number | undefined {
+  const publishedAt = Number(candidate.publishedAt);
+  return Number.isFinite(publishedAt) && publishedAt > 0 ? publishedAt : undefined;
+}
 
 export type MainGateDecision =
   | {
@@ -22,7 +67,7 @@ export type MainGateDecision =
       status: 'replace';
       candidate: MainCandidate & PersistedOcrFields;
       confidence: 'high' | 'low';
-      suitability: 'accepted';
+      suitability: 'accepted' | 'indeterminate';
     };
 
 export class MainCandidateNotFoundError extends Error {
@@ -42,6 +87,8 @@ export type MainGateDeps = {
   ) => Promise<MainSuitability>;
   search: () => Promise<MainCandidate[]>;
   rankAccepted?: (candidates: AcceptedSuitability[]) => AcceptedSuitability | null;
+  creditedHandle?: string;
+  sourceWindow?: SourceWindow;
   // Set when step 3 credited no account at all (the model omitted it, or answered with the "@akun"
   // placeholder). The search then had no handle to aim at, so finding nothing says nothing about
   // the input post — keep it as main rather than aborting the run. With a real credited handle this
@@ -52,6 +99,14 @@ export type MainGateDeps = {
 
 const AGGREGATOR_MARKERS =
   /(news|berita|media|infotainment|seleb|gosip|viral|update|terkini|trending|repost|kabar|warta|portal|redaksi|jurnal|koran|radar|grid|tempo|detik|kompas|tribun|cnnindo|cnbc|official)$/i;
+
+function candidateHandle(candidate: MainCandidate): string {
+  return (
+    normHandle(String(candidate.uploader || '')) ||
+    normHandle(urlHandle(candidate.pageUrl || '')) ||
+    normHandle(urlHandle(candidate.url))
+  );
+}
 
 function appendEvaluationDiagnostic(
   deps: MainGateDeps,
@@ -66,6 +121,9 @@ function appendEvaluationDiagnostic(
     status: result.status,
     reason:
       result.status === 'rejected' || result.status === 'indeterminate' ? result.reason : undefined,
+    // 'media_unavailable' covers both a stream that would not resolve and an OCR that could not read
+    // the media it was given; without the code the two are one indistinguishable line in the ledger.
+    detail: result.status === 'rejected' ? result.detail : undefined,
     similarity:
       result.status === 'accepted' || result.status === 'rejected' ? result.similarity : undefined,
     visual_kind:
@@ -84,23 +142,21 @@ export function rankAcceptedMainCandidates(
     credited: string;
     repostHandle: string;
     preferFootage: boolean;
-  },
+  } & SourceWindow,
 ): AcceptedSuitability | null {
   const credited = normHandle(options.credited);
   const repost = normHandle(options.repostHandle);
   const tier = (result: AcceptedSuitability): number => {
-    const handle = normHandle(
-      String(
-        result.candidate.uploader || urlHandle(result.candidate.pageUrl || result.candidate.url),
-      ),
-    );
+    const handle = candidateHandle(result.candidate);
     if (credited && handle === credited) return 0;
     if (!handle) return 1;
     if (handle === repost || AGGREGATOR_MARKERS.test(handle)) return 2;
     return 1;
   };
   const score = (result: AcceptedSuitability): number =>
-    result.similarity + (options.preferFootage && result.kind === 'footage' ? 1 : 0);
+    result.similarity +
+    (options.preferFootage && result.kind === 'footage' ? 1 : 0) +
+    (isPlausibleSource(result.candidate, options) ? 2 : 0);
 
   for (const currentTier of [0, 1, 2]) {
     const pool = candidates
@@ -137,13 +193,60 @@ export async function chooseInputOrReplacement(
 
   const discovered = await deps.search();
   const acceptedResults: AcceptedSuitability[] = [];
+  const indeterminateResults: IndeterminateSuitability[] = [];
   for (const candidate of discovered) {
     const result = await deps.evaluate(candidate, story, 'search');
     appendEvaluationDiagnostic(deps, candidate, 'search', result);
     if (result.status === 'accepted') acceptedResults.push(result);
+    else if (result.status === 'indeterminate') indeterminateResults.push(result);
+  }
+  const credited = normHandle(deps.creditedHandle);
+  const hasAcceptedCredited =
+    !!credited && acceptedResults.some((result) => candidateHandle(result.candidate) === credited);
+  const creditedFallback = !hasAcceptedCredited && credited
+    ? indeterminateResults
+        .filter((result) => candidateHandle(result.candidate) === credited)
+        .sort(
+          (a, b) =>
+            creditedFallbackTier(a.candidate, deps.sourceWindow ?? {}) -
+              creditedFallbackTier(b.candidate, deps.sourceWindow ?? {}) ||
+            (sourcePublishedAt(b.candidate) ?? 0) - (sourcePublishedAt(a.candidate) ?? 0) ||
+            viewCount(b.candidate) - viewCount(a.candidate),
+        )
+        .find((result) => creditedFallbackTier(result.candidate, deps.sourceWindow ?? {}) < 2)
+    : undefined;
+  if (creditedFallback) {
+    return {
+      status: 'replace',
+      candidate: creditedFallback.candidate,
+      confidence: 'low',
+      suitability: 'indeterminate',
+    };
   }
   const selected = (deps.rankAccepted ?? ((results) => results[0] || null))(acceptedResults);
   if (!selected) {
+    // A candidate nobody could score is not a candidate anybody rejected. The gate already
+    // retains an indeterminate INPUT; refusing to replace with an indeterminate SEARCH result
+    // is what turned "found the credited account" into "took no video at all".
+    const fallbackPool = credited
+      ? indeterminateResults.filter(
+          (result) =>
+            candidateHandle(result.candidate) !== credited ||
+            creditedFallbackTier(result.candidate, deps.sourceWindow ?? {}) < 2,
+        )
+      : indeterminateResults;
+    const fallback =
+      fallbackPool.find((result) =>
+        isPlausibleSource(result.candidate, deps.sourceWindow ?? {}),
+      ) ?? fallbackPool[0];
+    if (fallback) {
+      return {
+        status: 'replace',
+        candidate: fallback.candidate,
+        confidence: 'low',
+        suitability: 'indeterminate',
+      };
+    }
     if (!deps.retainInputWhenUncredited) throw new MainCandidateNotFoundError();
     return { status: 'retain', candidate: input, confidence: 'low', suitability: 'unverified' };
   }

@@ -18,6 +18,11 @@ import {
   type PersistedOcrFields,
 } from './ocr_contract.ts';
 
+// The OCR model is an env contract (THOTH_SUBTITLE_OCR_MODEL, read by scout AND thoth-core), so
+// these DEFAULT_OCR_MODEL fixtures only match on a machine that configured none — the moment one is
+// set, every record below reads as analyzed by a stale model. Pin it to what the fixtures state.
+process.env.THOTH_SUBTITLE_OCR_MODEL = DEFAULT_OCR_MODEL;
+
 assert.equal(shouldAttachVideoOcr({ url: 'https://example.test/legacy.mp4' }), true);
 assert.equal(shouldAttachVideoOcr({ url: 'https://example.test/video.mp4', is_video: true }), true);
 assert.equal(shouldAttachVideoOcr({ url: 'https://example.test/still', is_video: false }), false);

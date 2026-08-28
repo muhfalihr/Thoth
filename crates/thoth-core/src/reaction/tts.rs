@@ -76,9 +76,8 @@ async fn synthesize_elevenlabs_timed(
 ) -> Result<TimedTtsResult, ReactionError> {
     use crate::transcribe::model::WordTimestamp;
 
-    let url = format!(
-        "https://api.elevenlabs.io/v1/text-to-speech/{}/with-timestamps",
-        cfg.tts.elevenlabs_voice_id
+    let url = crate::endpoints::elevenlabs_text_to_speech_with_timestamps(
+        &cfg.tts.elevenlabs_voice_id,
     );
     let body = serde_json::json!({
         "text": text,
@@ -315,7 +314,7 @@ async fn synthesize_openai(
     });
 
     let bytes = client
-        .post("https://api.openai.com/v1/audio/speech")
+        .post(crate::endpoints::openai_audio_speech())
         .bearer_auth(&key)
         .json(&body)
         .timeout(Duration::from_secs(30))
@@ -351,10 +350,7 @@ async fn synthesize_elevenlabs(
         return Err(ReactionError::Tts("reaction.tts.elevenlabs_voice_id not set".to_owned()));
     }
 
-    let url = format!(
-        "https://api.elevenlabs.io/v1/text-to-speech/{}",
-        cfg.tts.elevenlabs_voice_id
-    );
+    let url = crate::endpoints::elevenlabs_text_to_speech(&cfg.tts.elevenlabs_voice_id);
     let body = serde_json::json!({
         "text": text,
         "model_id": cfg.tts.elevenlabs_model,

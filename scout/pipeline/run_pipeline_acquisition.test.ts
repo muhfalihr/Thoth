@@ -22,6 +22,9 @@ await runPipelineWithDeps(
     packageForcedMain: async () => {
       throw new Error('legacy runs must not package forced main footage');
     },
+    analyzeMainOcr: async () => {
+      throw new Error('legacy runs get main OCR from trace_source');
+    },
     writeSeed: async () => {},
     traceSource: async (_options, received) => {
       stages.push('trace');
@@ -98,6 +101,13 @@ try {
       writeSeed: async (_file, seed) => {
         assert.equal(seed.main_footage?.mode, 'forced_url_pool');
       },
+      // Nothing else analyzes main here: trace_source is skipped, and both the lint and Rust's
+      // validate_main_ocr reject a main without an ocr_status.
+      analyzeMainOcr: async (options, received) => {
+        forcedStages.push('main_ocr');
+        assert.equal(received, forcedContext);
+        assert.equal(options.file, 'set.json');
+      },
       traceSource: async () => forcedStages.push('trace'),
       collectComments: async () => forcedStages.push('comments'),
       topicDossier: async () => forcedStages.push('dossier'),
@@ -122,7 +132,7 @@ try {
   if (previousFfprobe === undefined) delete process.env.THOTH_FFPROBE;
   else process.env.THOTH_FFPROBE = previousFfprobe;
 }
-assert.deepEqual(forcedStages, ['footage', 'external', 'figures', 'validate']);
+assert.deepEqual(forcedStages, ['main_ocr', 'footage', 'external', 'figures', 'validate']);
 assert.equal(forcedInspectCalls, 1);
 assert.equal(forcedPackageCalls, 1);
 

@@ -12,6 +12,9 @@ import os
 import json
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lib.endpoints import elevenlabs_voices  # noqa: E402  (path set up just above)
+
 # Load .env manually (no dotenv dependency needed)
 env_path = Path(__file__).parent.parent.parent / ".env"  # repo root (scripts/tts/ is two deep)
 if env_path.exists():
@@ -29,7 +32,7 @@ if not api_key:
 try:
     import urllib.request
     req = urllib.request.Request(
-        "https://api.elevenlabs.io/v1/voices",
+        elevenlabs_voices(),
         headers={"xi-api-key": api_key},
     )
     with urllib.request.urlopen(req, timeout=10) as resp:

@@ -18,15 +18,62 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isPlaceholderHandle } from '../lib/aggregators.ts';
-import { novitaKey } from '../lib/env.ts';
-const KEY = novitaKey();
+import { chatCompletion, chatKey } from '../lib/llm.ts';
+import {
+  accountHasEvidence,
+  type HandleHit,
+  isReplyMentionOnly,
+  platformHasEvidence,
+} from '../lib/source_credit.ts';
+const KEY = chatKey();
 const MODEL = process.env.THOTH_LLM_MODEL || 'qwen/qwen3-vl-30b-a3b-instruct';
 const PLATFORMS = ['tiktok', 'instagram', 'twitter', 'youtube', 'facebook', 'threads'];
+
+// Bukti yang dibaca dari PIXEL (cover / detik pertama), bukan dari caption — lihat
+// pipeline/source_credit_scan.ts. Kosong untuk pemanggil yang tak melakukan scan.
+export type CreditSignals = {
+  handles?: HandleHit[];
+  /**
+   * Teks OCR mentah dari frame. Watermark TikTok mencetak username TANPA "@"
+   * ("vincentius.christ76"), jadi `handles` saja membuang kredit yang justru paling sering muncul.
+   */
+  frameText?: string;
+  /** Platform hasil pencocokan ikon ke tabel `platform_logos` di Supabase. */
+  logoPlatform?: string;
+  /** Akun PENGUNGGAH repost-nya (dari URL main). Dia yang me-repost, jadi bukan sumber. */
+  poster?: string;
+};
+
+// Blok bukti visual: apa yang benar-benar TERBACA di cover / detik pertama. Ditaruh di prompt sebagai
+// blok terpisah supaya model tahu mana yang bersumber dari pixel dan mana yang cuma caption.
+const visualBlock = (credit: CreditSignals): string => {
+  const lines: string[] = [];
+  if (credit.handles?.length) {
+    lines.push(
+      `[KREDIT TERBACA di cover/detik pertama]: ${credit.handles
+        .map((hit) => `@${hit.handle}${hit.credited ? ' (di belakang penanda kredit)' : ''}`)
+        .join(', ')}`,
+    );
+  }
+  if (credit.frameText) {
+    lines.push(`[TEKS TERBACA di cover/detik pertama (OCR)]: ${credit.frameText.slice(0, 400)}`);
+  }
+  if (credit.logoPlatform) {
+    lines.push(
+      `[IKON PLATFORM di frame]: ${credit.logoPlatform} (dikenali dari katalog logo, bukan tebakan)`,
+    );
+  }
+  if (credit.poster) {
+    lines.push(`[AKUN PENGUNGGAH repost ini]: ${credit.poster} — dia yang me-repost, BUKAN sumber.`);
+  }
+  return lines.length ? `\n${lines.join('\n')}` : '';
+};
 
 const PROMPT = ({
   description,
   caption,
   headline,
+  credit,
 }) => `Kamu menganalisis sebuah video REPOST/REACTION (mis. reel kurator). Dari teks di bawah, tentukan
 SUMBER ASLI video tersebut.
 
@@ -39,6 +86,20 @@ ATURAN:
      (konvensi repost IG yang mengkredit akun IG asli).
    - KREDIT "tt/{user}" ("tt/user", "tt/@user", "tt: @user") → platform-nya "tiktok"
      ("tt" = singkatan TikTok; konvensi repost yang mengkredit akun TikTok asli).
+   - "Membalas @x" / "Balas @x" / "Replying to @x" BUKAN kredit sumber — itu jawaban untuk
+     KOMENTATOR. Jangan pernah jadikan @x di belakang kata itu sebagai "account".
+   - Isi "platform" HANYA kalau teks benar-benar menyebutnya (nama platform, URL-nya, atau
+     konvensi 📸 / tt/ di atas). Kalau tak disebut → "" — jangan menebak.
+   - Blok [KREDIT TERBACA], [TEKS TERBACA] & [IKON PLATFORM] (kalau ada) dibaca dari PIXEL
+     cover/detik pertama. Itu bukti paling kuat: utamakan account/platform dari sana daripada
+     tebakan dari caption.
+   - Di [TEKS TERBACA] username sering tercetak TANPA "@" — watermark platform menempelkan nama
+     akun polos (mis. "vincentius.christ76", "budi_wartawan"). Token bergaya username (huruf kecil
+     menyatu, ada titik/garis bawah/angka, bukan kata Indonesia biasa) SAH dipakai sebagai "account".
+   - Kalau [AKUN PENGUNGGAH] disebut, akun itu DILARANG jadi "account" — dia yang me-repost.
+     Kalau satu-satunya nama yang terbaca adalah pengunggah, berarti tak ada kredit sumber → "".
+   - "account" WAJIB benar-benar muncul di salah satu blok di bawah. Dilarang mengarang handle
+     yang tak tertulis di mana pun — kalau tak ada, isi "" dan andalkan "keywords".
 2. SELALU isi "keywords": 3-6 kata/frasa kunci PALING SPESIFIK dari teks (nama orang/tempat/
    peristiwa/objek) untuk MENCARI video sumbernya — WAJIB diisi baik "source" ada MAUPUN null.
    Urut dari yang paling menentukan dulu (entitas/peristiwa inti, mis. "damkar padang"). Jangan
@@ -48,7 +109,7 @@ ATURAN:
 TEKS:
 [DESKRIPSI]: ${(description || '').slice(0, 600) || '(kosong)'}
 [CAPTION]: ${(caption || '').slice(0, 400) || '(kosong)'}
-[HEADLINE/HOOK on-screen]: ${(headline || '').slice(0, 300) || '(kosong)'}
+[HEADLINE/HOOK on-screen]: ${(headline || '').slice(0, 300) || '(kosong)'}${visualBlock(credit || {})}
 
 Keluarkan HANYA JSON valid persis format ini:
 {"source": {"account": "", "platform": ""} , "keywords": [], "reason": ""}
@@ -60,22 +121,24 @@ async function resolveSource({
   headline = '',
   key = KEY,
   model = MODEL,
+  credit = {} as CreditSignals,
+  fetchImpl = undefined,
+  log = (line: string) => console.log(line),
 } = {}) {
-  if (!key) return { source: null, keywords: [], reason: 'no novita key' };
+  if (!key) return { source: null, keywords: [], reason: 'no llm key' };
   if (!(description || caption || headline))
     return { source: null, keywords: [], reason: 'no text' };
   let txt = '';
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({
+    const resp = await chatCompletion(
+      {
         model,
         max_tokens: 400,
         temperature: 0,
-        messages: [{ role: 'user', content: PROMPT({ description, caption, headline }) }],
-      }),
-    });
+        messages: [{ role: 'user', content: PROMPT({ description, caption, headline, credit }) }],
+      },
+      { fetchImpl },
+    );
     if (!resp.ok) return { source: null, keywords: [], reason: 'llm ' + resp.status };
     const d = await resp.json();
     txt = (d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '';
@@ -92,7 +155,11 @@ async function resolveSource({
     return { source: null, keywords: [], reason: 'json fail' };
   }
 
-  // Normalise.
+  // Normalise. Bukti = semua yang model lihat: teks postingan + apa yang terbaca dari pixel.
+  const visualHandles = (credit.handles || []).map((hit) => `@${hit.handle}`).join(' ');
+  const evidence = [description, caption, headline, visualHandles, credit.frameText]
+    .filter(Boolean)
+    .join('\n');
   let source = null;
   if (o.source && (o.source.account || o.source.platform)) {
     // A placeholder account ("@akun") is the model saying it could NOT identify the poster. Passing
@@ -101,12 +168,44 @@ async function resolveSource({
     const rawAccount = String(o.source.account || '')
       .replace(/^@/, '')
       .trim();
-    const account = isPlaceholderHandle(rawAccount) ? '' : rawAccount;
+    let account = isPlaceholderHandle(rawAccount) ? '' : rawAccount;
     let platform = String(o.source.platform || '')
       .toLowerCase()
       .trim();
     if (platform === 'x' || platform === 'x/twitter') platform = 'twitter';
     if (!PLATFORMS.includes(platform)) platform = '';
+    // Balasan komentar bukan kredit: buang akun DAN platform yang menempel padanya, karena platform
+    // itu ditebak dari mention yang salah sejak awal.
+    if (account && isReplyMentionOnly(account, evidence)) {
+      log(`    ⚠ "@${account}" cuma sasaran balasan komentar → bukan sumber, diabaikan.`);
+      account = '';
+      platform = '';
+    }
+    // Pengunggah repost-nya sendiri bukan sumber. Handle-nya tercetak di watermark tiap frame, jadi
+    // dia justru kandidat paling "berbukti" — tanpa guard ini trace berhenti di reposter-nya.
+    if (account && credit.poster && account.toLowerCase() === credit.poster.toLowerCase()) {
+      log(`    ⚠ "@${account}" adalah pengunggah repost ini → bukan sumber, diabaikan.`);
+      account = '';
+      platform = '';
+    }
+    // Handle yang tak tertulis di mana pun = karangan model (pernah: "@niscayabernostro" untuk klip
+    // detikjatim). Mengejarnya berarti mencari akun yang tak ada, sekaligus membuang jalur keyword.
+    if (account && !accountHasEvidence(account, evidence)) {
+      log(`    ⚠ "@${account}" tak ada di teks/cover mana pun → karangan, diabaikan.`);
+      account = '';
+      platform = '';
+    }
+    // Ikon platform yang cocok ke katalog logo = bukti pixel; pakai itu saat teks bungkam.
+    if (!platform && credit.logoPlatform && PLATFORMS.includes(credit.logoPlatform)) {
+      platform = credit.logoPlatform;
+      log(`    · platform "${platform}" dari ikon di frame (katalog logo).`);
+    }
+    // Platform tanpa jejak di teks MAUPUN di ikon = tebakan. Kosongkan supaya pencarian sumber tidak
+    // dikirim ke platform yang keliru; handle-nya (kalau ada) tetap dicari lintas platform.
+    if (platform && platform !== credit.logoPlatform && !platformHasEvidence(platform, evidence)) {
+      log(`    ⚠ platform "${platform}" tak disebut di teks → tebakan, diabaikan.`);
+      platform = '';
+    }
     if (account || platform) source = { account, platform };
   }
   const keywords = Array.isArray(o.keywords)
@@ -151,16 +250,12 @@ ATURAN:
 [HEADLINE on-screen]: ${(headline || '').slice(0, 300) || '(kosong)'}
 [DESKRIPSI VISUAL]: ${(scene || '').slice(0, 300) || '(kosong)'}`;
   try {
-    const resp = await fetch('https://api.novita.ai/v3/openai/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({
+    const resp = await chatCompletion({
         model,
         max_tokens: 60,
         temperature: 0,
         messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+      });
     if (!resp.ok) return '';
     const d = await resp.json();
     let q =

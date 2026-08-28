@@ -1716,7 +1716,7 @@ impl AppConfig {
             .set_default("llm.gemini_model", "gemini-2.0-flash")?
             .set_default("llm.ollama_base_url", "http://localhost:11434")?
             .set_default("llm.ollama_model", "llama3:70b")?
-            .set_default("llm.novita_base_url", "https://api.novita.ai/openai")?
+            .set_default("llm.novita_base_url", crate::endpoints::novita())?
             .set_default("llm.novita_model", "meta-llama/llama-3.3-70b-instruct")?
             .set_default("llm.together_model", "meta-llama/Llama-3.3-70B-Instruct-Turbo")?
             .set_default("llm.fireworks_model", "accounts/fireworks/models/llama-v3p3-70b-instruct")?
@@ -1757,9 +1757,9 @@ impl AppConfig {
             .set_default("vision.score_weight", 0.35)?
             .set_default("vision.vllm_base_url", "")?
             .set_default("vision.vllm_model", "Qwen/Qwen2.5-VL-7B-Instruct")?
-            .set_default("vision.novita_base_url", "https://api.novita.ai/openai")?
+            .set_default("vision.novita_base_url", crate::endpoints::novita())?
             .set_default("vision.novita_model", "qwen/qwen3-vl-235b-a22b-instruct")?
-            .set_default("vision.openrouter_base_url", "https://openrouter.ai/api")?
+            .set_default("vision.openrouter_base_url", crate::endpoints::openrouter())?
             .set_default("vision.openrouter_model", "")?
             .set_default("vision.describe_video", false)?
             .set_default("vision.describe_interval", 10.0)?

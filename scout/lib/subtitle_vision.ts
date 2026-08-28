@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { novitaKey } from './env.ts';
+import { buildChatRequest, chatContent, chatKey, normalizeChatResponse } from './llm.ts';
 import type { OcrAnalysis } from './ocr_contract.ts';
 import {
   configuredOcrModel,
@@ -198,6 +198,21 @@ function boxArea(box: OcrBox): number {
   return Math.max(0, box.x1 - box.x0) * Math.max(0, box.y1 - box.y0);
 }
 
+function median(values: number[]): number {
+  const ordered = [...values].sort((a, b) => a - b);
+  const mid = ordered.length >> 1;
+  return ordered.length % 2 === 1 ? ordered[mid] : (ordered[mid - 1] + ordered[mid]) / 2;
+}
+
+function isPlausibleSubtitleCandidate(box: OcrBox): boolean {
+  const text = normText(box.text);
+  const width = box.x1 - box.x0;
+  const height = box.y1 - box.y0;
+  // One-glyph captions are valid in CJK languages; punctuation and digits alone
+  // are not enough caption evidence. A near-full-frame OCR box is also noise.
+  return Boolean(text) && !/^[\p{N}\s]+$/u.test(text) && !(width >= 0.9 && height >= 0.85);
+}
+
 function boxIou(a: OcrBox, b: OcrBox): number {
   const intersection =
     Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) *
@@ -345,6 +360,10 @@ function unionEnvelope(a: OcrBox, b: OcrBox): OcrBox {
   };
 }
 
+// Above this share of the frame a persistent box is furniture worth reasoning about (a headline,
+// a caption); below it, it is a watermark or a station badge that every frame carries.
+const STABLE_SMALL_AREA = 0.02;
+
 // Headline removal and subtitle censorship are deliberately independent. A clip
 // can therefore retain a positive trim_start while also carrying later blur
 // windows (the common social-video hybrid case).
@@ -365,7 +384,11 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
   const editorialLabels = sorted
     .flatMap((frame) => frame.boxes)
     .filter((candidate, candidateIndex, all) => {
-      if (!isEditorialLabel(candidate.text) || candidate.y0 < 0.65 || boxArea(candidate) >= 0.02)
+      if (
+        !isEditorialLabel(candidate.text) ||
+        candidate.y0 < 0.65 ||
+        boxArea(candidate) >= STABLE_SMALL_AREA
+      )
         return false;
       const matches = sorted.filter((frame) =>
         frame.boxes.some(
@@ -382,21 +405,22 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
         ) === candidateIndex
       );
     });
+  // Area is re-measured every frame from noisy OCR geometry, so a banner sitting right at the
+  // cutoff jitters across it — one real chyron read 0.0192 and 0.0202 on alternating samples.
+  // A per-box cutoff punished that twice: the over-cutoff samples escaped the filter AND stopped
+  // counting as matches, so the survivors fell under the stability threshold too. The banner then
+  // reached the headline scan, "disappeared" where a sample happened to land over the line, and
+  // trimmed 47s off an 89s video. Judge the group by its MEDIAN area instead: that describes the
+  // banner rather than one sample of it, and either keeps or drops all of its samples together.
   const isStableSmall = (candidate: OcrBox) => {
-    if (boxArea(candidate) >= 0.02) return false;
-    let matches = 0;
+    const areas: number[] = [];
     for (const frame of sorted) {
-      if (
-        frame.boxes.some(
-          (box) =>
-            boxArea(box) < 0.02 &&
-            normText(box.text) === normText(candidate.text) &&
-            boxIou(box, candidate) >= 0.6,
-        )
-      )
-        matches++;
+      const match = frame.boxes.find(
+        (box) => normText(box.text) === normText(candidate.text) && boxIou(box, candidate) >= 0.6,
+      );
+      if (match) areas.push(boxArea(match));
     }
-    return matches >= stableThreshold;
+    return areas.length >= stableThreshold && median(areas) < STABLE_SMALL_AREA;
   };
   const filtered = sorted.map((frame) => ({
     ...frame,
@@ -441,7 +465,12 @@ export function classifyOcrFrames(frames: OcrFrame[], duration: number): ClipVer
     ...frame,
     boxes:
       frame.t + 1e-9 >= trimStart
-        ? frame.boxes.filter((box) => box.x1 - box.x0 >= 0.18 && box.y1 - box.y0 >= 0.025)
+        ? frame.boxes.filter(
+            (box) =>
+              box.x1 - box.x0 >= 0.18 &&
+              box.y1 - box.y0 >= 0.025 &&
+              isPlausibleSubtitleCandidate(box),
+          )
         : [],
   }));
   const candidateFrames = rawCandidateFrames.map((frame, frameIndex) => ({
@@ -748,9 +777,10 @@ export function classifyVisionText(resp: string): boolean {
   }
 }
 
-async function ocrFrame(
+// Exported for the source-credit scan, which OCRs the cover and the first second looking for a
+// burned-in "@handle" credit — the same grounding call, a different question asked of the boxes.
+export async function ocrFrame(
   img: string,
-  apiKey: string,
   model: string,
   env: Record<string, string | undefined>,
 ): Promise<{ boxes: OcrBox[]; error?: string }> {
@@ -758,31 +788,32 @@ async function ocrFrame(
     const configuredTimeout = Number.parseInt(env.THOTH_SUBTITLE_OCR_TIMEOUT_MS || '20000', 10);
     const timeoutMs =
       Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 20_000;
-    const { response: resp, data } = await fetchJsonWithTimeout(
-      'https://api.novita.ai/v3/openai/chat/completions',
+    // Same injected env the key and model come from, so a test can point OCR at a stub server —
+    // and the request is translated to whichever provider is configured for the vision role.
+    const request = await buildChatRequest(
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model,
-          max_tokens: 4096,
-          temperature: 0,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: '<|grounding|>OCR this image.' },
-                { type: 'image_url', image_url: { url: img, detail: 'high' } },
-              ],
-            },
-          ],
-        }),
+        model,
+        max_tokens: 4096,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '<|grounding|>OCR this image.' },
+              { type: 'image_url', image_url: { url: img, detail: 'high' } },
+            ],
+          },
+        ],
       },
+      { role: 'vision', env },
+    );
+    const { response: resp, data } = await fetchJsonWithTimeout(
+      request.url,
+      request.init,
       timeoutMs,
     );
     if (!resp.ok) return { boxes: [], error: `http_${resp.status}` };
-    const d: any = data;
-    const content = d?.choices?.[0]?.message?.content;
+    const content = chatContent(normalizeChatResponse(request.family, data));
     return parseOcrResponseContent(content);
   } catch (error) {
     return { boxes: [], error: error instanceof Error ? error.name : 'unknown_error' };
@@ -1047,7 +1078,8 @@ export async function analyzeSubtitlesDetailed(
   const writeDiagnostics = deps.appendDiagnostics ?? appendDiagnostics;
   const analyzedAt = (deps.now ?? (() => new Date()))().toISOString();
   const model = configuredOcrModel(env);
-  const apiKey = deps.env ? env.THOTH_NOVITA_API_KEY?.trim() || '' : novitaKey();
+  // Key milik provider yang dipilih untuk peran vision — bukan lagi Novita saja.
+  const apiKey = chatKey('vision', env);
   const retryCount =
     Number.isFinite(deps.retryCount) && deps.retryCount! >= 0 ? Math.floor(deps.retryCount!) : 2;
 
@@ -1108,7 +1140,7 @@ export async function analyzeSubtitlesDetailed(
   const maxFrames = Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 12;
   const times = buildSampleTimes(resolvedDuration, maxFrames);
   const extractFrame = deps.frameDataUrl ?? ((video, t) => extractFrameDataUrl(video, t, env));
-  const analyzeFrame = deps.ocrFrame ?? ((image) => ocrFrame(image, apiKey, model, env));
+  const analyzeFrame = deps.ocrFrame ?? ((image) => ocrFrame(image, model, env));
   const wait = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const frames: OcrFrame[] = [];
   let actualRetryCount = 0;

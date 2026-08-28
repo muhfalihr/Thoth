@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -571,6 +572,84 @@ try {
     assert.ok(
       index.scenes.every((scene) => scene.embedding_path),
       'a budget-degraded scene still carries an embedding',
+    );
+  }
+
+  // --- I8: a sample past the last decodable video frame still yields a frame -----------------
+  // Regression: real sources routinely end with an audio-only tail (a TikTok download probed at
+  // 89.467891s of container duration over 89.433333s of video), and low-fps sources have a frame
+  // interval wider than the 0.05s back-off indexSource applies to a scene end. Either way the
+  // requested timestamp lands past the final video pts, accurate input seek discards every frame,
+  // and ffmpeg exits non-zero without writing an output file.
+  {
+    const realFfmpeg =
+      process.env.THOTH_FFMPEG || path.join(import.meta.dirname, '..', '..', 'ffmpeg.exe');
+    const realFfprobe =
+      process.env.THOTH_FFPROBE || path.join(import.meta.dirname, '..', '..', 'ffprobe.exe');
+    assert.ok(fs.existsSync(realFfmpeg), `this regression needs a real ffmpeg at ${realFfmpeg}`);
+    assert.ok(fs.existsSync(realFfprobe), `this regression needs a real ffprobe at ${realFfprobe}`);
+
+    const clip = path.join(packageRoot, 'trailing-gap.mp4');
+    execFileSync(
+      realFfmpeg,
+      [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc=size=160x120:rate=15:duration=2',
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:duration=2.5',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        clip,
+      ],
+      { stdio: 'ignore', timeout: 120_000 },
+    );
+
+    const probed = JSON.parse(
+      execFileSync(
+        realFfprobe,
+        [
+          '-v',
+          'error',
+          '-show_entries',
+          'format=duration:stream=codec_type,duration',
+          '-of',
+          'json',
+          clip,
+        ],
+        { encoding: 'utf8', timeout: 30_000 },
+      ),
+    ) as {
+      format?: { duration?: string };
+      streams?: Array<{ codec_type?: string; duration?: string }>;
+    };
+    const containerDuration = Number(probed.format?.duration);
+    const videoDuration = Number(
+      probed.streams?.find((stream) => stream.codec_type === 'video')?.duration,
+    );
+    assert.ok(
+      containerDuration > videoDuration,
+      'fixture sanity: the audio stream must outlast the video stream',
+    );
+
+    // Exactly what indexSource asks for on the final scene, whose end is the probed duration.
+    const endSample = containerDuration - 0.05;
+    assert.ok(
+      endSample > videoDuration,
+      'fixture sanity: the requested sample must land past the last video frame',
+    );
+    const [frame] = await extractFramesWithFfmpeg(clip, [endSample]);
+    assert.ok(
+      frame && fs.statSync(frame).size > 0,
+      'a sample in the trailing gap must still resolve to the final video frame',
     );
   }
 

@@ -26,6 +26,8 @@ type ProbeRuntimeDeps = {
     shape: string;
     slides: Array<{ index: number; kind: string; duration: number }>;
     caption?: string;
+    thumbnail?: string;
+    time?: number;
     uploader?: string;
     webpageUrl?: string;
   };
@@ -35,6 +37,7 @@ type ProbeRuntimeDeps = {
     thumbnail: string;
     uploader: string;
     webpageUrl: string;
+    error?: string;
   };
 };
 
@@ -45,8 +48,34 @@ export async function probeMainCandidateVideo(
   if (candidate.platform === 'threads') {
     return { available: true, isVideo: Boolean(candidate.videoSrc), candidate };
   }
-  if (candidate.platform === 'tiktok' || candidate.platform === 'youtube') {
+  if (candidate.platform === 'youtube') {
     return { available: true, isVideo: candidate.isVideo !== false, candidate };
+  }
+  if (candidate.platform === 'tiktok') {
+    // The blind path left `thumbnail: ''` on every profile-discovery candidate, so
+    // describeEvidence returned '' and a source post with an empty caption had NO evidence at
+    // all — scored null, filed as similarity_unavailable, then dropped. postShape is memoized
+    // per run, so probing 30 candidates costs one warm wave, not thirty roundtrips.
+    const shape = (deps.postShape ?? postShape)(candidate.url);
+    if (!shape.ok) {
+      // Fail open: a dead probe is missing information, not a rejection.
+      return { available: true, isVideo: candidate.isVideo !== false, candidate };
+    }
+    const slide = shape.slides.find((s) => s.kind === 'video') ?? shape.slides[0];
+    return {
+      available: true,
+      // Discovery only ever yields video entries here; a photo-shape misread must not veto them.
+      isVideo: candidate.isVideo !== false,
+      candidate: {
+        ...candidate,
+        caption: candidate.caption || shape.caption || '',
+        thumbnail: candidate.thumbnail || shape.thumbnail || '',
+        uploader: shape.uploader || candidate.uploader || '',
+        pageUrl: shape.webpageUrl || candidate.pageUrl || candidate.url,
+        ...(shape.time ? { publishedAt: shape.time } : {}),
+        ...(slide?.duration ? { durationSec: slide.duration } : {}),
+      },
+    };
   }
   if (candidate.platform === 'instagram' || candidate.platform === 'facebook') {
     const shape = (deps.postShape ?? postShape)(candidate.url);
@@ -66,6 +95,7 @@ export async function probeMainCandidateVideo(
   return {
     available: true,
     isVideo: probed.isVideo,
+    ...(probed.error ? { detail: probed.error } : {}),
     candidate: {
       ...candidate,
       caption: probed.caption || candidate.caption || '',

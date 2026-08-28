@@ -14,6 +14,7 @@ pub mod cli;
 pub mod profile_cli;
 pub mod config;
 pub mod edit;
+pub mod endpoints;
 pub mod execution;
 pub mod gpu;
 pub mod ingest;
