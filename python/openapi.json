@@ -1,0 +1,1088 @@
+{
+  "components": {
+    "schemas": {
+      "ApprovalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_decisions": {
+            "items": {
+              "enum": [
+                "approve",
+                "reject"
+              ],
+              "type": "string"
+            },
+            "title": "Allowed Decisions",
+            "type": "array"
+          },
+          "approval_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "kind": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_id",
+          "kind",
+          "prompt",
+          "allowed_decisions"
+        ],
+        "title": "ApprovalRequest",
+        "type": "object"
+      },
+      "ApprovalSubmission": {
+        "additionalProperties": false,
+        "description": "An approval decision supplied by a caller, before actor audit data is added.",
+        "properties": {
+          "approval_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "approval_id",
+          "decision"
+        ],
+        "title": "ApprovalSubmission",
+        "type": "object"
+      },
+      "ArtifactRef": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "checksum": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-fA-F]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum"
+          },
+          "kind": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "location": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Location",
+            "type": "string"
+          },
+          "media_type": {
+            "pattern": "^[a-z][a-z0-9.+-]*/[a-z][a-z0-9.+-]*$",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "kind",
+          "label",
+          "media_type",
+          "location"
+        ],
+        "title": "ArtifactRef",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "OutputRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Format",
+            "type": "string"
+          },
+          "language": {
+            "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$",
+            "title": "Language",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "language"
+        ],
+        "title": "OutputRequest",
+        "type": "object"
+      },
+      "RetryRequest": {
+        "additionalProperties": false,
+        "description": "Optional validated checkpoint for an explicit workflow retry.",
+        "properties": {
+          "from_stage": {
+            "anyOf": [
+              {
+                "enum": [
+                  "validation",
+                  "source",
+                  "assets",
+                  "narration",
+                  "render",
+                  "review",
+                  "delivery"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Stage"
+          }
+        },
+        "title": "RetryRequest",
+        "type": "object"
+      },
+      "ReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "require_publish_approval": {
+            "title": "Require Publish Approval",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "require_publish_approval"
+        ],
+        "title": "ReviewRequest",
+        "type": "object"
+      },
+      "SourceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "enum": [
+              "identify_original",
+              "produce_video"
+            ],
+            "title": "Intent",
+            "type": "string"
+          },
+          "url": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "intent"
+        ],
+        "title": "SourceInput",
+        "type": "object"
+      },
+      "StageSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "^(validation|source|assets|narration|render|review|delivery)$",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "waiting",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "status"
+        ],
+        "title": "StageSummary",
+        "type": "object"
+      },
+      "StyleChoice": {
+        "additionalProperties": false,
+        "properties": {
+          "preset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Preset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset_id"
+        ],
+        "title": "StyleChoice",
+        "type": "object"
+      },
+      "StylePreset": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "preset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Preset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset_id",
+          "label",
+          "description"
+        ],
+        "title": "StylePreset",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkflowFailure": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "failed_stage": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Stage"
+          },
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "WorkflowFailure",
+        "type": "object"
+      },
+      "WorkflowRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "output": {
+            "$ref": "#/components/schemas/OutputRequest"
+          },
+          "review": {
+            "$ref": "#/components/schemas/ReviewRequest"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceInput"
+          },
+          "style": {
+            "$ref": "#/components/schemas/StyleChoice"
+          }
+        },
+        "required": [
+          "source",
+          "style",
+          "output",
+          "review"
+        ],
+        "title": "WorkflowRequest",
+        "type": "object"
+      },
+      "WorkflowSource": {
+        "additionalProperties": false,
+        "properties": {
+          "display_url": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "title": "Display Url",
+            "type": "string"
+          },
+          "platform": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Platform",
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_url",
+          "platform"
+        ],
+        "title": "WorkflowSource",
+        "type": "object"
+      },
+      "WorkflowStatus": {
+        "enum": [
+          "queued",
+          "running",
+          "awaiting_approval",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ],
+        "title": "WorkflowStatus",
+        "type": "string"
+      },
+      "WorkflowSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactRef"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/WorkflowSource"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/StageSummary"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WorkflowStatus"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "workflow_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Workflow Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow_id",
+          "status",
+          "created_at",
+          "updated_at",
+          "source",
+          "stages"
+        ],
+        "title": "WorkflowSummary",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Thoth Control Plane",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/legacy/jobs/{legacy_job_id}": {
+      "get": {
+        "description": "Return a safe v1 projection of one legacy Rust job, without mutations.",
+        "operationId": "get_legacy_job_api_v1_legacy_jobs__legacy_job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legacy_job_id",
+            "required": true,
+            "schema": {
+              "title": "Legacy Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Observe a legacy job during migration",
+        "tags": [
+          "migration"
+        ]
+      }
+    },
+    "/api/v1/legacy/jobs/{legacy_job_id}/events": {
+      "get": {
+        "description": "Expose migration-only SSE replay with a strict, monotonically increasing cursor.",
+        "operationId": "stream_legacy_job_events_api_v1_legacy_jobs__legacy_job_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "legacy_job_id",
+            "required": true,
+            "schema": {
+              "title": "Legacy Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replay legacy job observations during migration",
+        "tags": [
+          "migration"
+        ]
+      }
+    },
+    "/api/v1/style-presets": {
+      "get": {
+        "operationId": "list_style_presets_api_v1_style_presets_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StylePreset"
+                  },
+                  "title": "Response List Style Presets Api V1 Style Presets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Style Presets"
+      }
+    },
+    "/api/v1/workflows": {
+      "post": {
+        "operationId": "create_workflow_api_v1_workflows_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Workflow"
+      }
+    },
+    "/api/v1/workflows/{workflow_id}": {
+      "get": {
+        "operationId": "get_workflow_api_v1_workflows__workflow_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Workflow"
+      }
+    },
+    "/api/v1/workflows/{workflow_id}/approve": {
+      "post": {
+        "operationId": "approve_workflow_api_v1_workflows__workflow_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalSubmission"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Workflow"
+      }
+    },
+    "/api/v1/workflows/{workflow_id}/cancel": {
+      "post": {
+        "operationId": "cancel_workflow_api_v1_workflows__workflow_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Workflow"
+      }
+    },
+    "/api/v1/workflows/{workflow_id}/retry": {
+      "post": {
+        "operationId": "retry_workflow_api_v1_workflows__workflow_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Workflow"
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "health_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readiness_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Readiness Readyz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness"
+      }
+    }
+  }
+}

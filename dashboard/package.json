@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "test": "bun test",
+    "generate:control-plane-types": "openapi-typescript ../python/openapi.json -o src/api/generated/control-plane.ts",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "oxlint": "^1.71.0",
+    "openapi-typescript": "^7.13.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
   }

@@ -6,6 +6,9 @@ import { ProfileStudio } from "@/components/ProfileStudio";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { Discovery } from "@/components/Discovery";
 import { ContentSet } from "@/components/ContentSet";
+import { WorkflowMonitor } from "@/components/WorkflowMonitor";
+import { WorkflowWizard } from "@/components/WorkflowWizard";
+import { controlPlaneClient } from "@/api/control-plane";
 import { Button } from "@/components/ui/button";
 
 /** Cockpit shell with a Runs/Profiles/Discovery/Content Set view toggle,
@@ -13,7 +16,8 @@ import { Button } from "@/components/ui/button";
 export default function App() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [view, setView] = useState<"runs" | "profiles" | "discovery" | "contentset">("runs");
+  const [view, setView] = useState<"workflows" | "runs" | "profiles" | "discovery" | "contentset">("workflows");
+  const [workflowId, setWorkflowId] = useState<string | null>(null);
   // Sub-project D: one-shot content-set path handed from the Content-Set view to
   // RunForm (cleared by RunForm.onConsumed once consumed on mount).
   const [pendingContentSet, setPendingContentSet] = useState<{
@@ -39,7 +43,8 @@ export default function App() {
         <span className="font-mono text-sm font-semibold tracking-wide text-foreground">Thoth</span>
         <div className="ml-3 flex items-center gap-0.5 rounded-lg border border-border p-0.5">
           {([
-            ["runs", "Runs"],
+            ["workflows", "Workflows"],
+            ["runs", "Legacy console"],
             ["profiles", "Profiles"],
             ["discovery", "Discovery"],
             ["contentset", "Content Set"],
@@ -54,7 +59,12 @@ export default function App() {
           <ProjectSwitcher projectId={projectId} onSelect={setProjectId} />
         </div>
       </div>
-      {view === "profiles" ? (
+      {view === "workflows" ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <WorkflowWizard client={controlPlaneClient} onStarted={setWorkflowId} />
+          <WorkflowMonitor workflowId={workflowId} client={controlPlaneClient} />
+        </div>
+      ) : view === "profiles" ? (
         projectId ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
             <ProfileStudio projectId={projectId} onProfileChanged={() => {}} />
