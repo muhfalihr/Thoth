@@ -1,5 +1,9 @@
 """FastAPI application factory."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 
@@ -15,13 +19,36 @@ from thoth_control_plane.application import (
     WorkflowService,
 )
 from thoth_control_plane.config import Settings
+from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflowGateway
 
 CONTRACT_VERSION = "1"
 
 
-def create_app(settings: Settings, gateway: WorkflowGateway | None) -> FastAPI:
+def create_app(settings: Settings, gateway: WorkflowGateway | None = None) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
-    app = FastAPI(title="Thoth Control Plane", version=CONTRACT_VERSION)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        resolved_gateway = gateway
+        try:
+            if resolved_gateway is None:
+                resolved_gateway = await TemporalWorkflowGateway.connect(settings)
+            checker: Any = getattr(resolved_gateway, "check_connection", None)
+            if checker is not None and not await checker():
+                raise WorkflowNotReady
+        except Exception:
+            app.state.workflow_ready = False
+            app.state.workflow_service = WorkflowService(UnavailableWorkflowGateway())
+        else:
+            app.state.workflow_ready = True
+            app.state.workflow_service = WorkflowService(resolved_gateway)
+        yield
+
+    app = FastAPI(
+        title="Thoth Control Plane",
+        version=CONTRACT_VERSION,
+        lifespan=lifespan,
+    )
     app.state.settings = settings
     app.state.workflow_ready = gateway is not None
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())

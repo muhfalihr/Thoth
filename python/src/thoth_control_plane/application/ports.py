@@ -37,6 +37,7 @@ class RetryRequest(BaseModel):
 class WorkflowGateway(Protocol):
     """Orchestration operations required by the application service."""
 
+    async def check_connection(self) -> bool: ...
     async def list_style_presets(self, *, actor: Actor) -> list[StylePreset]: ...
 
     async def start(

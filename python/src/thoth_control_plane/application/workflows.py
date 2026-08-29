@@ -119,6 +119,7 @@ class WorkflowService:
         return await self._gateway.get(workflow_id, actor=actor)
 
     async def cancel(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
+        await self._gateway.get(workflow_id, actor=actor)
         return await self._gateway.cancel(workflow_id, actor=actor)
 
     async def retry(
@@ -141,6 +142,12 @@ class WorkflowService:
         *,
         actor: Actor,
     ) -> WorkflowSummary:
+        current = await self._gateway.get(workflow_id, actor=actor)
+        if current.approval is not None and (
+            current.approval.approval_id != approval.approval_id
+            or approval.decision not in current.approval.allowed_decisions
+        ):
+            raise ApprovalNotAllowed
         return await self._gateway.record_approval(
             workflow_id,
             approval,
