@@ -8,7 +8,7 @@ vocabulary, while the existing Scout UI remains explicitly available as the **Le
 The Python `thoth-control` Typer entry point is a thin HTTPX client for the same v1 request,
 summary, approval, cancellation, and retry contract.
 
-Commit: `feat: add workflow dashboard and typed cli client` (this Task 7 changeset).
+Implementation commit: `f6c6875` (`feat: add workflow dashboard and typed cli client`).
 
 ## Inherited state
 
