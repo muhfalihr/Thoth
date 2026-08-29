@@ -64,3 +64,40 @@ FastAPI routes do not participate in implementation or task-queue selection.
 - `docs/python-control-plane.md`
 
 Pre-existing untracked `docs/research/` was not changed or staged.
+
+## Fix round 1 — 2026-08-29
+
+Committed review corrections in `d1912dc` (`fix: preserve legacy scout failure state`).
+
+### RED / GREEN evidence
+
+- RED: the expanded adapter suite reported six failures: the fixed argv did not own an
+  output destination; non-zero exit and timeout fabricated a `source_report`; the
+  Temporal wrapper discarded typed failure/progress; and neither POSIX nor Windows
+  process-tree branch could be injected for testing.
+- GREEN: `rtk uv run pytest tests/activities/test_legacy_scout.py
+  tests/workflows/test_source_investigation.py -q` — **23 passed**.
+
+### Corrections
+
+- `SourceInvestigationResult` now has an exact-one safe outcome: report or typed
+  failure. Timeout and non-zero Scout exits return `legacy_scout_timeout` and
+  `legacy_scout_failed`, respectively, with no artifact.
+- The Temporal wrapper carries typed lifecycle/progress records and safe failure into
+  `SourceInvestigationActivityResult`; the workflow retains only those typed records
+  in deterministic state and exposes them through its query.
+- The fixed argv carries `--output-destination
+  legacy-scout/<workflow_id>/source-report.json`; the successful artifact reference
+  uses precisely that owned destination.
+- POSIX process-group and Windows process-tree termination now have focused injected
+  coverage, while the original no-PID fallback cancellation test remains.
+- Workflow integration covers both timeout and non-zero safe failure results reaching
+  a failed summary with no artifacts.
+
+### Verification
+
+- `rtk uv run pytest tests/activities/test_legacy_scout.py tests/workflows/test_source_investigation.py -q` — **23 passed**
+- `rtk uv run pytest -q` — **83 passed**
+- `rtk uv run ruff check src tests` — **passed**
+- `rtk uv run ruff format --check src tests` — **33 files already formatted**
+- `rtk git diff --cached --check` — **passed before commit**
