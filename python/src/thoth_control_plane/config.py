@@ -28,9 +28,24 @@ class Settings(BaseSettings):
     def __init__(self, **values: object) -> None:
         """Load settings, then reject an incomplete gateway pair without retaining inputs."""
         super().__init__(**values)
-        has_base_url = self.THOTH_LEGACY_API_BASE_URL is not None
-        has_api_key = self.THOTH_LEGACY_API_KEY is not None
+        has_base_url = bool((self.THOTH_LEGACY_API_BASE_URL or "").strip())
+        has_api_key = bool(
+            self.THOTH_LEGACY_API_KEY is not None
+            and self.THOTH_LEGACY_API_KEY.get_secret_value().strip()
+        )
         if has_base_url != has_api_key:
             raise SettingsValidationError(
                 "legacy gateway base URL and API key must be configured together"
             )
+        supplied_partial_value = (
+            self.THOTH_LEGACY_API_BASE_URL is not None or self.THOTH_LEGACY_API_KEY is not None
+        )
+        if supplied_partial_value and not (has_base_url and has_api_key):
+            raise SettingsValidationError(
+                "legacy gateway base URL and API key must be configured together"
+            )
+
+    @property
+    def legacy_bridge_enabled(self) -> bool:
+        """Whether the validated legacy observation bridge can be constructed."""
+        return self.THOTH_LEGACY_API_BASE_URL is not None and self.THOTH_LEGACY_API_KEY is not None

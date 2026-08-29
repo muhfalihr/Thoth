@@ -1,9 +1,12 @@
 """Versioned workflow lifecycle routes."""
 
+import re
+from collections.abc import AsyncIterator
 from hmac import compare_digest
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
 from thoth_control_plane.application import (
     Actor,
@@ -14,12 +17,37 @@ from thoth_control_plane.application import (
     WorkflowService,
     WorkflowSummary,
 )
+from thoth_control_plane.infrastructure.event_store import LegacyEventStore
+from thoth_control_plane.infrastructure.legacy_reader import (
+    LegacyJobMappingError,
+    LegacyJobNotFound,
+    LegacyJobReader,
+)
 
 router = APIRouter()
 
 
 def get_workflow_service(request: Request) -> WorkflowService:
     return request.app.state.workflow_service
+
+
+def get_legacy_job_reader(request: Request) -> LegacyJobReader:
+    """Get the migration-only, read-only adapter without changing product wiring."""
+    configured_reader = getattr(request.app.state, "legacy_job_reader", None)
+    if configured_reader is not None:
+        return configured_reader
+    settings = request.app.state.settings
+    if not settings.legacy_bridge_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Legacy bridge is not configured",
+        )
+    reader = LegacyJobReader.from_settings(
+        settings.THOTH_LEGACY_API_BASE_URL or "",
+        settings.THOTH_LEGACY_API_KEY.get_secret_value() if settings.THOTH_LEGACY_API_KEY else "",
+    )
+    request.app.state.legacy_job_reader = reader
+    return reader
 
 
 def current_actor(
@@ -62,6 +90,71 @@ async def get_workflow(
     service: Annotated[WorkflowService, Depends(get_workflow_service)],
 ) -> WorkflowSummary:
     return await service.get(workflow_id, actor=actor)
+
+
+@router.get(
+    "/legacy/jobs/{legacy_job_id}",
+    response_model=WorkflowSummary,
+    tags=["migration"],
+    summary="Observe a legacy job during migration",
+)
+async def get_legacy_job(
+    legacy_job_id: str,
+    actor: Annotated[Actor, Depends(current_actor)],
+    reader: Annotated[LegacyJobReader, Depends(get_legacy_job_reader)],
+) -> WorkflowSummary:
+    """Return a safe v1 projection of one legacy Rust job, without mutations."""
+    try:
+        return await reader.get_summary(legacy_job_id, actor)
+    except LegacyJobNotFound as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found"
+        ) from error
+    except LegacyJobMappingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="Legacy job is unavailable"
+        ) from error
+
+
+@router.get(
+    "/legacy/jobs/{legacy_job_id}/events",
+    tags=["migration"],
+    summary="Replay legacy job observations during migration",
+)
+async def stream_legacy_job_events(
+    legacy_job_id: str,
+    actor: Annotated[Actor, Depends(current_actor)],
+    reader: Annotated[LegacyJobReader, Depends(get_legacy_job_reader)],
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+) -> StreamingResponse:
+    """Expose migration-only SSE replay with a strict, monotonically increasing cursor."""
+    after_sequence = _parse_last_event_id(last_event_id)
+    store = LegacyEventStore(reader)
+
+    async def encoded_events() -> AsyncIterator[str]:
+        try:
+            async for event in store.replay(legacy_job_id, actor, after_sequence):
+                yield (
+                    f"id: {event.sequence}\nevent: {event.kind}\n"
+                    f"data: {event.model_dump_json()}\n\n"
+                )
+        except LegacyJobNotFound:
+            return
+        except LegacyJobMappingError:
+            return
+
+    return StreamingResponse(encoded_events(), media_type="text/event-stream")
+
+
+def _parse_last_event_id(value: str | None) -> int:
+    if value is None:
+        return 0
+    if not re.fullmatch(r"[0-9]+", value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Last-Event-ID must be a non-negative integer",
+        )
+    return int(value)
 
 
 @router.post("/workflows/{workflow_id}/cancel", response_model=WorkflowSummary)

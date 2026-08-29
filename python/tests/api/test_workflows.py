@@ -5,6 +5,7 @@ import pytest
 
 from thoth_control_plane.api import create_app
 from thoth_control_plane.config import Settings
+from thoth_control_plane.infrastructure.legacy_reader import LegacyJobReader
 
 VALID_REQUEST = {
     "source": {"url": "https://example.test/post", "intent": "identify_original"},
@@ -245,6 +246,8 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
         ("/api/v1/workflows/{workflow_id}/cancel", "post"),
         ("/api/v1/workflows/{workflow_id}/retry", "post"),
         ("/api/v1/workflows/{workflow_id}/approve", "post"),
+        ("/api/v1/legacy/jobs/{legacy_job_id}", "get"),
+        ("/api/v1/legacy/jobs/{legacy_job_id}/events", "get"),
         ("/healthz", "get"),
         ("/readyz", "get"),
     }
@@ -310,3 +313,64 @@ async def test_unbound_production_wiring_is_not_ready_and_cannot_start_work() ->
 
     assert readiness.status_code == 503
     assert started.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_legacy_observation_endpoints_replay_only_unseen_safe_events() -> None:
+    """Removing the migration bridge cursor boundary must fail this test."""
+    legacy_job = {
+        "id": "job_123",
+        "spec": {"command": "run", "url": "https://example.test/post?signature=secret"},
+        "status": "running",
+        "stage": "scout",
+        "pct": 0.5,
+        "error": None,
+        "output_dir": "C:\\private\\output\\job_123",
+        "worker_id": "worker-1",
+        "cancel_requested": False,
+        "created_at": "2026-08-28T08:00:00Z",
+        "started_at": "2026-08-28T08:01:00Z",
+        "finished_at": None,
+        "heartbeat_at": "2026-08-28T08:02:00Z",
+        "updated_at": "2026-08-28T08:02:00Z",
+    }
+    stream = (
+        "id: 3\n"
+        'data: {"seq":3,"job_id":"job_123","type":"done","stage":"render",'
+        '"pct":1.0,"message":"C:\\\\private\\\\done.mp4",'
+        '"ts":"2026-08-28T08:04:00Z"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/jobs/job_123":
+            return httpx.Response(200, json=legacy_job, request=request)
+        if request.url.path == "/api/jobs/job_123/stream":
+            return httpx.Response(200, text=stream, request=request)
+        return httpx.Response(404, request=request)
+
+    app = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), None)
+    app.state.legacy_job_reader = LegacyJobReader(
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://legacy.test"
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as test_client:
+        summary = await test_client.get("/api/v1/legacy/jobs/job_123", headers=AUTH_HEADERS)
+        replay = await test_client.get(
+            "/api/v1/legacy/jobs/job_123/events",
+            headers={**AUTH_HEADERS, "Last-Event-ID": "3"},
+        )
+        malformed = await test_client.get(
+            "/api/v1/legacy/jobs/job_123/events",
+            headers={**AUTH_HEADERS, "Last-Event-ID": "last"},
+        )
+
+    assert summary.status_code == 200
+    assert "private" not in summary.text
+    assert "signature" not in summary.text
+    assert replay.status_code == 200
+    assert "id: 4" in replay.text
+    assert "workflow.completed" in replay.text
+    assert "snapshot" not in replay.text
+    assert malformed.status_code == 422
