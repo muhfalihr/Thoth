@@ -36,7 +36,7 @@ with workflow.unsafe.imports_passed_through():
         WorkflowStatus,
         WorkflowSummary,
     )
-    from thoth_control_plane.domain.models import StageSummary
+    from thoth_control_plane.domain.models import LegacyScoutProgressEvent, StageSummary
 
 
 @workflow.defn
@@ -57,6 +57,7 @@ class SourceInvestigationWorkflow:
         self._approval_decision: str | None = None
         self._cancel_requested = False
         self._failure: WorkflowFailure | None = None
+        self._source_events: list[LegacyScoutProgressEvent] = []
         self._event_sequence = 0
 
     @workflow.run
@@ -92,6 +93,9 @@ class SourceInvestigationWorkflow:
             )
             self._transition(WorkflowStatus.FAILED)
             return self._summary()
+
+        self._source_events = list(result.events)
+        self._event_sequence += len(self._source_events)
 
         if result.failure is not None:
             if self._cancel_requested:
@@ -220,6 +224,10 @@ class SourceInvestigationWorkflow:
     @workflow.query
     def request_snapshot_id(self) -> str:
         return self._request_snapshot_id
+
+    @workflow.query
+    def source_events(self) -> list[LegacyScoutProgressEvent]:
+        return list(self._source_events)
 
     def _transition(self, status: WorkflowStatus) -> None:
         self._status = status

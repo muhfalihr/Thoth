@@ -92,13 +92,34 @@ async def fake_legacy_inspect(input_: LegacyScoutInput) -> SourceInvestigationAc
     assert input_.workflow_id.startswith("wf_")
     assert input_.output_package_id.startswith("pkg_")
     assert input_.canonical_source_url.query is None
-    return await fake_inspect(input_)
+    result = await fake_inspect(input_)
+    return result.model_copy(
+        update={
+            "events": [
+                {"kind": "stage.started", "payload": {"stage": "source"}},
+                {
+                    "kind": "stage.progress",
+                    "payload": {"stage": "source", "progress": 0.5},
+                },
+                {"kind": "stage.completed", "payload": {"stage": "source"}},
+            ]
+        }
+    )
+
+
+@activity.defn(name="inspect_legacy_scout")
+async def failed_legacy_inspect(input_: LegacyScoutInput) -> SourceInvestigationActivityResult:
+    del input_
+    return SourceInvestigationActivityResult(
+        failure={"code": LEGACY_FAILURE_CODE, "retryable": False}
+    )
 
 
 FAILING_ACTIVITY_ATTEMPTS = 0
 CANCELLING_ACTIVITY_RELEASE: asyncio.Event | None = None
 LEGACY_ACTIVITY_STARTED: asyncio.Event | None = None
 LEGACY_ACTIVITY_CANCELLED: asyncio.Event | None = None
+LEGACY_FAILURE_CODE = "legacy_scout_failed"
 
 
 @activity.defn(name="inspect_source_candidates")
@@ -279,6 +300,43 @@ async def test_cancel_signal_finishes_as_cancelled(
 
     assert result.status == "cancelled"
     assert result.approval is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_code", ["legacy_scout_timeout", "legacy_scout_failed"])
+async def test_legacy_timeout_or_nonzero_failure_reaches_workflow_summary(
+    workflow_env: WorkflowEnvironment,
+    failure_code: str,
+) -> None:
+    global LEGACY_FAILURE_CODE
+    LEGACY_FAILURE_CODE = failure_code
+    legacy_input = workflow_input(VALID_IDENTIFY_REQUEST).model_copy(
+        update={"activity_mode": "legacy_scout"}
+    )
+    async with (
+        Worker(
+            workflow_env.client,
+            task_queue="test",
+            workflows=[SourceInvestigationWorkflow],
+        ),
+        Worker(
+            workflow_env.client,
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            activities=[failed_legacy_inspect],
+            max_concurrent_activities=1,
+        ),
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[legacy_input],
+            id=f"wf_test_{failure_code}",
+            task_queue="test",
+        )
+
+    assert result.status == "failed"
+    assert result.failure is not None
+    assert result.failure.code == failure_code
+    assert result.artifacts == []
 
 
 @pytest.mark.asyncio

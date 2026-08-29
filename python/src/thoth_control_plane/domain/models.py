@@ -299,12 +299,19 @@ class SourceCandidate(StrictModel):
 
 
 class SourceInvestigationResult(StrictModel):
-    candidates: list[SourceCandidate]
-    report: ArtifactRef
+    candidates: list[SourceCandidate] = Field(default_factory=list)
+    report: ArtifactRef | None = None
+    failure: SafeActivityError | None = None
     events: list[LegacyScoutProgressEvent] = Field(default_factory=list)
     diagnostics: list[Annotated[str, Field(min_length=1, max_length=2_000)]] = Field(
         default_factory=list
     )
+
+    @model_validator(mode="after")
+    def require_exactly_one_outcome(self) -> SourceInvestigationResult:
+        if (self.report is None) == (self.failure is None):
+            raise ValueError("source investigation result must contain exactly one outcome")
+        return self
 
 
 class LegacyScoutProgressEvent(StrictModel):
@@ -328,6 +335,7 @@ class SourceInvestigationActivityResult(StrictModel):
 
     report: ArtifactRef | None = None
     failure: SafeActivityError | None = None
+    events: list[LegacyScoutProgressEvent] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_exactly_one_outcome(self) -> SourceInvestigationActivityResult:

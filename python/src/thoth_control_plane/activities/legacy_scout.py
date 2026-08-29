@@ -25,7 +25,12 @@ from thoth_control_plane.domain import (
     SourceInvestigationActivityResult,
     SourceInvestigationResult,
 )
-from thoth_control_plane.domain.models import LegacyScoutProgressEvent, OpaqueId, StrictModel
+from thoth_control_plane.domain.models import (
+    LegacyScoutProgressEvent,
+    OpaqueId,
+    SafeActivityError,
+    StrictModel,
+)
 
 LEGACY_ADAPTER_TASK_QUEUE = "thoth-legacy-adapter"
 LEGACY_ADAPTER_MAX_CONCURRENT_ACTIVITIES = 1
@@ -64,13 +69,25 @@ class _Process(Protocol):
 
 
 ProcessFactory = Callable[..., Awaitable[_Process]]
+ProcessGroupKiller = Callable[[int, int], None]
+WindowsTreeKiller = Callable[[int], Awaitable[None]]
 
 
 class LegacyScoutActivity:
     """Own exactly one Scout process and translate its lifecycle into safe results."""
 
-    def __init__(self, *, process_factory: ProcessFactory | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        process_factory: ProcessFactory | None = None,
+        platform_name: str | None = None,
+        process_group_killer: ProcessGroupKiller | None = None,
+        windows_tree_killer: WindowsTreeKiller | None = None,
+    ) -> None:
         self._process_factory = process_factory or asyncio.create_subprocess_exec
+        self._platform_name = platform_name or os.name
+        self._process_group_killer = process_group_killer
+        self._windows_tree_killer = windows_tree_killer
 
     async def inspect(self, input_: LegacyScoutInput) -> SourceInvestigationResult:
         """Run the fixed legacy command without treating stdout as workflow state."""
@@ -91,7 +108,11 @@ class LegacyScoutActivity:
             raise
         except TimeoutError:
             await self._terminate_owned_tree(process)
-            return self._result(input_, "stage.failed", "legacy process timed out")
+            return self._failure_result(
+                input_,
+                code="legacy_scout_timeout",
+                diagnostic="legacy process timed out",
+            )
         finally:
             finished.set()
             heartbeat.cancel()
@@ -99,12 +120,12 @@ class LegacyScoutActivity:
                 await heartbeat
 
         if process.returncode not in (None, 0):
-            return self._result(
+            return self._failure_result(
                 input_,
-                "stage.failed",
-                self._redacted_diagnostic(process.returncode, stdout, stderr),
+                code="legacy_scout_failed",
+                diagnostic=self._redacted_diagnostic(process.returncode, stdout, stderr),
             )
-        return self._result(input_, "stage.completed", "legacy process completed")
+        return self._success_result(input_, "legacy process completed")
 
     @staticmethod
     def _argv(input_: LegacyScoutInput) -> tuple[str, ...]:
@@ -119,15 +140,16 @@ class LegacyScoutActivity:
             str(input_.canonical_source_url),
             "--output-package-id",
             input_.output_package_id,
+            "--output-destination",
+            LegacyScoutActivity._output_destination(input_),
             "--timeout-seconds",
             str(int(input_.timeout.total_seconds())),
             "--cancellation-token",
             input_.cancellation_token,
         )
 
-    @staticmethod
-    def _process_group_options() -> dict[str, int | bool]:
-        if os.name == "nt":
+    def _process_group_options(self) -> dict[str, int | bool]:
+        if self._platform_name == "nt":
             return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         return {"start_new_session": True}
 
@@ -144,21 +166,15 @@ class LegacyScoutActivity:
     async def _terminate_owned_tree(self, process: _Process) -> None:
         if process.returncode is not None:
             return
-        if os.name == "nt" and getattr(process, "pid", None):
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/PID",
-                str(process.pid),
-                "/T",
-                "/F",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(killer.wait(), timeout=5)
-        elif os.name != "nt" and getattr(process, "pid", None):
+        if self._platform_name == "nt" and getattr(process, "pid", None):
+            if self._windows_tree_killer is not None:
+                await self._windows_tree_killer(process.pid)
+            else:
+                await self._taskkill_tree(process.pid)
+        elif self._platform_name != "nt" and getattr(process, "pid", None):
             with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGTERM)
+                killer = self._process_group_killer or os.killpg
+                killer(process.pid, signal.SIGTERM)
         else:
             process.terminate()
         try:
@@ -168,10 +184,26 @@ class LegacyScoutActivity:
             await process.wait()
 
     @staticmethod
-    def _result(
-        input_: LegacyScoutInput,
-        terminal_kind: str,
-        diagnostic: str,
+    def _output_destination(input_: LegacyScoutInput) -> str:
+        return f"legacy-scout/{input_.workflow_id}/source-report.json"
+
+    @classmethod
+    async def _taskkill_tree(cls, pid: int) -> None:
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(pid),
+            "/T",
+            "/F",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(killer.wait(), timeout=5)
+
+    @classmethod
+    def _success_result(
+        cls, input_: LegacyScoutInput, diagnostic: str
     ) -> SourceInvestigationResult:
         fingerprint = sha256(input_.output_package_id.encode()).hexdigest()
         report = ArtifactRef(
@@ -179,7 +211,7 @@ class LegacyScoutActivity:
             kind="source_report",
             label="Legacy Scout source report",
             media_type="application/json",
-            location=f"legacy-scout/{input_.workflow_id}/{input_.output_package_id}.json",
+            location=cls._output_destination(input_),
         )
         return SourceInvestigationResult(
             candidates=[],
@@ -193,7 +225,31 @@ class LegacyScoutActivity:
                     )
                     for record in input_.progress_records
                 ],
-                LegacyScoutProgressEvent(kind=terminal_kind, payload={"stage": "source"}),
+                LegacyScoutProgressEvent(kind="stage.completed", payload={"stage": "source"}),
+            ],
+            diagnostics=[diagnostic],
+        )
+
+    @classmethod
+    def _failure_result(
+        cls,
+        input_: LegacyScoutInput,
+        *,
+        code: str,
+        diagnostic: str,
+    ) -> SourceInvestigationResult:
+        return SourceInvestigationResult(
+            failure=SafeActivityError(code=code, retryable=False),
+            events=[
+                LegacyScoutProgressEvent(kind="stage.started", payload={"stage": "source"}),
+                *[
+                    LegacyScoutProgressEvent(
+                        kind="stage.progress",
+                        payload={"stage": record.stage, "progress": record.progress},
+                    )
+                    for record in input_.progress_records
+                ],
+                LegacyScoutProgressEvent(kind="stage.failed", payload={"stage": "source"}),
             ],
             diagnostics=[diagnostic],
         )
@@ -209,4 +265,8 @@ class LegacyScoutActivity:
 async def inspect_legacy_scout(input_: LegacyScoutInput) -> SourceInvestigationActivityResult:
     """Temporal registration wrapper; the adapter's public result remains inspect()."""
     result = await LegacyScoutActivity().inspect(input_)
-    return SourceInvestigationActivityResult(report=result.report)
+    return SourceInvestigationActivityResult(
+        report=result.report,
+        failure=result.failure,
+        events=result.events,
+    )
