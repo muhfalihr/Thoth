@@ -98,6 +98,20 @@ async def test_reader_rejects_an_unsafe_legacy_job_id_before_making_a_request() 
 
 
 @pytest.mark.asyncio
+async def test_reader_rejects_an_empty_legacy_job_id_before_making_a_request() -> None:
+    """Accepting an empty ID could issue a GET against the legacy jobs collection."""
+    transport = RecordingTransport()
+    reader = LegacyJobReader(
+        client=httpx.AsyncClient(transport=transport, base_url="http://legacy.test")
+    )
+
+    with pytest.raises(LegacyJobMappingError):
+        await reader.get_summary("", actor=Actor(actor_id="owner", actor_type="user"))
+
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
 async def test_reader_orders_replayed_events_by_their_legacy_sequence() -> None:
     """Returning source transport order instead of sequence order must fail this test."""
     stream = "\n".join(
@@ -149,7 +163,10 @@ async def test_event_replay_emits_one_snapshot_then_unseen_normalized_events() -
         )
     )
 
+    requests: list[httpx.Request] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
         if request.url.path == "/api/jobs/job_123":
             return httpx.Response(200, json=legacy_job(), request=request)
         if request.url.path == "/api/jobs/job_123/stream":
@@ -174,6 +191,47 @@ async def test_event_replay_emits_one_snapshot_then_unseen_normalized_events() -
     ]
     assert [(event.sequence, event.kind) for event in reconnected] == [(4, "workflow.completed")]
     assert "private" not in events[-1].model_dump_json()
+    assert {request.method for request in requests} == {"GET"}
+    assert {request.url.path for request in requests} <= {
+        "/api/jobs/job_123",
+        "/api/jobs/job_123/manifest",
+        "/api/jobs/job_123/stream",
+    }
+    assert [request.url.path for request in requests] == [
+        "/api/jobs/job_123",
+        "/api/jobs/job_123/stream",
+        "/api/jobs/job_123/stream",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_events_never_expose_bearers_signed_urls_or_local_paths() -> None:
+    """Weak redaction that leaks token or path tails must fail this confidentiality test."""
+    bearer = "distinct-bearer-secret"
+    signed_url = "https://assets.example.test/video.mp4?signature=distinct-signed-value"
+    local_path = r"C:\\private files\\distinct local path\\video.mp4"
+    stream = (
+        "id: 4\n"
+        'data: {"seq":4,"job_id":"job_123","type":"log","stage":null,"pct":null,'
+        f'"message":"Authorization: Bearer {bearer}; URL {signed_url}; path {local_path}",'
+        '"ts":"2026-08-28T08:05:00Z"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=stream, request=request)
+
+    reader = LegacyJobReader(
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://legacy.test"
+        )
+    )
+    events = [event async for event in reader.iter_events("job_123", 0)]
+
+    assert [event.kind for event in events] == ["diagnostic.recorded"]
+    diagnostic = events[0].model_dump_json()
+    assert bearer not in diagnostic
+    assert "distinct-signed-value" not in diagnostic
+    assert "distinct local path" not in diagnostic
 
 
 def test_legacy_bridge_is_enabled_only_for_a_complete_nonblank_configuration() -> None:

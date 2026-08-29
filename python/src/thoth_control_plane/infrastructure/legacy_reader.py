@@ -43,12 +43,6 @@ _TERMINAL_EVENT_KINDS = {
     "error": EventKind.WORKFLOW_FAILED,
     "cancelled": EventKind.WORKFLOW_CANCELLED,
 }
-_SENSITIVE_VALUE = re.compile(
-    r"(?i)\b(token|secret|cookie|authorization|signed[_-]?url|provider[_-]?payload)"
-    r"\s*[:=]\s*[^\s,;]+"
-)
-_HTTP_URL = re.compile(r"https?://[^\s]+", re.IGNORECASE)
-_LOCAL_PATH = re.compile(r"(?<!\w)(?:[A-Za-z]:[\\/]|\\\\|/)[^\s,;]+")
 
 
 class LegacyJobNotFound(Exception):
@@ -187,9 +181,11 @@ class LegacyJobReader:
 
 
 def _workflow_id(legacy_job_id: str) -> str:
-    value = f"legacy_{legacy_job_id}"
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,127}", value):
+    if not isinstance(legacy_job_id, str) or not re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9_-]{0,127}", legacy_job_id
+    ):
         raise LegacyJobMappingError("legacy job ID is not a safe opaque identifier")
+    value = f"legacy_{legacy_job_id}"
     return value
 
 
@@ -290,7 +286,6 @@ def _parse_sse_records(body: str) -> list[_LegacyEvent]:
 
 
 def _redact_diagnostic(message: str) -> str:
-    redacted = _SENSITIVE_VALUE.sub(lambda match: f"{match.group(1)}=[REDACTED]", message)
-    redacted = _HTTP_URL.sub("[REDACTED_URL]", redacted)
-    redacted = _LOCAL_PATH.sub("[REDACTED_PATH]", redacted)
-    return redacted[:2_000] or "Legacy diagnostic recorded"
+    """Discard legacy log text so credentials, signed URLs, and paths cannot escape."""
+    del message
+    return "Legacy diagnostic recorded"
