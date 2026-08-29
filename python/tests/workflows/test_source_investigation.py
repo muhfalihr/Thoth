@@ -12,6 +12,7 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
+from thoth_control_plane.activities.legacy_scout import LEGACY_ADAPTER_TASK_QUEUE, LegacyScoutInput
 from thoth_control_plane.activities.source_investigation import (
     SourceInvestigationActivityInput,
     inspect_source_candidates,
@@ -86,8 +87,18 @@ async def fake_inspect(input_: object) -> SourceInvestigationActivityResult:
     )
 
 
+@activity.defn(name="inspect_legacy_scout")
+async def fake_legacy_inspect(input_: LegacyScoutInput) -> SourceInvestigationActivityResult:
+    assert input_.workflow_id.startswith("wf_")
+    assert input_.output_package_id.startswith("pkg_")
+    assert input_.canonical_source_url.query is None
+    return await fake_inspect(input_)
+
+
 FAILING_ACTIVITY_ATTEMPTS = 0
 CANCELLING_ACTIVITY_RELEASE: asyncio.Event | None = None
+LEGACY_ACTIVITY_STARTED: asyncio.Event | None = None
+LEGACY_ACTIVITY_CANCELLED: asyncio.Event | None = None
 
 
 @activity.defn(name="inspect_source_candidates")
@@ -108,6 +119,19 @@ async def cancelling_inspect(input_: object) -> SourceInvestigationActivityResul
     return SourceInvestigationActivityResult(
         failure={"code": "source_investigation_cancelled", "retryable": False}
     )
+
+
+@activity.defn(name="inspect_legacy_scout")
+async def cancelling_legacy_inspect(input_: LegacyScoutInput) -> SourceInvestigationActivityResult:
+    del input_
+    assert LEGACY_ACTIVITY_STARTED is not None
+    assert LEGACY_ACTIVITY_CANCELLED is not None
+    LEGACY_ACTIVITY_STARTED.set()
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        LEGACY_ACTIVITY_CANCELLED.set()
+        raise
 
 
 @pytest_asyncio.fixture
@@ -151,6 +175,37 @@ async def test_identify_original_finishes_with_a_redacted_source_report(
     assert result.artifacts[0].kind == "source_report"
     assert "signature" not in str(result.model_dump(mode="json"))
     assert "candidate_001" not in str(result.model_dump(mode="json"))
+
+
+@pytest.mark.asyncio
+async def test_legacy_selection_runs_only_the_isolated_adapter_queue(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    legacy_input = workflow_input(VALID_IDENTIFY_REQUEST).model_copy(
+        update={"activity_mode": "legacy_scout"}
+    )
+    async with (
+        Worker(
+            workflow_env.client,
+            task_queue="test",
+            workflows=[SourceInvestigationWorkflow],
+        ),
+        Worker(
+            workflow_env.client,
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            activities=[fake_legacy_inspect],
+            max_concurrent_activities=1,
+        ),
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[legacy_input],
+            id="wf_test_legacy_queue",
+            task_queue="test",
+        )
+
+    assert result.status == "succeeded"
+    assert result.artifacts[0].kind == "source_report"
 
 
 @pytest.mark.asyncio
@@ -224,6 +279,43 @@ async def test_cancel_signal_finishes_as_cancelled(
 
     assert result.status == "cancelled"
     assert result.approval is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_cancellation_cancels_the_owned_activity_and_workflow(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    global LEGACY_ACTIVITY_STARTED, LEGACY_ACTIVITY_CANCELLED
+    LEGACY_ACTIVITY_STARTED = asyncio.Event()
+    LEGACY_ACTIVITY_CANCELLED = asyncio.Event()
+    legacy_input = workflow_input(VALID_IDENTIFY_REQUEST).model_copy(
+        update={"activity_mode": "legacy_scout"}
+    )
+    async with (
+        Worker(
+            workflow_env.client,
+            task_queue="test",
+            workflows=[SourceInvestigationWorkflow],
+        ),
+        Worker(
+            workflow_env.client,
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            activities=[cancelling_legacy_inspect],
+            max_concurrent_activities=1,
+        ),
+    ):
+        handle = await workflow_env.client.start_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[legacy_input],
+            id="wf_test_legacy_cancel",
+            task_queue="test",
+        )
+        await asyncio.wait_for(LEGACY_ACTIVITY_STARTED.wait(), timeout=3)
+        await handle.signal(SourceInvestigationWorkflow.request_cancel)
+        result = await asyncio.wait_for(handle.result(), timeout=3)
+
+    assert result.status == "cancelled"
+    assert LEGACY_ACTIVITY_CANCELLED.is_set()
 
 
 @pytest.mark.asyncio

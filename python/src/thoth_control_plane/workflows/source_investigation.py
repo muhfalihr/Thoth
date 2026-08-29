@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import timedelta
 from hashlib import sha256
 
@@ -10,6 +12,15 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
+    import annotated_types
+
+    del annotated_types
+
+    from thoth_control_plane.activities.legacy_scout import (
+        LEGACY_ADAPTER_TASK_QUEUE,
+        LegacyScoutInput,
+        inspect_legacy_scout,
+    )
     from thoth_control_plane.activities.source_investigation import (
         SourceInvestigationActivityInput,
         inspect_source_candidates,
@@ -19,6 +30,7 @@ with workflow.unsafe.imports_passed_through():
         ApprovalRequest,
         ApprovalSignal,
         ArtifactRef,
+        SourceInvestigationActivityResult,
         SourceInvestigationWorkflowInput,
         WorkflowFailure,
         WorkflowStatus,
@@ -59,15 +71,15 @@ class SourceInvestigationWorkflow:
         self._transition(WorkflowStatus.RUNNING)
 
         try:
-            result = await workflow.execute_activity(
-                inspect_source_candidates,
-                SourceInvestigationActivityInput(
-                    workflow_id=self._workflow_id,
-                    request_snapshot_id=self._request_snapshot_id,
-                ),
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=RetryPolicy(maximum_attempts=3),
-            )
+            activity_task = asyncio.create_task(self._execute_source_activity(input_))
+            await workflow.wait_condition(lambda: self._cancel_requested or activity_task.done())
+            if self._cancel_requested:
+                activity_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await activity_task
+                self._transition(WorkflowStatus.CANCELLED)
+                return self._summary()
+            result = await activity_task
         except ActivityError:
             if self._cancel_requested:
                 self._transition(WorkflowStatus.CANCELLED)
@@ -143,6 +155,33 @@ class SourceInvestigationWorkflow:
             )
             self._transition(WorkflowStatus.FAILED)
         return self._summary()
+
+    async def _execute_source_activity(
+        self, input_: SourceInvestigationWorkflowInput
+    ) -> SourceInvestigationActivityResult:
+        if input_.activity_mode == "legacy_scout":
+            return await workflow.execute_activity(
+                inspect_legacy_scout,
+                LegacyScoutInput(
+                    workflow_id=self._workflow_id,
+                    canonical_source_url=input_.source.display_url,
+                    output_package_id=f"pkg_{self._request_snapshot_id[4:]}",
+                    timeout=timedelta(minutes=5),
+                    cancellation_token=f"can_{self._workflow_id[3:]}",
+                ),
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+                task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            )
+        return await workflow.execute_activity(
+            inspect_source_candidates,
+            SourceInvestigationActivityInput(
+                workflow_id=self._workflow_id,
+                request_snapshot_id=self._request_snapshot_id,
+            ),
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
 
     @workflow.signal
     def request_cancel(self) -> None:

@@ -301,6 +301,19 @@ class SourceCandidate(StrictModel):
 class SourceInvestigationResult(StrictModel):
     candidates: list[SourceCandidate]
     report: ArtifactRef
+    events: list[LegacyScoutProgressEvent] = Field(default_factory=list)
+    diagnostics: list[Annotated[str, Field(min_length=1, max_length=2_000)]] = Field(
+        default_factory=list
+    )
+
+
+class LegacyScoutProgressEvent(StrictModel):
+    """Small machine-readable compatibility event; never derived from CLI prose."""
+
+    kind: Literal[
+        "stage.started", "stage.progress", "stage.completed", "stage.failed", "stage.cancelled"
+    ]
+    payload: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class SafeActivityError(StrictModel):
@@ -330,6 +343,7 @@ class SourceInvestigationWorkflowInput(StrictModel):
     source: WorkflowSource
     intent: Literal["identify_original", "produce_video"]
     actor: ActorSnapshot
+    activity_mode: Literal["python", "legacy_scout"] = "python"
 
 
 def request_snapshot_id(request: WorkflowRequest) -> str:

@@ -1,5 +1,7 @@
 """Configuration for the Thoth control plane."""
 
+from typing import Literal
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,6 +26,7 @@ class Settings(BaseSettings):
     THOTH_TEMPORAL_NAMESPACE: str = "default"
     THOTH_LEGACY_API_BASE_URL: str | None = None
     THOTH_LEGACY_API_KEY: SecretStr | None = None
+    THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: Literal["python", "legacy_scout"] = "python"
 
     def __init__(self, **values: object) -> None:
         """Load settings, then reject an incomplete gateway pair without retaining inputs."""
@@ -49,3 +52,8 @@ class Settings(BaseSettings):
     def legacy_bridge_enabled(self) -> bool:
         """Whether the validated legacy observation bridge can be constructed."""
         return self.THOTH_LEGACY_API_BASE_URL is not None and self.THOTH_LEGACY_API_KEY is not None
+
+    @property
+    def source_investigation_activity_mode(self) -> Literal["python", "legacy_scout"]:
+        """Worker-owned activity selection, intentionally outside HTTP request handling."""
+        return self.THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
