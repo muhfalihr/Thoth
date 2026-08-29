@@ -12,16 +12,28 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
+from thoth_control_plane.activities.source_investigation import (
+    SourceInvestigationActivityInput,
+    inspect_source_candidates,
+)
 from thoth_control_plane.api.app import create_app
-from thoth_control_plane.application import WorkflowNotFound
+from thoth_control_plane.application import (
+    ApprovalSubmission,
+    IdempotencyConflict,
+    WorkflowNotFound,
+)
 from thoth_control_plane.config import Settings
 from thoth_control_plane.domain import (
     Actor,
     ActorSnapshot,
     ApprovalDecision,
     ApprovalSignal,
-    SourceInvestigationResult,
+    SourceInvestigationActivityResult,
+    SourceInvestigationWorkflowInput,
     WorkflowRequest,
+    WorkflowSummary,
+    request_snapshot_id,
+    safe_workflow_source,
 )
 from thoth_control_plane.infrastructure.temporal_gateway import (
     TASK_QUEUE,
@@ -46,18 +58,22 @@ VALID_PRODUCE_REQUEST = VALID_IDENTIFY_REQUEST.model_copy(
 ACTOR_SNAPSHOT = ActorSnapshot(actor_id="owner", actor_type="user")
 
 
+def workflow_input(
+    request: WorkflowRequest, actor: ActorSnapshot = ACTOR_SNAPSHOT
+) -> SourceInvestigationWorkflowInput:
+    return SourceInvestigationWorkflowInput(
+        request_snapshot_id=request_snapshot_id(request),
+        source=safe_workflow_source(request),
+        intent=request.source.intent,
+        actor=actor,
+    )
+
+
 @activity.defn(name="inspect_source_candidates")
-async def fake_inspect(input_: object) -> SourceInvestigationResult:
+async def fake_inspect(input_: object) -> SourceInvestigationActivityResult:
     del input_
-    return SourceInvestigationResult.model_validate(
+    return SourceInvestigationActivityResult.model_validate(
         {
-            "candidates": [
-                {
-                    "candidate_id": "candidate_001",
-                    "citation": "Safe public citation; raw provider payload is not returned.",
-                    "score": 0.94,
-                }
-            ],
             "report": {
                 "artifact_id": "art_source_report_001",
                 "kind": "source_report",
@@ -71,14 +87,27 @@ async def fake_inspect(input_: object) -> SourceInvestigationResult:
 
 
 FAILING_ACTIVITY_ATTEMPTS = 0
+CANCELLING_ACTIVITY_RELEASE: asyncio.Event | None = None
 
 
 @activity.defn(name="inspect_source_candidates")
-async def failing_inspect(input_: object) -> SourceInvestigationResult:
+async def failing_inspect(input_: object) -> SourceInvestigationActivityResult:
     del input_
     global FAILING_ACTIVITY_ATTEMPTS
     FAILING_ACTIVITY_ATTEMPTS += 1
-    raise RuntimeError("provider token and raw payload must not escape")
+    return SourceInvestigationActivityResult(
+        failure={"code": "source_investigation_failed", "retryable": True}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def cancelling_inspect(input_: object) -> SourceInvestigationActivityResult:
+    del input_
+    assert CANCELLING_ACTIVITY_RELEASE is not None
+    await CANCELLING_ACTIVITY_RELEASE.wait()
+    return SourceInvestigationActivityResult(
+        failure={"code": "source_investigation_cancelled", "retryable": False}
+    )
 
 
 @pytest_asyncio.fixture
@@ -113,7 +142,7 @@ async def test_identify_original_finishes_with_a_redacted_source_report(
     ):
         result = await workflow_env.client.execute_workflow(
             SourceInvestigationWorkflow.run,
-            args=[VALID_IDENTIFY_REQUEST, ACTOR_SNAPSHOT],
+            args=[workflow_input(VALID_IDENTIFY_REQUEST)],
             id="wf_test_report",
             task_queue="test",
         )
@@ -136,7 +165,7 @@ async def test_produce_video_waits_for_authorized_approval_then_resumes_once(
     ):
         handle = await workflow_env.client.start_workflow(
             SourceInvestigationWorkflow.run,
-            args=[VALID_PRODUCE_REQUEST, ACTOR_SNAPSHOT],
+            args=[workflow_input(VALID_PRODUCE_REQUEST)],
             id="wf_test_approval",
             task_queue="test",
         )
@@ -185,7 +214,7 @@ async def test_cancel_signal_finishes_as_cancelled(
     ):
         handle = await workflow_env.client.start_workflow(
             SourceInvestigationWorkflow.run,
-            args=[VALID_PRODUCE_REQUEST, ACTOR_SNAPSHOT],
+            args=[workflow_input(VALID_PRODUCE_REQUEST)],
             id="wf_test_cancel",
             task_queue="test",
         )
@@ -211,12 +240,12 @@ async def test_activity_failure_is_bounded_and_returns_only_a_safe_failure(
     ):
         result = await workflow_env.client.execute_workflow(
             SourceInvestigationWorkflow.run,
-            args=[VALID_IDENTIFY_REQUEST, ACTOR_SNAPSHOT],
+            args=[workflow_input(VALID_IDENTIFY_REQUEST)],
             id="wf_test_safe_failure",
             task_queue="test",
         )
 
-    assert FAILING_ACTIVITY_ATTEMPTS == 3
+    assert FAILING_ACTIVITY_ATTEMPTS == 1
     assert result.status == "failed"
     assert result.failure is not None
     assert result.failure.code == "source_investigation_failed"
@@ -249,11 +278,148 @@ async def test_temporal_gateway_reuses_durable_id_and_enforces_actor_scope(
 
         assert second.workflow_id == first.workflow_id
         assert result.status == "succeeded"
+        changed = VALID_IDENTIFY_REQUEST.model_copy(
+            update={"output": VALID_IDENTIFY_REQUEST.output.model_copy(update={"language": "en"})}
+        )
+        with pytest.raises(IdempotencyConflict):
+            await gateway.start(changed, actor=owner, idempotency_key="create-001")
+
+        same_id_service = Actor(actor_id="owner", actor_type="service")
+        service_summary = await gateway.start(
+            VALID_IDENTIFY_REQUEST,
+            actor=same_id_service,
+            idempotency_key="create-001",
+        )
+        assert service_summary.workflow_id != first.workflow_id
+        with pytest.raises(WorkflowNotFound):
+            await gateway.get(first.workflow_id, actor=same_id_service)
         with pytest.raises(WorkflowNotFound):
             await gateway.get(
                 first.workflow_id,
                 actor=Actor(actor_id="outsider", actor_type="user"),
             )
+
+
+@pytest.mark.asyncio
+async def test_temporal_history_contains_only_redacted_workflow_values(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    async with Worker(
+        workflow_env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[SourceInvestigationWorkflow],
+        activities=[fake_inspect],
+    ):
+        gateway = TemporalWorkflowGateway(workflow_env.client)
+        summary = await gateway.start(
+            VALID_IDENTIFY_REQUEST,
+            actor=Actor(actor_id="owner", actor_type="user"),
+            idempotency_key="history-001",
+        )
+        history = await workflow_env.client.get_workflow_handle(summary.workflow_id).fetch_history()
+
+    serialized_history = history.to_json()
+    assert "signature=must-not-leak" not in serialized_history
+    assert "candidate_001" not in serialized_history
+    assert "provider token" not in serialized_history
+
+
+@pytest.mark.asyncio
+async def test_source_investigation_activity_materializes_its_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from thoth_control_plane.activities import source_investigation
+
+    monkeypatch.setattr(source_investigation, "ARTIFACT_ROOT", tmp_path)
+    result = await inspect_source_candidates(
+        SourceInvestigationActivityInput(
+            workflow_id="wf_materialized",
+            request_snapshot_id="req_materialized",
+        )
+    )
+
+    assert result.report is not None
+    report = tmp_path / result.report.location
+    assert report.is_file()
+    assert "req_materialized" in report.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_gateway_approval_and_cancellation_use_authorized_boundaries(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    owner = Actor(actor_id="owner", actor_type="user")
+    async with Worker(
+        workflow_env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[SourceInvestigationWorkflow],
+        activities=[fake_inspect],
+    ):
+        gateway = TemporalWorkflowGateway(workflow_env.client)
+        approved = await gateway.start(
+            VALID_PRODUCE_REQUEST,
+            actor=owner,
+            idempotency_key="approval-001",
+        )
+        approved_handle = workflow_env.client.get_workflow_handle(
+            approved.workflow_id,
+            result_type=WorkflowSummary,
+        )
+        await wait_for_status(approved_handle, "awaiting_approval")
+        awaiting = await gateway.get(approved.workflow_id, actor=owner)
+        assert awaiting.approval is not None
+        await gateway.record_approval(
+            approved.workflow_id,
+            approval=ApprovalSubmission(
+                approval_id=awaiting.approval.approval_id,
+                decision="approve",
+            ),
+            actor=owner,
+        )
+        assert (await approved_handle.result()).status == "succeeded"
+
+        cancelled = await gateway.start(
+            VALID_PRODUCE_REQUEST,
+            actor=owner,
+            idempotency_key="cancel-001",
+        )
+        cancelled_handle = workflow_env.client.get_workflow_handle(
+            cancelled.workflow_id,
+            result_type=WorkflowSummary,
+        )
+        await wait_for_status(cancelled_handle, "awaiting_approval")
+        await gateway.cancel(cancelled.workflow_id, actor=owner)
+        assert (await cancelled_handle.result()).status == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_gateway_cancellation_wins_when_the_running_activity_returns_an_error(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    global CANCELLING_ACTIVITY_RELEASE
+    CANCELLING_ACTIVITY_RELEASE = asyncio.Event()
+    owner = Actor(actor_id="owner", actor_type="user")
+    async with Worker(
+        workflow_env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[SourceInvestigationWorkflow],
+        activities=[cancelling_inspect],
+    ):
+        gateway = TemporalWorkflowGateway(workflow_env.client)
+        started = await gateway.start(
+            VALID_IDENTIFY_REQUEST,
+            actor=owner,
+            idempotency_key="running-cancel-001",
+        )
+        handle = workflow_env.client.get_workflow_handle(
+            started.workflow_id,
+            result_type=WorkflowSummary,
+        )
+        await wait_for_status(handle, "running")
+        await gateway.cancel(started.workflow_id, actor=owner)
+        CANCELLING_ACTIVITY_RELEASE.set()
+        assert (await handle.result()).status == "cancelled"
 
 
 @pytest.mark.asyncio

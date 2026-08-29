@@ -10,8 +10,10 @@ from thoth_control_plane.domain.models import (
     EventKind,
     OutputRequest,
     ReviewRequest,
+    SourceInvestigationActivityResult,
     SourceInvestigationInput,
     SourceInvestigationResult,
+    SourceInvestigationWorkflowInput,
     StyleChoice,
     StylePreset,
     WorkflowEvent,
@@ -19,6 +21,8 @@ from thoth_control_plane.domain.models import (
     WorkflowRequest,
     WorkflowStatus,
     WorkflowSummary,
+    request_snapshot_id,
+    safe_workflow_source,
 )
 
 __all__ = [
@@ -31,8 +35,10 @@ __all__ = [
     "EventKind",
     "OutputRequest",
     "ReviewRequest",
+    "SourceInvestigationActivityResult",
     "SourceInvestigationInput",
     "SourceInvestigationResult",
+    "SourceInvestigationWorkflowInput",
     "StyleChoice",
     "StylePreset",
     "WorkflowEvent",
@@ -40,4 +46,6 @@ __all__ = [
     "WorkflowRequest",
     "WorkflowStatus",
     "WorkflowSummary",
+    "request_snapshot_id",
+    "safe_workflow_source",
 ]

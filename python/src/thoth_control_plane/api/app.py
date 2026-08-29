@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
+from temporalio.service import RPCError
 
 from thoth_control_plane.api.routes.health import router as health_router
 from thoth_control_plane.api.routes.workflows import router as workflow_router
@@ -36,11 +37,13 @@ def create_app(settings: Settings, gateway: WorkflowGateway | None = None) -> Fa
             checker: Any = getattr(resolved_gateway, "check_connection", None)
             if checker is not None and not await checker():
                 raise WorkflowNotReady
-        except Exception:
+        except (OSError, RPCError, WorkflowNotReady):
             app.state.workflow_ready = False
+            app.state.workflow_gateway = UnavailableWorkflowGateway()
             app.state.workflow_service = WorkflowService(UnavailableWorkflowGateway())
         else:
             app.state.workflow_ready = True
+            app.state.workflow_gateway = resolved_gateway
             app.state.workflow_service = WorkflowService(resolved_gateway)
         yield
 
@@ -51,6 +54,7 @@ def create_app(settings: Settings, gateway: WorkflowGateway | None = None) -> Fa
     )
     app.state.settings = settings
     app.state.workflow_ready = gateway is not None
+    app.state.workflow_gateway = gateway or UnavailableWorkflowGateway()
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
 
     exception_statuses = {

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from contextlib import suppress
 from datetime import UTC, datetime
 from hashlib import sha256
-from urllib.parse import urlsplit, urlunsplit
 
 from temporalio.client import Client, WorkflowHandle
 from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
@@ -26,10 +24,12 @@ from thoth_control_plane.domain import (
     ActorSnapshot,
     ApprovalDecision,
     ApprovalSignal,
+    SourceInvestigationWorkflowInput,
     StylePreset,
     WorkflowRequest,
-    WorkflowStatus,
     WorkflowSummary,
+    request_snapshot_id,
+    safe_workflow_source,
 )
 from thoth_control_plane.workflows.source_investigation import SourceInvestigationWorkflow
 
@@ -74,21 +74,36 @@ class TemporalWorkflowGateway:
         actor: Actor,
         idempotency_key: str,
     ) -> WorkflowSummary:
-        workflow_id = _workflow_id(actor.actor_id, idempotency_key)
+        workflow_id = _workflow_id(actor.actor_type, actor.actor_id, idempotency_key)
+        requested_snapshot_id = request_snapshot_id(request)
         with suppress(WorkflowAlreadyStartedError):
             await self._client.start_workflow(
                 SourceInvestigationWorkflow.run,
-                args=[request, ActorSnapshot.model_validate(actor.model_dump())],
+                args=[
+                    SourceInvestigationWorkflowInput(
+                        request_snapshot_id=requested_snapshot_id,
+                        source=safe_workflow_source(request),
+                        intent=request.source.intent,
+                        actor=ActorSnapshot.model_validate(actor.model_dump()),
+                    )
+                ],
                 id=workflow_id,
                 task_queue=TASK_QUEUE,
                 id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
                 id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
                 memo={
                     "idempotency_key": idempotency_key,
-                    "request_snapshot_id": _request_snapshot_id(request),
+                    "request_snapshot_id": requested_snapshot_id,
                 },
             )
-        return _queued_summary(workflow_id, request)
+
+        handle = await self._authorized_handle(workflow_id, actor)
+        existing_snapshot_id = await handle.query(SourceInvestigationWorkflow.request_snapshot_id)
+        if existing_snapshot_id != requested_snapshot_id:
+            from thoth_control_plane.application import IdempotencyConflict
+
+            raise IdempotencyConflict
+        return await handle.query(SourceInvestigationWorkflow.summary)
 
     async def get(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         handle = await self._authorized_handle(workflow_id, actor)
@@ -143,45 +158,20 @@ class TemporalWorkflowGateway:
     ) -> WorkflowHandle[WorkflowSummary]:
         handle: WorkflowHandle[WorkflowSummary] = self._client.get_workflow_handle(workflow_id)
         try:
-            owner_actor_id = await handle.query(SourceInvestigationWorkflow.owner_actor_id)
+            owner_actor = await handle.query(SourceInvestigationWorkflow.owner_actor)
         except RPCError as error:
             raise _mapped_rpc_error(error) from error
-        if owner_actor_id != actor.actor_id:
+        if owner_actor.actor_id != actor.actor_id or owner_actor.actor_type != actor.actor_type:
             raise WorkflowNotFound
         return handle
 
 
-def _workflow_id(actor_id: str, idempotency_key: str) -> str:
-    digest = sha256(f"{actor_id}\0{idempotency_key}".encode()).hexdigest()
+def _workflow_id(actor_type: str, actor_id: str, idempotency_key: str) -> str:
+    digest = sha256(f"{actor_type}\0{actor_id}\0{idempotency_key}".encode()).hexdigest()
     return f"wf_{digest[:24]}"
-
-
-def _request_snapshot_id(request: WorkflowRequest) -> str:
-    return f"req_{sha256(request.model_dump_json().encode()).hexdigest()[:24]}"
-
-
-def _queued_summary(workflow_id: str, request: WorkflowRequest) -> WorkflowSummary:
-    now = datetime.now(UTC)
-    parsed = urlsplit(str(request.source.url))
-    display_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-    platform = _platform(parsed.hostname)
-    return WorkflowSummary(
-        workflow_id=workflow_id,
-        status=WorkflowStatus.QUEUED,
-        created_at=now,
-        updated_at=now,
-        source={"display_url": display_url, "platform": platform},
-        stages=[],
-    )
 
 
 def _mapped_rpc_error(error: RPCError) -> Exception:
     if error.status == RPCStatusCode.NOT_FOUND:
         return WorkflowNotFound()
     return WorkflowNotReady()
-
-
-def _platform(hostname: str | None) -> str:
-    labels = (hostname or "unknown").lower().split(".")
-    value = labels[-2] if len(labels) > 1 else labels[0]
-    return re.sub(r"[^a-z0-9_]", "_", value).strip("_") or "unknown"

@@ -24,6 +24,7 @@ class InMemoryWorkflowGateway:
     def __init__(self) -> None:
         self.workflows: dict[str, WorkflowSummary] = {}
         self.actors: list[Actor] = []
+        self.connection_available = True
         self.last_from_stage: str | None = None
         self.last_approval: ApprovalSubmission | None = None
         self.approval_allowed = True
@@ -33,6 +34,9 @@ class InMemoryWorkflowGateway:
             return self.workflows[workflow_id]
         except KeyError as exc:
             raise WorkflowNotFound from exc
+
+    async def check_connection(self) -> bool:
+        return self.connection_available
 
     async def list_style_presets(self, *, actor: Actor) -> list[StylePreset]:
         self.actors.append(actor)

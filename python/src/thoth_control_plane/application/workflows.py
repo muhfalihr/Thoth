@@ -84,8 +84,8 @@ class WorkflowService:
 
     def __init__(self, gateway: WorkflowGateway) -> None:
         self._gateway = gateway
-        self._starts: dict[tuple[str, str], tuple[str, WorkflowSummary]] = {}
-        self._start_locks: dict[tuple[str, str], Lock] = {}
+        self._starts: dict[tuple[str, str, str], tuple[str, WorkflowSummary]] = {}
+        self._start_locks: dict[tuple[str, str, str], Lock] = {}
 
     async def list_style_presets(self, *, actor: Actor) -> list[StylePreset]:
         return await self._gateway.list_style_presets(actor=actor)
@@ -97,7 +97,7 @@ class WorkflowService:
         actor: Actor,
         idempotency_key: str,
     ) -> WorkflowSummary:
-        cache_key = (actor.actor_id, idempotency_key)
+        cache_key = (actor.actor_type, actor.actor_id, idempotency_key)
         fingerprint = request.model_dump_json()
         lock = self._start_locks.setdefault(cache_key, Lock())
         async with lock:

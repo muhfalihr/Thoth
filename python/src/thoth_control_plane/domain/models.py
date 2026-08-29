@@ -6,6 +6,7 @@ import math
 import re
 from datetime import datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -300,3 +301,48 @@ class SourceCandidate(StrictModel):
 class SourceInvestigationResult(StrictModel):
     candidates: list[SourceCandidate]
     report: ArtifactRef
+
+
+class SafeActivityError(StrictModel):
+    """A stable activity error safe to store in Temporal history."""
+
+    code: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
+    retryable: bool
+
+
+class SourceInvestigationActivityResult(StrictModel):
+    """The history-safe result from source investigation."""
+
+    report: ArtifactRef | None = None
+    failure: SafeActivityError | None = None
+
+    @model_validator(mode="after")
+    def require_exactly_one_outcome(self) -> SourceInvestigationActivityResult:
+        if (self.report is None) == (self.failure is None):
+            raise ValueError("activity result must contain exactly one outcome")
+        return self
+
+
+class SourceInvestigationWorkflowInput(StrictModel):
+    """The minimal, redacted Temporal workflow input."""
+
+    request_snapshot_id: OpaqueId
+    source: WorkflowSource
+    intent: Literal["identify_original", "produce_video"]
+    actor: ActorSnapshot
+
+
+def request_snapshot_id(request: WorkflowRequest) -> str:
+    """Return the opaque fingerprint used to compare durable start requests."""
+    digest = sha256(request.model_dump_json().encode()).hexdigest()
+    return f"req_{digest[:24]}"
+
+
+def safe_workflow_source(request: WorkflowRequest) -> WorkflowSource:
+    """Strip a request URL to the display-safe source representation."""
+    parsed = urlsplit(str(request.source.url))
+    display_url = urlsplit(str(request.source.url))._replace(query="", fragment="").geturl()
+    labels = (parsed.hostname or "unknown").lower().split(".")
+    platform = labels[-2] if len(labels) > 1 else labels[0]
+    platform = re.sub(r"[^a-z0-9_]", "_", platform).strip("_") or "unknown"
+    return WorkflowSource(display_url=display_url, platform=platform)

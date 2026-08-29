@@ -300,6 +300,18 @@ async def test_health_and_readiness_endpoints_emit_the_v1_contract_header(
 
 
 @pytest.mark.asyncio
+async def test_readiness_checks_the_current_temporal_connection(
+    client: httpx.AsyncClient,
+    gateway,
+) -> None:
+    gateway.connection_available = False
+
+    readiness = await client.get("/readyz")
+
+    assert readiness.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_unbound_production_wiring_is_not_ready_and_cannot_start_work() -> None:
     app = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), None)
     transport = httpx.ASGITransport(app=app)

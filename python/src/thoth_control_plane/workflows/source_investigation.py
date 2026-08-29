@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import re
 from datetime import timedelta
 from hashlib import sha256
-from urllib.parse import urlsplit, urlunsplit
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -21,8 +19,8 @@ with workflow.unsafe.imports_passed_through():
         ApprovalRequest,
         ApprovalSignal,
         ArtifactRef,
+        SourceInvestigationWorkflowInput,
         WorkflowFailure,
-        WorkflowRequest,
         WorkflowStatus,
         WorkflowSummary,
     )
@@ -50,32 +48,58 @@ class SourceInvestigationWorkflow:
         self._event_sequence = 0
 
     @workflow.run
-    async def run(self, request: WorkflowRequest, actor: ActorSnapshot) -> WorkflowSummary:
+    async def run(self, input_: SourceInvestigationWorkflowInput) -> WorkflowSummary:
         self._workflow_id = workflow.info().workflow_id
-        self._request_snapshot_id = _request_snapshot_id(request)
-        self._actor_id = actor.actor_id
-        self._actor_type = actor.actor_type
+        self._request_snapshot_id = input_.request_snapshot_id
+        self._actor_id = input_.actor.actor_id
+        self._actor_type = input_.actor.actor_type
         self._created_at = workflow.now()
         self._updated_at = self._created_at
-        self._source = _safe_source(request)
+        self._source = input_.source
         self._transition(WorkflowStatus.RUNNING)
 
         try:
             result = await workflow.execute_activity(
                 inspect_source_candidates,
                 SourceInvestigationActivityInput(
-                    request=request,
                     workflow_id=self._workflow_id,
+                    request_snapshot_id=self._request_snapshot_id,
                 ),
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
         except ActivityError:
+            if self._cancel_requested:
+                self._transition(WorkflowStatus.CANCELLED)
+                return self._summary()
             self._failure = WorkflowFailure(
                 code="source_investigation_failed",
                 message="Source investigation failed",
                 failed_stage="source",
                 retryable=True,
+            )
+            self._transition(WorkflowStatus.FAILED)
+            return self._summary()
+
+        if result.failure is not None:
+            if self._cancel_requested:
+                self._transition(WorkflowStatus.CANCELLED)
+                return self._summary()
+            self._failure = WorkflowFailure(
+                code=result.failure.code,
+                message="Source investigation failed",
+                failed_stage="source",
+                retryable=result.failure.retryable,
+            )
+            self._transition(WorkflowStatus.FAILED)
+            return self._summary()
+
+        if result.report is None:
+            self._failure = WorkflowFailure(
+                code="source_investigation_failed",
+                message="Source investigation failed",
+                failed_stage="source",
+                retryable=False,
             )
             self._transition(WorkflowStatus.FAILED)
             return self._summary()
@@ -88,7 +112,7 @@ class SourceInvestigationWorkflow:
             self._transition(WorkflowStatus.CANCELLED)
             return self._summary()
 
-        if request.source.intent == "identify_original":
+        if input_.intent == "identify_original":
             self._transition(WorkflowStatus.SUCCEEDED)
             return self._summary()
 
@@ -151,8 +175,8 @@ class SourceInvestigationWorkflow:
         return self._summary()
 
     @workflow.query
-    def owner_actor_id(self) -> str:
-        return self._actor_id
+    def owner_actor(self) -> ActorSnapshot:
+        return ActorSnapshot(actor_id=self._actor_id, actor_type=self._actor_type)
 
     @workflow.query
     def request_snapshot_id(self) -> str:
@@ -194,20 +218,6 @@ class SourceInvestigationWorkflow:
         )
 
 
-def _request_snapshot_id(request: WorkflowRequest) -> str:
-    digest = sha256(request.model_dump_json().encode()).hexdigest()
-    return f"req_{digest[:24]}"
-
-
 def _approval_id(workflow_id: str) -> str:
     digest = sha256(workflow_id.encode()).hexdigest()
     return f"apr_{digest[:24]}"
-
-
-def _safe_source(request: WorkflowRequest) -> dict[str, str]:
-    parsed = urlsplit(str(request.source.url))
-    display_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-    labels = (parsed.hostname or "unknown").lower().split(".")
-    platform = labels[-2] if len(labels) > 1 else labels[0]
-    platform = re.sub(r"[^a-z0-9_]", "_", platform).strip("_") or "unknown"
-    return {"display_url": display_url, "platform": platform}

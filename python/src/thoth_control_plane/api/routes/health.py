@@ -16,4 +16,7 @@ async def health() -> dict[str, str]:
 async def readiness(request: Request) -> dict[str, str]:
     if not request.app.state.workflow_ready:
         raise WorkflowNotReady
+    checker = getattr(request.app.state.workflow_gateway, "check_connection", None)
+    if checker is not None and not await checker():
+        raise WorkflowNotReady
     return {"status": "ready"}
