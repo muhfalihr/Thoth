@@ -3,7 +3,8 @@ name = "thoth-control-plane"
 version = "0.1.0"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-  "fastapi>=0.115,<1",
+    "agno>=3,<4",
+    "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "pydantic-settings>=2.6,<3",
   "temporalio>=1.10,<2",
@@ -19,7 +20,7 @@ dev = [
   "pytest>=8,<9",
   "pytest-asyncio>=0.24,<1",
   "respx>=0.22,<1",
-  "ruff>=0.8,<1",
+    "ruff>=0.8,<1",
 ]
 
 [tool.ruff]
