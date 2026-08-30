@@ -64,7 +64,7 @@ test("shows human workflow status before optional diagnostics", async () => {
 
   expect(await screen.findByText(/Review video/)).toBeDefined();
   expect(screen.getByText("Progress")).toBeDefined();
-  expect(screen.getByText("Needs decision")).toBeDefined();
+  expect(screen.getByText("Needs your decision")).toBeDefined();
   expect(screen.getByText("Results")).toBeDefined();
   expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
   expect(screen.getByRole("button", { name: "Cancel" })).toBeDefined();

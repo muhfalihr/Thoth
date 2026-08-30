@@ -115,26 +115,18 @@ async def stream_workflow_events(
     after_sequence = _parse_last_event_id(last_event_id)
 
     async def encoded_events() -> AsyncIterator[str]:
-        first = after_sequence == 0
+        if after_sequence == 0:
+            snapshot = _workflow_snapshot_event(
+                await service.get(workflow_id, actor=actor), sequence=1
+            )
+            yield f"event: workflow.snapshot\ndata: {snapshot.model_dump_json()}\n\n"
         async for event in service.stream_events(
             workflow_id,
             actor=actor,
             after_sequence=after_sequence,
         ):
-            event_name = "workflow.snapshot" if first else event.kind
-            first = False
             yield (
-                f"id: {event.sequence}\nevent: {event_name}\ndata: {event.model_dump_json()}\n\n"
-            )
-
-        if first:
-            snapshot = _workflow_snapshot_event(
-                await service.get(workflow_id, actor=actor),
-                sequence=after_sequence + 1,
-            )
-            yield (
-                f"id: {snapshot.sequence}\nevent: workflow.snapshot\n"
-                f"data: {snapshot.model_dump_json()}\n\n"
+                f"id: {event.sequence}\nevent: {event.kind}\ndata: {event.model_dump_json()}\n\n"
             )
 
     return StreamingResponse(encoded_events(), media_type="text/event-stream")

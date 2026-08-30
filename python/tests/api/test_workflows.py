@@ -5,6 +5,7 @@ import pytest
 
 from thoth_control_plane.api import create_app
 from thoth_control_plane.config import Settings
+from thoth_control_plane.domain import EventKind
 from thoth_control_plane.infrastructure.legacy_reader import LegacyJobReader
 
 VALID_REQUEST = {
@@ -83,7 +84,8 @@ async def test_workflow_events_are_authorized_and_replay_after_last_event_id(
     assert forbidden.status_code == 403
     assert fresh.status_code == 200
     assert fresh.headers["content-type"].startswith("text/event-stream")
-    assert "id: 1\nevent: workflow.snapshot\n" in fresh.text
+    assert fresh.text.startswith("event: workflow.snapshot\n")
+    assert "id: 1\nevent: workflow.queued\n" in fresh.text
     assert "id: 2\nevent: workflow.started\n" in fresh.text
     assert "id: 1" not in replay.text
     assert "id: 2\nevent: workflow.started\n" in replay.text
@@ -108,6 +110,36 @@ async def test_workflow_events_emit_an_initial_snapshot_when_no_events_are_avail
     assert response.status_code == 200
     assert "event: workflow.snapshot" in response.text
     assert '"workflow_id":"wf_001"' in response.text
+
+
+@pytest.mark.asyncio
+async def test_fresh_event_stream_precedes_original_replay_with_current_snapshot(
+    client: httpx.AsyncClient,
+    gateway,
+) -> None:
+    await client.post(
+        "/api/v1/workflows",
+        headers={**AUTH_HEADERS, "Idempotency-Key": "create-001"},
+        json=VALID_REQUEST,
+    )
+    gateway.workflows["wf_001"] = gateway.workflows["wf_001"].model_copy(
+        update={"status": "succeeded"}
+    )
+    gateway.events[1] = gateway.events[1].model_copy(update={"kind": EventKind.WORKFLOW_COMPLETED})
+
+    fresh = await client.get("/api/v1/workflows/wf_001/events", headers=AUTH_HEADERS)
+    replay = await client.get(
+        "/api/v1/workflows/wf_001/events",
+        headers={**AUTH_HEADERS, "Last-Event-ID": "1"},
+    )
+
+    frames = [frame for frame in fresh.text.split("\n\n") if frame]
+    assert "event: workflow.snapshot" in frames[0]
+    assert '"kind":"workflow.completed"' in frames[0]
+    assert "event: workflow.queued" in frames[1]
+    assert "event: workflow.completed" in frames[2]
+    assert "workflow.snapshot" not in replay.text
+    assert "event: workflow.completed" in replay.text
 
 
 @pytest.mark.asyncio

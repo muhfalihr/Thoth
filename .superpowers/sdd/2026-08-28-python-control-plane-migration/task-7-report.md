@@ -100,3 +100,20 @@ The first Temporal implementation run failed at `awaiting.approval` with `Attrib
 - `rtk bun run build` — passed (2036 modules transformed).
 - `rtk bun run lint` — exit 0; three existing warnings remain in `ui/button.tsx`, `ui/badge.tsx`, and `Discovery.tsx`.
 - `rtk uv run ruff check .`, `rtk uv run ruff format --check .`, and `rtk git diff --check` — passed.
+
+## Fix round 2
+
+- RED: the fresh event stream relabelled its first historical `workflow.queued` replay frame as `workflow.snapshot`; a completed workflow therefore did not receive a current-summary snapshot first.
+- GREEN: a fresh stream now emits one summary-derived typed `workflow.snapshot` frame without an SSE cursor, followed by every original replay event with its original name and ordered sequence. A `Last-Event-ID` reconnect emits only unseen original events and no snapshot.
+- RED: approval UI assertion required the exact product vocabulary `Needs your decision` while the component rendered `Needs decision`.
+- GREEN: the approval section now renders exactly `Needs your decision`.
+
+### Verification
+
+- `rtk uv run pytest tests/api/test_workflows.py -q` — **26 passed**.
+- `rtk uv run pytest -q` — **94 passed**.
+- `rtk uv run python scripts/export_openapi.py` and `rtk bun run generate:control-plane-types` — passed.
+- `rtk bun test` — **50 passed, 0 failed, 148 assertions**.
+- `rtk bun run build` — passed (2036 modules transformed).
+- `rtk bun run lint` — exit 0; three existing warnings remain in `Discovery.tsx`, `ui/button.tsx`, and `ui/badge.tsx`.
+- `rtk uv run ruff check .` and `rtk uv run ruff format --check .` — passed.
