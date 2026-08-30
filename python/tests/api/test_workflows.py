@@ -80,6 +80,10 @@ async def test_workflow_events_are_authorized_and_replay_after_last_event_id(
         "/api/v1/workflows/wf_001/events",
         headers={**AUTH_HEADERS, "Last-Event-ID": "1"},
     )
+    replay_from_zero = await client.get(
+        "/api/v1/workflows/wf_001/events",
+        headers={**AUTH_HEADERS, "Last-Event-ID": "0"},
+    )
 
     assert forbidden.status_code == 403
     assert fresh.status_code == 200
@@ -90,7 +94,10 @@ async def test_workflow_events_are_authorized_and_replay_after_last_event_id(
     assert "id: 1" not in replay.text
     assert "id: 2\nevent: workflow.started\n" in replay.text
     assert "workflow.snapshot" not in replay.text
-    assert gateway.last_event_cursor == 1
+    assert "workflow.snapshot" not in replay_from_zero.text
+    assert "id: 1\nevent: workflow.queued\n" in replay_from_zero.text
+    assert "id: 2\nevent: workflow.started\n" in replay_from_zero.text
+    assert gateway.last_event_cursor == 0
 
 
 @pytest.mark.asyncio

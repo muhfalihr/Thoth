@@ -115,7 +115,7 @@ async def stream_workflow_events(
     after_sequence = _parse_last_event_id(last_event_id)
 
     async def encoded_events() -> AsyncIterator[str]:
-        if after_sequence == 0:
+        if last_event_id is None:
             snapshot = _workflow_snapshot_event(
                 await service.get(workflow_id, actor=actor), sequence=1
             )

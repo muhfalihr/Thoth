@@ -117,3 +117,17 @@ The first Temporal implementation run failed at `awaiting.approval` with `Attrib
 - `rtk bun run build` — passed (2036 modules transformed).
 - `rtk bun run lint` — exit 0; three existing warnings remain in `Discovery.tsx`, `ui/button.tsx`, and `ui/badge.tsx`.
 - `rtk uv run ruff check .` and `rtk uv run ruff format --check .` — passed.
+
+## Fix round 3
+
+- RED: an explicit `Last-Event-ID: 0` was parsed to zero and incorrectly followed the fresh-connection snapshot branch. The public endpoint test showed `workflow.snapshot` in that reconnect response.
+- GREEN: snapshot emission now depends solely on header absence (`last_event_id is None`). Any supplied cursor, including `0`, replays only unseen original typed events.
+
+### Verification
+
+- `rtk uv run pytest tests/api/test_workflows.py tests/application/test_workflows.py tests/workflows/test_source_investigation.py -q` — **51 passed**.
+- `rtk uv run pytest -q` — **94 passed**.
+- `rtk uv run python scripts/export_openapi.py` and `rtk bun run generate:control-plane-types` — passed.
+- `rtk bun test` — **50 passed, 0 failed, 148 assertions**; `rtk bun run build` passed.
+- `rtk bun run lint` — exit 0; same three existing warnings remain.
+- `rtk uv run ruff check .` and `rtk uv run ruff format --check .` — passed.
