@@ -6,6 +6,7 @@ There are two ways to run Thoth. Pick whichever fits how you work:
 |---|---|---|
 | **[A. Single-command CLI](#a-single-command-cli)** | One `thoth run …` invocation does the whole pipeline and exits. | One-off clips, scripting, cron jobs. |
 | **[B. Server + worker](#b-server--worker-deployment)** | A long-running web API (`thoth-server`) + a warm engine (`thoth worker`) sharing a SQLite queue; drive it from the dashboard SPA or the REST API. | A dashboard/UI, many jobs, or keeping models warm between jobs. |
+| **[C. Python workflow control plane](#c-python-workflow-control-plane)** | FastAPI + Temporal Python worker + Temporal development server + the React dashboard. | Exercising the versioned v1 workflow, approval, SSE, cancellation, and artifact boundary. |
 
 This page assumes you have already built the binaries — see **[INSTALL.md](INSTALL.md)**.
 Full flag reference is in **[CLI.md](CLI.md)**.
@@ -14,6 +15,26 @@ Full flag reference is in **[CLI.md](CLI.md)**.
 > `thoth-server.exe`; on Linux/macOS they are `thoth` and `thoth-server`. After a
 > release build they live in `target/release/`. Either add that folder to your `PATH`
 > or call the binary by its path. The examples use the bare name.
+
+---
+
+## C. Python workflow control plane
+
+The Python control plane is additive during migration. It does not replace the Rust
+`thoth-server`/`thoth worker` pair or redirect the legacy Scout screen. Run its four terminals,
+ports, environment, safe shutdown sequence, retry limitation, and offline smoke exactly as
+documented in [python-control-plane.md](python-control-plane.md).
+
+The short local sequence is:
+
+1. start Temporal development server on `7233` (UI `8233`);
+2. from `python/`, start FastAPI on `8000` and `python -m thoth_control_plane.worker`;
+3. from `dashboard/`, start Vite on `5173` with `VITE_CONTROL_PLANE_URL` pointing at FastAPI; and
+4. stop dashboard, API, worker, then Temporal with `Ctrl+C` in each terminal.
+
+Never print or commit the API keys while configuring these processes. The existing Rust worker
+uses the SQLite queue below; the Temporal Python worker uses `thoth-control-plane` and its isolated
+legacy-adapter queue. They are independent processes and queues.
 
 ---
 

@@ -1,5 +1,27 @@
 # React + TypeScript + Vite
 
+## Python v1 workflow dashboard
+
+The **New video** workflow uses generated OpenAPI types and the Python control plane's
+`/api/v1/workflows` product contract. Configure the local Vite process with
+`VITE_CONTROL_PLANE_URL=http://127.0.0.1:8000` and inject
+`VITE_CONTROL_PLANE_API_KEY` without printing or committing its value, then run `bun run dev`.
+
+Generate/check the client and verify the dashboard with:
+
+```powershell
+bun run generate:control-plane-types
+bun test
+bun run build
+bun run lint
+```
+
+The existing Scout console remains on the legacy Rust API and `VITE_THOTH_API_KEY`; it is not the
+v1 workflow path. The ordinary v1 screen exposes Source, Style, Review, Progress, Decisions,
+Results, Cancel, and Retry rather than Scout executor flags or stdout-driven state. See
+[`docs/python-control-plane.md`](../docs/python-control-plane.md) for the four-process local stack,
+SSE reconnect rule, authorization, redaction, and adapter retirement gate.
+
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
 Currently, two official plugins are available:

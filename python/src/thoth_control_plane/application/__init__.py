@@ -7,6 +7,7 @@ from thoth_control_plane.application.ports import (
 )
 from thoth_control_plane.application.workflows import (
     ApprovalNotAllowed,
+    ArtifactNotFound,
     IdempotencyConflict,
     UnavailableWorkflowGateway,
     WorkflowNotFound,
@@ -25,6 +26,7 @@ __all__ = [
     "Actor",
     "ApprovalNotAllowed",
     "ApprovalSubmission",
+    "ArtifactNotFound",
     "IdempotencyConflict",
     "RetryRequest",
     "StylePreset",

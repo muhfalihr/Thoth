@@ -3,6 +3,30 @@
 Generated from `thoth --help` (and each subcommand's `--help`). Keep this in sync
 with `crates/thoth-core/src/cli.rs` whenever the CLI surface changes.
 
+## Python v1 workflow client
+
+`thoth-control` is the thin operator client for the Python control plane. Run it from `python/`
+after `uv sync --all-groups`:
+
+```powershell
+uv run thoth-control workflow start --url https://example.com/source --style news-vertical
+uv run thoth-control workflow watch <workflow_id>
+uv run thoth-control workflow approve <workflow_id> --approval-id <approval_id> --decision approve
+uv run thoth-control workflow cancel <workflow_id>
+uv run thoth-control workflow retry <workflow_id> --from-stage source
+```
+
+Set `THOTH_CONTROL_PLANE_URL` (default `http://localhost:8000`) and
+`THOTH_CONTROL_PLANE_API_KEY` without printing or committing their values. Every command sends the
+same typed `/api/v1/workflows` HTTP contract used by the dashboard. It has no Scout/Bun subprocess
+route and does not implement alternate orchestration. Durable retry is deliberately unavailable
+and returns `503` until checkpoint and artifact-fingerprint validation can prevent duplicate side
+effects.
+
+The Rust `thoth scout` command below remains a clearly labelled legacy operator path. It may be
+used by the isolated worker-only compatibility adapter, but new v1 API/dashboard/CLI traffic never
+calls `/api/scout/*` or shapes a `scout/cli.ts` command.
+
 > On Windows the binary is `thoth.exe` (or `.\target\release\thoth.exe`); on
 > Linux/macOS it is `thoth` (or `./target/release/thoth`). The examples below use
 > the bare name `thoth` — assume it is on your `PATH` or prefix the release path.

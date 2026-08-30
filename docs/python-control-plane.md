@@ -1,28 +1,148 @@
-# Python control plane
+# Python workflow control plane operations
+
+The Python control plane is the v1 product boundary for one source-investigation workflow.
+It runs beside the existing Rust server and worker during migration; it does not replace the
+Rust media engine or the legacy Scout console.
+
+## Local topology
+
+Run each process from its indicated directory in a separate terminal.
+
+| Process | Local address / queue | Start | Graceful stop |
+| --- | --- | --- | --- |
+| Temporal development server | gRPC `127.0.0.1:7233`, UI `127.0.0.1:8233` | `temporal server start-dev --ip 127.0.0.1 --port 7233 --ui-port 8233` | `Ctrl+C` in its terminal |
+| FastAPI | `127.0.0.1:8000` | From `python/`: `uv run uvicorn thoth_control_plane.api:create_app --factory --host 127.0.0.1 --port 8000` | `Ctrl+C`; Uvicorn drains in-flight HTTP requests |
+| Temporal Python worker | `thoth-control-plane` and isolated `thoth-legacy-adapter` task queues | From `python/`: `uv run python -m thoth_control_plane.worker` | `Ctrl+C`; the worker asks Temporal to reschedule unfinished work |
+| React dashboard | `127.0.0.1:5173` | From `dashboard/`: `bun run dev --host 127.0.0.1` | `Ctrl+C` |
+
+Use Temporal's development server only for local work. It is separate from the existing Rust
+`thoth worker`, whose SQLite queue and lifecycle remain documented in [RUNNING.md](RUNNING.md).
+Start Temporal before FastAPI and the Python worker. Stop the dashboard, FastAPI, worker, then
+Temporal so the durable service remains available while clients and workers drain.
+
+## Configuration without secret disclosure
+
+Set secrets in the process environment or a local secret manager. Do not put values in command
+history, documentation, screenshots, diagnostics, `git diff`, or commands such as `env`,
+`Get-ChildItem Env:`, `set`, or `echo`. Verify presence with a boolean check, never by printing
+the value.
+
+| Variable | Process | Meaning |
+| --- | --- | --- |
+| `THOTH_CONTROL_PLANE_API_KEY` | FastAPI, CLI | Owner bearer credential. Required. |
+| `THOTH_CONTROL_PLANE_CORS_ORIGINS` | FastAPI | JSON list of allowed dashboard origins, for example the local Vite origin. Empty by default. |
+| `THOTH_CONTROL_PLANE_ARTIFACT_ROOT` | FastAPI, Python worker working directory | Root for safe relative artifact locations. Defaults to `.thoth-artifacts`; API and worker must resolve the same root. |
+| `THOTH_TEMPORAL_TARGET` | FastAPI, Python worker | Temporal gRPC target; default `localhost:7233`. |
+| `THOTH_TEMPORAL_NAMESPACE` | FastAPI, Python worker | Temporal namespace; default `default`. |
+| `THOTH_LEGACY_API_BASE_URL` | FastAPI | Optional read-only Rust observation bridge base URL. |
+| `THOTH_LEGACY_API_KEY` | FastAPI | Secret paired with `THOTH_LEGACY_API_BASE_URL`; configuring only one is rejected. |
+| `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE` | Python worker / workflow start wiring | Worker-owned implementation choice: `python` (default) or `legacy_scout`. It is never accepted from HTTP. |
+| `VITE_CONTROL_PLANE_URL` | Dashboard build/dev server | FastAPI origin, normally `http://127.0.0.1:8000`. |
+| `VITE_CONTROL_PLANE_API_KEY` | Dashboard build/dev server | Local owner credential used by the v1 client. Do not commit it. |
+
+The existing Scout UI continues to use its legacy Rust route and `VITE_THOTH_API_KEY`. Setting
+`VITE_CONTROL_PLANE_URL` does not redirect legacy Scout traffic into the v1 workflow API.
+
+## v1 HTTP contract
+
+Every response carries `X-Thoth-Contract-Version: 1`. All state-changing endpoints require
+`Authorization: Bearer …`; workflow creation also requires a non-empty `Idempotency-Key`.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /healthz`, `GET /readyz` | Process liveness and Temporal readiness. |
+| `GET /api/v1/style-presets` | Safe user-facing style choices. |
+| `POST /api/v1/workflows` | Submit a typed workflow request; repeated actor/key/body returns the same workflow. |
+| `GET /api/v1/workflows/{workflow_id}` | Read the authoritative summary. |
+| `GET /api/v1/workflows/{workflow_id}/events` | Read the current snapshot and ordered SSE replay. |
+| `POST /api/v1/workflows/{workflow_id}/approve` | Record the exact active approval decision. |
+| `POST /api/v1/workflows/{workflow_id}/cancel` | Idempotently request cancellation. |
+| `POST /api/v1/workflows/{workflow_id}/retry` | Request retry from a validated stage. Currently returns `503` because no durable checkpoint policy is implemented. |
+| `GET /api/v1/workflows/{workflow_id}/artifacts/{artifact_id}` | Authorize through workflow ownership and stream one referenced artifact. |
+| `GET /api/v1/legacy/jobs/{legacy_job_id}` and `/events` | Read-only migration projection; never starts or mutates legacy work. |
+
+The retryable flag on a failure states whether the failed activity is safe to consider for a
+future checkpointed retry. It is not permission to rerun now. Until artifact fingerprint and
+side-effect checkpoint validation exist, the Temporal gateway rejects retry rather than risk a
+duplicate publish, download, or other side effect.
+
+## Events and reconnect
+
+A fresh SSE response begins with `workflow.snapshot`, followed by durable events whose sequence is
+after the requested cursor. Durable v1 kinds are `workflow.queued`, `workflow.started`,
+`workflow.completed`, `workflow.failed`, `workflow.cancelled`, `stage.started`, `stage.progress`,
+`stage.completed`, `approval.required`, `approval.recorded`, `artifact.created`, and
+`diagnostic.recorded`.
+
+Durable event `sequence` values strictly increase. Store the last durable SSE `id` and reconnect
+with `Last-Event-ID`; do not manufacture a cursor from list position or raw legacy output. The
+snapshot is authoritative current state, while replayed events are the audit trail after the
+cursor. Reconnect can repeat a snapshot, so clients must apply events idempotently.
+
+## Authorization and approvals
+
+The local v1 implementation maps the valid owner key to an audited `Actor`. Authorization is
+checked again at the application/gateway boundary for summary, events, controls, and artifact
+download. A missing, wrong, or non-Bearer credential receives `403`; an invisible workflow or
+artifact receives the same safe not-found boundary as an absent one.
+
+Approval requires the workflow to be waiting for the exact active `approval_id`, an allowed
+`approve` or `reject` decision, and the authenticated workflow owner. Agent SDK pause/resume data
+is never authorization. Approval is persisted and signalled through Temporal; restarting FastAPI
+or the worker while waiting does not create a second decision or activity execution.
+
+## Redaction and artifact policy
+
+Workflow history and events contain only small typed identifiers, safe source display URLs,
+stage state, stable error codes/messages, safe metrics, and `ArtifactRef` metadata. They must not
+contain bearer tokens, API keys, cookies, signed URLs, absolute paths, raw provider/model payloads,
+browser traces, media bytes, or unredacted stdout/stderr. Query strings and fragments are removed
+from stored display URLs. Legacy diagnostic text is redacted before persistence and never drives
+workflow state.
+
+Artifact locations are validated relative durable paths. The API resolves them beneath
+`THOTH_CONTROL_PLANE_ARTIFACT_ROOT` only after actor/workflow/artifact authorization; it never
+returns the storage path or a signed source URL.
 
 ## Temporary Legacy Scout activity
 
-`LegacyScoutActivity` is a temporary worker-only compatibility seam. It is never
-selected by a FastAPI route or request field. Operators select it with
-`THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE=legacy_scout`; the Temporal gateway
-records that fixed choice in the workflow input, and the workflow dispatches the
-activity to `thoth-legacy-adapter`.
+`LegacyScoutActivity` is a worker-only compatibility seam. FastAPI routes and requests cannot
+select it. When `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE=legacy_scout`, the Temporal gateway
+records the fixed worker configuration and the workflow dispatches only to
+`thoth-legacy-adapter`.
 
-The adapter worker has a maximum activity concurrency of one, matching the
-single-browser limit. It launches a fixed `bun scout/cli.ts investigate` argument
-vector without a shell, heartbeats while it waits, owns the process group/tree,
-and terminates that tree if the Temporal activity is cancelled. Legacy stdout and
-stderr are never parsed into state and are retained only as redacted diagnostic
-metadata. Workflow state receives typed stage events and safe artifact references.
+That queue has maximum activity concurrency one to match the single-browser limit. The adapter
+launches a fixed `bun scout/cli.ts investigate` argument vector without a shell, heartbeats while
+waiting, owns its process group/tree, and terminates that tree on activity cancellation. Typed
+events and safe artifact/error results cross the activity boundary; stdout and stderr do not.
 
-## Retirement gate
+### Exact retirement gate
 
-Do not remove the adapter merely because a Python source activity exists. The
-replacement must first pass all of these gates:
+Do not remove the adapter until the Python source activity:
 
-- the same offline source-investigation fixtures;
-- a controlled live smoke test with equivalent safe artifacts and failure codes;
-- cancellation proving only the owned browser/process tree is terminated;
-- worker crash/restart and retry tests; and
-- confirmation that the production source-investigation path has no
-  `bun scout/cli.ts` dependency.
+1. passes the same offline candidate fixture;
+2. completes a controlled live smoke with equivalent safe artifacts and stable failure codes;
+3. demonstrates equivalent cancellation and no orphaned browser/process tree;
+4. survives API and worker restart with the same retry/rate-limit behavior and performance budget;
+5. preserves safe artifact, error, event, and redaction semantics; and
+6. repository search plus production smoke prove there is no import, reference, or execution of
+   `scout/cli.ts` or Bun on the production source-investigation path.
+
+Only after all six proofs are recorded may the isolated adapter queue and its worker wiring be
+removed. A later migration plan must name one bounded replacement activity and its parity fixture;
+it must not begin a broad Scout TypeScript or Rust media rewrite.
+
+## Verification and smoke scope
+
+The deterministic offline smoke uses Temporal's time-skipping test server and the real FastAPI,
+gateway, workflow, worker, SSE, authorization, approval, cancellation, failure eligibility, and
+artifact route seams:
+
+```powershell
+cd python
+uv run pytest tests/integration/test_control_plane_smoke.py -q
+```
+
+This is not a controlled live provider/Scout smoke. A live run additionally requires operator
+credentials, network/provider availability, and explicit selection of an approved fixture; never
+paste those credentials into the test command or report.

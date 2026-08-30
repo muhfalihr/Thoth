@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from thoth_control_plane.application.ports import ApprovalSubmission, WorkflowGateway
 from thoth_control_plane.domain import (
     Actor,
+    ArtifactRef,
     StylePreset,
     WorkflowEvent,
     WorkflowRequest,
@@ -38,6 +39,12 @@ class WorkflowNotFound(WorkflowApplicationError):
     """The requested workflow is absent or not visible to the actor."""
 
     default_detail = "Workflow not found"
+
+
+class ArtifactNotFound(WorkflowApplicationError):
+    """A requested artifact is absent from the actor-authorized workflow."""
+
+    default_detail = "Artifact not found"
 
 
 class ApprovalNotAllowed(WorkflowApplicationError):
@@ -132,6 +139,21 @@ class WorkflowService:
 
     async def get(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         return await self._gateway.get(workflow_id, actor=actor)
+
+    async def get_artifact(
+        self,
+        workflow_id: str,
+        artifact_id: str,
+        *,
+        actor: Actor,
+    ) -> ArtifactRef:
+        """Resolve only an artifact owned by a workflow visible to the actor."""
+
+        summary = await self._gateway.get(workflow_id, actor=actor)
+        for artifact in summary.artifacts:
+            if artifact.artifact_id == artifact_id:
+                return artifact
+        raise ArtifactNotFound
 
     def stream_events(
         self, workflow_id: str, *, actor: Actor, after_sequence: int

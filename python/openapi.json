@@ -1034,6 +1034,69 @@
         "summary": "Approve Workflow"
       }
     },
+    "/api/v1/workflows/{workflow_id}/artifacts/{artifact_id}": {
+      "get": {
+        "description": "Authorize through the workflow owner boundary, then stream one safe artifact.",
+        "operationId": "download_workflow_artifact_api_v1_workflows__workflow_id__artifacts__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Workflow Artifact"
+      }
+    },
     "/api/v1/workflows/{workflow_id}/cancel": {
       "post": {
         "operationId": "cancel_workflow_api_v1_workflows__workflow_id__cancel_post",

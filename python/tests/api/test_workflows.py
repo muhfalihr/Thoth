@@ -5,7 +5,7 @@ import pytest
 
 from thoth_control_plane.api import create_app
 from thoth_control_plane.config import Settings
-from thoth_control_plane.domain import EventKind
+from thoth_control_plane.domain import ArtifactRef, EventKind
 from thoth_control_plane.infrastructure.legacy_reader import LegacyJobReader
 
 VALID_REQUEST = {
@@ -241,6 +241,63 @@ async def test_missing_workflow_returns_not_found(client: httpx.AsyncClient) -> 
 
 
 @pytest.mark.asyncio
+async def test_artifact_download_is_workflow_authorized_and_resolves_only_safe_locations(
+    gateway,
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        THOTH_CONTROL_PLANE_API_KEY="test-key",
+        THOTH_CONTROL_PLANE_ARTIFACT_ROOT=tmp_path,
+    )
+    app = create_app(settings, gateway)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as test_client:
+        created = await test_client.post(
+            "/api/v1/workflows",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "artifact-auth-001"},
+            json=VALID_REQUEST,
+        )
+        workflow_id = created.json()["workflow_id"]
+        artifact_location = f"reports/{workflow_id}/source-report.json"
+        gateway.workflows[workflow_id] = gateway.workflows[workflow_id].model_copy(
+            update={
+                "artifacts": [
+                    ArtifactRef(
+                        artifact_id="art_source_001",
+                        kind="source_report",
+                        label="Source investigation report",
+                        media_type="application/json",
+                        location=artifact_location,
+                        checksum="sha256:" + "a" * 64,
+                    )
+                ]
+            }
+        )
+        report_path = tmp_path / artifact_location
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text('{"safe":true}', encoding="utf-8")
+
+        authorized = await test_client.get(
+            f"/api/v1/workflows/{workflow_id}/artifacts/art_source_001",
+            headers=AUTH_HEADERS,
+        )
+        forbidden = await test_client.get(
+            f"/api/v1/workflows/{workflow_id}/artifacts/art_source_001",
+            headers={"Authorization": "Bearer wrong-key"},
+        )
+        missing = await test_client.get(
+            f"/api/v1/workflows/{workflow_id}/artifacts/art_missing",
+            headers=AUTH_HEADERS,
+        )
+
+    assert authorized.status_code == 200
+    assert authorized.json() == {"safe": True}
+    assert str(tmp_path) not in authorized.text
+    assert forbidden.status_code == 403
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_disallowed_approval_returns_conflict(client: httpx.AsyncClient, gateway) -> None:
     await client.post(
         "/api/v1/workflows",
@@ -330,6 +387,7 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
         ("/api/v1/style-presets", "get"),
         ("/api/v1/workflows", "post"),
         ("/api/v1/workflows/{workflow_id}", "get"),
+        ("/api/v1/workflows/{workflow_id}/artifacts/{artifact_id}", "get"),
         ("/api/v1/workflows/{workflow_id}/events", "get"),
         ("/api/v1/workflows/{workflow_id}/cancel", "post"),
         ("/api/v1/workflows/{workflow_id}/retry", "post"),

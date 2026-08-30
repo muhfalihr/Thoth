@@ -3,14 +3,16 @@
 import re
 from collections.abc import AsyncIterator
 from hmac import compare_digest
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from thoth_control_plane.application import (
     Actor,
     ApprovalSubmission,
+    ArtifactNotFound,
     RetryRequest,
     StylePreset,
     WorkflowEvent,
@@ -91,6 +93,28 @@ async def get_workflow(
     service: Annotated[WorkflowService, Depends(get_workflow_service)],
 ) -> WorkflowSummary:
     return await service.get(workflow_id, actor=actor)
+
+
+@router.get("/workflows/{workflow_id}/artifacts/{artifact_id}")
+async def download_workflow_artifact(
+    workflow_id: str,
+    artifact_id: str,
+    request: Request,
+    actor: Annotated[Actor, Depends(current_actor)],
+    service: Annotated[WorkflowService, Depends(get_workflow_service)],
+) -> FileResponse:
+    """Authorize through the workflow owner boundary, then stream one safe artifact."""
+
+    artifact = await service.get_artifact(workflow_id, artifact_id, actor=actor)
+    artifact_root = Path(request.app.state.settings.THOTH_CONTROL_PLANE_ARTIFACT_ROOT).resolve()
+    artifact_path = (artifact_root / artifact.location).resolve()
+    if artifact_root not in artifact_path.parents or not artifact_path.is_file():
+        raise ArtifactNotFound
+    return FileResponse(
+        artifact_path,
+        media_type=artifact.media_type,
+        filename=f"{artifact.artifact_id}{artifact_path.suffix}",
+    )
 
 
 @router.get(

@@ -12,6 +12,7 @@ from thoth_control_plane.api.routes.health import router as health_router
 from thoth_control_plane.api.routes.workflows import router as workflow_router
 from thoth_control_plane.application import (
     ApprovalNotAllowed,
+    ArtifactNotFound,
     IdempotencyConflict,
     UnavailableWorkflowGateway,
     WorkflowGateway,
@@ -58,6 +59,7 @@ def create_app(settings: Settings, gateway: WorkflowGateway | None = None) -> Fa
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
 
     exception_statuses = {
+        ArtifactNotFound: status.HTTP_404_NOT_FOUND,
         IdempotencyConflict: status.HTTP_409_CONFLICT,
         ApprovalNotAllowed: status.HTTP_409_CONFLICT,
         WorkflowNotFound: status.HTTP_404_NOT_FOUND,
