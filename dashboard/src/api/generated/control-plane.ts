@@ -669,6 +669,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+                    "application/json": unknown;
                     "application/octet-stream": string;
                 };
             };

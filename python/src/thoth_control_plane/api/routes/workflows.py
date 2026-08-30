@@ -101,8 +101,9 @@ async def get_workflow(
     responses={
         status.HTTP_200_OK: {
             "content": {
-                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
-            }
+                "application/json": {"schema": {}},
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},
+            },
         }
     },
 )

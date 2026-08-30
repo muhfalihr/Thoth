@@ -122,3 +122,36 @@ The safe presence-only preflight did not print credentials. It found
 Consequently no live provider/legacy smoke was run; the controlled live parity gate
 remains pending operator credentials, an approved fixture, and a running Temporal
 service.
+
+## Fix round 2 TDD and debugging evidence
+
+- TDD red: `rtk uv run pytest tests/api/test_workflows.py -q -k artifact_download`
+  exited `1` because the new contract assertion expected `application/json`, while the
+  endpoint OpenAPI response declared only `application/octet-stream`.
+- The minimal production fix adds a generic JSON response entry alongside the existing
+  binary download entry. `FileResponse` still uses the `ArtifactRef.media_type`, so a
+  source report returns `application/json` and a generic archive returns
+  `application/octet-stream` at runtime.
+- While adding the binary header regression fixture, collection first failed with an
+  `IndentationError`; after inspecting the actual block nesting, the root cause was
+  only the fixture statements accidentally dedented out of its `AsyncClient` context.
+  The closeout changed only that indentation. `rtk uv run pytest
+  tests/api/test_workflows.py --collect-only -q` then collected 28 tests, and the
+  focused artifact test command exited `0` with 2 passed. Those assertions cover both
+  actual `Content-Type` response headers and the multi-media OpenAPI contract.
+
+### Fix round 2 verification (2026-08-31)
+
+- `rtk uv sync --all-groups` — exit `0`; 51 packages resolved, 50 audited.
+- `rtk uv run ruff check .` and `rtk uv run ruff format --check .` — exit `0`;
+  44 files formatted.
+- `rtk uv run pytest` — exit `0`; 108 passed.
+- `rtk uv run python scripts/export_openapi.py` — exit `0`; then
+  `rtk bun run generate:control-plane-types` from `dashboard/` — exit `0`.
+- `rtk bun test` — exit `0`; 50 passed, 0 failed, 148 assertions.
+- `rtk bun run build` and `rtk bun run lint` — exit `0`; lint retains three
+  pre-existing warnings and no errors.
+- `rtk cargo test -p thoth-server` — exit `0`; 129 passed, 101 filtered out.
+- `rtk cargo test -p thoth-core` and `rtk cargo check --workspace` — exit `0`.
+- `rtk cargo fmt --check` — exit `1` on the established broad Rust formatting
+  baseline, beginning in `crates/thoth/src/main.rs`; no Rust files changed.

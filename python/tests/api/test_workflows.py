@@ -259,6 +259,7 @@ async def test_artifact_download_is_workflow_authorized_and_resolves_only_safe_l
         )
         workflow_id = created.json()["workflow_id"]
         artifact_location = f"reports/{workflow_id}/source-report.json"
+        binary_location = f"reports/{workflow_id}/source-archive.bin"
         gateway.workflows[workflow_id] = gateway.workflows[workflow_id].model_copy(
             update={
                 "artifacts": [
@@ -269,16 +270,29 @@ async def test_artifact_download_is_workflow_authorized_and_resolves_only_safe_l
                         media_type="application/json",
                         location=artifact_location,
                         checksum="sha256:" + "a" * 64,
-                    )
+                    ),
+                    ArtifactRef(
+                        artifact_id="art_source_002",
+                        kind="source_archive",
+                        label="Source investigation archive",
+                        media_type="application/octet-stream",
+                        location=binary_location,
+                        checksum="sha256:" + "b" * 64,
+                    ),
                 ]
             }
         )
         report_path = tmp_path / artifact_location
         report_path.parent.mkdir(parents=True)
         report_path.write_text('{"safe":true}', encoding="utf-8")
+        (tmp_path / binary_location).write_bytes(b"safe-bytes")
 
         authorized = await test_client.get(
             f"/api/v1/workflows/{workflow_id}/artifacts/art_source_001",
+            headers=AUTH_HEADERS,
+        )
+        binary = await test_client.get(
+            f"/api/v1/workflows/{workflow_id}/artifacts/art_source_002",
             headers=AUTH_HEADERS,
         )
         forbidden = await test_client.get(
@@ -293,6 +307,10 @@ async def test_artifact_download_is_workflow_authorized_and_resolves_only_safe_l
     assert authorized.status_code == 200
     assert authorized.json() == {"safe": True}
     assert str(tmp_path) not in authorized.text
+    assert authorized.headers["content-type"] == "application/json"
+    assert binary.status_code == 200
+    assert binary.content == b"safe-bytes"
+    assert binary.headers["content-type"] == "application/octet-stream"
     assert forbidden.status_code == 403
     assert missing.status_code == 404
 
@@ -399,7 +417,7 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
     }
 
 
-def test_openapi_declares_artifact_download_as_binary(gateway) -> None:
+def test_openapi_declares_artifact_download_media_types(gateway) -> None:
     document = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway).openapi()
 
     response = document["paths"]["/api/v1/workflows/{workflow_id}/artifacts/{artifact_id}"]["get"][
@@ -407,7 +425,8 @@ def test_openapi_declares_artifact_download_as_binary(gateway) -> None:
     ]["200"]
 
     assert response["content"] == {
-        "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+        "application/json": {"schema": {}},
+        "application/octet-stream": {"schema": {"type": "string", "format": "binary"}},
     }
 
 
