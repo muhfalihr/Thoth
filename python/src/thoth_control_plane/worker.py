@@ -11,12 +11,22 @@ from temporalio.worker import Worker
 from thoth_control_plane.activities import (
     LEGACY_ADAPTER_MAX_CONCURRENT_ACTIVITIES,
     LEGACY_ADAPTER_TASK_QUEUE,
+    build_source_investigation_activity,
     inspect_legacy_scout,
-    inspect_source_candidates,
 )
 from thoth_control_plane.config import Settings
 from thoth_control_plane.infrastructure.temporal_gateway import TASK_QUEUE
 from thoth_control_plane.workflows import SourceInvestigationWorkflow
+
+
+def build_source_investigation_worker(client: Client, settings: Settings) -> Worker:
+    """Register the production source activity with its configured artifact root."""
+    return Worker(
+        client,
+        task_queue=TASK_QUEUE,
+        workflows=[SourceInvestigationWorkflow],
+        activities=[build_source_investigation_activity(settings)],
+    )
 
 
 async def run_worker(settings: Settings | None = None) -> None:
@@ -28,12 +38,7 @@ async def run_worker(settings: Settings | None = None) -> None:
         data_converter=pydantic_data_converter,
     )
     async with (
-        Worker(
-            client,
-            task_queue=TASK_QUEUE,
-            workflows=[SourceInvestigationWorkflow],
-            activities=[inspect_source_candidates],
-        ),
+        build_source_investigation_worker(client, runtime_settings),
         Worker(
             client,
             task_queue=LEGACY_ADAPTER_TASK_QUEUE,

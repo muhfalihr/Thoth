@@ -399,6 +399,18 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
     }
 
 
+def test_openapi_declares_artifact_download_as_binary(gateway) -> None:
+    document = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway).openapi()
+
+    response = document["paths"]["/api/v1/workflows/{workflow_id}/artifacts/{artifact_id}"]["get"][
+        "responses"
+    ]["200"]
+
+    assert response["content"] == {
+        "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+    }
+
+
 def test_openapi_declares_workflow_create_as_accepted(gateway) -> None:
     document = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway).openapi()
     responses = document["paths"]["/api/v1/workflows"]["post"]["responses"]

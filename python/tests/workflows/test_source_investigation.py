@@ -12,10 +12,11 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
+from thoth_control_plane import worker
 from thoth_control_plane.activities.legacy_scout import LEGACY_ADAPTER_TASK_QUEUE, LegacyScoutInput
 from thoth_control_plane.activities.source_investigation import (
     SourceInvestigationActivityInput,
-    inspect_source_candidates,
+    build_source_investigation_activity,
 )
 from thoth_control_plane.api.app import create_app
 from thoth_control_plane.application import (
@@ -476,13 +477,15 @@ async def test_temporal_history_contains_only_redacted_workflow_values(
 
 @pytest.mark.asyncio
 async def test_source_investigation_activity_materializes_its_report(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    from thoth_control_plane.activities import source_investigation
-
-    monkeypatch.setattr(source_investigation, "ARTIFACT_ROOT", tmp_path)
-    result = await inspect_source_candidates(
+    configured_activity = build_source_investigation_activity(
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_CONTROL_PLANE_ARTIFACT_ROOT=tmp_path,
+        )
+    )
+    result = await configured_activity(
         SourceInvestigationActivityInput(
             workflow_id="wf_materialized",
             request_snapshot_id="req_materialized",
@@ -493,6 +496,41 @@ async def test_source_investigation_activity_materializes_its_report(
     report = tmp_path / result.report.location
     assert report.is_file()
     assert "req_materialized" in report.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_production_worker_registration_binds_source_activity_to_configured_artifact_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    registered: dict[str, object] = {}
+
+    class CapturingWorker:
+        def __init__(self, client: object, **kwargs: object) -> None:
+            registered["client"] = client
+            registered.update(kwargs)
+
+    monkeypatch.setattr(worker, "Worker", CapturingWorker)
+    configured_root = tmp_path / "configured-artifacts"
+    worker.build_source_investigation_worker(
+        object(),
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_CONTROL_PLANE_ARTIFACT_ROOT=configured_root,
+        ),
+    )
+
+    activities = registered["activities"]
+    assert isinstance(activities, list)
+    result = await activities[0](
+        SourceInvestigationActivityInput(
+            workflow_id="wf_registered_root",
+            request_snapshot_id="req_registered_root",
+        )
+    )
+
+    assert (configured_root / "reports" / "wf_registered_root" / "source-report.json").is_file()
+    assert result.report.location == "reports/wf_registered_root/source-report.json"
 
 
 @pytest.mark.asyncio

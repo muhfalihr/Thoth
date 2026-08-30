@@ -9,6 +9,7 @@ from thoth_control_plane.activities.legacy_scout import (
 )
 from thoth_control_plane.activities.source_investigation import (
     SourceInvestigationActivityInput,
+    build_source_investigation_activity,
     inspect_source_candidates,
 )
 
@@ -18,6 +19,7 @@ __all__ = [
     "LegacyScoutActivity",
     "LegacyScoutInput",
     "SourceInvestigationActivityInput",
+    "build_source_investigation_activity",
     "inspect_legacy_scout",
     "inspect_source_candidates",
 ]

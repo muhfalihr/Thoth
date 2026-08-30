@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from hashlib import sha256
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 from temporalio import activity
 
+from thoth_control_plane.config import Settings
 from thoth_control_plane.domain import (
     ArtifactRef,
     SourceInvestigationActivityResult,
 )
-
-ARTIFACT_ROOT = Path.cwd() / ".thoth-artifacts"
 
 
 class SourceInvestigationActivityInput(BaseModel):
@@ -29,6 +29,34 @@ class SourceInvestigationActivityInput(BaseModel):
 @activity.defn(name="inspect_source_candidates")
 async def inspect_source_candidates(
     input_: SourceInvestigationActivityInput,
+) -> SourceInvestigationActivityResult:
+    """Activity-name reference for workflow definitions and direct local use."""
+
+    return await _inspect_source_candidates(input_, Path.cwd() / ".thoth-artifacts")
+
+
+def build_source_investigation_activity(
+    settings: Settings,
+) -> Callable[
+    [SourceInvestigationActivityInput],
+    Awaitable[SourceInvestigationActivityResult],
+]:
+    """Bind the production activity to the same configured root used by FastAPI."""
+
+    artifact_root = settings.THOTH_CONTROL_PLANE_ARTIFACT_ROOT.resolve()
+
+    @activity.defn(name="inspect_source_candidates")
+    async def configured_source_investigation_activity(
+        input_: SourceInvestigationActivityInput,
+    ) -> SourceInvestigationActivityResult:
+        return await _inspect_source_candidates(input_, artifact_root)
+
+    return configured_source_investigation_activity
+
+
+async def _inspect_source_candidates(
+    input_: SourceInvestigationActivityInput,
+    artifact_root: Path,
 ) -> SourceInvestigationActivityResult:
     """Create a safe source-report reference using the Python activity boundary.
 
@@ -56,7 +84,7 @@ async def inspect_source_candidates(
         checksum=f"sha256:{report_fingerprint}",
     )
     try:
-        report_path = ARTIFACT_ROOT / report.location
+        report_path = artifact_root / report.location
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_bytes(content)
     except OSError:

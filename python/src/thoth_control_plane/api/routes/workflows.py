@@ -95,7 +95,17 @@ async def get_workflow(
     return await service.get(workflow_id, actor=actor)
 
 
-@router.get("/workflows/{workflow_id}/artifacts/{artifact_id}")
+@router.get(
+    "/workflows/{workflow_id}/artifacts/{artifact_id}",
+    response_class=FileResponse,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            }
+        }
+    },
+)
 async def download_workflow_artifact(
     workflow_id: str,
     artifact_id: str,

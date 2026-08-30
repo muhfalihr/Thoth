@@ -1,4 +1,17 @@
+import asyncio
+from itertools import pairwise
+
+import httpx
 import pytest
+from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.testing import WorkflowEnvironment
+from temporalio.worker import Worker
+
+from thoth_control_plane.activities import build_source_investigation_activity
+from thoth_control_plane.api import create_app
+from thoth_control_plane.config import Settings
+from thoth_control_plane.infrastructure.temporal_gateway import TASK_QUEUE, TemporalWorkflowGateway
+from thoth_control_plane.workflows import SourceInvestigationWorkflow
 
 VALID_PRODUCE_REQUEST = {
     "source": {
@@ -24,9 +37,9 @@ async def test_source_workflow_survives_restart_and_never_uses_a_cli_route(
     initial_events = await control_plane.events(created["workflow_id"])
     assert initial_events[0]["event"] == "workflow.snapshot"
     assert initial_events[-1]["event"] == "approval.required"
-    assert [event["sequence"] for event in initial_events] == sorted(
-        event["sequence"] for event in initial_events
-    )
+    durable_sequences = [event["sequence"] for event in initial_events[1:]]
+    assert len(durable_sequences) == len(set(durable_sequences))
+    assert all(previous < current for previous, current in pairwise(durable_sequences))
 
     await control_plane.restart_api_and_worker()
     await control_plane.approve(
@@ -80,3 +93,66 @@ async def test_source_workflow_survives_restart_and_never_uses_a_cli_route(
 
     assert all(path.startswith("/api/v1/workflows") for path in control_plane.recorded_http_paths)
     assert all("/api/scout/" not in path for path in control_plane.recorded_http_paths)
+
+
+@pytest.mark.asyncio
+async def test_production_activity_and_api_share_a_custom_artifact_root(tmp_path) -> None:
+    settings = Settings(
+        THOTH_CONTROL_PLANE_API_KEY="custom-root-key",
+        THOTH_CONTROL_PLANE_ARTIFACT_ROOT=tmp_path,
+    )
+    environment = await WorkflowEnvironment.start_time_skipping(
+        data_converter=pydantic_data_converter
+    )
+    try:
+        configured_activity = build_source_investigation_activity(settings)
+        async with Worker(
+            environment.client,
+            task_queue=TASK_QUEUE,
+            workflows=[SourceInvestigationWorkflow],
+            activities=[configured_activity],
+            max_cached_workflows=0,
+        ):
+            app = create_app(settings, TemporalWorkflowGateway(environment.client))
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://offline-control-plane"
+            ) as client:
+                headers = {
+                    "Authorization": "Bearer custom-root-key",
+                    "Idempotency-Key": "custom-root-001",
+                }
+                response = await client.post(
+                    "/api/v1/workflows",
+                    headers=headers,
+                    json={
+                        **VALID_PRODUCE_REQUEST,
+                        "source": {
+                            "url": "https://example.com/source/custom-root",
+                            "intent": "identify_original",
+                        },
+                    },
+                )
+                workflow_id = response.json()["workflow_id"]
+                summary = response.json()
+                for _ in range(300):
+                    summary_response = await client.get(
+                        f"/api/v1/workflows/{workflow_id}", headers=headers
+                    )
+                    summary = summary_response.json()
+                    if summary["status"] == "succeeded":
+                        break
+                    await asyncio.sleep(0.01)
+                assert summary["status"] == "succeeded"
+
+                artifact = summary["artifacts"][0]
+                download = await client.get(
+                    f"/api/v1/workflows/{workflow_id}/artifacts/{artifact['artifact_id']}",
+                    headers=headers,
+                )
+
+        assert download.status_code == 200
+        assert download.json()["workflow_id"] == workflow_id
+        assert (tmp_path / "reports" / workflow_id / "source-report.json").is_file()
+    finally:
+        await environment.shutdown()

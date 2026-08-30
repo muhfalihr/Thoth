@@ -73,3 +73,52 @@ Run from `python/` unless another directory is named:
 
 The existing untracked `docs/research/2026-08-28-python-framework-options.md` was left untouched,
 and `progress.md` was not modified.
+
+## Fix round 1 evidence
+
+- Added `build_source_investigation_worker` and made `run_worker` use it. The
+  registered source activity is created from the same runtime `Settings` object that
+  configures the worker, so its artifact root is not a module-level cwd default.
+- TDD red: `rtk uv run pytest tests/workflows/test_source_investigation.py -q -k
+  production_worker_registration_binds_source_activity_to_configured_artifact_root`
+  initially exited `1` with the expected missing
+  `worker.build_source_investigation_worker` attribute. Green: the same command exited
+  `0` after the minimal worker-registration implementation. The test invokes the
+  activity captured at the actual production registration point and proves its report
+  is written beneath a custom root.
+- The offline FastAPI/Temporal custom-root smoke creates a workflow, waits for
+  completion, retrieves its v1 artifact with the authorized bearer credential, and
+  confirms `reports/<workflow-id>/source-report.json` exists under that custom root.
+- Artifact download declares `FileResponse` plus a 200
+  `application/octet-stream` binary schema. `python/openapi.json` was exported and
+  `dashboard/src/api/generated/control-plane.ts` regenerated. The API contract test
+  asserts the exact OpenAPI response content. Smoke durable event sequences use strict
+  increasing-order validation, so duplicates cannot pass.
+
+### Fix round 1 verification (2026-08-31)
+
+- `rtk uv sync --all-groups` — exit `0`; 51 packages resolved, 50 audited.
+- `rtk uv run ruff check .` — exit `0`; all checks passed.
+- `rtk uv run ruff format --check .` — exit `0`; 44 files already formatted.
+- `rtk uv run pytest` — exit `0`; 108 passed. Temporal emitted its known test-server
+  heartbeat-capability warning during the integration smoke.
+- `rtk uv run python scripts/export_openapi.py` — exit `0`; then
+  `rtk bun run generate:control-plane-types` from `dashboard/` — exit `0`.
+- `rtk bun test` — exit `0`; 50 passed, 0 failed, 148 assertions.
+- `rtk bun run build` — exit `0`; TypeScript and Vite build succeeded.
+- `rtk bun run lint` — exit `0`; three pre-existing warnings, no errors.
+- `rtk cargo test -p thoth-server` — exit `0`; 129 passed, 101 filtered out.
+- `rtk cargo test -p thoth-core` — exit `0`.
+- `rtk cargo check --workspace` — exit `0`.
+- `rtk cargo fmt --check` — exit `1` on broad pre-existing Rust formatting (beginning
+  in `crates/thoth/src/main.rs`); no Rust file was changed or mass-formatted.
+- `rtk git diff --check` — exit `0`.
+
+### Bounded live preflight
+
+The safe presence-only preflight did not print credentials. It found
+`THOTH_CONTROL_PLANE_API_KEY=False`, `THOTH_LEGACY_API_BASE_URL=False`,
+`THOTH_LEGACY_API_KEY=False`, and no listener at local Temporal `127.0.0.1:7233`.
+Consequently no live provider/legacy smoke was run; the controlled live parity gate
+remains pending operator credentials, an approved fixture, and a running Temporal
+service.
