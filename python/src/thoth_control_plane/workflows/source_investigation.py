@@ -30,8 +30,10 @@ with workflow.unsafe.imports_passed_through():
         ApprovalRequest,
         ApprovalSignal,
         ArtifactRef,
+        EventKind,
         SourceInvestigationActivityResult,
         SourceInvestigationWorkflowInput,
+        WorkflowEvent,
         WorkflowFailure,
         WorkflowStatus,
         WorkflowSummary,
@@ -59,6 +61,7 @@ class SourceInvestigationWorkflow:
         self._failure: WorkflowFailure | None = None
         self._source_events: list[LegacyScoutProgressEvent] = []
         self._event_sequence = 0
+        self._workflow_events: list[WorkflowEvent] = []
 
     @workflow.run
     async def run(self, input_: SourceInvestigationWorkflowInput) -> WorkflowSummary:
@@ -79,11 +82,13 @@ class SourceInvestigationWorkflow:
                 with contextlib.suppress(asyncio.CancelledError):
                     await activity_task
                 self._transition(WorkflowStatus.CANCELLED)
+                self._record_event(EventKind.WORKFLOW_CANCELLED)
                 return self._summary()
             result = await activity_task
         except ActivityError:
             if self._cancel_requested:
                 self._transition(WorkflowStatus.CANCELLED)
+                self._record_event(EventKind.WORKFLOW_CANCELLED)
                 return self._summary()
             self._failure = WorkflowFailure(
                 code="source_investigation_failed",
@@ -100,6 +105,7 @@ class SourceInvestigationWorkflow:
         if result.failure is not None:
             if self._cancel_requested:
                 self._transition(WorkflowStatus.CANCELLED)
+                self._record_event(EventKind.WORKFLOW_CANCELLED)
                 return self._summary()
             self._failure = WorkflowFailure(
                 code=result.failure.code,
@@ -108,6 +114,7 @@ class SourceInvestigationWorkflow:
                 retryable=result.failure.retryable,
             )
             self._transition(WorkflowStatus.FAILED)
+            self._record_event(EventKind.WORKFLOW_FAILED)
             return self._summary()
 
         if result.report is None:
@@ -118,6 +125,7 @@ class SourceInvestigationWorkflow:
                 retryable=False,
             )
             self._transition(WorkflowStatus.FAILED)
+            self._record_event(EventKind.WORKFLOW_FAILED)
             return self._summary()
 
         self._artifacts = [result.report]
@@ -126,10 +134,12 @@ class SourceInvestigationWorkflow:
 
         if self._cancel_requested:
             self._transition(WorkflowStatus.CANCELLED)
+            self._record_event(EventKind.WORKFLOW_CANCELLED)
             return self._summary()
 
         if input_.intent == "identify_original":
             self._transition(WorkflowStatus.SUCCEEDED)
+            self._record_event(EventKind.WORKFLOW_COMPLETED)
             return self._summary()
 
         self._approval = ApprovalRequest(
@@ -139,6 +149,7 @@ class SourceInvestigationWorkflow:
             allowed_decisions=["approve", "reject"],
         )
         self._transition(WorkflowStatus.AWAITING_APPROVAL)
+        self._record_event(EventKind.APPROVAL_REQUIRED)
         await workflow.wait_condition(
             lambda: self._cancel_requested or self._approval_decision is not None
         )
@@ -146,9 +157,11 @@ class SourceInvestigationWorkflow:
         if self._cancel_requested:
             self._approval = None
             self._transition(WorkflowStatus.CANCELLED)
+            self._record_event(EventKind.WORKFLOW_CANCELLED)
         elif self._approval_decision == "approve":
             self._approval = None
             self._transition(WorkflowStatus.SUCCEEDED)
+            self._record_event(EventKind.WORKFLOW_COMPLETED)
         else:
             self._approval = None
             self._failure = WorkflowFailure(
@@ -158,6 +171,7 @@ class SourceInvestigationWorkflow:
                 retryable=False,
             )
             self._transition(WorkflowStatus.FAILED)
+            self._record_event(EventKind.WORKFLOW_FAILED)
         return self._summary()
 
     async def _execute_source_activity(
@@ -212,6 +226,7 @@ class SourceInvestigationWorkflow:
         self._approval_decision = signal.decision.decision
         self._event_sequence += 1
         self._updated_at = workflow.now()
+        self._record_event(EventKind.APPROVAL_RECORDED)
 
     @workflow.query
     def summary(self) -> WorkflowSummary:
@@ -229,10 +244,27 @@ class SourceInvestigationWorkflow:
     def source_events(self) -> list[LegacyScoutProgressEvent]:
         return list(self._source_events)
 
+    @workflow.query
+    def workflow_events(self) -> list[WorkflowEvent]:
+        """Return durable, safe lifecycle events in strictly increasing order."""
+        return list(self._workflow_events)
+
     def _transition(self, status: WorkflowStatus) -> None:
         self._status = status
         self._event_sequence += 1
         self._updated_at = workflow.now()
+
+    def _record_event(self, kind: EventKind) -> None:
+        sequence = len(self._workflow_events) + 1
+        self._workflow_events.append(
+            WorkflowEvent(
+                workflow_id=self._workflow_id,
+                event_id=f"evt_{sequence}",
+                sequence=sequence,
+                kind=kind,
+                occurred_at=workflow.now(),
+            )
+        )
 
     def _summary(self) -> WorkflowSummary:
         if self._created_at is None or self._updated_at is None or self._source is None:

@@ -143,6 +143,24 @@
         "title": "ArtifactRef",
         "type": "object"
       },
+      "EventKind": {
+        "enum": [
+          "workflow.queued",
+          "workflow.started",
+          "workflow.completed",
+          "workflow.failed",
+          "workflow.cancelled",
+          "stage.started",
+          "stage.progress",
+          "stage.completed",
+          "approval.required",
+          "approval.recorded",
+          "artifact.created",
+          "diagnostic.recorded"
+        ],
+        "title": "EventKind",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -243,6 +261,32 @@
           "intent"
         ],
         "title": "SourceInput",
+        "type": "object"
+      },
+      "StageProgress": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "StageProgress",
         "type": "object"
       },
       "StageSummary": {
@@ -373,6 +417,76 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkflowEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ArtifactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EventKind"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "sequence": {
+            "exclusiveMinimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StageProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workflow_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Workflow Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflow_id",
+          "event_id",
+          "sequence",
+          "kind",
+          "occurred_at"
+        ],
+        "title": "WorkflowEvent",
         "type": "object"
       },
       "WorkflowFailure": {
@@ -973,6 +1087,78 @@
           }
         },
         "summary": "Cancel Workflow"
+      }
+    },
+    "/api/v1/workflows/{workflow_id}/events": {
+      "get": {
+        "description": "Stream the current workflow snapshot and replay only unseen typed events.",
+        "operationId": "stream_workflow_events_api_v1_workflows__workflow_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowEvent"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Workflow Events"
       }
     },
     "/api/v1/workflows/{workflow_id}/retry": {

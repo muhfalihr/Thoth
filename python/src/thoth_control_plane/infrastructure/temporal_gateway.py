@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import suppress
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -26,6 +27,7 @@ from thoth_control_plane.domain import (
     ApprovalSignal,
     SourceInvestigationWorkflowInput,
     StylePreset,
+    WorkflowEvent,
     WorkflowRequest,
     WorkflowSummary,
     request_snapshot_id,
@@ -113,6 +115,19 @@ class TemporalWorkflowGateway:
             return await handle.query(SourceInvestigationWorkflow.summary)
         except RPCError as error:
             raise _mapped_rpc_error(error) from error
+
+    async def stream_events(
+        self, workflow_id: str, *, actor: Actor, after_sequence: int
+    ) -> AsyncIterator[WorkflowEvent]:
+        """Replay durable lifecycle events only after the caller's cursor."""
+        handle = await self._authorized_handle(workflow_id, actor)
+        try:
+            events = await handle.query(SourceInvestigationWorkflow.workflow_events)
+        except RPCError as error:
+            raise _mapped_rpc_error(error) from error
+        for event in events:
+            if event.sequence > after_sequence:
+                yield event
 
     async def cancel(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         handle = await self._authorized_handle(workflow_id, actor)

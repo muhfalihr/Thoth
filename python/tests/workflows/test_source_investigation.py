@@ -544,6 +544,81 @@ async def test_gateway_approval_and_cancellation_use_authorized_boundaries(
 
 
 @pytest.mark.asyncio
+async def test_gateway_event_stream_returns_current_snapshot_then_unseen_events(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    async with Worker(
+        workflow_env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[SourceInvestigationWorkflow],
+        activities=[fake_inspect],
+    ):
+        gateway = TemporalWorkflowGateway(workflow_env.client)
+        owner = Actor(actor_id="owner", actor_type="user")
+        started = await gateway.start(
+            VALID_PRODUCE_REQUEST,
+            actor=owner,
+            idempotency_key="events-001",
+        )
+        handle = workflow_env.client.get_workflow_handle(
+            started.workflow_id,
+            result_type=WorkflowSummary,
+        )
+        await wait_for_status(handle, "awaiting_approval")
+        awaiting = await handle.query(SourceInvestigationWorkflow.summary)
+
+        initial = [
+            event
+            async for event in gateway.stream_events(
+                started.workflow_id,
+                actor=owner,
+                after_sequence=0,
+            )
+        ]
+
+        assert len(initial) == 1
+        assert initial[0].kind == "approval.required"
+        cursor = initial[0].sequence
+        assert awaiting.approval is not None
+        await gateway.record_approval(
+            started.workflow_id,
+            approval=ApprovalSubmission(
+                approval_id=awaiting.approval.approval_id,
+                decision="approve",
+            ),
+            actor=owner,
+        )
+        await handle.result()
+
+        replayed = [
+            event
+            async for event in gateway.stream_events(
+                started.workflow_id,
+                actor=owner,
+                after_sequence=cursor,
+            )
+        ]
+
+        assert [event.kind for event in replayed] == [
+            "approval.recorded",
+            "workflow.completed",
+        ]
+        assert [event.sequence for event in replayed] == list(
+            range(cursor + 1, cursor + 1 + len(replayed))
+        )
+
+        with pytest.raises(WorkflowNotFound):
+            _ = [
+                event
+                async for event in gateway.stream_events(
+                    started.workflow_id,
+                    actor=Actor(actor_id="intruder", actor_type="user"),
+                    after_sequence=0,
+                )
+            ]
+
+
+@pytest.mark.asyncio
 async def test_gateway_cancellation_wins_when_the_running_activity_returns_an_error(
     workflow_env: WorkflowEnvironment,
 ) -> None:

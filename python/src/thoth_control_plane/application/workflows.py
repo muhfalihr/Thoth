@@ -1,9 +1,16 @@
 """Workflow lifecycle application service."""
 
 from asyncio import Lock
+from collections.abc import AsyncIterator
 
 from thoth_control_plane.application.ports import ApprovalSubmission, WorkflowGateway
-from thoth_control_plane.domain import Actor, StylePreset, WorkflowRequest, WorkflowSummary
+from thoth_control_plane.domain import (
+    Actor,
+    StylePreset,
+    WorkflowEvent,
+    WorkflowRequest,
+    WorkflowSummary,
+)
 
 
 class WorkflowApplicationError(Exception):
@@ -56,6 +63,14 @@ class UnavailableWorkflowGateway:
 
     async def get(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         raise WorkflowNotReady
+
+    async def stream_events(
+        self, workflow_id: str, *, actor: Actor, after_sequence: int
+    ) -> AsyncIterator[WorkflowEvent]:
+        del workflow_id, actor, after_sequence
+        raise WorkflowNotReady
+        if False:  # pragma: no cover - keeps this unavailable seam an async iterator
+            yield WorkflowEvent.model_construct()
 
     async def cancel(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         raise WorkflowNotReady
@@ -117,6 +132,15 @@ class WorkflowService:
 
     async def get(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         return await self._gateway.get(workflow_id, actor=actor)
+
+    def stream_events(
+        self, workflow_id: str, *, actor: Actor, after_sequence: int
+    ) -> AsyncIterator[WorkflowEvent]:
+        return self._gateway.stream_events(
+            workflow_id,
+            actor=actor,
+            after_sequence=after_sequence,
+        )
 
     async def cancel(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         await self._gateway.get(workflow_id, actor=actor)

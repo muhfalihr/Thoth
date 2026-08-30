@@ -63,6 +63,54 @@ async def test_get_workflow_returns_the_current_summary(client: httpx.AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_workflow_events_are_authorized_and_replay_after_last_event_id(
+    client: httpx.AsyncClient,
+    gateway,
+) -> None:
+    await client.post(
+        "/api/v1/workflows",
+        headers={**AUTH_HEADERS, "Idempotency-Key": "create-001"},
+        json=VALID_REQUEST,
+    )
+
+    forbidden = await client.get("/api/v1/workflows/wf_001/events")
+    fresh = await client.get("/api/v1/workflows/wf_001/events", headers=AUTH_HEADERS)
+    replay = await client.get(
+        "/api/v1/workflows/wf_001/events",
+        headers={**AUTH_HEADERS, "Last-Event-ID": "1"},
+    )
+
+    assert forbidden.status_code == 403
+    assert fresh.status_code == 200
+    assert fresh.headers["content-type"].startswith("text/event-stream")
+    assert "id: 1\nevent: workflow.snapshot\n" in fresh.text
+    assert "id: 2\nevent: workflow.started\n" in fresh.text
+    assert "id: 1" not in replay.text
+    assert "id: 2\nevent: workflow.started\n" in replay.text
+    assert "workflow.snapshot" not in replay.text
+    assert gateway.last_event_cursor == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_events_emit_an_initial_snapshot_when_no_events_are_available(
+    client: httpx.AsyncClient,
+    gateway,
+) -> None:
+    await client.post(
+        "/api/v1/workflows",
+        headers={**AUTH_HEADERS, "Idempotency-Key": "create-001"},
+        json=VALID_REQUEST,
+    )
+    gateway.events = []
+
+    response = await client.get("/api/v1/workflows/wf_001/events", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert "event: workflow.snapshot" in response.text
+    assert '"workflow_id":"wf_001"' in response.text
+
+
+@pytest.mark.asyncio
 async def test_cancel_workflow_returns_the_latest_summary(client: httpx.AsyncClient) -> None:
     await client.post(
         "/api/v1/workflows",
@@ -243,6 +291,7 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
         ("/api/v1/style-presets", "get"),
         ("/api/v1/workflows", "post"),
         ("/api/v1/workflows/{workflow_id}", "get"),
+        ("/api/v1/workflows/{workflow_id}/events", "get"),
         ("/api/v1/workflows/{workflow_id}/cancel", "post"),
         ("/api/v1/workflows/{workflow_id}/retry", "post"),
         ("/api/v1/workflows/{workflow_id}/approve", "post"),
@@ -259,6 +308,16 @@ def test_openapi_declares_workflow_create_as_accepted(gateway) -> None:
 
     assert "202" in responses
     assert "200" not in responses
+
+
+def test_openapi_declares_typed_workflow_event_stream(gateway) -> None:
+    document = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway).openapi()
+    operation = document["paths"]["/api/v1/workflows/{workflow_id}/events"]["get"]
+
+    assert operation["responses"]["200"]["content"]["text/event-stream"]["schema"] == {
+        "$ref": "#/components/schemas/WorkflowEvent"
+    }
+    assert "WorkflowEvent" in document["components"]["schemas"]
 
 
 def test_openapi_approval_and_retry_inputs_are_narrow(gateway) -> None:

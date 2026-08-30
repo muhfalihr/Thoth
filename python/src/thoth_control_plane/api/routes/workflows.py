@@ -13,6 +13,7 @@ from thoth_control_plane.application import (
     ApprovalSubmission,
     RetryRequest,
     StylePreset,
+    WorkflowEvent,
     WorkflowRequest,
     WorkflowService,
     WorkflowSummary,
@@ -93,6 +94,53 @@ async def get_workflow(
 
 
 @router.get(
+    "/workflows/{workflow_id}/events",
+    response_model=WorkflowEvent,
+    response_class=StreamingResponse,
+    responses={
+        status.HTTP_200_OK: {
+            "content": {
+                "text/event-stream": {"schema": {"$ref": "#/components/schemas/WorkflowEvent"}}
+            }
+        }
+    },
+)
+async def stream_workflow_events(
+    workflow_id: str,
+    actor: Annotated[Actor, Depends(current_actor)],
+    service: Annotated[WorkflowService, Depends(get_workflow_service)],
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+) -> StreamingResponse:
+    """Stream the current workflow snapshot and replay only unseen typed events."""
+    after_sequence = _parse_last_event_id(last_event_id)
+
+    async def encoded_events() -> AsyncIterator[str]:
+        first = after_sequence == 0
+        async for event in service.stream_events(
+            workflow_id,
+            actor=actor,
+            after_sequence=after_sequence,
+        ):
+            event_name = "workflow.snapshot" if first else event.kind
+            first = False
+            yield (
+                f"id: {event.sequence}\nevent: {event_name}\ndata: {event.model_dump_json()}\n\n"
+            )
+
+        if first:
+            snapshot = _workflow_snapshot_event(
+                await service.get(workflow_id, actor=actor),
+                sequence=after_sequence + 1,
+            )
+            yield (
+                f"id: {snapshot.sequence}\nevent: workflow.snapshot\n"
+                f"data: {snapshot.model_dump_json()}\n\n"
+            )
+
+    return StreamingResponse(encoded_events(), media_type="text/event-stream")
+
+
+@router.get(
     "/legacy/jobs/{legacy_job_id}",
     response_model=WorkflowSummary,
     tags=["migration"],
@@ -155,6 +203,25 @@ def _parse_last_event_id(value: str | None) -> int:
             detail="Last-Event-ID must be a non-negative integer",
         )
     return int(value)
+
+
+def _workflow_snapshot_event(summary: WorkflowSummary, *, sequence: int) -> WorkflowEvent:
+    """Represent an otherwise eventless current state with the typed event contract."""
+    kind_by_status = {
+        "queued": "workflow.queued",
+        "running": "workflow.started",
+        "awaiting_approval": "approval.required",
+        "succeeded": "workflow.completed",
+        "failed": "workflow.failed",
+        "cancelled": "workflow.cancelled",
+    }
+    return WorkflowEvent(
+        workflow_id=summary.workflow_id,
+        event_id=f"snapshot_{summary.workflow_id}",
+        sequence=max(1, sequence),
+        kind=kind_by_status[str(summary.status)],
+        occurred_at=summary.updated_at,
+    )
 
 
 @router.post("/workflows/{workflow_id}/cancel", response_model=WorkflowSummary)

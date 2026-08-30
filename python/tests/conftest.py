@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import httpx
@@ -14,6 +15,7 @@ from thoth_control_plane.config import Settings
 from thoth_control_plane.domain import (
     Actor,
     StylePreset,
+    WorkflowEvent,
     WorkflowRequest,
     WorkflowStatus,
     WorkflowSummary,
@@ -28,6 +30,24 @@ class InMemoryWorkflowGateway:
         self.last_from_stage: str | None = None
         self.last_approval: ApprovalSubmission | None = None
         self.approval_allowed = True
+        timestamp = datetime(2026, 8, 28, 8, tzinfo=UTC)
+        self.events = [
+            WorkflowEvent(
+                workflow_id="wf_001",
+                event_id="evt_001",
+                sequence=1,
+                kind="workflow.queued",
+                occurred_at=timestamp,
+            ),
+            WorkflowEvent(
+                workflow_id="wf_001",
+                event_id="evt_002",
+                sequence=2,
+                kind="workflow.started",
+                occurred_at=timestamp,
+            ),
+        ]
+        self.last_event_cursor: int | None = None
 
     def _workflow(self, workflow_id: str) -> WorkflowSummary:
         try:
@@ -71,6 +91,16 @@ class InMemoryWorkflowGateway:
     async def get(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         self.actors.append(actor)
         return self._workflow(workflow_id)
+
+    async def stream_events(
+        self, workflow_id: str, *, actor: Actor, after_sequence: int
+    ) -> AsyncIterator[WorkflowEvent]:
+        self.actors.append(actor)
+        self._workflow(workflow_id)
+        self.last_event_cursor = after_sequence
+        for event in self.events:
+            if event.sequence > after_sequence:
+                yield event
 
     async def cancel(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
         self.actors.append(actor)

@@ -75,3 +75,28 @@ The inherited focused behavior was already green when resumed:
 - `dashboard/src/components/WorkflowMonitor.test.tsx`
 - `dashboard/src/App.tsx`
 - `.superpowers/sdd/2026-08-28-python-control-plane-migration/task-7-report.md`
+
+## Fix round 1
+
+### Inherited state and RED/GREEN evidence
+
+- Inherited, uncommitted work introduced the typed v1 route, application port/service seam, in-memory API/application fixtures, and initial API/Temporal tests. It did not implement `TemporalWorkflowGateway.stream_events`; the focused workflow suite failed with `AttributeError: 'TemporalWorkflowGateway' object has no attribute 'stream_events'`.
+- GREEN: the Temporal gateway now authorizes through `_authorized_handle`, queries the durable workflow-owned `workflow_events` query, and yields only strictly later `WorkflowEvent` records. The workflow stores safe typed lifecycle events for approval, completion, failure, and cancellation. The focused Temporal replay/authorization test passed.
+- RED: an authorized event endpoint with an empty event history returned a successful empty body. `test_workflow_events_emit_an_initial_snapshot_when_no_events_are_available` failed because `"event: workflow.snapshot"` was absent.
+- GREEN: the route now emits a typed, safe current-state snapshot when a fresh stream has no replay records; reconnects with `Last-Event-ID` still replay only later records. Routes remain application-service only and contain no CLI/process behavior.
+- RED: the monitor issued its own `getWorkflow` request alongside the stream, allowing a delayed stale response to overwrite a newer stream state. It also ignored action results/errors and used highest-stage progress.
+- GREEN: monitor state comes solely from `streamWorkflow`; cancel/retry/approve apply returned summaries and surface failures in an alert; progress is the average across all stages (completed stages count as 1); the binding reads exactly `Needs decision`.
+
+### Root-cause investigation
+
+The first Temporal implementation run failed at `awaiting.approval` with `AttributeError: 'NoneType' object has no attribute 'approval'`. Focused reproduction consistently reached that line. Comparison with Task 5 showed `wait_for_status` deliberately returns `None`; the inherited new test assigned its return value instead of querying the workflow after the wait. Minimal hypothesis test changed only the test to query `SourceInvestigationWorkflow.summary` after waiting. It passed (`1 passed in 0.80s`), proving the failure was a test-fixture misuse rather than a gateway/query defect.
+
+### Verification
+
+- `rtk uv run pytest tests/api/test_workflows.py tests/application/test_workflows.py tests/workflows/test_source_investigation.py -q` — **50 passed**.
+- `rtk uv run pytest -q` — **93 passed**.
+- `rtk uv run python scripts/export_openapi.py` and `rtk bun run generate:control-plane-types` — passed; `python/openapi.json` and committed generated client were refreshed.
+- `rtk bun test` — **50 passed, 0 failed, 148 assertions**.
+- `rtk bun run build` — passed (2036 modules transformed).
+- `rtk bun run lint` — exit 0; three existing warnings remain in `ui/button.tsx`, `ui/badge.tsx`, and `Discovery.tsx`.
+- `rtk uv run ruff check .`, `rtk uv run ruff format --check .`, and `rtk git diff --check` — passed.

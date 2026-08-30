@@ -13,7 +13,13 @@ from thoth_control_plane.application.workflows import (
     WorkflowNotReady,
     WorkflowService,
 )
-from thoth_control_plane.domain import Actor, StylePreset, WorkflowRequest, WorkflowSummary
+from thoth_control_plane.domain import (
+    Actor,
+    StylePreset,
+    WorkflowEvent,
+    WorkflowRequest,
+    WorkflowSummary,
+)
 
 __all__ = [
     "Actor",
@@ -23,6 +29,7 @@ __all__ = [
     "RetryRequest",
     "StylePreset",
     "UnavailableWorkflowGateway",
+    "WorkflowEvent",
     "WorkflowGateway",
     "WorkflowNotFound",
     "WorkflowNotReady",

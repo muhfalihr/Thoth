@@ -129,6 +129,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workflows/{workflow_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Workflow Events
+         * @description Stream the current workflow snapshot and replay only unseen typed events.
+         */
+        get: operations["stream_workflow_events_api_v1_workflows__workflow_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workflows/{workflow_id}/retry": {
         parameters: {
             query?: never;
@@ -227,6 +247,11 @@ export interface components {
             /** Size Bytes */
             size_bytes?: number | null;
         };
+        /**
+         * EventKind
+         * @enum {string}
+         */
+        EventKind: "workflow.queued" | "workflow.started" | "workflow.completed" | "workflow.failed" | "workflow.cancelled" | "stage.started" | "stage.progress" | "stage.completed" | "approval.required" | "approval.recorded" | "artifact.created" | "diagnostic.recorded";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -264,6 +289,13 @@ export interface components {
              * Format: uri
              */
             url: string;
+        };
+        /** StageProgress */
+        StageProgress: {
+            /** Name */
+            name: string;
+            /** Progress */
+            progress?: number | null;
         };
         /** StageSummary */
         StageSummary: {
@@ -305,6 +337,25 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WorkflowEvent */
+        WorkflowEvent: {
+            artifact?: components["schemas"]["ArtifactRef"] | null;
+            /** Event Id */
+            event_id: string;
+            kind: components["schemas"]["EventKind"];
+            /** Message */
+            message?: string | null;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Sequence */
+            sequence: number;
+            stage?: components["schemas"]["StageProgress"] | null;
+            /** Workflow Id */
+            workflow_id: string;
         };
         /** WorkflowFailure */
         WorkflowFailure: {
@@ -598,6 +649,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_workflow_events_api_v1_workflows__workflow_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Last-Event-ID"?: string | null;
+                Authorization?: string | null;
+            };
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["WorkflowEvent"];
                 };
             };
             /** @description Validation Error */

@@ -1,10 +1,17 @@
 """Typed outbound ports for workflow orchestration."""
 
+from collections.abc import AsyncIterator
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from thoth_control_plane.domain import Actor, StylePreset, WorkflowRequest, WorkflowSummary
+from thoth_control_plane.domain import (
+    Actor,
+    StylePreset,
+    WorkflowEvent,
+    WorkflowRequest,
+    WorkflowSummary,
+)
 
 
 class ApprovalSubmission(BaseModel):
@@ -49,6 +56,10 @@ class WorkflowGateway(Protocol):
     ) -> WorkflowSummary: ...
 
     async def get(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary: ...
+
+    def stream_events(
+        self, workflow_id: str, *, actor: Actor, after_sequence: int
+    ) -> AsyncIterator[WorkflowEvent]: ...
 
     async def cancel(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary: ...
 

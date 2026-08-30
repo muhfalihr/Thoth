@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import pytest
@@ -8,7 +9,13 @@ from thoth_control_plane.application.workflows import (
     IdempotencyConflict,
     WorkflowService,
 )
-from thoth_control_plane.domain import Actor, StylePreset, WorkflowRequest, WorkflowSummary
+from thoth_control_plane.domain import (
+    Actor,
+    StylePreset,
+    WorkflowEvent,
+    WorkflowRequest,
+    WorkflowSummary,
+)
 
 
 class StartGateway:
@@ -16,6 +23,7 @@ class StartGateway:
         self.start_calls = 0
         self.last_actor: Actor | None = None
         self.last_from_stage: str | None = None
+        self.last_event_cursor: int | None = None
 
     async def start(
         self,
@@ -55,6 +63,19 @@ class StartGateway:
             updated_at=timestamp,
             source={"display_url": "https://example.test/post", "platform": "tiktok"},
             stages=[],
+        )
+
+    async def stream_events(
+        self, workflow_id: str, *, actor: Actor, after_sequence: int
+    ) -> AsyncIterator[WorkflowEvent]:
+        self.last_actor = actor
+        self.last_event_cursor = after_sequence
+        yield WorkflowEvent(
+            workflow_id=workflow_id,
+            event_id="evt_002",
+            sequence=2,
+            kind="workflow.started",
+            occurred_at=datetime(2026, 8, 28, 8, tzinfo=UTC),
         )
 
     async def cancel(self, workflow_id: str, *, actor: Actor) -> WorkflowSummary:
@@ -259,6 +280,21 @@ async def test_get_returns_the_actor_authorized_workflow() -> None:
 
     assert summary.workflow_id == "wf_001"
     assert gateway.last_actor == actor
+
+
+@pytest.mark.asyncio
+async def test_event_replay_uses_the_actor_authorized_gateway_cursor() -> None:
+    gateway = StartGateway()
+    service = WorkflowService(gateway)
+    actor = Actor(actor_id="owner", actor_type="user")
+
+    events = [
+        event async for event in service.stream_events("wf_001", actor=actor, after_sequence=1)
+    ]
+
+    assert [event.sequence for event in events] == [2]
+    assert gateway.last_actor == actor
+    assert gateway.last_event_cursor == 1
 
 
 @pytest.mark.asyncio
