@@ -10,7 +10,10 @@ import pytest
 
 from spikes.agno_source_investigator import AgnoSourceInvestigator
 from thoth_control_plane.application import ApprovalSubmission, WorkflowService
-from thoth_control_plane.application.source_investigator import SourceInvestigatorInput
+from thoth_control_plane.application.source_investigator import (
+    SourceExplanation,
+    SourceInvestigatorInput,
+)
 from thoth_control_plane.domain import (
     Actor,
     ApprovalRequest,
@@ -41,6 +44,9 @@ ACTOR = Actor(actor_id="reviewer_001", actor_type="user")
 
 class Investigator(Protocol):
     tool_names: tuple[str, ...]
+    sdk_registered_tools: tuple[str, ...]
+    sdk_invoked_tools: tuple[str, ...]
+    loaded_from_checkpoint: bool
     last_context: dict[str, Any]
 
     async def explain(self, input: SourceInvestigatorInput): ...
@@ -48,7 +54,22 @@ class Investigator(Protocol):
     async def cancel(self) -> None: ...
 
 
-AdapterFactory = Callable[["FixtureToolService"], Investigator]
+AdapterFactory = Callable[..., Investigator]
+
+
+class DurableInvestigatorCheckpoint:
+    def __init__(self) -> None:
+        self.explanations: dict[str, Any] = {}
+        self.load_count = 0
+        self.save_count = 0
+
+    async def load(self, workflow_id: str):
+        self.load_count += 1
+        return self.explanations.get(workflow_id)
+
+    async def save(self, workflow_id: str, explanation: Any) -> None:
+        self.save_count += 1
+        self.explanations[workflow_id] = explanation
 
 
 class FixtureToolService:
@@ -60,10 +81,12 @@ class FixtureToolService:
         self.side_effect_count = 0
         self.events: list[WorkflowEvent] = []
         self.correlation_ids: list[str] = []
+        self.tool_call_counts = dict.fromkeys(READ_ONLY_TOOLS, 0)
 
     async def inspect_source_candidates(
         self, workflow_id: str, correlation_id: str
     ) -> list[dict[str, object]]:
+        self.tool_call_counts["inspect_source_candidates"] += 1
         self.activity_count += 1
         self.correlation_ids.append(correlation_id)
         self.events.append(
@@ -95,6 +118,7 @@ class FixtureToolService:
     async def explain_source_choice(
         self, candidate_ids: list[str], correlation_id: str
     ) -> dict[str, object]:
+        self.tool_call_counts["explain_source_choice"] += 1
         assert candidate_ids == ["candidate_vincentius", "candidate_repost"]
         self.correlation_ids.append(correlation_id)
         return {
@@ -111,6 +135,7 @@ class FixtureToolService:
     async def request_next_stage(
         self, kind: str, evidence_ids: list[str], correlation_id: str
     ) -> dict[str, object]:
+        self.tool_call_counts["request_next_stage"] += 1
         self.correlation_ids.append(correlation_id)
         return {
             "kind": kind,
@@ -146,6 +171,29 @@ class DurableApprovalGateway:
         return updated
 
 
+class ReplacementInvestigatorWorker:
+    """Fresh execution context joining durable approval and investigator recovery."""
+
+    def __init__(self, investigator: Investigator, workflow_service: WorkflowService) -> None:
+        self.investigator = investigator
+        self.workflow_service = workflow_service
+
+    async def recover_and_resume(
+        self,
+        input: SourceInvestigatorInput,
+        approval: ApprovalSubmission,
+        *,
+        actor: Actor,
+    ) -> tuple[SourceExplanation, WorkflowSummary]:
+        resumed = await self.workflow_service.record_approval(
+            input.workflow_id,
+            approval,
+            actor=actor,
+        )
+        recovered = await self.investigator.explain(input)
+        return recovered, resumed
+
+
 COMPARISON_ADAPTERS = [AgnoSourceInvestigator]
 COMPARISON_IDS = ["agno"]
 if PydanticAISourceInvestigator is not None:
@@ -171,7 +219,10 @@ async def test_cited_explanation_uses_only_three_read_only_tools(
     assert [citation.evidence_id for citation in result.citations] == ["evidence_timestamp_001"]
     assert set(investigator.tool_names) == READ_ONLY_TOOLS
     assert len(investigator.tool_names) == 3
+    assert investigator.sdk_registered_tools == tuple(investigator.tool_names)
     assert set(result.executed_tools) == READ_ONLY_TOOLS
+    assert investigator.sdk_invoked_tools == tuple(investigator.tool_names)
+    assert tools.tool_call_counts == dict.fromkeys(READ_ONLY_TOOLS, 1)
 
 
 @pytest.mark.asyncio
@@ -193,7 +244,8 @@ async def test_pause_restart_resume_records_one_authorized_decision_without_dupl
     adapter_factory: AdapterFactory,
 ) -> None:
     tools = FixtureToolService()
-    first_worker = adapter_factory(tools)
+    checkpoint = DurableInvestigatorCheckpoint()
+    first_worker = adapter_factory(tools, checkpoint=checkpoint)
     explanation = await first_worker.explain(FIXTURE_INPUT)
     timestamp = datetime(2026, 8, 30, 8, tzinfo=UTC)
     state = {
@@ -213,19 +265,27 @@ async def test_pause_restart_resume_records_one_authorized_decision_without_dupl
         )
     }
 
-    restarted_worker = adapter_factory(tools)
     gateway = DurableApprovalGateway(state)
-    service = WorkflowService(gateway)
-    resumed = await service.record_approval(
-        FIXTURE_INPUT.workflow_id,
+    replacement_adapter = adapter_factory(tools, checkpoint=checkpoint)
+    replacement_worker = ReplacementInvestigatorWorker(
+        replacement_adapter,
+        WorkflowService(gateway),
+    )
+    recovered, resumed = await replacement_worker.recover_and_resume(
+        FIXTURE_INPUT,
         ApprovalSubmission(approval_id="approval_source_001", decision="approve"),
         actor=ACTOR,
     )
 
-    assert restarted_worker is not first_worker
+    assert replacement_worker.investigator is not first_worker
+    assert replacement_adapter.loaded_from_checkpoint is True
+    assert recovered == explanation
     assert resumed.status == WorkflowStatus.RUNNING
     assert gateway.record_count == 1
+    assert checkpoint.load_count == 2
+    assert checkpoint.save_count == 1
     assert tools.activity_count == 1
+    assert tools.tool_call_counts == dict.fromkeys(READ_ONLY_TOOLS, 1)
 
 
 @pytest.mark.asyncio

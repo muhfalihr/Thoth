@@ -132,3 +132,85 @@ rtk uv run pytest -q
 
 Two production-wiring searches for SDK imports and spike adapter names under
 `src/thoth_control_plane`, including API, workflows, and infrastructure, returned no matches.
+
+## Fix round 1 evidence
+
+The review's two Important evidence gaps are closed without production wiring.
+
+The native-tool boundary received an additional TDD mutation guard. Before the adapters
+reported the callable names actually registered with their SDK, the focused selected-runtime
+test failed for the expected missing behavior:
+
+```text
+rtk uv run pytest tests/spikes/test_agent_sdk_acceptance.py -q -k cited_explanation
+FAILED test_cited_explanation_uses_only_three_read_only_tools[agno]
+AttributeError: 'AgnoSourceInvestigator' object has no attribute 'sdk_registered_tools'
+```
+
+Both adapters now create one tuple of exactly three read-only callables, derive the recorded
+SDK registry from that tuple, and give that same tuple to the native SDK agent. Agno's offline
+fake model requests those registered names as native tool calls; PydanticAI's offline
+`TestModel(call_tools="all")` requests every registered tool. The acceptance test independently
+proves that the registered names, model-invoked wrappers, and fixture-service call counts are
+exactly the three allowed tools, once each. The focused selected and comparison checks passed:
+
+```text
+rtk uv run pytest tests/spikes/test_agent_sdk_acceptance.py -q -k cited_explanation
+1 passed, 5 deselected in 0.31s
+
+rtk uv run --with pydantic-ai==2.36.0 pytest tests/spikes/test_agent_sdk_acceptance.py -q -k cited_explanation
+2 passed, 10 deselected in 1.77s
+```
+
+The restart case now uses a replacement-worker fixture that owns both the fresh adapter and
+the durable `WorkflowService`. It records the one authorized approval in that restarted
+execution context, then asks the fresh adapter to recover the durable explanation. Assertions
+prove two checkpoint loads (initial miss and restarted recovery), one checkpoint save, one
+approval record, and exactly one call to each source-inspection tool across both worker
+instances. Focused selected and comparison checks passed:
+
+```text
+rtk uv run pytest tests/spikes/test_agent_sdk_acceptance.py -q -k pause_restart_resume
+1 passed, 5 deselected in 0.32s
+
+rtk uv run --with pydantic-ai==2.36.0 pytest tests/spikes/test_agent_sdk_acceptance.py -q -k pause_restart_resume
+2 passed, 10 deselected in 1.57s
+```
+
+The corrected comparison matrix still passes all six cases for both SDKs:
+
+```text
+rtk uv run --with pydantic-ai==2.36.0 pytest tests/application/test_source_investigator_contract.py tests/spikes/test_agent_sdk_acceptance.py -q
+15 passed in 1.87s
+```
+
+Therefore the fixed selection rule produces the same result: Agno and PydanticAI tie at one
+custom adapter module and zero new persistent services, so the binding tie-break selects Agno.
+`pyproject.toml` and `uv.lock` remain faithfully selected-runtime-only: Agno is present and
+PydanticAI is absent.
+
+Final fix-round verification from that selected dependency state:
+
+```text
+rtk uv lock --check
+Resolved 51 packages in 4ms
+
+rtk uv run pytest tests/application/test_source_investigator_contract.py tests/spikes/test_agent_sdk_acceptance.py -q
+9 passed in 0.35s
+
+rtk uv run pytest -q
+103 passed in 6.42s
+
+rtk uv run ruff check src tests spikes
+All checks passed!
+
+rtk uv run ruff format --check src tests spikes
+41 files already formatted
+
+rtk rg -n "agno|pydantic-ai|pydantic_ai" pyproject.toml
+6:    "agno>=3,<4",
+```
+
+The production-wiring search under `src/thoth_control_plane` again returned no SDK imports,
+spike imports, or adapter registrations. `rtk git diff --check` also passed. The pre-existing
+untracked `docs/research/` content was preserved.

@@ -71,3 +71,13 @@ class SourceInvestigator(Protocol):
 
     async def explain(self, input: SourceInvestigatorInput) -> SourceExplanation:
         """Explain a source choice without performing or authorizing sensitive work."""
+
+
+class SourceInvestigatorCheckpoint(Protocol):
+    """Durable explanation checkpoint used across disposable adapter instances."""
+
+    async def load(self, workflow_id: str) -> SourceExplanation | None:
+        """Load a completed explanation for a workflow, if one exists."""
+
+    async def save(self, workflow_id: str, explanation: SourceExplanation) -> None:
+        """Persist a completed explanation before an approval pause."""
