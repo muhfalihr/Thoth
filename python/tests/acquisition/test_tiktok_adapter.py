@@ -28,6 +28,8 @@ def test_entry_validation_accepts_supported_public_tiktok_urls(url: str) -> None
         "https://www.tiktok.com:8443/@creator/video/1234567890",
         "https://evil.example/@creator/video/1234567890",
         "https://www.tiktok.com/@creator",
+        "https://www.tiktok.com:abc/@creator/video/1234567890",
+        "https://[::1/@creator/video/1234567890",
     ],
 )
 def test_entry_validation_rejects_unsafe_or_non_post_urls(url: str) -> None:

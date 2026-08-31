@@ -33,14 +33,21 @@ class TikTokPostIdentity(StrictModel):
 
 
 def _safe_split(url: str) -> tuple[SplitResult, str]:
-    parsed = urlsplit(url)
-    host = (parsed.hostname or "").lower()
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        # urlsplit()/`.port` raise a bare ValueError whose message embeds the
+        # raw offending substring (e.g. malformed port or IPv6 authority).
+        # Re-raise without chaining so that text never reaches callers.
+        raise TikTokUrlError("invalid_tiktok_url") from None
     if (
         parsed.scheme != "https"
         or host not in ENTRY_HOSTS
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.port not in {None, 443}
+        or port not in {None, 443}
     ):
         raise TikTokUrlError("invalid_tiktok_url")
     return parsed, host
