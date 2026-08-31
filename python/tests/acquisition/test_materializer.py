@@ -484,8 +484,17 @@ async def test_valid_ftyp_body_below_minimum_size_is_rejected(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_http_timeout_is_sanitized_and_cleans_partial_output(tmp_path) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
+    async def timeout_body(request: httpx.Request):
+        yield MP4_BODY[:20]
         raise httpx.ReadTimeout("timed out at https://cdn.example/private-token", request=request)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "video/mp4"},
+            content=timeout_body(request),
+            request=request,
+        )
 
     destination = tmp_path / "video.mp4"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
