@@ -83,6 +83,79 @@ def test_fixture_is_reduced_to_sanitized_candidates() -> None:
     assert "itemInfo" not in dumped
 
 
+def _xhr_item(unique_id: str, post_id: str = "1234567890") -> list[dict]:
+    return [
+        {
+            "status": 200,
+            "body": {
+                "itemInfo": {
+                    "itemStruct": {
+                        "id": post_id,
+                        "desc": "caption",
+                        "author": {"uniqueId": unique_id},
+                    }
+                }
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "meta_author",
+    ["someone-else", None, "@creator", "CREATOR", " creator "],
+    ids=["wrong", "missing", "at-prefixed", "different-case", "whitespace"],
+)
+def test_xhr_unique_id_wins_over_a_wrong_or_missing_meta_author(meta_author: str | None) -> None:
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="caption",
+        author=meta_author,
+        video_sources=["https://video.example/a.mp4"],
+        captured_xhr=_xhr_item("creator"),
+    )
+    assert snapshot.post_candidates[0].owner_handle == "creator"
+
+
+def test_xhr_unique_id_mismatch_downgrades_even_if_meta_author_matches() -> None:
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="caption",
+        author="creator",
+        video_sources=["https://video.example/a.mp4"],
+        captured_xhr=_xhr_item("someone-else"),
+    )
+    assert snapshot.post_candidates == []
+
+
+def test_missing_xhr_signal_falls_back_to_a_mismatching_meta_author() -> None:
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="caption",
+        author="someone-else",
+        video_sources=["https://video.example/a.mp4"],
+        captured_xhr=[],
+    )
+    assert snapshot.post_candidates == []
+
+
+@pytest.mark.parametrize(
+    "meta_author",
+    ["creator", "@creator", "CREATOR", " creator "],
+    ids=["exact", "at-prefixed", "different-case", "whitespace"],
+)
+def test_missing_xhr_signal_falls_back_to_a_matching_meta_author_normalized(
+    meta_author: str,
+) -> None:
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="caption",
+        author=meta_author,
+        video_sources=["https://video.example/a.mp4"],
+        captured_xhr=[],
+    )
+    assert snapshot.post_candidates[0].owner_handle == "creator"
+
+
 @pytest.mark.asyncio
 async def test_production_adapter_uses_headless_network_capture_then_closes() -> None:
     calls: list[tuple[str, object]] = []

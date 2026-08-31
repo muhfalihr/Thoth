@@ -140,6 +140,10 @@ def _parse_captured_xhr(raw_entries: list[Any]) -> list[dict[str, Any]]:
     return parsed
 
 
+def _normalize_handle(value: str) -> str:
+    return value.strip().removeprefix("@").casefold()
+
+
 def extract_browser_snapshot(
     *,
     final_url: str,
@@ -153,12 +157,20 @@ def extract_browser_snapshot(
     `final_url` is validated through Task 2's canonicalization before any
     candidate is accepted. Raw XHR bodies are inspected only long enough to
     pull out `id`/`desc`/`author.uniqueId`; nothing raw is retained.
+
+    Owner-handle cross-check precedence: the XHR `uniqueId` is an
+    authoritative signal straight from TikTok's own item data, so when it is
+    present it alone decides the match. The `meta[name="author"]` tag is a
+    page-rendering artifact (can be absent, differently formatted, or a
+    display name) and is only consulted as a fallback when the XHR signal is
+    absent. Either signal fails safe: a mismatch downgrades to no candidate.
     """
     identity = canonicalize_tiktok_post_url(final_url)
+    canonical_handle = _normalize_handle(identity.owner_handle)
 
     item_struct = _xhr_item_struct(captured_xhr)
     caption = og_title or ""
-    owner_matches = author is None or author.strip().lower() == identity.owner_handle.lower()
+    xhr_unique_id: str | None = None
     if item_struct is not None and str(item_struct.get("id")) == identity.post_id:
         xhr_desc = item_struct.get("desc")
         if isinstance(xhr_desc, str) and xhr_desc:
@@ -166,8 +178,13 @@ def extract_browser_snapshot(
         xhr_author = item_struct.get("author")
         if isinstance(xhr_author, dict):
             unique_id = xhr_author.get("uniqueId")
-            if isinstance(unique_id, str):
-                owner_matches = owner_matches and unique_id.lower() == identity.owner_handle.lower()
+            if isinstance(unique_id, str) and unique_id:
+                xhr_unique_id = unique_id
+
+    if xhr_unique_id is not None:
+        owner_matches = _normalize_handle(xhr_unique_id) == canonical_handle
+    else:
+        owner_matches = author is None or _normalize_handle(author) == canonical_handle
 
     post_candidates: list[TikTokPost] = []
     if owner_matches:
