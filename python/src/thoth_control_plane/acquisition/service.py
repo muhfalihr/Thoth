@@ -9,6 +9,7 @@ module that Task 6 adapts into a Temporal activity.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path, PurePosixPath
 
@@ -189,8 +190,11 @@ class TikTokAcquisitionService:
             # Browser cleanup runs unconditionally, including on cancellation:
             # `asyncio.CancelledError` derives from `BaseException`, so it is
             # not caught above, but this `finally` still closes the browser
-            # before the cancellation propagates.
-            await self._browser.close()
+            # before the cancellation propagates. `asyncio.shield` runs
+            # close() as an independent task so a *second* cancellation
+            # delivered while we are awaiting it cannot also cancel the
+            # underlying cleanup partway through.
+            await asyncio.shield(self._browser.close())
 
         if headless_reason is None:
             assert snapshot is not None  # guaranteed: no exception was raised above

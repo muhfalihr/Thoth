@@ -24,7 +24,9 @@ from thoth_control_plane.acquisition.models import (
 )
 from thoth_control_plane.acquisition.service import TikTokAcquisitionService
 
-TIKWM_FIXTURE_PATH = Path("tests/fixtures/tiktok/tikwm_success.json")
+TIKWM_FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "tiktok" / "tikwm_success.json"
+)
 SOURCE_URL = "https://www.tiktok.com/@creator/video/1234567890"
 
 
@@ -346,6 +348,39 @@ async def test_cancellation_during_headless_closes_browser_and_never_calls_tikwm
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_cleanup_still_closes_browser(tmp_path) -> None:
+    close_started = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    class SlowCloseBrowser(FakeBrowser):
+        async def close(self) -> None:
+            close_started.set()
+            await asyncio.sleep(0.05)
+            self.calls.append("close")
+            close_finished.set()
+
+    browser = SlowCloseBrowser(asyncio.CancelledError())
+    resolver = FakeResolver()
+    materializer = FakeMaterializer()
+    service = TikTokAcquisitionService(browser, resolver, materializer)
+
+    task = asyncio.ensure_future(
+        service.inspect(
+            workflow_id="wf_cancel_cleanup_001",
+            source_url=SOURCE_URL,
+            artifact_root=tmp_path,
+        )
+    )
+    await close_started.wait()
+    task.cancel()  # a SECOND cancellation, delivered while close() is in-flight
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(close_finished.wait(), timeout=1.0)
+    assert "close" in browser.calls
+    assert resolver.calls == []
+
+
+@pytest.mark.asyncio
 async def test_media_written_to_reports_workflow_media_layout(tmp_path) -> None:
     browser = FakeBrowser(complete_snapshot())
     resolver = FakeResolver()
@@ -385,14 +420,69 @@ def test_parse_tikwm_payload_rejects_rate_limit_signal() -> None:
     assert "Frequently" not in str(excinfo.value)
 
 
+def test_parse_tikwm_payload_rejects_rate_limit_language_even_without_code_signal() -> None:
+    # `code` is deliberately not -1: this must be caught by the message-language
+    # check alone, not the (separately tested) numeric-code check.
+    payload = {"code": 10004, "msg": "Too many requests, please slow down", "data": {}}
+    with pytest.raises(TikWmError) as excinfo:
+        parse_tikwm_payload(payload)
+    assert excinfo.value.code == "cdn_rate_limited"
+
+
+def _valid_tikwm_payload(**data_overrides: object) -> dict:
+    data: dict[str, object] = {
+        "id": "1234567890",
+        "author": {"unique_id": "creator"},
+        "hdplay": "https://cdn.tikwm.com/video/media.mp4",
+        "title": "caption",
+        "duration": 12,
+    }
+    data.update(data_overrides)
+    return {"code": 0, "msg": "success", "data": data}
+
+
+def test_parse_tikwm_payload_falls_back_to_play_when_hdplay_absent() -> None:
+    payload = _valid_tikwm_payload(hdplay="", play="https://cdn.tikwm.com/video/play.mp4")
+    resolution = parse_tikwm_payload(payload)
+    assert (
+        resolution.media.ephemeral_url.get_secret_value() == "https://cdn.tikwm.com/video/play.mp4"
+    )
+
+
+def test_parse_tikwm_payload_falls_back_to_wmplay_when_hdplay_and_play_absent() -> None:
+    payload = _valid_tikwm_payload(hdplay="", play="", wmplay="https://cdn.tikwm.com/video/wm.mp4")
+    resolution = parse_tikwm_payload(payload)
+    assert resolution.media.ephemeral_url.get_secret_value() == "https://cdn.tikwm.com/video/wm.mp4"
+
+
+def test_parse_tikwm_payload_normalizes_a_relative_media_url() -> None:
+    payload = _valid_tikwm_payload(hdplay="/download/video.mp4")
+    resolution = parse_tikwm_payload(payload)
+    assert (
+        resolution.media.ephemeral_url.get_secret_value()
+        == "https://www.tikwm.com/download/video.mp4"
+    )
+
+
+def test_parse_tikwm_payload_truncates_an_oversized_caption() -> None:
+    payload = _valid_tikwm_payload(title="x" * 10_050)
+    resolution = parse_tikwm_payload(payload)
+    assert len(resolution.post.caption) == 10_000
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         "not a dict",
+        None,
+        [1, 2, 3],
         {"code": 1, "msg": "unexpected error", "data": {}},
+        {"code": [], "msg": "unexpected error", "data": {}},
         {"code": 0, "msg": "success", "data": "not a dict"},
+        {"code": 0, "msg": "success"},
         {"code": 0, "msg": "success", "data": {"id": "abc", "author": {"unique_id": "creator"}}},
         {"code": 0, "msg": "success", "data": {"id": "1234567890", "author": {}}},
+        {"code": 0, "msg": "success", "data": {"id": "1234567890", "author": ["not", "a", "dict"]}},
         {
             "code": 0,
             "msg": "success",
@@ -411,6 +501,16 @@ def test_parse_tikwm_payload_rejects_rate_limit_signal() -> None:
                 "id": "1234567890",
                 "author": {"unique_id": "creator"},
                 "hdplay": "http://insecure.example/video.mp4",
+            },
+        },
+        {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "id": "1234567890",
+                "author": {"unique_id": "creator"},
+                "hdplay": "https://cdn.tikwm.com/video/media.mp4",
+                "duration": 10**400,
             },
         },
     ],

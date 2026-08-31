@@ -45,7 +45,7 @@ class TikWmError(RuntimeError):
 
 
 def _is_rate_limited(code: object, msg: object) -> bool:
-    if code in _RATE_LIMIT_CODES:
+    if isinstance(code, int) and code in _RATE_LIMIT_CODES:
         return True
     lowered = msg.lower() if isinstance(msg, str) else ""
     return any(marker in lowered for marker in _RATE_LIMIT_MARKERS)
@@ -102,7 +102,10 @@ def parse_tikwm_payload(payload: object) -> TikWmResolution:
     caption = data.get("title")
     caption = caption if isinstance(caption, str) else ""
     duration = data.get("duration")
-    duration_seconds = float(duration) if isinstance(duration, int | float) else None
+    try:
+        duration_seconds = float(duration) if isinstance(duration, int | float) else None
+    except OverflowError:
+        raise TikWmError("cdn_unavailable") from None
 
     try:
         return TikWmResolution(
