@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import ipaddress
 import os
@@ -134,7 +135,7 @@ class MediaMaterializer:
                                 declared_bytes = int(content_length)
                             except ValueError:
                                 raise MediaMaterializationError() from None
-                            if declared_bytes > MAX_MEDIA_BYTES:
+                            if declared_bytes <= 0 or declared_bytes > MAX_MEDIA_BYTES:
                                 raise MediaMaterializationError()
 
                         with part_path.open("wb") as handle:
@@ -170,5 +171,10 @@ class MediaMaterializer:
                 acquisition_strategy=acquisition_strategy,
                 duration_seconds=candidate.duration_seconds,
             )
+        except OSError:
+            # Filesystem errors (mkdir/open/write/replace) can carry an
+            # absolute path in their message; never let that escape.
+            raise MediaMaterializationError() from None
         finally:
-            part_path.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                part_path.unlink(missing_ok=True)
