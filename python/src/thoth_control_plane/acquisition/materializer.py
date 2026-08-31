@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from pydantic import ValidationError
 
 from thoth_control_plane.acquisition.models import (
     AcquisitionStrategy,
@@ -167,16 +168,20 @@ class MediaMaterializer:
             if total_bytes < MIN_MEDIA_BYTES:
                 raise MediaMaterializationError()
 
-            os.replace(part_path, destination)
+            try:
+                result = MaterializedMedia(
+                    media_id="media_1",
+                    location=relative_location,
+                    bytes=total_bytes,
+                    checksum=f"sha256:{digest.hexdigest()}",
+                    acquisition_strategy=acquisition_strategy,
+                    duration_seconds=candidate.duration_seconds,
+                )
+            except ValidationError:
+                raise MediaMaterializationError() from None
 
-            return MaterializedMedia(
-                media_id="media_1",
-                location=relative_location,
-                bytes=total_bytes,
-                checksum=f"sha256:{digest.hexdigest()}",
-                acquisition_strategy=acquisition_strategy,
-                duration_seconds=candidate.duration_seconds,
-            )
+            os.replace(part_path, destination)
+            return result
         except OSError:
             # Filesystem errors (mkdir/open/write/replace) can carry an
             # absolute path in their message; never let that escape.
