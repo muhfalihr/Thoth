@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "workflow_id": "wf_contract_001",
+  "source": {
+    "platform": "tiktok",
+    "canonical_url": "https://www.tiktok.com/@creator/video/1234567890"
+  },
+  "post": {
+    "post_id": "1234567890",
+    "owner_handle": "creator",
+    "caption": "",
+    "published_at": null,
+    "engagement": {}
+  },
+  "media": [
+    {
+      "media_id": "media_1",
+      "kind": "video",
+      "index": 1,
+      "location": "reports/wf_contract_001/media/tiktok-1234567890.mp4",
+      "media_type": "video/mp4",
+      "bytes": 10000,
+      "checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "acquisition_strategy": "scrapling_headless",
+      "width": null,
+      "height": null,
+      "duration_seconds": null
+    }
+  ],
+  "outcome": {
+    "status": "resolved",
+    "attempts": [
+      {
+        "strategy": "scrapling_headless",
+        "status": "succeeded",
+        "reason": null,
+        "attempt_count": 1,
+        "elapsed_ms": 12
+      }
+    ]
+  }
+}
