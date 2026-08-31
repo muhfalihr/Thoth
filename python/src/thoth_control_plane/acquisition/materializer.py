@@ -74,7 +74,10 @@ def _validate_public_https_url(url: str) -> str:
 
 
 async def _ensure_publicly_routable(host: str, resolver: HostResolver) -> None:
-    addresses = await resolver(host)
+    try:
+        addresses = await resolver(host)
+    except Exception:
+        raise MediaMaterializationError() from None
     if not addresses:
         raise MediaMaterializationError()
     for value in dict.fromkeys(addresses):
@@ -124,7 +127,10 @@ class MediaMaterializer:
                             location = response.headers.get("Location")
                             if not location:
                                 raise MediaMaterializationError()
-                            current_url = urljoin(current_url, location)
+                            try:
+                                current_url = urljoin(current_url, location)
+                            except ValueError:
+                                raise MediaMaterializationError() from None
                             continue
                         if not 200 <= response.status_code < 300:
                             raise MediaMaterializationError()

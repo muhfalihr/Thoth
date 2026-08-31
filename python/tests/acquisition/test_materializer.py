@@ -339,3 +339,54 @@ async def test_filesystem_error_is_wrapped_without_leaking_path(tmp_path, monkey
     assert str(tmp_path) not in str(exc_info.value)
     assert not destination.exists()
     assert list(tmp_path.rglob("*.part")) == []
+
+
+@pytest.mark.asyncio
+async def test_resolver_error_is_wrapped_without_leaking_hostname(tmp_path) -> None:
+    async def failing_resolver(host: str) -> list[str]:
+        raise RuntimeError(f"resolver failed for {host}")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unsafe request reached transport: {request}")
+
+    destination = tmp_path / "video.mp4"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(MediaMaterializationError) as exc_info:
+            await MediaMaterializer(client, failing_resolver).materialize(
+                media(),
+                destination,
+                PurePosixPath("reports/wf_1/media/video.mp4"),
+                "tikwm_cdn",
+            )
+
+    assert str(exc_info.value) == "media_validation_failed"
+    assert "cdn.example" not in str(exc_info.value)
+    assert not destination.exists()
+    assert list(tmp_path.rglob("*.part")) == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_redirect_is_wrapped_without_leaking_target(tmp_path) -> None:
+    malformed_target = "https://[private.invalid/video.mp4"
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            302,
+            headers={"Location": malformed_target},
+            request=request,
+        )
+    )
+    destination = tmp_path / "video.mp4"
+
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
+        with pytest.raises(MediaMaterializationError) as exc_info:
+            await MediaMaterializer(client, public_resolver).materialize(
+                media(),
+                destination,
+                PurePosixPath("reports/wf_1/media/video.mp4"),
+                "tikwm_cdn",
+            )
+
+    assert str(exc_info.value) == "media_validation_failed"
+    assert malformed_target not in str(exc_info.value)
+    assert not destination.exists()
+    assert list(tmp_path.rglob("*.part")) == []
