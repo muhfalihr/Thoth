@@ -35,6 +35,7 @@ and reaction/news cards assembled around it).
 - 🎨 **GPU color grading & transitions** — CapCut-style shaders (wgpu) + NVENC encoding.
 - 🔎 **Content sourcing** — the `scout/` layer assembles content-sets from multiple platforms, all acquisition routed through one enforced kernel (`scout/acquisition/`) with cache/TTL, circuit breaking, and sensitive-data rules.
 - 🌐 **CLI or server + worker** — run one-off from the terminal, or as a warm two-process deployment with a dashboard.
+- 🧭 **Durable workflow control plane** — an additive Python `/api/v1` (FastAPI + Temporal) that runs one source-investigation workflow with approvals, ordered SSE events, cancellation, and authorized artifacts.
 
 ## Quick start
 
@@ -99,6 +100,34 @@ bun --cwd dashboard run dev
 Vite proxies `/api` to `127.0.0.1:8787`, so in dev mode the server must be on the default
 port `8787` (or edit the proxy target in `dashboard/vite.config.ts`).
 
+## Python workflow control plane (v1, additive)
+
+Next to the Rust server + worker there is an **additive** control plane in
+**[`python/`](python/README.md)** — a FastAPI `/api/v1` boundary plus a Temporal worker that owns
+one durable **source-investigation** workflow: submit → ordered events → approval → authorized
+artifact. It does not replace the Rust media engine or the legacy Scout console, and its HTTP
+handlers never build or parse a `thoth`/`scout` CLI command.
+
+Four local processes, each in its own terminal:
+
+```bash
+temporal server start-dev --ip 127.0.0.1 --port 7233 --ui-port 8233   # anywhere
+cd python  && uv run uvicorn thoth_control_plane.api:create_app --factory --port 8000
+cd python  && uv run python -m thoth_control_plane.worker
+bun --cwd dashboard run dev          # Workflows tab; needs VITE_CONTROL_PLANE_URL
+```
+
+The typed operator client is `uv run thoth-control workflow start|watch|approve|cancel|retry`
+(see **[docs/CLI.md](docs/CLI.md)**). Every response carries `X-Thoth-Contract-Version: 1`, and
+workflow creation requires an `Idempotency-Key`. Ports, environment variables, event/reconnect
+semantics, redaction policy, and the retirement gate for the temporary legacy-Scout activity are in
+**[docs/python-control-plane.md](docs/python-control-plane.md)**.
+
+> Migration status: `POST /api/v1/workflows/{id}/retry` deliberately answers `503` until a durable
+> checkpoint policy exists, so a retry can never duplicate a side effect. The React dashboard stays
+> the only end-user UI; the Rust `/api/scout/*` screens continue as an explicit **Legacy console**
+> tab.
+
 ## Project profiles
 
 Editing style is configured with **typed, project-scoped profiles** instead of raw
@@ -134,13 +163,16 @@ Manual acceptance checklist: **[docs/superpowers/plans/2026-07-18-project-profil
 | **[docs/FEATURES.md](docs/FEATURES.md)** | Feature catalog — narration, cover, overlays, color grading, transitions, audio |
 | **[docs/PIPELINE.md](docs/PIPELINE.md)** | Architecture — the five stages, output layout, and the `ViralMoment` schema |
 | **[docs/MODELS.md](docs/MODELS.md)** | Every AI model used, where it's configured, and how to swap it |
+| **[docs/python-control-plane.md](docs/python-control-plane.md)** | Python v1 control plane — local topology, env vars, HTTP contract, events/reconnect, approvals, redaction, legacy-adapter retirement gate |
+| **[python/README.md](python/README.md)** · **[docs/decisions/](docs/decisions/)** | Control-plane package layout & checks · accepted architecture decisions |
 | **[scout/README.md](scout/README.md)** | Content sourcing — discovery, content-sets, cultural enrichment, acquisition kernel (env vars, cache, safety rules) |
 | **[CHANGELOG.md](CHANGELOG.md)** · **[BLUEPRINT.md](BLUEPRINT.md)** | Change history · architecture blueprint & feature status |
 
 ## Stack
 
 Rust 2024 (Tokio async) · wgpu (WGSL shaders) · FFmpeg/NVENC · Whisper (CUDA/API) ·
-SQLite (job queue) · Supabase/pgvector (RAG) · Node ≥ 24 (`scout/`) · Python 3.10+ (cover/hook renderer).
+SQLite (job queue) · Supabase/pgvector (RAG) · Node ≥ 24 (`scout/`) · Python 3.10+ (cover/hook renderer) ·
+Python 3.11–3.13 + uv/FastAPI/Temporal/Ruff (`python/` control plane) · React 19 + TypeScript + Bun (`dashboard/`).
 
 ## License
 

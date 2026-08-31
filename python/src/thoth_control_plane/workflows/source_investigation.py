@@ -38,7 +38,11 @@ with workflow.unsafe.imports_passed_through():
         WorkflowStatus,
         WorkflowSummary,
     )
-from thoth_control_plane.domain.models import LegacyScoutProgressEvent, StageProgress, StageSummary
+    from thoth_control_plane.domain.models import (
+        LegacyScoutProgressEvent,
+        StageProgress,
+        StageSummary,
+    )
 
 
 @workflow.defn

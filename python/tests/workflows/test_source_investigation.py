@@ -281,10 +281,11 @@ async def test_produce_video_waits_for_authorized_approval_then_resumes_once(
         )
         result = await handle.result()
 
-    assert result.status == "succeeded"
-    assert result.approval is None
-    assert [artifact.kind for artifact in result.artifacts] == ["source_report"]
-    events = await handle.query(SourceInvestigationWorkflow.workflow_events)
+        assert result.status == "succeeded"
+        assert result.approval is None
+        assert [artifact.kind for artifact in result.artifacts] == ["source_report"]
+        events = await handle.query(SourceInvestigationWorkflow.workflow_events)
+
     assert [event.kind for event in events] == [
         EventKind.WORKFLOW_QUEUED,
         EventKind.WORKFLOW_STARTED,
@@ -723,9 +724,15 @@ async def test_gateway_event_stream_returns_current_snapshot_then_unseen_events(
             )
         ]
 
-        assert len(initial) == 1
-        assert initial[0].kind == "approval.required"
-        cursor = initial[0].sequence
+        assert [event.kind for event in initial] == [
+            "workflow.queued",
+            "workflow.started",
+            "stage.started",
+            "stage.completed",
+            "artifact.created",
+            "approval.required",
+        ]
+        cursor = initial[-1].sequence
         assert awaiting.approval is not None
         await gateway.record_approval(
             started.workflow_id,
