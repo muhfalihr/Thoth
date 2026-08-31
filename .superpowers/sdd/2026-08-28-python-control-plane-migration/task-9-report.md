@@ -140,6 +140,42 @@ service.
   focused artifact test command exited `0` with 2 passed. Those assertions cover both
   actual `Content-Type` response headers and the multi-media OpenAPI contract.
 
+## Whole-branch final-fix wave (2026-08-31)
+
+- Added the zero-argument production ASGI factory path and allowlist CORS middleware. The focused
+  API tests prove the Uvicorn factory reads environment settings and a dashboard-origin OPTIONS
+  preflight accepts `Authorization`, `Idempotency-Key`, and content headers.
+- The durable Temporal lifecycle now records safe queued, start, source-stage, artifact,
+  approval, terminal-success, terminal-failure, and terminal-cancel events. Focused real Temporal
+  tests assert ordered success, approval, cancellation, and activity-error traces without provider
+  detail entering the event payload.
+- Corrected the worker-only Scout bridge to invoke its registered `run` command from the repository
+  root, write to its configured durable artifact root, and return a safe failure if no report is
+  materialized. Cancellation now terminates the owned POSIX group or Windows tree, escalates the
+  full group/tree after the grace period, and waits for the original process to be reaped.
+- Changed `thoth-control workflow watch` from a one-time summary GET to its authorized typed SSE
+  stream. Updated operator and blueprint documentation with the control-plane ownership and
+  corrected legacy-adapter contract.
+- Focused regression evidence: `rtk uv run ruff check src tests` and
+  `rtk uv run ruff format --check src tests` exited `0`; focused API, workflow, legacy-adapter,
+  and CLI tests exited `0` after the final changes. The complete cross-stack matrix remains the
+  final controller verification after the focused commit and scoped re-review.
+
+### Whole-matrix closeout (2026-08-31)
+
+- `rtk uv sync --all-groups`, Ruff check/format, and `rtk uv run pytest -q` completed successfully;
+  Pytest collected 117 tests. The Temporal test server emitted its known heartbeat-capability
+  warning only.
+- Dashboard OpenAPI generation, 50 dashboard tests, production build, and lint completed
+  successfully. Lint retained the three existing UI warnings only.
+- `rtk cargo test -p thoth-server` completed with 129 passing tests; `rtk cargo test -p thoth-core`
+  completed with 375 passing tests; `rtk cargo check --workspace` completed successfully.
+- `rtk cargo fmt --check` still exits `1` on the pre-existing repository-wide Rust formatting debt;
+  no Rust files were modified. `rtk git diff --check 2b11768..HEAD` completed successfully.
+- The documented production ASGI factory is covered under an environment-backed API test. Live
+  Temporal/provider smoke remains blocked by absent local operator configuration and was not
+  fabricated.
+
 ### Fix round 2 verification (2026-08-31)
 
 - `rtk uv sync --all-groups` — exit `0`; 51 packages resolved, 50 audited.

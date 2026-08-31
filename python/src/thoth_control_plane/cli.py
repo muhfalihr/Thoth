@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Iterator
 from typing import Annotated, Any
 
 import httpx
 import typer
 
 from thoth_control_plane.application import ApprovalSubmission, RetryRequest
-from thoth_control_plane.domain import WorkflowRequest
+from thoth_control_plane.domain import WorkflowEvent, WorkflowRequest
 
 app = typer.Typer(no_args_is_help=True)
 workflow_app = typer.Typer(no_args_is_help=True)
@@ -40,6 +41,21 @@ def _request(method: str, path: str, *, payload: dict[str, Any] | None = None) -
     return response.json()
 
 
+def _stream_events(path: str) -> Iterator[WorkflowEvent]:
+    """Read only typed SSE data from the public workflow API."""
+    base_url, api_key = _settings()
+    headers = {"Authorization": f"Bearer {api_key}"}
+    with httpx.stream("GET", f"{base_url}{path}", headers=headers, timeout=30) as response:
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            detail = error.response.text or str(error)
+            raise typer.Exit(code=1) from typer.BadParameter(detail)
+        for line in response.iter_lines():
+            if line.startswith("data:"):
+                yield WorkflowEvent.model_validate_json(line.removeprefix("data:").strip())
+
+
 def _render(summary: dict[str, Any]) -> None:
     typer.echo(json.dumps(summary, indent=2, sort_keys=True, default=str))
 
@@ -66,8 +82,9 @@ def start(
 
 @workflow_app.command("watch")
 def watch(workflow_id: str) -> None:
-    """Read the latest authoritative workflow snapshot."""
-    _render(_request("GET", f"/api/v1/workflows/{workflow_id}"))
+    """Stream typed v1 workflow events until the API closes the SSE connection."""
+    for event in _stream_events(f"/api/v1/workflows/{workflow_id}/events"):
+        _render(event.model_dump(mode="json"))
 
 
 @workflow_app.command("approve")

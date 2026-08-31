@@ -23,6 +23,9 @@ route and does not implement alternate orchestration. Durable retry is deliberat
 and returns `503` until checkpoint and artifact-fingerprint validation can prevent duplicate side
 effects.
 
+`workflow watch` opens the authorized `/events` Server-Sent Events stream and prints each typed
+lifecycle event until the server closes the stream; it is not a one-time status lookup.
+
 The Rust `thoth scout` command below remains a clearly labelled legacy operator path. It may be
 used by the isolated worker-only compatibility adapter, but new v1 API/dashboard/CLI traffic never
 calls `/api/scout/*` or shapes a `scout/cli.ts` command.

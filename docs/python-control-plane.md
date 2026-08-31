@@ -20,6 +20,10 @@ Use Temporal's development server only for local work. It is separate from the e
 Start Temporal before FastAPI and the Python worker. Stop the dashboard, FastAPI, worker, then
 Temporal so the durable service remains available while clients and workers drain.
 
+`thoth_control_plane.api:create_app` is the zero-argument production ASGI factory used by the
+Uvicorn command above. It constructs `Settings()` from the environment; tests may still supply
+an explicit settings object and gateway to the same factory.
+
 ## Configuration without secret disclosure
 
 Set secrets in the process environment or a local secret manager. Do not put values in command
@@ -112,9 +116,13 @@ records the fixed worker configuration and the workflow dispatches only to
 `thoth-legacy-adapter`.
 
 That queue has maximum activity concurrency one to match the single-browser limit. The adapter
-launches a fixed `bun scout/cli.ts investigate` argument vector without a shell, heartbeats while
-waiting, owns its process group/tree, and terminates that tree on activity cancellation. Typed
-events and safe artifact/error results cross the activity boundary; stdout and stderr do not.
+launches the registered `bun scout/cli.ts run <canonical-source-url> --out <configured-report>`
+command from the repository root, without a shell. It creates the configured report directory
+first and returns an artifact only after the report exists below
+`THOTH_CONTROL_PLANE_ARTIFACT_ROOT`; otherwise it returns a typed safe failure. It heartbeats
+while waiting, owns its process group/tree, gives that tree a bounded graceful-stop interval, then
+escalates the full group/tree and reaps the original process. Typed events and safe artifact/error
+results cross the activity boundary; stdout and stderr do not.
 
 ### Exact retirement gate
 

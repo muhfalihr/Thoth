@@ -17,6 +17,40 @@ VALID_REQUEST = {
 AUTH_HEADERS = {"Authorization": "Bearer test-key"}
 
 
+def test_zero_argument_factory_loads_production_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("THOTH_CONTROL_PLANE_API_KEY", "factory-key")
+
+    app = create_app()
+
+    assert app.state.settings.THOTH_CONTROL_PLANE_API_KEY.get_secret_value() == "factory-key"
+
+
+@pytest.mark.asyncio
+async def test_cors_preflight_allows_configured_dashboard_origin(gateway) -> None:
+    app = create_app(
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_CONTROL_PLANE_CORS_ORIGINS=["http://localhost:5173"],
+        ),
+        gateway,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as test_client:
+        response = await test_client.options(
+            "/api/v1/workflows",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,idempotency-key,content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
+    assert "idempotency-key" in response.headers["access-control-allow-headers"].lower()
+
+
 @pytest.mark.asyncio
 async def test_create_workflow_returns_accepted_v1_summary(client: httpx.AsyncClient) -> None:
     response = await client.post(

@@ -50,12 +50,19 @@ def test_cli_posts_the_same_v1_request(respx_mock: respx.MockRouter, monkeypatch
     }
 
 
-def test_cli_watch_reads_and_renders_the_authoritative_v1_summary(
+def test_cli_watch_streams_and_renders_typed_v1_sse_events(
     respx_mock: respx.MockRouter, monkeypatch
 ) -> None:
     _configure(monkeypatch)
-    route = respx_mock.get("http://control-plane.test/api/v1/workflows/wf_001").respond(
-        200, json=QUEUED_SUMMARY
+    route = respx_mock.get("http://control-plane.test/api/v1/workflows/wf_001/events").respond(
+        200,
+        text=(
+            "id: 1\n"
+            "event: workflow.queued\n"
+            'data: {"workflow_id":"wf_001","event_id":"evt_1","sequence":1,'
+            '"kind":"workflow.queued","occurred_at":"2026-08-28T08:00:00Z"}\n\n'
+        ),
+        headers={"content-type": "text/event-stream"},
     )
 
     result = runner.invoke(app, ["workflow", "watch", "wf_001"])
@@ -63,7 +70,7 @@ def test_cli_watch_reads_and_renders_the_authoritative_v1_summary(
     assert result.exit_code == 0
     assert route.called
     assert '"workflow_id": "wf_001"' in result.stdout
-    assert '"status": "queued"' in result.stdout
+    assert '"kind": "workflow.queued"' in result.stdout
 
 
 @pytest.mark.parametrize(

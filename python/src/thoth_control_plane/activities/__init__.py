@@ -5,6 +5,7 @@ from thoth_control_plane.activities.legacy_scout import (
     LEGACY_ADAPTER_TASK_QUEUE,
     LegacyScoutActivity,
     LegacyScoutInput,
+    build_legacy_scout_activity,
     inspect_legacy_scout,
 )
 from thoth_control_plane.activities.source_investigation import (
@@ -19,6 +20,7 @@ __all__ = [
     "LegacyScoutActivity",
     "LegacyScoutInput",
     "SourceInvestigationActivityInput",
+    "build_legacy_scout_activity",
     "build_source_investigation_activity",
     "inspect_legacy_scout",
     "inspect_source_candidates",

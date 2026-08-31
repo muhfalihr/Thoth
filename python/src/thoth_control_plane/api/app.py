@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from temporalio.service import RPCError
 
@@ -26,8 +27,9 @@ from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflow
 CONTRACT_VERSION = "1"
 
 
-def create_app(settings: Settings, gateway: WorkflowGateway | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, gateway: WorkflowGateway | None = None) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
+    settings = settings or Settings()  # type: ignore[call-arg]
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -57,6 +59,20 @@ def create_app(settings: Settings, gateway: WorkflowGateway | None = None) -> Fa
     app.state.workflow_ready = gateway is not None
     app.state.workflow_gateway = gateway or UnavailableWorkflowGateway()
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.THOTH_CONTROL_PLANE_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "Last-Event-ID",
+        ],
+        expose_headers=["X-Thoth-Contract-Version"],
+    )
 
     exception_statuses = {
         ArtifactNotFound: status.HTTP_404_NOT_FOUND,

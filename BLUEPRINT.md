@@ -13,6 +13,19 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
 
 ## Status Keseluruhan
 
+### Python workflow control plane (2026-08-28)
+
+- **Status: additive v1 slice implemented.** FastAPI owns the versioned workflow, approval,
+  artifact authorization, and typed SSE boundary; the React dashboard and `thoth-control` client
+  consume that HTTP contract rather than constructing Scout commands.
+- **Temporal owns durable lifecycle state.** The Python worker owns source-investigation
+  activities. The temporary `thoth-legacy-adapter` queue is worker-only, single-concurrency,
+  cancellable, and must remain until the retirement gate in
+  [`docs/python-control-plane.md`](docs/python-control-plane.md) is proven.
+- **Ownership split:** the existing Rust server/worker and legacy Scout console stay in service for
+  their current media and discovery paths. This control plane neither replaces them nor exposes
+  Scout executor flags through its v1 API/dashboard.
+
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|
 | Ingest + transkrip | ✅ 100% | yt-dlp + Whisper word-level timestamps |

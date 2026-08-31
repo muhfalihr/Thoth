@@ -38,7 +38,7 @@ with workflow.unsafe.imports_passed_through():
         WorkflowStatus,
         WorkflowSummary,
     )
-    from thoth_control_plane.domain.models import LegacyScoutProgressEvent, StageSummary
+from thoth_control_plane.domain.models import LegacyScoutProgressEvent, StageProgress, StageSummary
 
 
 @workflow.defn
@@ -72,7 +72,13 @@ class SourceInvestigationWorkflow:
         self._created_at = workflow.now()
         self._updated_at = self._created_at
         self._source = input_.source
+        self._record_event(EventKind.WORKFLOW_QUEUED)
         self._transition(WorkflowStatus.RUNNING)
+        self._record_event(EventKind.WORKFLOW_STARTED)
+        self._record_event(
+            EventKind.STAGE_STARTED,
+            stage=StageProgress(name="source", progress=0.0),
+        )
 
         try:
             activity_task = asyncio.create_task(self._execute_source_activity(input_))
@@ -97,6 +103,7 @@ class SourceInvestigationWorkflow:
                 retryable=True,
             )
             self._transition(WorkflowStatus.FAILED)
+            self._record_event(EventKind.WORKFLOW_FAILED)
             return self._summary()
 
         self._source_events = list(result.events)
@@ -128,7 +135,12 @@ class SourceInvestigationWorkflow:
             self._record_event(EventKind.WORKFLOW_FAILED)
             return self._summary()
 
+        self._record_event(
+            EventKind.STAGE_COMPLETED,
+            stage=StageProgress(name="source", progress=1.0),
+        )
         self._artifacts = [result.report]
+        self._record_event(EventKind.ARTIFACT_CREATED, artifact=result.report)
         self._event_sequence += 1
         self._updated_at = workflow.now()
 
@@ -254,7 +266,13 @@ class SourceInvestigationWorkflow:
         self._event_sequence += 1
         self._updated_at = workflow.now()
 
-    def _record_event(self, kind: EventKind) -> None:
+    def _record_event(
+        self,
+        kind: EventKind,
+        *,
+        stage: StageProgress | None = None,
+        artifact: ArtifactRef | None = None,
+    ) -> None:
         sequence = len(self._workflow_events) + 1
         self._workflow_events.append(
             WorkflowEvent(
@@ -263,6 +281,8 @@ class SourceInvestigationWorkflow:
                 sequence=sequence,
                 kind=kind,
                 occurred_at=workflow.now(),
+                stage=stage,
+                artifact=artifact,
             )
         )
 

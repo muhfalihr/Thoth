@@ -11,8 +11,8 @@ from temporalio.worker import Worker
 from thoth_control_plane.activities import (
     LEGACY_ADAPTER_MAX_CONCURRENT_ACTIVITIES,
     LEGACY_ADAPTER_TASK_QUEUE,
+    build_legacy_scout_activity,
     build_source_investigation_activity,
-    inspect_legacy_scout,
 )
 from thoth_control_plane.config import Settings
 from thoth_control_plane.infrastructure.temporal_gateway import TASK_QUEUE
@@ -42,7 +42,9 @@ async def run_worker(settings: Settings | None = None) -> None:
         Worker(
             client,
             task_queue=LEGACY_ADAPTER_TASK_QUEUE,
-            activities=[inspect_legacy_scout],
+            activities=[
+                build_legacy_scout_activity(runtime_settings.THOTH_CONTROL_PLANE_ARTIFACT_ROOT)
+            ],
             max_concurrent_activities=LEGACY_ADAPTER_MAX_CONCURRENT_ACTIVITIES,
         ),
     ):

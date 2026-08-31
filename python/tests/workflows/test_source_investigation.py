@@ -30,6 +30,7 @@ from thoth_control_plane.domain import (
     ActorSnapshot,
     ApprovalDecision,
     ApprovalSignal,
+    EventKind,
     SourceInvestigationActivityResult,
     SourceInvestigationWorkflowInput,
     WorkflowRequest,
@@ -131,6 +132,12 @@ async def failing_inspect(input_: object) -> SourceInvestigationActivityResult:
     return SourceInvestigationActivityResult(
         failure={"code": "source_investigation_failed", "retryable": True}
     )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def crashing_inspect(input_: object) -> SourceInvestigationActivityResult:
+    del input_
+    raise RuntimeError("provider token and raw activity detail must not enter history events")
 
 
 @activity.defn(name="inspect_source_candidates")
@@ -277,6 +284,17 @@ async def test_produce_video_waits_for_authorized_approval_then_resumes_once(
     assert result.status == "succeeded"
     assert result.approval is None
     assert [artifact.kind for artifact in result.artifacts] == ["source_report"]
+    events = await handle.query(SourceInvestigationWorkflow.workflow_events)
+    assert [event.kind for event in events] == [
+        EventKind.WORKFLOW_QUEUED,
+        EventKind.WORKFLOW_STARTED,
+        EventKind.STAGE_STARTED,
+        EventKind.STAGE_COMPLETED,
+        EventKind.ARTIFACT_CREATED,
+        EventKind.APPROVAL_REQUIRED,
+        EventKind.APPROVAL_RECORDED,
+        EventKind.WORKFLOW_COMPLETED,
+    ]
 
 
 @pytest.mark.asyncio
@@ -401,6 +419,97 @@ async def test_activity_failure_is_bounded_and_returns_only_a_safe_failure(
     assert result.failure is not None
     assert result.failure.code == "source_investigation_failed"
     assert "provider token" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_success_trace_records_the_complete_safe_source_lifecycle(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    workflow_id = "wf_test_complete_lifecycle"
+    async with Worker(
+        workflow_env.client,
+        task_queue="test",
+        workflows=[SourceInvestigationWorkflow],
+        activities=[fake_inspect],
+    ):
+        await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[workflow_input(VALID_IDENTIFY_REQUEST)],
+            id=workflow_id,
+            task_queue="test",
+        )
+        events = await workflow_env.client.get_workflow_handle(workflow_id).query(
+            SourceInvestigationWorkflow.workflow_events
+        )
+
+    assert [event.kind for event in events] == [
+        EventKind.WORKFLOW_QUEUED,
+        EventKind.WORKFLOW_STARTED,
+        EventKind.STAGE_STARTED,
+        EventKind.STAGE_COMPLETED,
+        EventKind.ARTIFACT_CREATED,
+        EventKind.WORKFLOW_COMPLETED,
+    ]
+    assert [event.sequence for event in events] == list(range(1, 7))
+    assert events[2].stage is not None and events[2].stage.name == "source"
+    assert events[4].artifact is not None and events[4].artifact.kind == "source_report"
+    assert "provider" not in str([event.model_dump(mode="json") for event in events])
+
+
+@pytest.mark.asyncio
+async def test_approval_and_cancel_traces_record_their_terminal_lifecycle(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    workflow_id = "wf_test_approval_cancel_lifecycle"
+    async with Worker(
+        workflow_env.client,
+        task_queue="test",
+        workflows=[SourceInvestigationWorkflow],
+        activities=[fake_inspect],
+    ):
+        handle = await workflow_env.client.start_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[workflow_input(VALID_PRODUCE_REQUEST)],
+            id=workflow_id,
+            task_queue="test",
+        )
+        await wait_for_status(handle, "awaiting_approval")
+        await handle.signal(SourceInvestigationWorkflow.request_cancel)
+        assert (await handle.result()).status == "cancelled"
+        events = await handle.query(SourceInvestigationWorkflow.workflow_events)
+
+    assert EventKind.APPROVAL_REQUIRED in [event.kind for event in events]
+    assert events[-1].kind == EventKind.WORKFLOW_CANCELLED
+    assert [event.sequence for event in events] == list(range(1, len(events) + 1))
+
+
+@pytest.mark.asyncio
+async def test_activity_error_records_a_typed_safe_workflow_failure_event(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    workflow_id = "wf_test_activity_error_lifecycle"
+    async with Worker(
+        workflow_env.client,
+        task_queue="test",
+        workflows=[SourceInvestigationWorkflow],
+        activities=[crashing_inspect],
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[workflow_input(VALID_IDENTIFY_REQUEST)],
+            id=workflow_id,
+            task_queue="test",
+        )
+        events = await workflow_env.client.get_workflow_handle(workflow_id).query(
+            SourceInvestigationWorkflow.workflow_events
+        )
+
+    assert result.status == "failed"
+    assert result.failure is not None and result.failure.code == "source_investigation_failed"
+    assert events[-1].kind == EventKind.WORKFLOW_FAILED
+    serialized = str([event.model_dump(mode="json") for event in events])
+    assert "provider token" not in serialized
+    assert "raw activity detail" not in serialized
 
 
 @pytest.mark.asyncio
