@@ -1290,3 +1290,53 @@ async def test_ineligible_python_failure_does_not_emit_transition(
 ) -> None:
     _, source_events = await run_ineligible_failure_and_query_events(workflow_env)
     assert all(event.payload.get("stage") != "legacy_fallback" for event in source_events)
+
+
+@activity.defn(name="inspect_legacy_scout")
+async def crashing_legacy_inspect(input_: LegacyScoutInput) -> SourceInvestigationActivityResult:
+    del input_
+    raise RuntimeError("legacy activity crashed; must not erase preserved python evidence")
+
+
+@pytest.mark.asyncio
+async def test_legacy_activity_failure_still_preserves_python_and_transition_evidence(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    workflow_id = "wf_fallback_legacy_crash_001"
+    async with (
+        Worker(
+            workflow_env.client,
+            task_queue="test",
+            workflows=[SourceInvestigationWorkflow],
+            activities=[eligible_headless_failure_with_events],
+        ),
+        Worker(
+            workflow_env.client,
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            activities=[crashing_legacy_inspect],
+            max_concurrent_activities=1,
+        ),
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[_tiktok_fallback_input("python_tiktok_with_legacy_fallback")],
+            id=workflow_id,
+            task_queue="test",
+        )
+        source_events = await workflow_env.client.get_workflow_handle(workflow_id).query(
+            SourceInvestigationWorkflow.source_events
+        )
+
+    assert result.status == WorkflowStatus.FAILED
+    assert result.failure is not None
+    assert result.failure.code == "source_investigation_failed"
+    assert [(event.kind, event.payload["stage"]) for event in source_events] == [
+        ("stage.started", "tiktok_headless"),
+        ("stage.failed", "tiktok_headless"),
+        ("stage.completed", "tiktok_cleanup"),
+        ("stage.started", "legacy_fallback"),
+    ]
+    assert source_events[3].payload == {
+        "stage": "legacy_fallback",
+        "fallback_from": "headless_blocked",
+    }
