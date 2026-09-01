@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import sys
 
 import pytest
 
@@ -35,6 +37,7 @@ def _reset_logging_state():
     original_scrapling_filters = list(scrapling_logger.filters)
     original_scrapling_level = scrapling_logger.level
     original_scrapling_propagate = scrapling_logger.propagate
+    original_scrapling_add_handler = scrapling_logger.__dict__.get("addHandler")
 
     original_child_handlers = list(child_logger.handlers)
     original_child_filters = list(child_logger.filters)
@@ -44,6 +47,9 @@ def _reset_logging_state():
     original_root_handler_filters = {
         handler: list(handler.filters) for handler in root_logger.handlers
     }
+    original_last_resort_filters = (
+        list(logging.lastResort.filters) if logging.lastResort is not None else []
+    )
 
     yield
 
@@ -51,6 +57,10 @@ def _reset_logging_state():
     scrapling_logger.filters[:] = original_scrapling_filters
     scrapling_logger.setLevel(original_scrapling_level)
     scrapling_logger.propagate = original_scrapling_propagate
+    if original_scrapling_add_handler is None:
+        scrapling_logger.__dict__.pop("addHandler", None)
+    else:
+        scrapling_logger.__dict__["addHandler"] = original_scrapling_add_handler
 
     child_logger.handlers[:] = original_child_handlers
     child_logger.filters[:] = original_child_filters
@@ -59,6 +69,8 @@ def _reset_logging_state():
 
     for handler in root_logger.handlers:
         handler.filters[:] = original_root_handler_filters.get(handler, [])
+    if logging.lastResort is not None:
+        logging.lastResort.filters[:] = original_last_resort_filters
 
 
 def test_scrapling_info_is_dropped_and_error_is_fully_redacted() -> None:
@@ -137,24 +149,63 @@ def test_configure_provider_logging_does_not_raise_on_broken_handler() -> None:
     configure_provider_logging()  # must not raise
 
 
-def test_scrapling_child_logger_records_propagate_through_redaction() -> None:
-    """Child loggers must be covered even though the filter targets 'scrapling' by name.
+def test_scrapling_child_logger_handler_attached_after_configure_is_redacted() -> None:
+    """Mirrors the REAL production ordering, not a convenient one.
 
-    A logging.Filter attached directly to a Logger object is only consulted by
-    Logger.handle() for records originated *on that exact logger*; it is not
-    consulted for records that merely propagate up from a child logger. What
-    *does* run for every propagating record is each Handler's own filter list.
-    So coverage for child loggers like 'scrapling.fetchers' depends on the
-    filter being installed on the Handler objects the record eventually
-    reaches (here: the 'scrapling' logger's own handler), not merely on the
-    'scrapling' Logger object itself.
+    In production, `configure_provider_logging()` runs first at worker
+    startup; `scrapling` is only imported later, lazily, inside
+    `check_scrapling_capability()` — and scrapling's own `setup_logger()`
+    attaches ITS OWN `StreamHandler` to the `scrapling` logger at that point,
+    long after configuration already ran. A filter installed only on
+    handlers that existed at configure time cannot see a handler created
+    later. Coverage for this must come from something that intercepts
+    handler attachment itself, not from having scanned `logger.handlers` at
+    a lucky moment.
+
+    Exercises both hostile vectors named by the security review: the secret
+    embedded directly in the message string, and the secret carried only in
+    `args`.
     """
+    scrapling_logger = logging.getLogger("scrapling")
+    scrapling_logger.handlers[:] = []
+    scrapling_logger.propagate = False
+    scrapling_logger.setLevel(logging.NOTSET)
+
+    configure_provider_logging()  # runs BEFORE scrapling is ever imported
+
     records: list[logging.LogRecord] = []
     handler = _ListHandler(records)
+    scrapling_logger.addHandler(handler)  # simulates scrapling.core.utils.setup_logger()
+
+    child_logger = logging.getLogger("scrapling.fetchers")
+    child_logger.handlers[:] = []
+    child_logger.propagate = True
+    child_logger.setLevel(logging.DEBUG)
+
+    child_logger.info("dropped info token=SUPER_SECRET_TOKEN")
+    child_logger.warning("signed url token=SUPER_SECRET_TOKEN")
+    child_logger.warning("signed url %s", "token=SUPER_SECRET_TOKEN")
+
+    assert len(records) == 2  # the INFO record must have been dropped, not just the two WARNINGs
+    for record in records:
+        assert record.name == "scrapling.fetchers"
+        assert record.getMessage() == REDACTED_PROVIDER_MESSAGE
+        assert "SUPER_SECRET_TOKEN" not in record.getMessage()
+        assert record.args == ()
+
+
+def test_scrapling_child_logger_falls_through_to_last_resort_redacted(monkeypatch) -> None:
+    """With zero handlers anywhere in the chain, logging falls back to `logging.lastResort`,
+    which by default has no filters and prints the raw record straight to stderr. That
+    fallback path must be closed too, independent of any handler ever being attached.
+    """
     scrapling_logger = logging.getLogger("scrapling")
-    scrapling_logger.handlers[:] = [handler]
-    scrapling_logger.propagate = False
-    scrapling_logger.setLevel(logging.DEBUG)
+    scrapling_logger.handlers[:] = []
+    scrapling_logger.propagate = True
+    scrapling_logger.setLevel(logging.NOTSET)
+
+    root_logger = logging.getLogger()
+    monkeypatch.setattr(root_logger, "handlers", [])  # no handler anywhere in the chain
 
     child_logger = logging.getLogger("scrapling.fetchers")
     child_logger.handlers[:] = []
@@ -163,12 +214,14 @@ def test_scrapling_child_logger_records_propagate_through_redaction() -> None:
 
     configure_provider_logging()
 
-    child_logger.info("child signed https://cdn.test/video?token=secret")
-    child_logger.error("child failed https://cdn.test/video?token=secret")
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stream)  # _StderrHandler.stream reads sys.stderr live
 
-    assert len(records) == 1
-    assert records[0].name == "scrapling.fetchers"
-    assert records[0].getMessage() == REDACTED_PROVIDER_MESSAGE
+    child_logger.warning("signed url token=SUPER_SECRET_TOKEN")
+
+    output = stream.getvalue()
+    assert "SUPER_SECRET_TOKEN" not in output
+    assert REDACTED_PROVIDER_MESSAGE in output
 
 
 def test_filter_clears_every_hostile_vector_directly() -> None:
