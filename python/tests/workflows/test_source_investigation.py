@@ -13,6 +13,7 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
+import thoth_control_plane.infrastructure.temporal_gateway as temporal_gateway
 from thoth_control_plane import worker
 from thoth_control_plane.acquisition.models import TikTokAcquisitionResult, TikTokSourceReport
 from thoth_control_plane.activities.legacy_scout import LEGACY_ADAPTER_TASK_QUEUE, LegacyScoutInput
@@ -855,6 +856,33 @@ async def unsafe_python_failure(input_: SourceInvestigationActivityInput):
     )
 
 
+@activity.defn(name="inspect_source_candidates")
+async def acquisition_runner_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "acquisition_runner_failed", "retryable": False}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def acquisition_dependency_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "acquisition_dependency_unavailable", "retryable": False}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def artifact_persistence_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "artifact_persistence_failed", "retryable": False}
+    )
+
+
 @activity.defn(name="inspect_legacy_scout")
 async def counted_legacy_success(input_: LegacyScoutInput):
     global LEGACY_CALLS
@@ -940,6 +968,33 @@ async def run_routing_case(workflow_env, *, source_url: str, mode: str, python_a
             0,
         ),
         (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            acquisition_runner_python_failure,
+            "failed",
+            "acquisition_runner_failed",
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            acquisition_dependency_python_failure,
+            "failed",
+            "acquisition_dependency_unavailable",
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            artifact_persistence_python_failure,
+            "failed",
+            "artifact_persistence_failed",
+            1,
+            0,
+        ),
+        (
             "https://example.test/post",
             "python_tiktok_with_legacy_fallback",
             counted_python_success,
@@ -956,6 +1011,15 @@ async def run_routing_case(workflow_env, *, source_url: str, mode: str, python_a
             "headless_blocked",
             1,
             0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "legacy_scout",
+            counted_python_success,
+            "succeeded",
+            None,
+            0,
+            1,
         ),
     ],
 )
@@ -979,6 +1043,28 @@ async def test_activity_mode_routing(
     assert (result.failure.code if result.failure is not None else None) == expected_failure
     assert python_calls == expected_python_calls
     assert legacy_calls == expected_legacy_calls
+
+
+@pytest.mark.asyncio
+async def test_gateway_connect_propagates_source_investigation_activity_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = object()
+
+    async def fake_connect(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        return fake_client
+
+    monkeypatch.setattr(temporal_gateway.Client, "connect", fake_connect)
+
+    gateway = await TemporalWorkflowGateway.connect(
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE="legacy_scout",
+        )
+    )
+
+    assert gateway._activity_mode == "legacy_scout"
 
 
 @pytest.mark.asyncio

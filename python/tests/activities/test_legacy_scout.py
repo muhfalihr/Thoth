@@ -371,4 +371,17 @@ def test_no_fastapi_request_model_exposes_activity_mode() -> None:
 
     app = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="key"))
     openapi_schema = app.openapi()
-    assert "activity_mode" not in str(openapi_schema)
+    request_schema_names = {
+        request_body["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]
+        for path_item in openapi_schema["paths"].values()
+        for operation in path_item.values()
+        if "requestBody" in operation
+        for request_body in [operation["requestBody"]]
+    }
+
+    assert request_schema_names == {"ApprovalSubmission", "RetryRequest", "WorkflowRequest"}
+    assert all(
+        "activity_mode"
+        not in openapi_schema["components"]["schemas"][schema_name].get("properties", {})
+        for schema_name in request_schema_names
+    )
