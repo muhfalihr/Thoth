@@ -12,6 +12,9 @@ dependencies = [
   "uvicorn[standard]>=0.30,<1",
 ]
 
+[project.optional-dependencies]
+acquisition = ["scrapling[fetchers]>=0.4.15,<0.5"]
+
 [project.scripts]
 thoth-control = "thoth_control_plane.cli:app"
 
@@ -33,6 +36,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+  "live: requires explicit public provider fixture and installed browser dependencies",
+]
 
 [build-system]
 requires = ["hatchling"]

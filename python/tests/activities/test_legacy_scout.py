@@ -344,3 +344,44 @@ def test_legacy_selection_is_explicit_worker_configuration() -> None:
     )
 
     assert settings.source_investigation_activity_mode == "legacy_scout"
+
+
+def test_source_activity_modes_are_worker_owned_and_strict() -> None:
+    assert Settings(THOTH_CONTROL_PLANE_API_KEY="key").source_investigation_activity_mode == (
+        "python_tiktok_with_legacy_fallback"
+    )
+    for mode in ("python", "python_tiktok_with_legacy_fallback", "legacy_scout"):
+        settings = Settings(
+            THOTH_CONTROL_PLANE_API_KEY="key",
+            THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE=mode,
+        )
+        assert settings.source_investigation_activity_mode == mode
+
+
+def test_source_activity_mode_rejects_an_arbitrary_value() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="key",
+            THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE="scout_v2",
+        )
+
+
+def test_no_fastapi_request_model_exposes_activity_mode() -> None:
+    from thoth_control_plane.api.app import create_app
+
+    app = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="key"))
+    openapi_schema = app.openapi()
+    request_schema_names = {
+        request_body["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]
+        for path_item in openapi_schema["paths"].values()
+        for operation in path_item.values()
+        if "requestBody" in operation
+        for request_body in [operation["requestBody"]]
+    }
+
+    assert request_schema_names == {"ApprovalSubmission", "RetryRequest", "WorkflowRequest"}
+    assert all(
+        "activity_mode"
+        not in openapi_schema["components"]["schemas"][schema_name].get("properties", {})
+        for schema_name in request_schema_names
+    )

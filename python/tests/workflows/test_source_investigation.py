@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -12,7 +13,9 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
+import thoth_control_plane.infrastructure.temporal_gateway as temporal_gateway
 from thoth_control_plane import worker
+from thoth_control_plane.acquisition.models import TikTokAcquisitionResult, TikTokSourceReport
 from thoth_control_plane.activities.legacy_scout import LEGACY_ADAPTER_TASK_QUEUE, LegacyScoutInput
 from thoth_control_plane.activities.source_investigation import (
     SourceInvestigationActivityInput,
@@ -585,6 +588,32 @@ async def test_temporal_history_contains_only_redacted_workflow_values(
     assert "provider token" not in serialized_history
 
 
+CANONICAL_TIKTOK_URL = "https://www.tiktok.com/@creator/video/1234567890"
+_FIXTURE_REPORT_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "tiktok" / "normalized_report.json"
+)
+
+
+def _offline_successful_runner():
+    """Build a deterministic, offline `AcquisitionRunner` for workflow tests.
+
+    Never touches Scrapling, Chromium, or TikWM; keeps the ordinary suite
+    fully offline while exercising the real activity persistence path.
+    """
+
+    async def run(workflow_id: str, source_url: str, artifact_root: Path):
+        del source_url
+        media_path = artifact_root / f"reports/{workflow_id}/media/tiktok-1234567890.mp4"
+        media_path.parent.mkdir(parents=True, exist_ok=True)
+        media_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 10_100)
+        report = TikTokSourceReport.model_validate_json(
+            _FIXTURE_REPORT_PATH.read_text(encoding="utf-8")
+        ).model_copy(update={"workflow_id": workflow_id})
+        return TikTokAcquisitionResult(report=report)
+
+    return run
+
+
 @pytest.mark.asyncio
 async def test_source_investigation_activity_materializes_its_report(
     tmp_path,
@@ -593,19 +622,22 @@ async def test_source_investigation_activity_materializes_its_report(
         Settings(
             THOTH_CONTROL_PLANE_API_KEY="test-key",
             THOTH_CONTROL_PLANE_ARTIFACT_ROOT=tmp_path,
-        )
+            THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE="python",
+        ),
+        runner=_offline_successful_runner(),
     )
     result = await configured_activity(
         SourceInvestigationActivityInput(
             workflow_id="wf_materialized",
             request_snapshot_id="req_materialized",
+            canonical_source_url=CANONICAL_TIKTOK_URL,
         )
     )
 
     assert result.report is not None
     report = tmp_path / result.report.location
     assert report.is_file()
-    assert "req_materialized" in report.read_text(encoding="utf-8")
+    assert "wf_materialized" in report.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -627,7 +659,9 @@ async def test_production_worker_registration_binds_source_activity_to_configure
         Settings(
             THOTH_CONTROL_PLANE_API_KEY="test-key",
             THOTH_CONTROL_PLANE_ARTIFACT_ROOT=configured_root,
+            THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE="python",
         ),
+        runner=_offline_successful_runner(),
     )
 
     activities = registered["activities"]
@@ -636,6 +670,7 @@ async def test_production_worker_registration_binds_source_activity_to_configure
         SourceInvestigationActivityInput(
             workflow_id="wf_registered_root",
             request_snapshot_id="req_registered_root",
+            canonical_source_url=CANONICAL_TIKTOK_URL,
         )
     )
 
@@ -799,6 +834,261 @@ async def test_gateway_cancellation_wins_when_the_running_activity_returns_an_er
         await gateway.cancel(started.workflow_id, actor=owner)
         CANCELLING_ACTIVITY_RELEASE.set()
         assert (await handle.result()).status == "cancelled"
+
+
+PYTHON_CALLS = 0
+LEGACY_CALLS = 0
+
+
+@activity.defn(name="inspect_source_candidates")
+async def eligible_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "headless_blocked", "retryable": True}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def cdn_unavailable_python_failure(input_: SourceInvestigationActivityInput):
+    """A real, service-producible eligible failure (see `TikWmError`).
+
+    Unlike `eligible_python_failure` (`headless_blocked`, a code
+    `TikTokAcquisitionService.inspect()` never actually returns), this pins
+    the fallback path a production run can really hit.
+    """
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(failure={"code": "cdn_unavailable", "retryable": True})
+
+
+@activity.defn(name="inspect_source_candidates")
+async def unsafe_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "invalid_tiktok_url", "retryable": False}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def acquisition_runner_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "acquisition_runner_failed", "retryable": False}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def acquisition_dependency_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "acquisition_dependency_unavailable", "retryable": False}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
+async def artifact_persistence_python_failure(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "artifact_persistence_failed", "retryable": False}
+    )
+
+
+@activity.defn(name="inspect_legacy_scout")
+async def counted_legacy_success(input_: LegacyScoutInput):
+    global LEGACY_CALLS
+    LEGACY_CALLS += 1
+    return await fake_legacy_inspect(input_)
+
+
+@activity.defn(name="inspect_source_candidates")
+async def counted_python_success(input_: SourceInvestigationActivityInput):
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return await fake_inspect(input_)
+
+
+async def run_routing_case(workflow_env, *, source_url: str, mode: str, python_activity):
+    global PYTHON_CALLS, LEGACY_CALLS
+    PYTHON_CALLS = 0
+    LEGACY_CALLS = 0
+    request = VALID_IDENTIFY_REQUEST.model_copy(
+        update={"source": VALID_IDENTIFY_REQUEST.source.model_copy(update={"url": source_url})}
+    )
+    input_ = workflow_input(request).model_copy(update={"activity_mode": mode})
+    async with (
+        Worker(
+            workflow_env.client,
+            task_queue="test",
+            workflows=[SourceInvestigationWorkflow],
+            activities=[python_activity],
+        ),
+        Worker(
+            workflow_env.client,
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            activities=[counted_legacy_success],
+            max_concurrent_activities=1,
+        ),
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[input_],
+            id=f"wf_route_{mode}_{request_snapshot_id(request)}",
+            task_queue="test",
+        )
+    return result, PYTHON_CALLS, LEGACY_CALLS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "source_url",
+        "mode",
+        "python_activity",
+        "expected_status",
+        "expected_failure",
+        "expected_python_calls",
+        "expected_legacy_calls",
+    ),
+    [
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            counted_python_success,
+            "succeeded",
+            None,
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            eligible_python_failure,
+            "succeeded",
+            None,
+            1,
+            1,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            cdn_unavailable_python_failure,
+            "succeeded",
+            None,
+            1,
+            1,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            unsafe_python_failure,
+            "failed",
+            "invalid_tiktok_url",
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            acquisition_runner_python_failure,
+            "failed",
+            "acquisition_runner_failed",
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            acquisition_dependency_python_failure,
+            "failed",
+            "acquisition_dependency_unavailable",
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            artifact_persistence_python_failure,
+            "failed",
+            "artifact_persistence_failed",
+            1,
+            0,
+        ),
+        (
+            "https://example.test/post",
+            "python_tiktok_with_legacy_fallback",
+            counted_python_success,
+            "succeeded",
+            None,
+            0,
+            1,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python",
+            eligible_python_failure,
+            "failed",
+            "headless_blocked",
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "legacy_scout",
+            counted_python_success,
+            "succeeded",
+            None,
+            0,
+            1,
+        ),
+    ],
+)
+async def test_activity_mode_routing(
+    workflow_env,
+    source_url,
+    mode,
+    python_activity,
+    expected_status,
+    expected_failure,
+    expected_python_calls,
+    expected_legacy_calls,
+):
+    result, python_calls, legacy_calls = await run_routing_case(
+        workflow_env,
+        source_url=source_url,
+        mode=mode,
+        python_activity=python_activity,
+    )
+    assert result.status == expected_status
+    assert (result.failure.code if result.failure is not None else None) == expected_failure
+    assert python_calls == expected_python_calls
+    assert legacy_calls == expected_legacy_calls
+
+
+@pytest.mark.asyncio
+async def test_gateway_connect_propagates_source_investigation_activity_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = object()
+
+    async def fake_connect(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        return fake_client
+
+    monkeypatch.setattr(temporal_gateway.Client, "connect", fake_connect)
+
+    gateway = await TemporalWorkflowGateway.connect(
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE="legacy_scout",
+        )
+    )
+
+    assert gateway._activity_mode == "legacy_scout"
 
 
 @pytest.mark.asyncio

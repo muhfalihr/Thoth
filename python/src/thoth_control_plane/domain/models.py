@@ -281,6 +281,13 @@ class WorkflowSummary(StrictModel):
         return _parse_rfc3339_timestamp(timestamp)
 
 
+SourceActivityMode = Literal[
+    "python",
+    "python_tiktok_with_legacy_fallback",
+    "legacy_scout",
+]
+
+
 class SourceInvestigationInput(StrictModel):
     source_url: HttpUrl
 
@@ -302,7 +309,7 @@ class SourceInvestigationResult(StrictModel):
     candidates: list[SourceCandidate] = Field(default_factory=list)
     report: ArtifactRef | None = None
     failure: SafeActivityError | None = None
-    events: list[LegacyScoutProgressEvent] = Field(default_factory=list)
+    events: list[SourceProgressEvent] = Field(default_factory=list)
     diagnostics: list[Annotated[str, Field(min_length=1, max_length=2_000)]] = Field(
         default_factory=list
     )
@@ -314,13 +321,17 @@ class SourceInvestigationResult(StrictModel):
         return self
 
 
-class LegacyScoutProgressEvent(StrictModel):
+class SourceProgressEvent(StrictModel):
     """Small machine-readable compatibility event; never derived from CLI prose."""
 
     kind: Literal[
         "stage.started", "stage.progress", "stage.completed", "stage.failed", "stage.cancelled"
     ]
     payload: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+
+LegacyScoutProgressEvent = SourceProgressEvent
+"""Backward-compatible alias; import compatibility only, do not extend."""
 
 
 class SafeActivityError(StrictModel):
@@ -335,7 +346,7 @@ class SourceInvestigationActivityResult(StrictModel):
 
     report: ArtifactRef | None = None
     failure: SafeActivityError | None = None
-    events: list[LegacyScoutProgressEvent] = Field(default_factory=list)
+    events: list[SourceProgressEvent] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_exactly_one_outcome(self) -> SourceInvestigationActivityResult:
@@ -351,7 +362,7 @@ class SourceInvestigationWorkflowInput(StrictModel):
     source: WorkflowSource
     intent: Literal["identify_original", "produce_video"]
     actor: ActorSnapshot
-    activity_mode: Literal["python", "legacy_scout"] = "python"
+    activity_mode: SourceActivityMode = "python"
 
 
 def request_snapshot_id(request: WorkflowRequest) -> str:

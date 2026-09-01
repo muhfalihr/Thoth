@@ -1,0 +1,20 @@
+{
+  "final_url": "https://www.tiktok.com/@creator/video/1234567890",
+  "og_title": "A public caption",
+  "author": "creator",
+  "video_sources": ["https://video.example/public.mp4?sig=fixture-secret"],
+  "captured_xhr": [
+    {
+      "status": 200,
+      "body": {
+        "itemInfo": {
+          "itemStruct": {
+            "id": "1234567890",
+            "desc": "A public caption",
+            "author": {"uniqueId": "creator"}
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "id": "1234567890",
+    "title": "A public caption",
+    "duration": 12,
+    "hdplay": "https://www.tikwm.com/video/media.mp4?token=fixture-secret",
+    "play": "",
+    "wmplay": "",
+    "author": {
+      "unique_id": "creator"
+    }
+  }
+}

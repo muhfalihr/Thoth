@@ -44,6 +44,23 @@ with workflow.unsafe.imports_passed_through():
         StageSummary,
     )
 
+# Frozen allowlist of Python source-investigation failure codes eligible for a
+# one-shot legacy Scout fallback. Closed by design: any code not explicitly
+# listed here is never fallback-eligible, even a new one added later (see
+# `acquisition_runner_failed`, which is an unknown-internal-error code and
+# must never trigger a silent re-run through a second engine).
+LEGACY_FALLBACK_ELIGIBLE_CODES = frozenset(
+    {
+        "unsupported_platform",
+        "headless_timeout",
+        "headless_blocked",
+        "headless_incomplete",
+        "cdn_rate_limited",
+        "cdn_unavailable",
+        "media_validation_failed",
+    }
+)
+
 
 @workflow.defn
 class SourceInvestigationWorkflow:
@@ -193,28 +210,57 @@ class SourceInvestigationWorkflow:
     async def _execute_source_activity(
         self, input_: SourceInvestigationWorkflowInput
     ) -> SourceInvestigationActivityResult:
+        """Route deterministically between the Python activity and legacy Scout.
+
+        Fallback eligibility is a frozen, closed allowlist
+        (`LEGACY_FALLBACK_ELIGIBLE_CODES`): unsafe input, dependency,
+        configuration, and artifact failures never invoke legacy.
+        """
         if input_.activity_mode == "legacy_scout":
-            return await workflow.execute_activity(
-                inspect_legacy_scout,
-                LegacyScoutInput(
-                    workflow_id=self._workflow_id,
-                    canonical_source_url=input_.source.display_url,
-                    output_package_id=f"pkg_{self._request_snapshot_id[4:]}",
-                    timeout=timedelta(minutes=5),
-                    cancellation_token=f"can_{self._workflow_id[3:]}",
-                ),
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=RetryPolicy(maximum_attempts=1),
-                task_queue=LEGACY_ADAPTER_TASK_QUEUE,
-            )
+            return await self._execute_legacy_activity(input_)
+        if (
+            input_.activity_mode == "python_tiktok_with_legacy_fallback"
+            and input_.source.platform != "tiktok"
+        ):
+            return await self._execute_legacy_activity(input_)
+        result = await self._execute_python_activity(input_)
+        if (
+            input_.activity_mode == "python_tiktok_with_legacy_fallback"
+            and result.failure is not None
+            and result.failure.code in LEGACY_FALLBACK_ELIGIBLE_CODES
+        ):
+            return await self._execute_legacy_activity(input_)
+        return result
+
+    async def _execute_python_activity(
+        self, input_: SourceInvestigationWorkflowInput
+    ) -> SourceInvestigationActivityResult:
         return await workflow.execute_activity(
             inspect_source_candidates,
             SourceInvestigationActivityInput(
                 workflow_id=self._workflow_id,
                 request_snapshot_id=self._request_snapshot_id,
+                canonical_source_url=input_.source.display_url,
             ),
             start_to_close_timeout=timedelta(minutes=5),
             retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+
+    async def _execute_legacy_activity(
+        self, input_: SourceInvestigationWorkflowInput
+    ) -> SourceInvestigationActivityResult:
+        return await workflow.execute_activity(
+            inspect_legacy_scout,
+            LegacyScoutInput(
+                workflow_id=self._workflow_id,
+                canonical_source_url=input_.source.display_url,
+                output_package_id=f"pkg_{self._request_snapshot_id[4:]}",
+                timeout=timedelta(minutes=5),
+                cancellation_token=f"can_{self._workflow_id[3:]}",
+            ),
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=RetryPolicy(maximum_attempts=1),
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
         )
 
     @workflow.signal
