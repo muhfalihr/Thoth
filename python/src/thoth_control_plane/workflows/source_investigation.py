@@ -212,6 +212,7 @@ class SourceInvestigationWorkflow:
             SourceInvestigationActivityInput(
                 workflow_id=self._workflow_id,
                 request_snapshot_id=self._request_snapshot_id,
+                canonical_source_url=input_.source.display_url,
             ),
             start_to_close_timeout=timedelta(minutes=5),
             retry_policy=RetryPolicy(maximum_attempts=3),

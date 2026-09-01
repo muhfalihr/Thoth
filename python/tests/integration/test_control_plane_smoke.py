@@ -1,5 +1,6 @@
 import asyncio
 from itertools import pairwise
+from pathlib import Path
 
 import httpx
 import pytest
@@ -7,11 +8,37 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
+from thoth_control_plane.acquisition.models import TikTokAcquisitionResult, TikTokSourceReport
 from thoth_control_plane.activities import build_source_investigation_activity
 from thoth_control_plane.api import create_app
 from thoth_control_plane.config import Settings
 from thoth_control_plane.infrastructure.temporal_gateway import TASK_QUEUE, TemporalWorkflowGateway
 from thoth_control_plane.workflows import SourceInvestigationWorkflow
+
+_FIXTURE_REPORT_PATH = Path("tests/fixtures/tiktok/normalized_report.json")
+
+
+def _offline_successful_runner():
+    """Deterministic, offline `AcquisitionRunner` double for this smoke test.
+
+    Task 6 replaced the generic source-report stub with real TikTok
+    acquisition, so exercising the production activity builder here (without
+    stubbing Temporal/the API away, unlike `control_plane`'s fixture activity
+    above) now needs an injected runner to stay offline and deterministic.
+    """
+
+    async def run(workflow_id: str, source_url: str, artifact_root: Path):
+        del source_url
+        media_path = artifact_root / f"reports/{workflow_id}/media/tiktok-1234567890.mp4"
+        media_path.parent.mkdir(parents=True, exist_ok=True)
+        media_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 10_100)
+        report = TikTokSourceReport.model_validate_json(
+            _FIXTURE_REPORT_PATH.read_text(encoding="utf-8")
+        ).model_copy(update={"workflow_id": workflow_id})
+        return TikTokAcquisitionResult(report=report)
+
+    return run
+
 
 VALID_PRODUCE_REQUEST = {
     "source": {
@@ -105,7 +132,9 @@ async def test_production_activity_and_api_share_a_custom_artifact_root(tmp_path
         data_converter=pydantic_data_converter
     )
     try:
-        configured_activity = build_source_investigation_activity(settings)
+        configured_activity = build_source_investigation_activity(
+            settings, runner=_offline_successful_runner()
+        )
         async with Worker(
             environment.client,
             task_queue=TASK_QUEUE,

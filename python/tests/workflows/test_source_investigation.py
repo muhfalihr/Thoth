@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -13,6 +14,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from thoth_control_plane import worker
+from thoth_control_plane.acquisition.models import TikTokAcquisitionResult, TikTokSourceReport
 from thoth_control_plane.activities.legacy_scout import LEGACY_ADAPTER_TASK_QUEUE, LegacyScoutInput
 from thoth_control_plane.activities.source_investigation import (
     SourceInvestigationActivityInput,
@@ -585,6 +587,30 @@ async def test_temporal_history_contains_only_redacted_workflow_values(
     assert "provider token" not in serialized_history
 
 
+CANONICAL_TIKTOK_URL = "https://www.tiktok.com/@creator/video/1234567890"
+_FIXTURE_REPORT_PATH = Path("tests/fixtures/tiktok/normalized_report.json")
+
+
+def _offline_successful_runner():
+    """Build a deterministic, offline `AcquisitionRunner` for workflow tests.
+
+    Never touches Scrapling, Chromium, or TikWM; keeps the ordinary suite
+    fully offline while exercising the real activity persistence path.
+    """
+
+    async def run(workflow_id: str, source_url: str, artifact_root: Path):
+        del source_url
+        media_path = artifact_root / f"reports/{workflow_id}/media/tiktok-1234567890.mp4"
+        media_path.parent.mkdir(parents=True, exist_ok=True)
+        media_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 10_100)
+        report = TikTokSourceReport.model_validate_json(
+            _FIXTURE_REPORT_PATH.read_text(encoding="utf-8")
+        ).model_copy(update={"workflow_id": workflow_id})
+        return TikTokAcquisitionResult(report=report)
+
+    return run
+
+
 @pytest.mark.asyncio
 async def test_source_investigation_activity_materializes_its_report(
     tmp_path,
@@ -593,19 +619,21 @@ async def test_source_investigation_activity_materializes_its_report(
         Settings(
             THOTH_CONTROL_PLANE_API_KEY="test-key",
             THOTH_CONTROL_PLANE_ARTIFACT_ROOT=tmp_path,
-        )
+        ),
+        runner=_offline_successful_runner(),
     )
     result = await configured_activity(
         SourceInvestigationActivityInput(
             workflow_id="wf_materialized",
             request_snapshot_id="req_materialized",
+            canonical_source_url=CANONICAL_TIKTOK_URL,
         )
     )
 
     assert result.report is not None
     report = tmp_path / result.report.location
     assert report.is_file()
-    assert "req_materialized" in report.read_text(encoding="utf-8")
+    assert "wf_materialized" in report.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -628,6 +656,7 @@ async def test_production_worker_registration_binds_source_activity_to_configure
             THOTH_CONTROL_PLANE_API_KEY="test-key",
             THOTH_CONTROL_PLANE_ARTIFACT_ROOT=configured_root,
         ),
+        runner=_offline_successful_runner(),
     )
 
     activities = registered["activities"]
@@ -636,6 +665,7 @@ async def test_production_worker_registration_binds_source_activity_to_configure
         SourceInvestigationActivityInput(
             workflow_id="wf_registered_root",
             request_snapshot_id="req_registered_root",
+            canonical_source_url=CANONICAL_TIKTOK_URL,
         )
     )
 
