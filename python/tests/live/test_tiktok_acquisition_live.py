@@ -27,6 +27,9 @@ from thoth_control_plane.activities.source_investigation import (
 from thoth_control_plane.config import Settings
 
 LIVE_URL = os.getenv("THOTH_LIVE_TIKTOK_URL")
+_SCOUT_ACQUISITION_MEDIA_ROOT = (
+    Path(__file__).resolve().parents[3] / "scout" / "output" / "acquisition-media"
+)
 
 _BANNED_PERSISTED_KEYS = frozenset(
     {
@@ -50,13 +53,18 @@ _BANNED_PERSISTED_KEYS = frozenset(
 )
 
 
-def _artifact_path(artifact_root: Path, location: str) -> Path:
-    """Resolve one persisted location and prove it remains below its artifact root."""
+def _artifact_path(
+    artifact_root: Path, location: str, *, absolute_roots: tuple[Path, ...] = ()
+) -> Path:
+    """Resolve one location below its relative root or an explicit absolute root."""
     path = Path(location)
-    assert not path.is_absolute()
-    resolved_root = artifact_root.resolve()
-    resolved_path = (artifact_root / path).resolve()
-    assert resolved_path.is_relative_to(resolved_root)
+    assert ".." not in path.parts
+    if path.is_absolute():
+        resolved_path = path.resolve()
+        assert any(resolved_path.is_relative_to(root.resolve()) for root in absolute_roots)
+    else:
+        resolved_path = (artifact_root / path).resolve()
+        assert resolved_path.is_relative_to(artifact_root.resolve())
     return resolved_path
 
 
@@ -66,6 +74,17 @@ def _persisted_keys(value: object) -> set[str]:
         return set(value) | set().union(*(_persisted_keys(item) for item in value.values()))
     if isinstance(value, list):
         return set().union(*(_persisted_keys(item) for item in value)) if value else set()
+    return set()
+
+
+def _persisted_strings(value: object) -> set[str]:
+    """Collect report strings without relying on JSON's platform-specific escaping."""
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, dict):
+        return set().union(*(_persisted_strings(item) for item in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_persisted_strings(item) for item in value)) if value else set()
     return set()
 
 
@@ -91,7 +110,11 @@ def normalize_legacy_tiktok(payload: dict, input_url: str, artifact_root: Path) 
         "media_kind": "video" if main.get("is_video", True) else "image",
         "media_index": 1,
         "local_media_present": isinstance(main.get("source_local"), str)
-        and _artifact_path(artifact_root, main["source_local"]).is_file(),
+        and _artifact_path(
+            artifact_root,
+            main["source_local"],
+            absolute_roots=(_SCOUT_ACQUISITION_MEDIA_ROOT,),
+        ).is_file(),
         "outcome": "resolved",
     }
 
@@ -139,21 +162,24 @@ async def test_public_tiktok_post_produces_safe_local_report(tmp_path: Path) -> 
         )
     )
     assert result.report is not None
+    assert not Path(result.report.location).is_absolute()
     report_path = _artifact_path(tmp_path, result.report.location)
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["outcome"]["attempts"][0]["strategy"] == "scrapling_headless"
     media = report["media"][0]
+    assert not Path(media["location"]).is_absolute()
     media_path = _artifact_path(tmp_path, media["location"])
     assert media["media_type"] == "video/mp4"
     assert media_path.is_file()
     assert media_path.stat().st_size >= 10_000
     assert media_path.stat().st_size == media["bytes"]
-    assert media_path.read_bytes()[:12][4:8] == b"ftyp"
+    with media_path.open("rb") as handle:
+        assert handle.read(12)[4:8] == b"ftyp"
     assert _file_checksum(media_path) == media["checksum"]
-    serialized = report_path.read_text(encoding="utf-8")
     assert not (_persisted_keys(report) & _BANNED_PERSISTED_KEYS)
-    assert str(tmp_path.resolve()).lower() not in serialized.lower()
-    assert report["source"]["canonical_url"] in serialized
+    resolved_artifact_root = str(tmp_path.resolve()).lower()
+    assert not any(resolved_artifact_root in value.lower() for value in _persisted_strings(report))
+    assert report["source"]["canonical_url"] in _persisted_strings(report)
     assert list(tmp_path.rglob("*.part")) == []
 
 
@@ -219,6 +245,7 @@ async def test_live_python_and_legacy_tiktok_contracts_match(tmp_path: Path) -> 
         )
     )
     assert legacy_result.report is not None
+    assert not Path(legacy_result.report.location).is_absolute()
     legacy_payload = json.loads(
         _artifact_path(legacy_root, legacy_result.report.location).read_text(encoding="utf-8")
     )
