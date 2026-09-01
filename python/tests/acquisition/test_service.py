@@ -364,6 +364,11 @@ async def test_tikwm_materialization_failure_returns_media_validation_failed(tmp
     assert result.failure is not None
     assert result.failure.code == "media_validation_failed"
     assert result.failure.retryable is True
+    assert [attempt.strategy.value for attempt in result.failure.attempts] == [
+        "scrapling_headless",
+        "tikwm_cdn",
+    ]
+    assert result.failure.attempts[-1].reason == AcquisitionReason.MEDIA_VALIDATION_FAILED
     assert materializer.calls == ["tikwm_cdn"]
     assert resolver.calls == ["tikwm"]
 
