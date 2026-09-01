@@ -19,6 +19,7 @@ from thoth_control_plane.activities import (
 )
 from thoth_control_plane.config import Settings
 from thoth_control_plane.infrastructure.temporal_gateway import TASK_QUEUE
+from thoth_control_plane.observability import configure_provider_logging
 from thoth_control_plane.workflows import SourceInvestigationWorkflow
 
 
@@ -44,6 +45,7 @@ def build_source_investigation_worker(
 async def run_worker(settings: Settings | None = None) -> None:
     """Run normal activities and the isolated single-concurrency legacy adapter."""
     runtime_settings = settings or Settings()  # type: ignore[call-arg]
+    configure_provider_logging()
     capability = await check_scrapling_capability()
     client = await Client.connect(
         runtime_settings.THOTH_TEMPORAL_TARGET,
