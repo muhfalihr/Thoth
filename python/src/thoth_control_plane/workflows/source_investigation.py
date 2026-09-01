@@ -39,27 +39,16 @@ with workflow.unsafe.imports_passed_through():
         WorkflowSummary,
     )
     from thoth_control_plane.domain.models import (
+        LEGACY_FALLBACK_ELIGIBLE_CODES,
         LegacyScoutProgressEvent,
+        SourceProgressEvent,
         StageProgress,
         StageSummary,
     )
 
-# Frozen allowlist of Python source-investigation failure codes eligible for a
-# one-shot legacy Scout fallback. Closed by design: any code not explicitly
-# listed here is never fallback-eligible, even a new one added later (see
-# `acquisition_runner_failed`, which is an unknown-internal-error code and
-# must never trigger a silent re-run through a second engine).
-LEGACY_FALLBACK_ELIGIBLE_CODES = frozenset(
-    {
-        "unsupported_platform",
-        "headless_timeout",
-        "headless_blocked",
-        "headless_incomplete",
-        "cdn_rate_limited",
-        "cdn_unavailable",
-        "media_validation_failed",
-    }
-)
+# `LEGACY_FALLBACK_ELIGIBLE_CODES` is domain-owned (see
+# `thoth_control_plane.domain.models`) so the workflow's routing and the
+# payload validator that guards `fallback_from` can never drift apart.
 
 
 @workflow.defn
@@ -214,7 +203,14 @@ class SourceInvestigationWorkflow:
 
         Fallback eligibility is a frozen, closed allowlist
         (`LEGACY_FALLBACK_ELIGIBLE_CODES`): unsafe input, dependency,
-        configuration, and artifact failures never invoke legacy.
+        configuration, and artifact failures never invoke legacy. When a
+        fallback fires, the Python evidence trail is preserved ahead of
+        exactly one `legacy_fallback` transition event, then the legacy
+        activity's own events, so the ordered history is always
+        `python events -> one fallback transition -> legacy events`. The
+        transition is recorded on `self._source_events` before awaiting the
+        legacy activity, so a query can still retrieve the Python and
+        transition evidence if the legacy activity itself raises.
         """
         if input_.activity_mode == "legacy_scout":
             return await self._execute_legacy_activity(input_)
@@ -229,7 +225,13 @@ class SourceInvestigationWorkflow:
             and result.failure is not None
             and result.failure.code in LEGACY_FALLBACK_ELIGIBLE_CODES
         ):
-            return await self._execute_legacy_activity(input_)
+            python_events = list(result.events)
+            transition = _legacy_fallback_event(result.failure.code)
+            self._source_events = [*python_events, transition]
+            legacy_result = await self._execute_legacy_activity(input_)
+            return legacy_result.model_copy(
+                update={"events": [*self._source_events, *legacy_result.events]}
+            )
         return result
 
     async def _execute_python_activity(
@@ -370,3 +372,19 @@ class SourceInvestigationWorkflow:
 def _approval_id(workflow_id: str) -> str:
     digest = sha256(workflow_id.encode()).hexdigest()
     return f"apr_{digest[:24]}"
+
+
+def _legacy_fallback_event(failure_code: str) -> SourceProgressEvent:
+    """Build the single transition event marking a Python-to-legacy fallback.
+
+    Only ever called with a code already checked against
+    `LEGACY_FALLBACK_ELIGIBLE_CODES`; the redundant check here is a closed
+    guard so an ineligible code can never be recorded, even if a future
+    caller forgets to gate first.
+    """
+    if failure_code not in LEGACY_FALLBACK_ELIGIBLE_CODES:
+        raise ValueError("failure code is not eligible for legacy fallback")
+    return SourceProgressEvent(
+        kind="stage.started",
+        payload={"stage": "legacy_fallback", "fallback_from": failure_code},
+    )

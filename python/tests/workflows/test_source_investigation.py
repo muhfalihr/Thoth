@@ -37,10 +37,12 @@ from thoth_control_plane.domain import (
     SourceInvestigationActivityResult,
     SourceInvestigationWorkflowInput,
     WorkflowRequest,
+    WorkflowStatus,
     WorkflowSummary,
     request_snapshot_id,
     safe_workflow_source,
 )
+from thoth_control_plane.domain.models import SafeActivityError, SourceProgressEvent
 from thoth_control_plane.infrastructure.temporal_gateway import (
     TASK_QUEUE,
     TemporalWorkflowGateway,
@@ -1113,3 +1115,178 @@ async def test_temporal_outage_fails_readiness_without_failing_liveness(
 
     assert health.status_code == 200
     assert readiness.status_code == 503
+
+
+@activity.defn(name="inspect_source_candidates")
+async def eligible_headless_failure_with_events(
+    input_: SourceInvestigationActivityInput,
+) -> SourceInvestigationActivityResult:
+    del input_
+    return SourceInvestigationActivityResult(
+        failure=SafeActivityError(code="headless_blocked", retryable=True),
+        events=[
+            SourceProgressEvent(kind="stage.started", payload={"stage": "tiktok_headless"}),
+            SourceProgressEvent(
+                kind="stage.failed",
+                payload={
+                    "stage": "tiktok_headless",
+                    "status": "failed",
+                    "elapsed_ms": 120,
+                    "reason": "headless_blocked",
+                },
+            ),
+            SourceProgressEvent(
+                kind="stage.completed",
+                payload={
+                    "stage": "tiktok_cleanup",
+                    "status": "succeeded",
+                    "partial_cleanup_passed": True,
+                    "browser_cleanup_passed": True,
+                },
+            ),
+        ],
+    )
+
+
+@activity.defn(name="inspect_legacy_scout")
+async def legacy_success_two_events(
+    input_: LegacyScoutInput,
+) -> SourceInvestigationActivityResult:
+    result = await fake_inspect(input_)
+    return result.model_copy(
+        update={
+            "events": [
+                SourceProgressEvent(kind="stage.started", payload={"stage": "source"}),
+                SourceProgressEvent(kind="stage.completed", payload={"stage": "source"}),
+            ]
+        }
+    )
+
+
+def _tiktok_fallback_input(mode: str) -> SourceInvestigationWorkflowInput:
+    request = VALID_IDENTIFY_REQUEST.model_copy(
+        update={
+            "source": VALID_IDENTIFY_REQUEST.source.model_copy(update={"url": CANONICAL_TIKTOK_URL})
+        }
+    )
+    return workflow_input(request).model_copy(update={"activity_mode": mode})
+
+
+async def run_fallback_case_and_query_events(
+    workflow_env: WorkflowEnvironment,
+) -> tuple[WorkflowSummary, list[SourceProgressEvent]]:
+    workflow_id = "wf_fallback_history_001"
+    async with (
+        Worker(
+            workflow_env.client,
+            task_queue="test",
+            workflows=[SourceInvestigationWorkflow],
+            activities=[eligible_headless_failure_with_events],
+        ),
+        Worker(
+            workflow_env.client,
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            activities=[legacy_success_two_events],
+            max_concurrent_activities=1,
+        ),
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[_tiktok_fallback_input("python_tiktok_with_legacy_fallback")],
+            id=workflow_id,
+            task_queue="test",
+        )
+        source_events = await workflow_env.client.get_workflow_handle(workflow_id).query(
+            SourceInvestigationWorkflow.source_events
+        )
+    return result, source_events
+
+
+async def run_mode_and_query_events(
+    workflow_env: WorkflowEnvironment, mode: str
+) -> tuple[WorkflowSummary, list[SourceProgressEvent]]:
+    workflow_id = f"wf_mode_history_{mode}"
+    async with (
+        Worker(
+            workflow_env.client,
+            task_queue="test",
+            workflows=[SourceInvestigationWorkflow],
+            activities=[eligible_headless_failure_with_events],
+        ),
+        Worker(
+            workflow_env.client,
+            task_queue=LEGACY_ADAPTER_TASK_QUEUE,
+            activities=[legacy_success_two_events],
+            max_concurrent_activities=1,
+        ),
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[_tiktok_fallback_input(mode)],
+            id=workflow_id,
+            task_queue="test",
+        )
+        source_events = await workflow_env.client.get_workflow_handle(workflow_id).query(
+            SourceInvestigationWorkflow.source_events
+        )
+    return result, source_events
+
+
+async def run_ineligible_failure_and_query_events(
+    workflow_env: WorkflowEnvironment,
+) -> tuple[WorkflowSummary, list[SourceProgressEvent]]:
+    workflow_id = "wf_ineligible_history_001"
+    async with Worker(
+        workflow_env.client,
+        task_queue="test",
+        workflows=[SourceInvestigationWorkflow],
+        activities=[acquisition_runner_python_failure],
+    ):
+        result = await workflow_env.client.execute_workflow(
+            SourceInvestigationWorkflow.run,
+            args=[_tiktok_fallback_input("python_tiktok_with_legacy_fallback")],
+            id=workflow_id,
+            task_queue="test",
+        )
+        source_events = await workflow_env.client.get_workflow_handle(workflow_id).query(
+            SourceInvestigationWorkflow.source_events
+        )
+    return result, source_events
+
+
+@pytest.mark.asyncio
+async def test_eligible_fallback_preserves_python_transition_and_legacy_events(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    result, source_events = await run_fallback_case_and_query_events(workflow_env)
+
+    assert result.status == WorkflowStatus.SUCCEEDED
+    assert [(event.kind, event.payload["stage"]) for event in source_events] == [
+        ("stage.started", "tiktok_headless"),
+        ("stage.failed", "tiktok_headless"),
+        ("stage.completed", "tiktok_cleanup"),
+        ("stage.started", "legacy_fallback"),
+        ("stage.started", "source"),
+        ("stage.completed", "source"),
+    ]
+    assert source_events[3].payload == {
+        "stage": "legacy_fallback",
+        "fallback_from": "headless_blocked",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["python", "legacy_scout"])
+async def test_non_fallback_modes_never_emit_transition(
+    workflow_env: WorkflowEnvironment, mode: str
+) -> None:
+    _, source_events = await run_mode_and_query_events(workflow_env, mode)
+    assert all(event.payload.get("stage") != "legacy_fallback" for event in source_events)
+
+
+@pytest.mark.asyncio
+async def test_ineligible_python_failure_does_not_emit_transition(
+    workflow_env: WorkflowEnvironment,
+) -> None:
+    _, source_events = await run_ineligible_failure_and_query_events(workflow_env)
+    assert all(event.payload.get("stage") != "legacy_fallback" for event in source_events)
