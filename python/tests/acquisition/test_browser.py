@@ -118,6 +118,55 @@ def test_xhr_unique_id_wins_over_a_wrong_or_missing_meta_author(meta_author: str
     assert snapshot.post_candidates[0].owner_handle == "creator"
 
 
+def _xhr_item_with_desc(desc: object, post_id: str = "1234567890") -> list[dict]:
+    item = _xhr_item("creator", post_id)
+    item[0]["body"]["itemInfo"]["itemStruct"]["desc"] = desc
+    return item
+
+
+def test_authoritative_empty_caption_is_not_replaced_by_the_page_title() -> None:
+    # TikTok emits "<display name> on TikTok" as og:title for a caption-less
+    # post. An empty `desc` from the matching item struct is an answer, not a
+    # missing signal, so the page title must never be promoted to a caption.
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="Ripael on TikTok",
+        author="creator",
+        video_sources=["https://video.example/a.mp4"],
+        captured_xhr=_xhr_item_with_desc(""),
+    )
+    assert snapshot.post_candidates[0].caption == ""
+
+
+def test_authoritative_caption_wins_over_the_page_title() -> None:
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="Ripael on TikTok",
+        author="creator",
+        video_sources=["https://video.example/a.mp4"],
+        captured_xhr=_xhr_item_with_desc("the real caption"),
+    )
+    assert snapshot.post_candidates[0].caption == "the real caption"
+
+
+@pytest.mark.parametrize(
+    "captured_xhr",
+    [[], _xhr_item_with_desc("", post_id="9999999999"), _xhr_item_with_desc(None)],
+    ids=["no-xhr", "post-id-mismatch", "non-string-desc"],
+)
+def test_page_title_never_stands_in_for_a_missing_caption(
+    captured_xhr: list[dict],
+) -> None:
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="Ripael on TikTok",
+        author="creator",
+        video_sources=["https://video.example/a.mp4"],
+        captured_xhr=captured_xhr,
+    )
+    assert snapshot.post_candidates[0].caption == ""
+
+
 def test_xhr_unique_id_mismatch_downgrades_even_if_meta_author_matches() -> None:
     snapshot = extract_browser_snapshot(
         final_url=POST_URL,

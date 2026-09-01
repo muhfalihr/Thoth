@@ -164,16 +164,22 @@ def extract_browser_snapshot(
     page-rendering artifact (can be absent, differently formatted, or a
     display name) and is only consulted as a fallback when the XHR signal is
     absent. Either signal fails safe: a mismatch downgrades to no candidate.
+
+    Caption precedence: the XHR `desc` is the only caption source. `og_title`
+    is TikTok's page title ("<display name> on TikTok") on every post measured,
+    including posts that carry a long caption, so it holds no caption
+    information and must never stand in for one -- an empty caption is a valid
+    result, while a fabricated one would poison downstream narration grounding.
     """
     identity = canonicalize_tiktok_post_url(final_url)
     canonical_handle = _normalize_handle(identity.owner_handle)
 
     item_struct = _xhr_item_struct(captured_xhr)
-    caption = og_title or ""
+    caption = ""
     xhr_unique_id: str | None = None
     if item_struct is not None and str(item_struct.get("id")) == identity.post_id:
         xhr_desc = item_struct.get("desc")
-        if isinstance(xhr_desc, str) and xhr_desc:
+        if isinstance(xhr_desc, str):
             caption = xhr_desc
         xhr_author = item_struct.get("author")
         if isinstance(xhr_author, dict):
