@@ -589,7 +589,9 @@ async def test_temporal_history_contains_only_redacted_workflow_values(
 
 
 CANONICAL_TIKTOK_URL = "https://www.tiktok.com/@creator/video/1234567890"
-_FIXTURE_REPORT_PATH = Path("tests/fixtures/tiktok/normalized_report.json")
+_FIXTURE_REPORT_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "tiktok" / "normalized_report.json"
+)
 
 
 def _offline_successful_runner():
@@ -848,6 +850,19 @@ async def eligible_python_failure(input_: SourceInvestigationActivityInput):
 
 
 @activity.defn(name="inspect_source_candidates")
+async def cdn_unavailable_python_failure(input_: SourceInvestigationActivityInput):
+    """A real, service-producible eligible failure (see `TikWmError`).
+
+    Unlike `eligible_python_failure` (`headless_blocked`, a code
+    `TikTokAcquisitionService.inspect()` never actually returns), this pins
+    the fallback path a production run can really hit.
+    """
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(failure={"code": "cdn_unavailable", "retryable": True})
+
+
+@activity.defn(name="inspect_source_candidates")
 async def unsafe_python_failure(input_: SourceInvestigationActivityInput):
     global PYTHON_CALLS
     PYTHON_CALLS += 1
@@ -953,6 +968,15 @@ async def run_routing_case(workflow_env, *, source_url: str, mode: str, python_a
             "https://www.tiktok.com/@creator/video/1234567890",
             "python_tiktok_with_legacy_fallback",
             eligible_python_failure,
+            "succeeded",
+            None,
+            1,
+            1,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            cdn_unavailable_python_failure,
             "succeeded",
             None,
             1,

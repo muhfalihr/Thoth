@@ -73,7 +73,12 @@ def test_result_requires_exactly_one_terminal_outcome() -> None:
     with pytest.raises(ValidationError):
         TikTokAcquisitionResult(
             report=TikTokSourceReport.model_validate_json(
-                Path("tests/fixtures/tiktok/normalized_report.json").read_text(encoding="utf-8")
+                (
+                    Path(__file__).resolve().parent.parent
+                    / "fixtures"
+                    / "tiktok"
+                    / "normalized_report.json"
+                ).read_text(encoding="utf-8")
             ),
             failure={"code": "headless_blocked", "retryable": True},
         )

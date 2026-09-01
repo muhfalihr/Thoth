@@ -73,14 +73,19 @@ history, logs, diagnostics, screenshots, reports, or verification output.
 | `legacy_scout` | Route all source investigation through the isolated legacy activity. Use this as the rollback mode. |
 
 For an eligible TikTok post, the route order is **Scrapling headless -> TikWM/CDN -> legacy
-activity**. A successful headless result materializes media locally and does not call TikWM. The
-legacy activity is available only in `python_tiktok_with_legacy_fallback` for the finite safe
-failure set: `unsupported_platform`, `headless_timeout`, `headless_blocked`,
-`headless_incomplete`, `cdn_rate_limited`, `cdn_unavailable`, and
-`media_validation_failed`. The exact non-fallback safe codes are `invalid_tiktok_url`,
-`artifact_persistence_failed`, `acquisition_dependency_unavailable`, and
-`acquisition_runner_failed`; unsafe input and internal/persistence/dependency failures do not
-silently fall back.
+activity**. A successful headless result materializes media locally and does not call TikWM. A
+headless failure never becomes the terminal failure code by itself: the service always continues
+to TikWM/CDN afterward, so any actually-observed fallback trigger today is one of
+`cdn_rate_limited`, `cdn_unavailable`, or `media_validation_failed` — these are the only codes
+`python_tiktok_with_legacy_fallback` can invoke the legacy activity for in practice. The
+allowlist that gates the fallback (`LEGACY_FALLBACK_ELIGIBLE_CODES`) also accepts
+`unsupported_platform`, `headless_timeout`, `headless_blocked`, and `headless_incomplete`; these
+are reserved/attempt-reason codes — they can appear in an activity's `attempts[]` (or, for
+`unsupported_platform`, in a future non-TikTok slice) but never as the terminal failure code for
+a TikTok run, so a fallback debugged at the terminal-failure level will never show one of them.
+The exact non-fallback safe codes are `invalid_tiktok_url`, `artifact_persistence_failed`,
+`acquisition_dependency_unavailable`, and `acquisition_runner_failed`; unsafe input and
+internal/persistence/dependency failures do not silently fall back.
 
 The worker limits both the Python acquisition queue and isolated legacy queue to one concurrent
 activity. Scrapling fetches have a 45-second deadline, TikWM resolution has a 15-second deadline,

@@ -72,7 +72,9 @@ def _session_returning(response_or_exc):
 
 def test_fixture_is_reduced_to_sanitized_candidates() -> None:
     fixture = json.loads(
-        Path("tests/fixtures/tiktok/headless_post.json").read_text(encoding="utf-8")
+        (
+            Path(__file__).resolve().parent.parent / "fixtures" / "tiktok" / "headless_post.json"
+        ).read_text(encoding="utf-8")
     )
     snapshot = extract_browser_snapshot(**fixture)
     assert snapshot.post_candidates[0].owner_handle == "creator"

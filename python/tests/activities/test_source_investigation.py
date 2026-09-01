@@ -24,7 +24,9 @@ from thoth_control_plane.activities.source_investigation import (
 )
 from thoth_control_plane.config import Settings
 
-FIXTURE_PATH = Path("tests/fixtures/tiktok/normalized_report.json")
+FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "tiktok" / "normalized_report.json"
+)
 
 INPUT = SourceInvestigationActivityInput(
     workflow_id="wf_activity_001",

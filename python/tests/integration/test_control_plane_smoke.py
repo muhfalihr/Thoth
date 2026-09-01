@@ -15,7 +15,9 @@ from thoth_control_plane.config import Settings
 from thoth_control_plane.infrastructure.temporal_gateway import TASK_QUEUE, TemporalWorkflowGateway
 from thoth_control_plane.workflows import SourceInvestigationWorkflow
 
-_FIXTURE_REPORT_PATH = Path("tests/fixtures/tiktok/normalized_report.json")
+_FIXTURE_REPORT_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "tiktok" / "normalized_report.json"
+)
 
 
 def _offline_successful_runner():
