@@ -120,12 +120,23 @@ def _attempt_events(attempts: list[AcquisitionAttempt]) -> list[SourceProgressEv
 def _cleanup_after_persistence_failure(
     part_path: Path, report: TikTokSourceReport, artifact_root: Path
 ) -> None:
-    """Remove the partial report and every materialized media file the report recorded."""
+    """Remove the partial report and every materialized media file the report recorded.
+
+    `media.location` is validated as a `PurePosixPath` (POSIX separators only),
+    but a Windows-style backslash string can slip past that check as a single
+    opaque segment and then, once joined with a real `Path`, resolve to an
+    absolute path or a `..` escape outside `artifact_root`. Only unlink
+    candidates that resolve inside the artifact root; skip anything else.
+    """
     with contextlib.suppress(OSError):
         part_path.unlink(missing_ok=True)
+    resolved_root = artifact_root.resolve()
     for media in report.media:
+        candidate = (artifact_root / media.location).resolve()
+        if not candidate.is_relative_to(resolved_root):
+            continue
         with contextlib.suppress(OSError):
-            (artifact_root / media.location).unlink(missing_ok=True)
+            candidate.unlink(missing_ok=True)
 
 
 async def _run(
@@ -142,9 +153,20 @@ async def _run(
             )
         )
 
-    acquisition_result = await runner(
-        input_.workflow_id, str(input_.canonical_source_url), artifact_root
-    )
+    try:
+        acquisition_result = await runner(
+            input_.workflow_id, str(input_.canonical_source_url), artifact_root
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Defense in depth: if the capability gate above is ever bypassed, a
+        # raw exception (e.g. the lazy Scrapling ImportError) must not carry
+        # its message into Temporal history. Nothing derived from the
+        # exception crosses this boundary -- only a fixed, safe code.
+        return SourceInvestigationActivityResult(
+            failure=SafeActivityError(code="acquisition_runner_failed", retryable=False)
+        )
 
     if acquisition_result.failure is not None:
         return SourceInvestigationActivityResult(
@@ -173,6 +195,11 @@ async def _run(
             handle.flush()
         os.replace(part_path, report_path)
     except asyncio.CancelledError:
+        # Defensive: none of the calls above are `await`ed, so cancellation
+        # cannot actually land inside this `try` today. Kept as a guard for
+        # if that ever changes (e.g. an async persistence backend) so a
+        # `.part` file is never left behind on cancellation; not covered by
+        # a test since it is currently unreachable.
         _cleanup_after_persistence_failure(part_path, report, artifact_root)
         raise
     except OSError:

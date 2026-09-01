@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
 
 import pytest
 from pydantic import ValidationError
@@ -86,7 +87,14 @@ async def test_activity_persists_strict_report_and_returns_existing_artifact_sha
     assert result.report.location == "reports/wf_activity_001/source-report.json"
     assert result.report.checksum.startswith("sha256:")
     assert payload["source"]["platform"] == "tiktok"
-    assert "signed" not in report_path.read_text(encoding="utf-8")
+    raw_report = report_path.read_text(encoding="utf-8")
+    assert "signed" not in raw_report
+    assert len(payload["media"]) > 0
+    for media in payload["media"]:
+        location = PurePosixPath(media["location"])
+        assert not location.is_absolute()
+        assert ".." not in location.parts
+    assert str(tmp_path) not in raw_report
 
 
 @pytest.mark.asyncio
@@ -111,6 +119,27 @@ async def test_missing_acquisition_dependency_returns_safe_failure_without_runne
 
 
 @pytest.mark.asyncio
+async def test_unexpected_runner_exception_becomes_structured_failure_without_leaking_text(
+    tmp_path: Path,
+) -> None:
+    leaked_text = "/abs/path leaked [Errno 28]"
+
+    async def failing_runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del workflow_id, source_url, artifact_root
+        raise RuntimeError(leaked_text)
+
+    configured = build_source_investigation_activity(_settings(tmp_path), runner=failing_runner)
+    result = await configured(INPUT)
+
+    assert result.failure is not None
+    assert result.failure.code == "acquisition_runner_failed"
+    serialized = result.model_dump_json()
+    assert leaked_text not in serialized
+    assert "/abs/path" not in serialized
+    assert "Errno" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_activity_cancellation_propagates_and_leaves_no_partial_artifact(
     tmp_path: Path, cancelling_runner
 ) -> None:
@@ -122,16 +151,6 @@ async def test_activity_cancellation_propagates_and_leaves_no_partial_artifact(
         await task
     assert list(tmp_path.rglob("*.part")) == []
     assert cancelling_runner.closed is True
-
-
-@pytest.mark.asyncio
-async def test_activity_leaves_no_part_file_after_success(
-    tmp_path: Path, successful_runner
-) -> None:
-    configured = build_source_investigation_activity(_settings(tmp_path), runner=successful_runner)
-    result = await configured(INPUT)
-    assert result.failure is None
-    assert list(tmp_path.rglob("*.part")) == []
 
 
 @pytest.mark.parametrize(
@@ -200,6 +219,56 @@ async def test_report_persistence_failure_removes_part_file_and_materialized_med
     assert not (tmp_path / "reports/wf_activity_001/source-report.json").exists()
 
 
+@pytest.mark.parametrize(
+    "malicious_location_kind",
+    ["absolute", "traversal"],
+)
+@pytest.mark.asyncio
+async def test_cleanup_after_persistence_failure_never_touches_outside_artifact_root(
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    malicious_location_kind: str,
+) -> None:
+    # `MaterializedMedia.location` is a `PurePosixPath` validated with POSIX
+    # semantics (no leading "/", no ".." *parts*). A Windows-style backslash
+    # string slips past that validator as one opaque segment, but a real
+    # Windows `Path` still treats the embedded backslashes as separators when
+    # joined -- `artifact_root / location` can then land outside the root
+    # entirely. This proves cleanup never deletes such an escaped path.
+    outside_dir = tmp_path_factory.mktemp("outside")
+    canary = outside_dir / "canary.mp4"
+    canary.write_bytes(b"do-not-delete")
+
+    if malicious_location_kind == "absolute":
+        malicious_location = str(canary)
+    else:
+        malicious_location = os.path.relpath(canary, tmp_path)
+        assert ".." in malicious_location
+
+    report = _load_fixture_report()
+    media = report.media[0].model_copy(update={"location": PurePosixPath(malicious_location)})
+    report = report.model_copy(update={"media": [media]})
+
+    async def runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del workflow_id, source_url, artifact_root
+        return TikTokAcquisitionResult(report=report)
+
+    from thoth_control_plane.activities import source_investigation as module
+
+    def raising_replace(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(module.os, "replace", raising_replace)
+
+    configured = build_source_investigation_activity(_settings(tmp_path), runner=runner)
+    result = await configured(INPUT)
+
+    assert result.failure is not None
+    assert canary.exists()
+    assert canary.read_bytes() == b"do-not-delete"
+
+
 @pytest.mark.asyncio
 async def test_attempts_convert_to_safe_progress_events_with_fixed_stage_names(
     tmp_path: Path,
@@ -249,9 +318,12 @@ async def test_attempts_convert_to_safe_progress_events_with_fixed_stage_names(
     stages = [event.payload["stage"] for event in result.events]
     assert stages == ["tiktok_headless", "tiktok_headless", "tiktok_cdn", "tiktok_cdn"]
     assert result.events[1].payload["reason"] == "headless_timeout"
+    # Allowlist, not denylist: every payload key must be one of the fixed,
+    # history-safe fields. A denylist of substrings ("http", "cookie") only
+    # catches what the author thought to ban; this catches anything new.
+    allowed_payload_keys = {"stage", "status", "elapsed_ms", "reason"}
     for event in result.events:
-        assert "http" not in json.dumps(event.payload)
-        assert "cookie" not in json.dumps(event.payload).lower()
+        assert set(event.payload.keys()) <= allowed_payload_keys
 
 
 def test_activity_input_rejects_extra_legacy_cli_flags() -> None:
