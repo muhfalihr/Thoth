@@ -3,6 +3,11 @@
 These tests are skipped unless the caller deliberately supplies an approved
 public TikTok post URL through ``THOTH_LIVE_TIKTOK_URL``. They never print or
 persist that environment value directly.
+
+The parity test additionally requires a *first-party* post: legacy Scout
+investigates provenance, so it rejects a repost as its own main candidate and
+traces it to the original creator instead. Supplying a repost URL fails the
+parity test inside legacy Scout, not in the Python acquisition path.
 """
 
 import asyncio

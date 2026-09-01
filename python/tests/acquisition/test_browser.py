@@ -283,7 +283,13 @@ async def test_close_is_idempotent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capability_check_reports_unavailable_without_optional_extra() -> None:
+async def test_capability_check_reports_unavailable_without_optional_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Simulate the missing extra instead of reading ambient environment state:
+    # a `None` entry makes the lazy `from patchright.async_api import ...`
+    # raise ImportError whether or not the extra happens to be installed.
+    monkeypatch.setitem(sys.modules, "patchright.async_api", None)
     capability = await check_scrapling_capability()
     assert capability.available is False
     assert capability.code == "acquisition_dependency_unavailable"
