@@ -6,6 +6,7 @@ persist that environment value directly.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 from datetime import timedelta
@@ -27,8 +28,56 @@ from thoth_control_plane.config import Settings
 
 LIVE_URL = os.getenv("THOTH_LIVE_TIKTOK_URL")
 
+_BANNED_PERSISTED_KEYS = frozenset(
+    {
+        "ephemeral_url",
+        "cookie",
+        "cookies",
+        "raw_html",
+        "raw_provider_body",
+        "raw_provider_response",
+        "provider_body",
+        "provider_payload",
+        "browser_trace",
+        "browser_traces",
+        "trace",
+        "traces",
+        "exception",
+        "exceptions",
+        "diagnostic",
+        "diagnostics",
+    }
+)
 
-def normalize_legacy_tiktok(payload: dict, input_url: str) -> dict:
+
+def _artifact_path(artifact_root: Path, location: str) -> Path:
+    """Resolve one persisted location and prove it remains below its artifact root."""
+    path = Path(location)
+    assert not path.is_absolute()
+    resolved_root = artifact_root.resolve()
+    resolved_path = (artifact_root / path).resolve()
+    assert resolved_path.is_relative_to(resolved_root)
+    return resolved_path
+
+
+def _persisted_keys(value: object) -> set[str]:
+    """Collect JSON object keys so report redaction is checked structurally."""
+    if isinstance(value, dict):
+        return set(value) | set().union(*(_persisted_keys(item) for item in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_persisted_keys(item) for item in value)) if value else set()
+    return set()
+
+
+def _file_checksum(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def normalize_legacy_tiktok(payload: dict, input_url: str, artifact_root: Path) -> dict:
     main = payload["main"]
     page_url = main.get("source_url") or input_url
     identity = canonicalize_tiktok_post_url(page_url)
@@ -40,7 +89,9 @@ def normalize_legacy_tiktok(payload: dict, input_url: str) -> dict:
         "owner_handle": profile.get("username") or identity.owner_handle,
         "caption": main.get("description") or "",
         "media_kind": "video" if main.get("is_video", True) else "image",
-        "local_media_present": bool(main.get("source_local")),
+        "media_index": 1,
+        "local_media_present": isinstance(main.get("source_local"), str)
+        and _artifact_path(artifact_root, main["source_local"]).is_file(),
         "outcome": "resolved",
     }
 
@@ -54,7 +105,8 @@ def normalize_python_tiktok(payload: dict, artifact_root: Path) -> dict:
         "owner_handle": payload["post"]["owner_handle"],
         "caption": payload["post"]["caption"],
         "media_kind": media["kind"],
-        "local_media_present": (artifact_root / media["location"]).is_file(),
+        "media_index": media["index"],
+        "local_media_present": _artifact_path(artifact_root, media["location"]).is_file(),
         "outcome": payload["outcome"]["status"],
     }
 
@@ -87,14 +139,21 @@ async def test_public_tiktok_post_produces_safe_local_report(tmp_path: Path) -> 
         )
     )
     assert result.report is not None
-    report_path = tmp_path / result.report.location
+    report_path = _artifact_path(tmp_path, result.report.location)
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["outcome"]["attempts"][0]["strategy"] == "scrapling_headless"
-    assert Path(tmp_path / report["media"][0]["location"]).is_file()
-    serialized = report_path.read_text(encoding="utf-8").lower()
-    assert "signedurl" not in serialized
-    assert "cookie" not in serialized
-    assert "providerpayload" not in serialized
+    media = report["media"][0]
+    media_path = _artifact_path(tmp_path, media["location"])
+    assert media["media_type"] == "video/mp4"
+    assert media_path.is_file()
+    assert media_path.stat().st_size >= 10_000
+    assert media_path.stat().st_size == media["bytes"]
+    assert media_path.read_bytes()[:12][4:8] == b"ftyp"
+    assert _file_checksum(media_path) == media["checksum"]
+    serialized = report_path.read_text(encoding="utf-8")
+    assert not (_persisted_keys(report) & _BANNED_PERSISTED_KEYS)
+    assert str(tmp_path.resolve()).lower() not in serialized.lower()
+    assert report["source"]["canonical_url"] in serialized
     assert list(tmp_path.rglob("*.part")) == []
 
 
@@ -146,7 +205,7 @@ async def test_live_python_and_legacy_tiktok_contracts_match(tmp_path: Path) -> 
     )
     assert python_result.report is not None
     python_payload = json.loads(
-        (tmp_path / python_result.report.location).read_text(encoding="utf-8")
+        _artifact_path(tmp_path, python_result.report.location).read_text(encoding="utf-8")
     )
 
     legacy_root = tmp_path / "legacy"
@@ -161,9 +220,9 @@ async def test_live_python_and_legacy_tiktok_contracts_match(tmp_path: Path) -> 
     )
     assert legacy_result.report is not None
     legacy_payload = json.loads(
-        (legacy_root / legacy_result.report.location).read_text(encoding="utf-8")
+        _artifact_path(legacy_root, legacy_result.report.location).read_text(encoding="utf-8")
     )
 
     assert normalize_python_tiktok(python_payload, tmp_path) == normalize_legacy_tiktok(
-        legacy_payload, url
+        legacy_payload, url, legacy_root
     )

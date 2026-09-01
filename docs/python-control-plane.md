@@ -77,14 +77,17 @@ activity**. A successful headless result materializes media locally and does not
 legacy activity is available only in `python_tiktok_with_legacy_fallback` for the finite safe
 failure set: `unsupported_platform`, `headless_timeout`, `headless_blocked`,
 `headless_incomplete`, `cdn_rate_limited`, `cdn_unavailable`, and
-`media_validation_failed`. Unsafe input and internal/persistence/dependency failures do not
+`media_validation_failed`. The exact non-fallback safe codes are `invalid_tiktok_url`,
+`artifact_persistence_failed`, `acquisition_dependency_unavailable`, and
+`acquisition_runner_failed`; unsafe input and internal/persistence/dependency failures do not
 silently fall back.
 
 The worker limits both the Python acquisition queue and isolated legacy queue to one concurrent
-activity. Scrapling fetches have a 45-second deadline, media downloads a 30-second deadline, and
-the source and legacy Temporal activities have five-minute start-to-close deadlines; Python may
-retry up to three attempts while the legacy activity has one attempt. Reports are written
-atomically at `reports/<workflow-id>/source-report.json`, with media at
+activity. Scrapling fetches have a 45-second deadline, TikWM resolution has a 15-second deadline,
+media downloads have a 30-second deadline, and the source and legacy Temporal activities have
+five-minute start-to-close deadlines; Python may retry up to three attempts while the legacy
+activity has one attempt. Reports are written atomically at
+`reports/<workflow-id>/source-report.json`, with media at
 `reports/<workflow-id>/media/tiktok-<post-id>.mp4`, all relative to
 `THOTH_CONTROL_PLANE_ARTIFACT_ROOT`. Legacy reports remain under
 `legacy-scout/<workflow-id>/source-report.json`.

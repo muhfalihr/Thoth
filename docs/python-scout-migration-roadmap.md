@@ -289,4 +289,8 @@ Retirement then proceeds in this order:
 
 ## Immediate Next Step
 
-Review and approve the written [Python TikTok Scout Rewrite Design](superpowers/specs/2026-08-31-python-tiktok-scout-rewrite-design.md), then create and execute its detailed implementation plan. That implementation is Stage 1 of this roadmap.
+Run the controlled Stage 1 live gate from the approved
+[Python TikTok Scout Rewrite Design](superpowers/specs/2026-08-31-python-tiktok-scout-rewrite-design.md)
+and its [implementation plan](superpowers/plans/2026-08-31-python-tiktok-scout-rewrite.md).
+After it passes, complete the agreed operational soak and make the capability-specific retirement
+decision; keep the Stage 1 status as `Active migration knowledge` until those gates are complete.
