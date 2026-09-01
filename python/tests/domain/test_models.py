@@ -11,6 +11,7 @@ from thoth_control_plane.domain.models import (
     ApprovalSignal,
     ArtifactRef,
     SourceInvestigationResult,
+    SourceProgressEvent,
     WorkflowEvent,
     WorkflowRequest,
     WorkflowSummary,
@@ -196,3 +197,29 @@ def test_source_investigation_fixtures_parse_and_contain_only_safe_metadata() ->
     result = SourceInvestigationResult.model_validate({"candidates": candidates, "report": report})
     assert result.candidates[0].candidate_id == "candidate_001"
     assert result.report.artifact_id == "art_source_report_001"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"stage": "tiktok_cleanup", "path": "C:/private/report.part"},
+        {"stage": "tiktok_cleanup", "diagnostic": "signed_url=https://cdn.test/x"},
+        {"stage": "tiktok_cleanup", "fallback_from": "free form reason"},
+    ],
+)
+def test_source_progress_event_rejects_non_allowlisted_payload(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        SourceProgressEvent(kind="stage.failed", payload=payload)
+
+
+def test_source_progress_event_accepts_cleanup_booleans() -> None:
+    event = SourceProgressEvent(
+        kind="stage.completed",
+        payload={
+            "stage": "tiktok_cleanup",
+            "status": "succeeded",
+            "partial_cleanup_passed": True,
+            "browser_cleanup_passed": True,
+        },
+    )
+    assert event.payload["partial_cleanup_passed"] is True

@@ -14,7 +14,11 @@ from pydantic import HttpUrl, TypeAdapter
 from temporalio import activity
 
 from thoth_control_plane.acquisition.adapters.tikwm import TikWmResolver
-from thoth_control_plane.acquisition.browser import ScraplingCapability, ScraplingHeadlessBrowser
+from thoth_control_plane.acquisition.browser import (
+    ScraplingCapability,
+    ScraplingHeadlessBrowser,
+    active_scrapling_session_count,
+)
 from thoth_control_plane.acquisition.materializer import (
     MediaMaterializer,
     resolve_host_via_getaddrinfo,
@@ -117,6 +121,41 @@ def _attempt_events(attempts: list[AcquisitionAttempt]) -> list[SourceProgressEv
     return events
 
 
+def _cleanup_event(artifact_root: Path, workflow_id: str) -> SourceProgressEvent:
+    """Inspect and report cleanup evidence as booleans and safe codes only.
+
+    Never includes the report directory path, an exception, or any other
+    diagnostic text -- only whether the two safety invariants held.
+    """
+    report_dir = (artifact_root / "reports" / workflow_id).resolve()
+    try:
+        partial_cleanup_passed = not report_dir.exists() or not any(report_dir.rglob("*.part"))
+    except OSError:
+        partial_cleanup_passed = False
+    browser_cleanup_passed = active_scrapling_session_count() == 0
+    passed = partial_cleanup_passed and browser_cleanup_passed
+    return SourceProgressEvent(
+        kind="stage.completed" if passed else "stage.failed",
+        payload={
+            "stage": "tiktok_cleanup",
+            "status": "succeeded" if passed else "failed",
+            "partial_cleanup_passed": partial_cleanup_passed,
+            "browser_cleanup_passed": browser_cleanup_passed,
+        },
+    )
+
+
+def _terminal_events(
+    attempts: list[AcquisitionAttempt], artifact_root: Path, workflow_id: str
+) -> list[SourceProgressEvent]:
+    """Compose the full history-safe event trail for a terminal activity result.
+
+    Always attempt events followed by exactly one cleanup event, so every
+    path that enters the runner boundary leaves matching evidence behind.
+    """
+    return [*_attempt_events(attempts), _cleanup_event(artifact_root, workflow_id)]
+
+
 def _cleanup_after_persistence_failure(
     part_path: Path, report: TikTokSourceReport, artifact_root: Path
 ) -> None:
@@ -163,9 +202,12 @@ async def _run(
         # Defense in depth: if the capability gate above is ever bypassed, a
         # raw exception (e.g. the lazy Scrapling ImportError) must not carry
         # its message into Temporal history. Nothing derived from the
-        # exception crosses this boundary -- only a fixed, safe code.
+        # exception crosses this boundary -- only a fixed, safe code. The
+        # runner boundary was still entered, so cleanup evidence is owed
+        # even though no acquisition attempt ever completed.
         return SourceInvestigationActivityResult(
-            failure=SafeActivityError(code="acquisition_runner_failed", retryable=False)
+            failure=SafeActivityError(code="acquisition_runner_failed", retryable=False),
+            events=_terminal_events([], artifact_root, input_.workflow_id),
         )
 
     if acquisition_result.failure is not None:
@@ -173,13 +215,14 @@ async def _run(
             failure=SafeActivityError(
                 code=acquisition_result.failure.code,
                 retryable=acquisition_result.failure.retryable,
-            )
+            ),
+            events=_terminal_events(
+                acquisition_result.failure.attempts, artifact_root, input_.workflow_id
+            ),
         )
 
     report = acquisition_result.report
     assert report is not None  # TikTokAcquisitionResult guarantees exactly one outcome
-
-    events = _attempt_events(report.outcome.attempts)
 
     # Ruling F-4a: the report artifact location is derived solely from the
     # activity input's workflow_id, never from the report body.
@@ -206,7 +249,7 @@ async def _run(
         _cleanup_after_persistence_failure(part_path, report, artifact_root)
         return SourceInvestigationActivityResult(
             failure=SafeActivityError(code="artifact_persistence_failed", retryable=True),
-            events=events,
+            events=_terminal_events(report.outcome.attempts, artifact_root, input_.workflow_id),
         )
 
     digest = sha256(content).hexdigest()
@@ -219,6 +262,7 @@ async def _run(
         checksum=f"sha256:{digest}",
         size_bytes=len(content),
     )
+    events = _terminal_events(report.outcome.attempts, artifact_root, input_.workflow_id)
     return SourceInvestigationActivityResult(report=artifact, events=events)
 
 

@@ -34,6 +34,28 @@ INPUT = SourceInvestigationActivityInput(
     canonical_source_url="https://www.tiktok.com/@creator/video/1234567890",
 )
 
+HEADLESS_FAILED_ATTEMPT = AcquisitionAttempt(
+    strategy=AcquisitionStrategy.SCRAPLING_HEADLESS,
+    status=AttemptStatus.FAILED,
+    reason=AcquisitionReason.HEADLESS_TIMEOUT,
+    attempt_count=1,
+    elapsed_ms=42,
+)
+CDN_FAILED_ATTEMPT = AcquisitionAttempt(
+    strategy=AcquisitionStrategy.TIKWM_CDN,
+    status=AttemptStatus.FAILED,
+    reason=AcquisitionReason.CDN_UNAVAILABLE,
+    attempt_count=1,
+    elapsed_ms=7,
+)
+TERMINAL_FAILURE_WITH_ATTEMPTS = TikTokAcquisitionResult(
+    failure=TikTokAcquisitionFailure(
+        code="cdn_unavailable",
+        retryable=True,
+        attempts=[HEADLESS_FAILED_ATTEMPT, CDN_FAILED_ATTEMPT],
+    )
+)
+
 
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
@@ -118,6 +140,8 @@ async def test_missing_acquisition_dependency_returns_safe_failure_without_runne
     assert result.failure is not None
     assert result.failure.code == "acquisition_dependency_unavailable"
     assert called is False
+    # The runner boundary was never entered, so no cleanup event is owed.
+    assert result.events == []
 
 
 @pytest.mark.asyncio
@@ -219,6 +243,14 @@ async def test_report_persistence_failure_removes_part_file_and_materialized_med
     assert not media_path.exists()
     assert list(tmp_path.rglob("*.part")) == []
     assert not (tmp_path / "reports/wf_activity_001/source-report.json").exists()
+    assert [event.payload["stage"] for event in result.events] == [
+        "tiktok_headless",
+        "tiktok_headless",
+        "tiktok_cleanup",
+    ]
+    cleanup = result.events[-1]
+    assert cleanup.payload["stage"] == "tiktok_cleanup"
+    assert cleanup.payload["partial_cleanup_passed"] is True
 
 
 @pytest.mark.parametrize(
@@ -316,16 +348,109 @@ async def test_attempts_convert_to_safe_progress_events_with_fixed_stage_names(
         "stage.failed",
         "stage.started",
         "stage.completed",
+        "stage.completed",
     ]
     stages = [event.payload["stage"] for event in result.events]
-    assert stages == ["tiktok_headless", "tiktok_headless", "tiktok_cdn", "tiktok_cdn"]
+    assert stages == [
+        "tiktok_headless",
+        "tiktok_headless",
+        "tiktok_cdn",
+        "tiktok_cdn",
+        "tiktok_cleanup",
+    ]
     assert result.events[1].payload["reason"] == "headless_timeout"
     # Allowlist, not denylist: every payload key must be one of the fixed,
     # history-safe fields. A denylist of substrings ("http", "cookie") only
     # catches what the author thought to ban; this catches anything new.
-    allowed_payload_keys = {"stage", "status", "elapsed_ms", "reason"}
+    allowed_payload_keys = {
+        "stage",
+        "status",
+        "elapsed_ms",
+        "reason",
+        "partial_cleanup_passed",
+        "browser_cleanup_passed",
+        "fallback_from",
+    }
     for event in result.events:
         assert set(event.payload.keys()) <= allowed_payload_keys
+
+
+@pytest.mark.asyncio
+async def test_terminal_failure_emits_attempts_then_one_cleanup_event(tmp_path: Path) -> None:
+    async def runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del workflow_id, source_url, artifact_root
+        return TikTokAcquisitionResult(
+            failure=TikTokAcquisitionFailure(
+                code="cdn_unavailable",
+                retryable=True,
+                attempts=[HEADLESS_FAILED_ATTEMPT, CDN_FAILED_ATTEMPT],
+            )
+        )
+
+    result = await build_source_investigation_activity(_settings(tmp_path), runner=runner)(INPUT)
+
+    assert result.failure is not None
+    assert [event.payload["stage"] for event in result.events] == [
+        "tiktok_headless",
+        "tiktok_headless",
+        "tiktok_cdn",
+        "tiktok_cdn",
+        "tiktok_cleanup",
+    ]
+    cleanup = result.events[-1]
+    assert cleanup.kind == "stage.completed"
+    assert cleanup.payload == {
+        "stage": "tiktok_cleanup",
+        "status": "succeeded",
+        "partial_cleanup_passed": True,
+        "browser_cleanup_passed": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_event_fails_when_part_file_remains(tmp_path: Path) -> None:
+    async def runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del source_url
+        part = artifact_root / "reports" / workflow_id / "leftover.part"
+        part.parent.mkdir(parents=True)
+        part.write_bytes(b"partial")
+        return TERMINAL_FAILURE_WITH_ATTEMPTS
+
+    result = await build_source_investigation_activity(_settings(tmp_path), runner=runner)(INPUT)
+    cleanup = result.events[-1]
+    assert cleanup.kind == "stage.failed"
+    assert cleanup.payload["partial_cleanup_passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_attempts_still_emits_single_cleanup_event(tmp_path: Path) -> None:
+    # Mirrors Task 1's pre-provider `invalid_tiktok_url` branch, which
+    # deliberately leaves `attempts` empty: event emission must not fabricate
+    # a bogus attempt event, but must still emit the one cleanup event.
+    async def runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del workflow_id, source_url, artifact_root
+        return TikTokAcquisitionResult(
+            failure=TikTokAcquisitionFailure(code="invalid_tiktok_url", retryable=False)
+        )
+
+    result = await build_source_investigation_activity(_settings(tmp_path), runner=runner)(INPUT)
+
+    assert result.failure is not None
+    assert [event.payload["stage"] for event in result.events] == ["tiktok_cleanup"]
+    assert result.events[-1].payload["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_runner_exception_still_emits_single_cleanup_event(tmp_path: Path) -> None:
+    async def failing_runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del workflow_id, source_url, artifact_root
+        raise RuntimeError("boom")
+
+    configured = build_source_investigation_activity(_settings(tmp_path), runner=failing_runner)
+    result = await configured(INPUT)
+
+    assert result.failure is not None
+    assert [event.payload["stage"] for event in result.events] == ["tiktok_cleanup"]
 
 
 def test_activity_input_rejects_extra_legacy_cli_flags() -> None:

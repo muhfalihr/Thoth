@@ -321,6 +321,49 @@ class SourceInvestigationResult(StrictModel):
         return self
 
 
+LEGACY_FALLBACK_ELIGIBLE_CODES = frozenset(
+    {
+        "unsupported_platform",
+        "headless_timeout",
+        "headless_blocked",
+        "headless_incomplete",
+        "cdn_rate_limited",
+        "cdn_unavailable",
+        "media_validation_failed",
+    }
+)
+"""Domain-owned taxonomy of codes eligible for legacy-scout fallback.
+
+Imported by the deterministic workflow (routing) and the soak contract
+(allowlist assertions) so the two cannot drift apart.
+"""
+
+SOURCE_EVENT_PAYLOAD_KEYS = frozenset(
+    {
+        "stage",
+        "status",
+        "elapsed_ms",
+        "reason",
+        "progress",
+        "partial_cleanup_passed",
+        "browser_cleanup_passed",
+        "fallback_from",
+    }
+)
+SOURCE_EVENT_STAGE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+SOURCE_EVENT_STATUSES = frozenset({"succeeded", "failed", "incomplete"})
+SOURCE_EVENT_REASONS = frozenset(
+    {
+        "headless_timeout",
+        "headless_blocked",
+        "headless_incomplete",
+        "cdn_rate_limited",
+        "cdn_unavailable",
+        "media_validation_failed",
+    }
+)
+
+
 class SourceProgressEvent(StrictModel):
     """Small machine-readable compatibility event; never derived from CLI prose."""
 
@@ -328,6 +371,35 @@ class SourceProgressEvent(StrictModel):
         "stage.started", "stage.progress", "stage.completed", "stage.failed", "stage.cancelled"
     ]
     payload: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload(
+        cls, payload: dict[str, str | int | float | bool | None]
+    ) -> dict[str, str | int | float | bool | None]:
+        if not set(payload) <= SOURCE_EVENT_PAYLOAD_KEYS:
+            raise ValueError("source event payload contains an unsupported key")
+        stage = payload.get("stage")
+        if not isinstance(stage, str) or not SOURCE_EVENT_STAGE_PATTERN.fullmatch(stage):
+            raise ValueError("source event stage must be a safe code")
+        if "status" in payload and payload["status"] not in SOURCE_EVENT_STATUSES:
+            raise ValueError("source event status is unsupported")
+        if "reason" in payload and payload["reason"] not in SOURCE_EVENT_REASONS:
+            raise ValueError("source event reason is unsupported")
+        if (
+            "fallback_from" in payload
+            and payload["fallback_from"] not in LEGACY_FALLBACK_ELIGIBLE_CODES
+        ):
+            raise ValueError("source event fallback code is unsupported")
+        progress = payload.get("progress")
+        if progress is not None and (
+            isinstance(progress, bool)
+            or not isinstance(progress, (int, float))
+            or not math.isfinite(progress)
+            or not 0 <= progress <= 1
+        ):
+            raise ValueError("source event progress must be finite and between zero and one")
+        return payload
 
 
 LegacyScoutProgressEvent = SourceProgressEvent
