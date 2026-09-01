@@ -127,6 +127,7 @@ async def test_production_activity_and_api_share_a_custom_artifact_root(tmp_path
     settings = Settings(
         THOTH_CONTROL_PLANE_API_KEY="custom-root-key",
         THOTH_CONTROL_PLANE_ARTIFACT_ROOT=tmp_path,
+        THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE="python",
     )
     environment = await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter

@@ -25,6 +25,7 @@ from thoth_control_plane.domain import (
     ActorSnapshot,
     ApprovalDecision,
     ApprovalSignal,
+    SourceActivityMode,
     SourceInvestigationWorkflowInput,
     StylePreset,
     WorkflowEvent,
@@ -41,7 +42,7 @@ TASK_QUEUE = "thoth-control-plane"
 class TemporalWorkflowGateway:
     """Run application lifecycle operations against durable Temporal state."""
 
-    def __init__(self, client: Client, *, activity_mode: str = "python") -> None:
+    def __init__(self, client: Client, *, activity_mode: SourceActivityMode = "python") -> None:
         self._client = client
         self._activity_mode = activity_mode
 

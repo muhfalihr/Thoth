@@ -281,6 +281,13 @@ class WorkflowSummary(StrictModel):
         return _parse_rfc3339_timestamp(timestamp)
 
 
+SourceActivityMode = Literal[
+    "python",
+    "python_tiktok_with_legacy_fallback",
+    "legacy_scout",
+]
+
+
 class SourceInvestigationInput(StrictModel):
     source_url: HttpUrl
 
@@ -355,7 +362,7 @@ class SourceInvestigationWorkflowInput(StrictModel):
     source: WorkflowSource
     intent: Literal["identify_original", "produce_video"]
     actor: ActorSnapshot
-    activity_mode: Literal["python", "legacy_scout"] = "python"
+    activity_mode: SourceActivityMode = "python"
 
 
 def request_snapshot_id(request: WorkflowRequest) -> str:
