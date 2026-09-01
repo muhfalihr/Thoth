@@ -63,8 +63,11 @@ Fallback is retired per capability and per platform. A platform that has passed 
 
 ## Stage 1: TikTok Single-Post Acquisition
 
-**Stage 1 status:** Active migration knowledge. Implementation and controlled live gates must
-pass before this status changes. The authoritative
+**Stage 1 status:** Implemented; live gates passed. The deterministic suite, the controlled
+live acquisition smoke, the live cancellation gate, and the same-URL Python/Scout parity gate
+all pass on a first-party public TikTok post. The operational soak and the capability-specific
+retirement decision remain open, so Scout stays reachable through the explicit fallback mode.
+The authoritative
 [design specification](superpowers/specs/2026-08-31-python-tiktok-scout-rewrite-design.md) and
 [implementation plan](superpowers/plans/2026-08-31-python-tiktok-scout-rewrite.md) define this
 slice and its retirement gates.
@@ -289,8 +292,15 @@ Retirement then proceeds in this order:
 
 ## Immediate Next Step
 
-Run the controlled Stage 1 live gate from the approved
-[Python TikTok Scout Rewrite Design](superpowers/specs/2026-08-31-python-tiktok-scout-rewrite-design.md)
-and its [implementation plan](superpowers/plans/2026-08-31-python-tiktok-scout-rewrite.md).
-After it passes, complete the agreed operational soak and make the capability-specific retirement
-decision; keep the Stage 1 status as `Active migration knowledge` until those gates are complete.
+The Stage 1 live gate has passed. Complete the agreed operational soak on the Python acquisition
+path, then make the capability-specific retirement decision for TikTok single-post acquisition.
+Keep `legacy_scout` and `python_tiktok_with_legacy_fallback` reachable until that decision is
+made, and do not widen Stage 1 scope beyond one public TikTok post URL.
+
+Two operational items carry into the soak:
+
+- Configure logging for the `scrapling` logger in the production worker. The library logs signed
+  CDN URLs at INFO. Reports, Temporal history, and events stay clean -- this is library stdout
+  only -- but those logs must not be shipped as-is.
+- Install the `acquisition` extra and its browsers on worker hosts only. The ordinary test suite
+  is deterministic with or without the extra and never requires it.
