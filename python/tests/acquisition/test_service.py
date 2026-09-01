@@ -99,6 +99,20 @@ def tikwm_fixture_payload() -> dict:
     return json.loads(TIKWM_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
+# Module-level services for the pre-provider and post-strategy failure-attempt
+# contract tests below: neither test cares about their exact composition
+# beyond the specific failure path each is meant to exercise.
+service = TikTokAcquisitionService(
+    FakeBrowser(complete_snapshot()), FakeResolver(), FakeMaterializer()
+)
+
+failing_cdn_service = TikTokAcquisitionService(
+    FakeBrowser(HeadlessBrowserError(AcquisitionReason.HEADLESS_BLOCKED)),
+    FakeResolver(TikWmError("cdn_unavailable")),
+    FakeMaterializer(),
+)
+
+
 @pytest.mark.asyncio
 async def test_complete_headless_success_never_calls_tikwm(tmp_path) -> None:
     browser = FakeBrowser(complete_snapshot())
@@ -175,6 +189,32 @@ async def test_short_url_returns_failure_without_calling_any_provider(tmp_path) 
     assert result.failure.code == "invalid_tiktok_url"
     assert browser.calls == []
     assert resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_url_failure_has_no_attempts(tmp_path: Path) -> None:
+    result = await service.inspect(
+        workflow_id="wf_invalid_url_001",
+        source_url="https://example.test/not-tiktok",
+        artifact_root=tmp_path,
+    )
+    assert result.failure is not None
+    assert result.failure.attempts == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_cdn_failure_retains_both_attempts(tmp_path: Path) -> None:
+    result = await failing_cdn_service.inspect(
+        workflow_id="wf_cdn_failure_001",
+        source_url="https://www.tiktok.com/@creator/video/1234567890",
+        artifact_root=tmp_path,
+    )
+    assert result.failure is not None
+    assert [attempt.strategy.value for attempt in result.failure.attempts] == [
+        "scrapling_headless",
+        "tikwm_cdn",
+    ]
+    assert result.failure.attempts[-1].reason == AcquisitionReason.CDN_UNAVAILABLE
 
 
 @pytest.mark.parametrize(

@@ -5,11 +5,13 @@ from pydantic import SecretStr, ValidationError
 
 from thoth_control_plane.acquisition.models import (
     AcquisitionAttempt,
+    AcquisitionReason,
     AcquisitionStrategy,
     AttemptStatus,
     BrowserSnapshot,
     MaterializedMedia,
     ResolvedMedia,
+    TikTokAcquisitionFailure,
     TikTokAcquisitionResult,
     TikTokPost,
     TikTokSourceReport,
@@ -82,6 +84,49 @@ def test_result_requires_exactly_one_terminal_outcome() -> None:
             ),
             failure={"code": "headless_blocked", "retryable": True},
         )
+
+
+def test_failure_serializes_safe_ordered_attempts() -> None:
+    # Note: strategy/status/reason use enum members rather than the raw string
+    # literals shown in the plan brief, because `StrictModel` (unrelated to
+    # this task, out of scope to change) sets `strict=True`, which rejects raw
+    # strings for enum-typed fields with an `is_instance_of` error. The string
+    # *values* below are identical to the brief's literals.
+    attempts = [
+        AcquisitionAttempt(
+            strategy=AcquisitionStrategy.SCRAPLING_HEADLESS,
+            status=AttemptStatus.FAILED,
+            reason=AcquisitionReason.HEADLESS_BLOCKED,
+            attempt_count=1,
+            elapsed_ms=10,
+        ),
+        AcquisitionAttempt(
+            strategy=AcquisitionStrategy.TIKWM_CDN,
+            status=AttemptStatus.FAILED,
+            reason=AcquisitionReason.CDN_UNAVAILABLE,
+            attempt_count=1,
+            elapsed_ms=20,
+        ),
+    ]
+    failure = TikTokAcquisitionFailure(code="cdn_unavailable", retryable=True, attempts=attempts)
+
+    assert failure.model_dump(mode="json") == {
+        "code": "cdn_unavailable",
+        "retryable": True,
+        "attempts": [attempt.model_dump(mode="json") for attempt in attempts],
+    }
+
+
+def test_failure_rejects_more_than_three_attempts() -> None:
+    attempt = AcquisitionAttempt(
+        strategy=AcquisitionStrategy.SCRAPLING_HEADLESS,
+        status=AttemptStatus.FAILED,
+        reason=AcquisitionReason.HEADLESS_TIMEOUT,
+        attempt_count=1,
+        elapsed_ms=1,
+    )
+    with pytest.raises(ValidationError):
+        TikTokAcquisitionFailure(code="headless_timeout", retryable=True, attempts=[attempt] * 4)
 
 
 def test_browser_snapshot_contains_sanitized_candidates_only() -> None:

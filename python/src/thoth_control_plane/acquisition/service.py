@@ -243,7 +243,9 @@ class TikTokAcquisitionService:
             )
             return TikTokAcquisitionResult(
                 failure=TikTokAcquisitionFailure(
-                    code=reason.value, retryable=reason.value in RETRYABLE_FAILURES
+                    code=reason.value,
+                    retryable=reason.value in RETRYABLE_FAILURES,
+                    attempts=list(attempts),
                 )
             )
 
@@ -265,7 +267,9 @@ class TikTokAcquisitionService:
                 )
             )
             return TikTokAcquisitionResult(
-                failure=TikTokAcquisitionFailure(code="media_validation_failed", retryable=True)
+                failure=TikTokAcquisitionFailure(
+                    code="media_validation_failed", retryable=True, attempts=list(attempts)
+                )
             )
 
         attempts.append(

@@ -114,6 +114,7 @@ class TikTokAcquisitionFailure(StrictModel):
         "acquisition_dependency_unavailable",
     ]
     retryable: bool
+    attempts: Annotated[list[AcquisitionAttempt], Field(max_length=3)] = Field(default_factory=list)
 
 
 class TikTokAcquisitionResult(StrictModel):
