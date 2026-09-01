@@ -40,12 +40,59 @@ the value.
 | `THOTH_TEMPORAL_NAMESPACE` | FastAPI, Python worker | Temporal namespace; default `default`. |
 | `THOTH_LEGACY_API_BASE_URL` | FastAPI | Optional read-only Rust observation bridge base URL. |
 | `THOTH_LEGACY_API_KEY` | FastAPI | Secret paired with `THOTH_LEGACY_API_BASE_URL`; configuring only one is rejected. |
-| `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE` | Python worker / workflow start wiring | Worker-owned implementation choice: `python` (default) or `legacy_scout`. It is never accepted from HTTP. |
+| `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE` | Python worker / workflow start wiring | Worker-owned implementation choice: `python`, `python_tiktok_with_legacy_fallback` (migration default), or `legacy_scout`. It is never accepted from HTTP. |
 | `VITE_CONTROL_PLANE_URL` | Dashboard build/dev server | FastAPI origin, normally `http://127.0.0.1:8000`. |
 | `VITE_CONTROL_PLANE_API_KEY` | Dashboard build/dev server | Local owner credential used by the v1 client. Do not commit it. |
 
 The existing Scout UI continues to use its legacy Rust route and `VITE_THOTH_API_KEY`. Setting
 `VITE_CONTROL_PLANE_URL` does not redirect legacy Scout traffic into the v1 workflow API.
+
+## TikTok acquisition worker
+
+From `python/`, install the optional acquisition runtime and its browser support before starting a
+worker that can inspect public TikTok posts:
+
+```powershell
+rtk uv sync --extra acquisition
+rtk uv run scrapling install
+rtk uv run python -m thoth_control_plane.worker
+```
+
+The normal test suite deliberately does not run either installation command and does not launch a
+browser, contact TikTok/TikWM, or invoke Bun. The opt-in live gate requires an approved public
+post URL in `THOTH_LIVE_TIKTOK_URL`; provide it through the environment or a secret manager and
+verify only its presence. Do not echo it, provider credentials, or provider URLs into shell
+history, logs, diagnostics, screenshots, reports, or verification output.
+
+`THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE` is a worker-owned migration control:
+
+| Mode | Routing behavior |
+| --- | --- |
+| `python` | Use Python acquisition only; it never invokes the legacy activity. |
+| `python_tiktok_with_legacy_fallback` | Migration default. A TikTok post uses Python first; eligible safe failures may run the legacy activity once. Non-TikTok sources route directly to legacy during this slice. |
+| `legacy_scout` | Route all source investigation through the isolated legacy activity. Use this as the rollback mode. |
+
+For an eligible TikTok post, the route order is **Scrapling headless -> TikWM/CDN -> legacy
+activity**. A successful headless result materializes media locally and does not call TikWM. The
+legacy activity is available only in `python_tiktok_with_legacy_fallback` for the finite safe
+failure set: `unsupported_platform`, `headless_timeout`, `headless_blocked`,
+`headless_incomplete`, `cdn_rate_limited`, `cdn_unavailable`, and
+`media_validation_failed`. Unsafe input and internal/persistence/dependency failures do not
+silently fall back.
+
+The worker limits both the Python acquisition queue and isolated legacy queue to one concurrent
+activity. Scrapling fetches have a 45-second deadline, media downloads a 30-second deadline, and
+the source and legacy Temporal activities have five-minute start-to-close deadlines; Python may
+retry up to three attempts while the legacy activity has one attempt. Reports are written
+atomically at `reports/<workflow-id>/source-report.json`, with media at
+`reports/<workflow-id>/media/tiktok-<post-id>.mp4`, all relative to
+`THOTH_CONTROL_PLANE_ARTIFACT_ROOT`. Legacy reports remain under
+`legacy-scout/<workflow-id>/source-report.json`.
+
+To roll back, set `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE` to `legacy_scout` through the
+approved deployment environment and restart the Python worker. This preserves the isolated,
+single-concurrency legacy queue and process ownership; it does not expose a per-request or HTTP
+switch.
 
 ## v1 HTTP contract
 

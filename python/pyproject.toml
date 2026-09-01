@@ -36,6 +36,9 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+  "live: requires explicit public provider fixture and installed browser dependencies",
+]
 
 [build-system]
 requires = ["hatchling"]
