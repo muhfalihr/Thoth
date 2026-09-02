@@ -70,7 +70,12 @@ retirement decision remain open, so Scout stays reachable through the explicit f
 The authoritative
 [design specification](superpowers/specs/2026-08-31-python-tiktok-scout-rewrite-design.md) and
 [implementation plan](superpowers/plans/2026-08-31-python-tiktok-scout-rewrite.md) define this
-slice and its retirement gates.
+slice and its retirement gates. The cutover decision itself — soak evidence, human approval, and
+rollback — is governed by its own
+[design specification](superpowers/specs/2026-09-02-python-tiktok-stage1-cutover-design.md) and
+[implementation plan](superpowers/plans/2026-09-02-python-tiktok-stage1-cutover.md); see the
+"TikTok Stage 1 operational soak" section of [python-control-plane.md](python-control-plane.md)
+for the exact operator sequence.
 
 The first slice accepts one public TikTok post URL.
 
@@ -293,9 +298,14 @@ Retirement then proceeds in this order:
 ## Immediate Next Step
 
 The Stage 1 live gate has passed. Complete the agreed operational soak on the Python acquisition
-path, then make the capability-specific retirement decision for TikTok single-post acquisition.
-Keep `legacy_scout` and `python_tiktok_with_legacy_fallback` reachable until that decision is
-made, and do not widen Stage 1 scope beyond one public TikTok post URL.
+path — see the "TikTok Stage 1 operational soak" section of
+[python-control-plane.md](python-control-plane.md) — then make the capability-specific retirement
+decision for TikTok single-post acquisition, following its own
+[design specification](superpowers/specs/2026-09-02-python-tiktok-stage1-cutover-design.md) and
+[implementation plan](superpowers/plans/2026-09-02-python-tiktok-stage1-cutover.md). Keep
+`legacy_scout` and `python_tiktok_with_legacy_fallback` reachable until that decision is made, and
+do not widen Stage 1 scope beyond one public TikTok post URL. Stage 2 ("Complete the TikTok
+Vertical Slice" above) starts only after the Stage 1 cutover decision is completed.
 
 Two operational items carry into the soak:
 

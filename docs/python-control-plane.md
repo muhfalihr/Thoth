@@ -102,6 +102,113 @@ approved deployment environment and restart the Python worker. This preserves th
 single-concurrency legacy queue and process ownership; it does not expose a per-request or HTTP
 switch.
 
+## TikTok Stage 1 operational soak
+
+The migration default, `python_tiktok_with_legacy_fallback`, is not changed by this section. It
+documents the evidence a future operator must gather and the approval a human must give before
+anyone proposes changing that default. Nothing here performs, simulates, or records that change.
+
+1. Deploy with `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE=python_tiktok_with_legacy_fallback`.
+2. Export only completed workflow summaries plus safe source events through the approved Temporal
+   operations channel; never export source/provider URLs or raw logs.
+3. Convert each exported run to the strict schema version 1 JSONL observation contract outside
+   Git (see "Observation contract" below), and designate at least five of the converted runs as
+   controlled parity samples.
+4. Collect at least 168 hours (7 days) and 50 valid completed runs before evaluating.
+5. From `python/`, run:
+
+   ```powershell
+   rtk uv run thoth-control operations tiktok-stage1-soak --observations <approved-jsonl> --output-directory <approved-aggregate-directory>
+   ```
+
+6. Archive only the aggregate report file, `tiktok-stage1-soak-report.json`, written into
+   `<approved-aggregate-directory>`. Investigate every sorted blocker it lists without editing the
+   evidence to force a pass.
+7. Require `ready: true` in that report, explicit human approval, and the rollback drill under
+   "Verification and smoke scope" below, in that order, before anyone proposes the default-mode
+   commit. A passing report is evidence for that decision, never the decision itself, and never a
+   substitute for the human approval step.
+
+### Observation contract
+
+Each line of the JSONL input is one `TikTokSoakObservation` (schema version 1). Its `route` field
+is exactly one of five values:
+
+| Route | Meaning |
+| --- | --- |
+| `python_native` | Python acquisition succeeded terminally; no legacy fallback was used. |
+| `legacy_fallback` | An eligible safe Python failure triggered the temporary legacy activity, which then succeeded. |
+| `failed` | A terminal failure with no eligible fallback (for example a persistence, dependency, or runner failure). |
+| `invalid_input` | Rejected before any attempt: an invalid TikTok URL or an unsupported platform. |
+| `operator_cancelled` | The operator cancelled the run before a terminal outcome. |
+
+An operator does not hand-write this file. It is the output of converting exported, redacted run
+summaries into this strict shape; the loader rejects any line that does not match it, including
+extra fields.
+
+### Readiness policy, counts, and rates
+
+`evaluate_tiktok_soak` applies a fixed policy — none of these thresholds is operator-configurable:
+
+| Policy field | Value |
+| --- | --- |
+| `minimum_window_days` | 7 |
+| `minimum_valid_completed_runs` | 50 |
+| `minimum_parity_samples` | 5 |
+| `minimum_python_native_success_rate` | 0.95 |
+| `maximum_legacy_fallback_rate` | 0.05 |
+| `maximum_terminal_failure_rate` | 0.02 |
+
+The aggregate report carries only counts, rates, a window, `ready`, and blockers — never a
+per-run identity, URL, or timestamp.
+
+Counts (`valid_completed` is `python_native + legacy_fallback + failed`, the denominator for the
+rates below): `valid_completed`, `python_native`, `legacy_fallback`, `failed`, `invalid_input`,
+`operator_cancelled`, `parity_samples`.
+
+Rates, each a fraction of `valid_completed`: `python_native`, `legacy_fallback`,
+`terminal_failure`.
+
+Blockers are sorted lexicographically by their fixed string value and are the closed set:
+`insufficient_window`, `insufficient_valid_completed_runs`, `insufficient_parity_samples`,
+`python_native_rate_below_minimum`, `legacy_fallback_rate_above_maximum`,
+`terminal_failure_rate_above_maximum`, `artifact_persistence_failure_present`,
+`acquisition_dependency_failure_present`, `acquisition_runner_failure_present`,
+`redaction_audit_failure_present`, `absolute_path_audit_failure_present`,
+`partial_cleanup_failure_present`, `browser_cleanup_failure_present`, `parity_failure_present`. A
+report with `ready: true` never carries any blocker.
+
+### Fail-closed CLI behavior
+
+`rtk uv run thoth-control operations tiktok-stage1-soak` fails closed. Any I/O error, encoding
+error, blank line, malformed JSON, per-observation validation failure, or dataset-level problem
+(for example an empty dataset, a duplicate id, or observations out of chronological order) aborts
+the entire run before any report is written. It prints the fixed message
+`tiktok stage 1 soak evaluation failed` to stderr and exits with status code `1`. It never writes
+a partial report, never prints a diagnostic derived from the offending line, and never names an
+observation id, workflow id, or path in that message. On success it prints
+`tiktok stage 1 soak report written` and writes the report atomically: a sibling `.part` file is
+written, flushed, and `fsync`'d, then renamed onto `tiktok-stage1-soak-report.json`; the `.part`
+file is removed on any failure or cancellation, so a reader never observes a truncated report.
+
+### Observation evidence is sensitive
+
+Every field in the strict observation contract is aggregate-safe by construction — no URL, no
+caption, no checksum, no absolute path. The exported JSONL as a whole is still sensitive
+operational evidence: it carries real observation and workflow identifiers and real occurrence
+timestamps that can correlate with actual acquisition activity. Do not commit it, paste it into a
+ticket, chat, or code review, or print it to a terminal session that is logged or shared. The
+repository's `.gitignore` matches the naming convention `tiktok-stage1-soak-observations*.jsonl`
+and the atomic partial-write suffix `tiktok-stage1-soak-report.json.part`; write the finished
+report only into an approved directory outside the repository tree, never the working directory
+default.
+
+The synthetic, non-live example at
+`docs/operations/tiktok-stage1-soak-observation.example.jsonl` is safe to commit: it uses a
+placeholder observation id, workflow id, and timestamp, and validates against the real
+`TikTokSoakObservation` model. It is a fixture for documentation and tooling checks, never a
+soak dataset.
+
 ## v1 HTTP contract
 
 Every response carries `X-Thoth-Contract-Version: 1`. All state-changing endpoints require
@@ -209,3 +316,23 @@ uv run pytest tests/integration/test_control_plane_smoke.py -q
 This is not a controlled live provider/Scout smoke. A live run additionally requires operator
 credentials, network/provider availability, and explicit selection of an approved fixture; never
 paste those credentials into the test command or report.
+
+### Required rollback drill
+
+Run this drill before approving a cutover away from the migration default, and keep it as the
+standing emergency procedure afterward. It does not run automatically and a passing soak report
+does not substitute for it.
+
+1. Set `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE=python_tiktok_with_legacy_fallback` for ordinary
+   recovery, or `legacy_scout` for full acquisition rollback, through the approved deployment
+   environment.
+2. Restart the Python worker; in-flight workflows retain their durable input mode from when they
+   started.
+3. Confirm newly gateway-started workflows carry the selected mode.
+4. Run one approved public TikTok post and verify exact Python/legacy activity counts against the
+   selected mode's expected routing.
+5. Audit logs and source events for zero source URLs, signed URLs, provider payloads, exception
+   text, and absolute paths.
+
+Do not include real workflow IDs, URLs, environment values, report paths, screenshots, or live
+output when recording that this drill was run.
