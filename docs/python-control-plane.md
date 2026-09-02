@@ -64,6 +64,41 @@ post URL in `THOTH_LIVE_TIKTOK_URL`; provide it through the environment or a sec
 verify only its presence. Do not echo it, provider credentials, or provider URLs into shell
 history, logs, diagnostics, screenshots, reports, or verification output.
 
+### Stage 1 compatibility container
+
+GitHub Actions builds the Linux AMD64 compatibility image at
+`ghcr.io/muhfalihr/thoth`. A branch or version tag is only a discovery aid; deployment and the
+Stage 1 change record must use the immutable digest printed in the successful **Container image**
+workflow summary. In PowerShell, pull the selected build without putting runtime secrets in the
+command:
+
+```powershell
+$ImageDigest = Read-Host "Paste the sha256 digest from the successful workflow summary"
+$Image = "ghcr.io/muhfalihr/thoth@$ImageDigest"
+docker pull $Image
+docker image inspect $Image --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+```
+
+The image defaults to `/opt/thoth/python/.venv/bin/python -m thoth_control_plane.worker`. Run the
+FastAPI process from the exact same digest by overriding the command with
+`/opt/thoth/python/.venv/bin/uvicorn thoth_control_plane.api.app:create_app --factory --host
+0.0.0.0 --port 8000`.
+
+Both services must receive `THOTH_CONTROL_PLANE_API_KEY`, `THOTH_TEMPORAL_TARGET`,
+`THOTH_TEMPORAL_NAMESPACE`, `THOTH_CONTROL_PLANE_ARTIFACT_ROOT`, and the deployment-owned activity
+mode at runtime through the approved environment or secret manager. During the soak the activity
+mode remains `python_tiktok_with_legacy_fallback`. Never bake these values or
+`THOTH_LIVE_TIKTOK_URL` into an image, build argument, workflow, or command history.
+
+Mount persistent storage at `/var/lib/thoth/artifacts` and set
+`THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts` for both API and worker. This runtime
+volume contains workflow artifacts; it is distinct from the approved external S3 prefixes used to
+archive sensitive observation JSONL and the finished aggregate report.
+
+Publishing the image does not deploy it to AWS, restart a worker, configure Temporal, start the
+soak window, or approve the Python-only cutover. The soak begins only after the recorded digest is
+deployed and a controlled canary passes.
+
 `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE` is a worker-owned migration control:
 
 | Mode | Routing behavior |

@@ -101,3 +101,14 @@ def test_container_workflow_pins_gates_tags_platform_and_digest_summary() -> Non
     assert "sbom: true" in workflow
     assert "steps.build.outputs.digest" in workflow
     assert "secrets." not in workflow
+
+
+def test_operations_documentation_requires_digest_pinning_and_runtime_injection() -> None:
+    documentation = _repo_text("docs/python-control-plane.md")
+    digest_prompt = 'Read-Host "Paste the sha256 digest from the successful workflow summary"'
+    assert "### Stage 1 compatibility container" in documentation
+    assert "ghcr.io/muhfalihr/thoth@" in documentation
+    assert digest_prompt in documentation
+    assert "/var/lib/thoth/artifacts" in documentation
+    assert "thoth_control_plane.api.app:create_app" in documentation
+    assert "Publishing the image does not deploy it to AWS" in documentation
