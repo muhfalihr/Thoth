@@ -137,6 +137,12 @@ class TikTokSoakObservation(StrictModel):
             ):
                 raise ValueError("python-native evidence is inconsistent")
         elif self.route is TikTokSoakRoute.LEGACY_FALLBACK:
+            # The two guards above already reject activity_mode == "python" and
+            # activity_mode == "legacy_scout" for this route, so the check below
+            # is currently unreachable for both of them: it is mutually redundant
+            # with those earlier guards for today's closed `SourceActivityMode`
+            # set. Kept anyway as forward defense in case a fourth activity mode
+            # is ever added without updating the guards above.
             if (
                 self.activity_mode != "python_tiktok_with_legacy_fallback"
                 or self.failure_code not in LEGACY_FALLBACK_ELIGIBLE_CODES
@@ -248,6 +254,25 @@ class TikTokSoakReport(StrictModel):
         if parsed.utcoffset() != timedelta(0):
             raise ValueError("generated_at must use UTC")
         return parsed
+
+    @model_validator(mode="after")
+    def validate_report_coherence(self) -> TikTokSoakReport:
+        """Cross-field invariants the field types alone cannot express.
+
+        Deliberately narrow: no counts-arithmetic invariant and no blocker
+        sort-order pin, both out of scope for this contract.
+        """
+        if self.ready and self.blockers:
+            raise ValueError("a ready report cannot carry any blockers")
+        if len(set(self.blockers)) != len(self.blockers):
+            raise ValueError("blockers must not contain duplicates")
+        if (
+            self.window.started_at is not None
+            and self.window.ended_at is not None
+            and self.window.ended_at < self.window.started_at
+        ):
+            raise ValueError("window end must not precede window start")
+        return self
 
 
 class TikTokSoakDatasetErrorCode(StrEnum):

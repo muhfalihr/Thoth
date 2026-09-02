@@ -127,20 +127,13 @@ def test_observation_rejects_unknown_failure_code(valid_observation: dict[str, o
 def test_attempts_field_declares_a_maximum_of_three(
     valid_observation: dict[str, object],
 ) -> None:
+    """Only assert the field's own declared metadata here. A `pytest.raises`
+    block that actually submits >3 attempts would never isolate this
+    constraint: 4 identical `HEADLESS_SUCCEEDED` attempts also violate the
+    headless-first attempt-order invariant, so a rejection would be
+    ambiguous about which rule fired."""
     metadata = TikTokSoakObservation.model_fields["attempts"].metadata
     assert any(isinstance(item, MaxLen) and item.max_length == 3 for item in metadata)
-    with pytest.raises(ValidationError):
-        TikTokSoakObservation.model_validate(
-            {
-                **valid_observation,
-                "attempts": [
-                    HEADLESS_SUCCEEDED,
-                    HEADLESS_SUCCEEDED,
-                    HEADLESS_SUCCEEDED,
-                    HEADLESS_SUCCEEDED,
-                ],
-            }
-        )
 
 
 @pytest.mark.parametrize(
@@ -573,6 +566,150 @@ def test_report_graph_cannot_represent_per_run_fields() -> None:
 def test_report_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         TikTokSoakReport.model_validate({**_valid_report_kwargs(), "note": "extra"})
+
+
+def test_report_submodels_reject_extra_fields() -> None:
+    """`TikTokSoakReport.model_fields` inheriting `StrictModel` is not the same
+    as each submodel actually enforcing `extra="forbid"` at construction time;
+    exercise the three submodels directly rather than only the top-level
+    report."""
+    from thoth_control_plane.operations.tiktok_soak import (
+        TikTokSoakCounts,
+        TikTokSoakRates,
+        TikTokSoakWindow,
+    )
+
+    valid_window = {"started_at": None, "ended_at": None, "duration_hours": 0}
+    valid_counts = {
+        "valid_completed": 0,
+        "python_native": 0,
+        "legacy_fallback": 0,
+        "failed": 0,
+        "invalid_input": 0,
+        "operator_cancelled": 0,
+        "parity_samples": 0,
+    }
+    valid_rates = {"python_native": 0.0, "legacy_fallback": 0.0, "terminal_failure": 0.0}
+
+    with pytest.raises(ValidationError):
+        TikTokSoakWindow.model_validate({**valid_window, "extra": 1})
+    with pytest.raises(ValidationError):
+        TikTokSoakCounts.model_validate({**valid_counts, "extra": 1})
+    with pytest.raises(ValidationError):
+        TikTokSoakRates.model_validate({**valid_rates, "extra": 1})
+
+
+def test_report_blockers_rejects_unknown_value() -> None:
+    kwargs = _valid_report_kwargs()
+    kwargs["blockers"] = ["not_a_real_blocker"]
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(kwargs)
+
+
+def test_report_window_rejects_non_utc_ended_at() -> None:
+    naive_kwargs = _valid_report_kwargs()
+    naive_kwargs["window"] = {
+        "started_at": None,
+        "ended_at": datetime(2026, 9, 2, 19, 0, 0),
+        "duration_hours": 0,
+    }
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(naive_kwargs)
+
+    offset_kwargs = _valid_report_kwargs()
+    offset_kwargs["window"] = {
+        "started_at": None,
+        "ended_at": "2026-09-02T19:00:00+07:00",
+        "duration_hours": 0,
+    }
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(offset_kwargs)
+
+
+def test_report_rejects_unsupported_schema_version() -> None:
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate({**_valid_report_kwargs(), "schema_version": 2})
+
+
+def test_report_counts_rejects_negative_value() -> None:
+    kwargs = _valid_report_kwargs()
+    kwargs["counts"] = {**kwargs["counts"], "valid_completed": -1}
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(kwargs)
+
+
+def test_report_rates_rejects_out_of_range_value() -> None:
+    kwargs = _valid_report_kwargs()
+    kwargs["rates"] = {**kwargs["rates"], "python_native": 1.5}
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(kwargs)
+
+
+def test_report_window_rejects_negative_duration_hours() -> None:
+    kwargs = _valid_report_kwargs()
+    kwargs["window"] = {**kwargs["window"], "duration_hours": -1}
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(kwargs)
+
+
+def test_observation_rejects_malformed_observation_id(
+    valid_observation: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        TikTokSoakObservation.model_validate({**valid_observation, "observation_id": "not_obs_id"})
+
+
+def test_observation_rejects_malformed_workflow_id(
+    valid_observation: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        TikTokSoakObservation.model_validate({**valid_observation, "workflow_id": "1_invalid"})
+
+
+def test_legacy_fallback_route_accepts_two_step_attempt_ladder(
+    valid_observation: dict[str, object],
+) -> None:
+    observation = TikTokSoakObservation.model_validate(
+        {
+            **valid_observation,
+            "activity_mode": "python_tiktok_with_legacy_fallback",
+            "route": TikTokSoakRoute.LEGACY_FALLBACK,
+            "failure_code": "cdn_unavailable",
+            "attempts": [HEADLESS_FAILED, TIKWM_FAILED],
+            "artifact_validated": True,
+        }
+    )
+    assert observation.route is TikTokSoakRoute.LEGACY_FALLBACK
+    assert observation.attempts == [HEADLESS_FAILED, TIKWM_FAILED]
+
+
+def test_report_ready_rejects_non_empty_blockers() -> None:
+    kwargs = _valid_report_kwargs()
+    kwargs["ready"] = True
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(kwargs)
+
+
+def test_report_rejects_duplicate_blockers() -> None:
+    kwargs = _valid_report_kwargs()
+    kwargs["ready"] = False
+    kwargs["blockers"] = [
+        TikTokSoakBlocker.INSUFFICIENT_VALID_COMPLETED_RUNS,
+        TikTokSoakBlocker.INSUFFICIENT_VALID_COMPLETED_RUNS,
+    ]
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(kwargs)
+
+
+def test_report_window_rejects_ended_before_started() -> None:
+    kwargs = _valid_report_kwargs()
+    kwargs["window"] = {
+        "started_at": "2026-09-02T12:00:00Z",
+        "ended_at": "2026-09-02T11:00:00Z",
+        "duration_hours": 1,
+    }
+    with pytest.raises(ValidationError):
+        TikTokSoakReport.model_validate(kwargs)
 
 
 def test_dataset_error_message_is_fixed_per_code() -> None:
