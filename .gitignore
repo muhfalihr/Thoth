@@ -98,5 +98,5 @@ api_key.txt
 !crates/thoth-core/tests/fixtures/scout_package/**
 
 # ── TikTok Stage 1 soak: never commit observation data or partial writes ────
-/tiktok-stage1-soak-observations*.jsonl
-/tiktok-stage1-soak-report.json.part
+tiktok-stage1-soak-observations*.jsonl
+tiktok-stage1-soak-report.json.part
