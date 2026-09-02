@@ -300,8 +300,12 @@ class TikTokSoakDatasetErrorCode(StrEnum):
     # The three members below are the specific reasons `evaluate_tiktok_soak`
     # raises: a duplicate `observation_id`, a duplicate `workflow_id` (checked
     # separately so each mismatch is unambiguous), and observations out of
-    # occurrence order. The four members above predate the evaluator and stay
-    # reserved for the dataset loader (a separate, later concern).
+    # occurrence order. The four members above predate the evaluator and are
+    # currently unused with no planned producer — they are Task 5's legacy,
+    # kept as-is rather than deleted since removing them is not this task's
+    # concern; two of them overlap in meaning with the members below
+    # (`DUPLICATE_OBSERVATION` ~ `DUPLICATE_OBSERVATION_ID`,
+    # `NON_MONOTONIC_OCCURRED_AT` ~ `OBSERVATIONS_NOT_CHRONOLOGICAL`).
     DUPLICATE_OBSERVATION_ID = "duplicate_observation_id"
     DUPLICATE_WORKFLOW_ID = "duplicate_workflow_id"
     OBSERVATIONS_NOT_CHRONOLOGICAL = "observations_not_chronological"
@@ -346,7 +350,7 @@ _COMPLETED_ROUTES = frozenset(
     {TikTokSoakRoute.PYTHON_NATIVE, TikTokSoakRoute.LEGACY_FALLBACK, TikTokSoakRoute.FAILED}
 )
 
-_ZERO_TOLERANCE_CODES: dict[str, TikTokSoakBlocker] = {
+_ZERO_TOLERANCE_CODES: dict[SoakFailureCode, TikTokSoakBlocker] = {
     "artifact_persistence_failed": TikTokSoakBlocker.ARTIFACT_PERSISTENCE_FAILURE_PRESENT,
     "acquisition_dependency_unavailable": TikTokSoakBlocker.ACQUISITION_DEPENDENCY_FAILURE_PRESENT,
     "acquisition_runner_failed": TikTokSoakBlocker.ACQUISITION_RUNNER_FAILURE_PRESENT,
@@ -363,7 +367,14 @@ def _fraction(value: float) -> Fraction:
     """Convert a policy threshold to an exact `Fraction` via its decimal
     string, so `0.95` compares as exactly 95/100 rather than the nearest
     float64 — a rate that lands exactly on a threshold must always compare
-    the same way, on every machine."""
+    the same way, on every machine.
+
+    Float division would already agree with this at any completed-run count
+    below roughly 9e14 (the scale at which IEEE-754 rounding could first
+    disagree with the exact rational for these thresholds) — far beyond any
+    soak this evaluator will ever see. `Fraction` is kept anyway because it
+    is correct without needing that bound to hold.
+    """
     return Fraction(str(value))
 
 
@@ -450,6 +461,8 @@ def evaluate_tiktok_soak(
     ordered_blockers = sorted(blockers, key=lambda blocker: blocker.value)
 
     return TikTokSoakReport(
+        # Fallback is a soak-window bound (`ended_at`), not a wall clock —
+        # it never leaks a fresher timestamp than `window.ended_at` itself.
         generated_at=generated_at or ended_at or datetime(1970, 1, 1, tzinfo=UTC),
         policy=policy,
         window=TikTokSoakWindow(

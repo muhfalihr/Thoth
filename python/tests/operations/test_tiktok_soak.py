@@ -862,6 +862,20 @@ def reverse_timestamp_order(
     return list(reversed(observations))
 
 
+def swap_adjacent_interior_observations(
+    observations: list[TikTokSoakObservation],
+) -> list[TikTokSoakObservation]:
+    """Swap two adjacent interior observations, leaving both endpoints in
+    order. Unlike `reverse_timestamp_order`, this cannot also be rejected by
+    `TikTokSoakWindow`'s non-negative-duration guard (endpoints are
+    untouched, so `duration_hours` stays positive) — it isolates the
+    chronological-order check as the only possible reason for rejection."""
+    mutated = list(observations)
+    mid = len(mutated) // 2
+    mutated[mid], mutated[mid + 1] = mutated[mid + 1], mutated[mid]
+    return mutated
+
+
 def failure_observation(code: str) -> TikTokSoakObservation:
     return TikTokSoakObservation(
         observation_id=_obs_id(9000),
@@ -958,6 +972,23 @@ def test_ready_observations_yield_a_ready_report(
     report = evaluate_tiktok_soak(ready_observations, generated_at=GENERATED_AT)
     assert report.ready is True
     assert report.blockers == []
+    assert report.window.started_at == ready_observations[0].occurred_at
+    assert report.window.ended_at == ready_observations[-1].occurred_at
+    assert report.window.duration_hours == 168.0
+    assert (
+        report.counts.valid_completed,
+        report.counts.python_native,
+        report.counts.legacy_fallback,
+        report.counts.failed,
+        report.counts.invalid_input,
+        report.counts.operator_cancelled,
+        report.counts.parity_samples,
+    ) == (100, 95, 3, 2, 0, 0, 5)
+    assert (
+        report.rates.python_native,
+        report.rates.legacy_fallback,
+        report.rates.terminal_failure,
+    ) == (0.95, 0.03, 0.02)
 
 
 @pytest.mark.parametrize(
@@ -966,6 +997,7 @@ def test_ready_observations_yield_a_ready_report(
         (duplicate_observation_id, "duplicate_observation_id"),
         (duplicate_workflow_id, "duplicate_workflow_id"),
         (reverse_timestamp_order, "observations_not_chronological"),
+        (swap_adjacent_interior_observations, "observations_not_chronological"),
     ],
 )
 def test_invalid_dataset_raises_safe_finite_error(
@@ -1083,6 +1115,47 @@ def test_invalid_and_cancelled_routes_are_counted_but_not_completed(
     assert report.counts.valid_completed == 100
 
 
+def test_report_window_start_ignores_a_leading_non_completed_run(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    """A leading `invalid_input` run must not push `window.started_at`
+    earlier than the first completed run."""
+    leading = invalid_input().model_copy(
+        update={"occurred_at": ready_observations[0].occurred_at - timedelta(seconds=1)}
+    )
+    report = evaluate_tiktok_soak([leading, *ready_observations], generated_at=GENERATED_AT)
+    assert report.window.started_at == ready_observations[0].occurred_at
+
+
+def test_report_window_end_ignores_a_trailing_non_completed_run(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    """A trailing `operator_cancelled` run must not push `window.ended_at`
+    (and therefore `duration_hours`) past the last completed run."""
+    trailing = operator_cancelled().model_copy(
+        update={"occurred_at": ready_observations[-1].occurred_at + timedelta(seconds=1)}
+    )
+    report = evaluate_tiktok_soak([*ready_observations, trailing], generated_at=GENERATED_AT)
+    assert report.window.ended_at == ready_observations[-1].occurred_at
+    assert report.window.duration_hours == 168.0
+
+
+def test_zero_tolerance_cleanup_failure_blocks_on_a_non_completed_route(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    """Zero-tolerance evidence must be swept across every observation, not
+    only completed runs: an aborted (`operator_cancelled`) run is exactly
+    where a leaked temp directory or orphaned browser is most likely, and
+    losing that route from the sweep would silently drop the blocker."""
+    non_completed_cleanup_failure = operator_cancelled().model_copy(
+        update={"partial_cleanup_passed": False}
+    )
+    report = evaluate_tiktok_soak(
+        [*ready_observations, non_completed_cleanup_failure], generated_at=GENERATED_AT
+    )
+    assert "partial_cleanup_failure_present" in [item.value for item in report.blockers]
+
+
 def test_evaluator_is_pure_and_uses_the_supplied_generated_at(
     ready_observations: list[TikTokSoakObservation],
 ) -> None:
@@ -1127,8 +1200,17 @@ def test_blocker_order_is_stable_across_input_permutation(
     """Two observations share one timestamp (a tie the chronological-order
     check permits), so feeding them in either order is a genuine input
     permutation. Whichever order they are appended in, the final `blockers`
-    sequence must come out identical: this is what proves the evaluator
-    never leaks `set` iteration order into its output."""
+    sequence must come out identical.
+
+    This does NOT by itself prove the evaluator never leaks `set` iteration
+    order: both orderings build the same set of blocker members in the same
+    interpreter, so `set` iteration order is identical on both sides
+    regardless of implementation. That guarantee rests entirely on
+    `test_blocker_order_is_deterministic_lexicographic_by_value`, which pins
+    an exact known sequence. This test's own value is as two more
+    zero-tolerance assertions (`partial_cleanup_failure_present` and
+    `redaction_audit_failure_present` both surviving a tied-timestamp
+    input) plus confirming permutation-stability of the final list."""
     tie_time = _BASE_TIME + _READY_WINDOW + timedelta(seconds=10)
     cleanup_break = TikTokSoakObservation(
         observation_id=_obs_id(9101),
