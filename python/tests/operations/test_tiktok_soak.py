@@ -15,6 +15,7 @@ from thoth_control_plane.acquisition.models import (
     AcquisitionStrategy,
     AttemptStatus,
 )
+from thoth_control_plane.operations import tiktok_soak as soak_module
 from thoth_control_plane.operations.tiktok_soak import (
     TikTokSoakBlocker,
     TikTokSoakDatasetError,
@@ -1258,3 +1259,48 @@ def test_dataset_error_from_evaluator_carries_no_raw_identifier() -> None:
     message = str(captured.value)
     for forbidden in ("http", "://", "obs_", "wf_", "C:", "/", "\\"):
         assert forbidden not in message
+
+
+def test_invalid_input_route_accepts_unsupported_platform(
+    valid_observation: dict[str, object],
+) -> None:
+    """`unsupported_platform` stays a valid `invalid_input` failure code.
+
+    Removing it from the fallback-eligible set must not remove it from the
+    soak taxonomy: it is still a real pre-provider rejection an operator can
+    observe, and it is representable exactly as the route defines -- zero
+    attempts, no fallback transition, no validated artifact.
+    """
+    observation = TikTokSoakObservation.model_validate(
+        {
+            **valid_observation,
+            "route": TikTokSoakRoute.INVALID_INPUT,
+            "failure_code": "unsupported_platform",
+            "attempts": [],
+            "artifact_validated": False,
+            "parity_passed": None,
+        }
+    )
+    assert observation.route is TikTokSoakRoute.INVALID_INPUT
+    assert observation.failure_code == "unsupported_platform"
+    assert observation.attempts == []
+
+
+def test_soak_contract_shares_the_domain_fallback_allowlist() -> None:
+    """One allowlist, three consumers.
+
+    The soak contract must not carry its own copy of the fallback taxonomy.
+    Asserting object identity -- not equality -- is what makes a future
+    divergence impossible rather than merely unlikely: an equal-but-separate
+    frozenset would pass an equality check today and drift tomorrow.
+    """
+    from thoth_control_plane.domain import models as domain_models
+    from thoth_control_plane.workflows import source_investigation as workflow_module
+
+    assert soak_module.LEGACY_FALLBACK_ELIGIBLE_CODES is (
+        domain_models.LEGACY_FALLBACK_ELIGIBLE_CODES
+    )
+    assert workflow_module.LEGACY_FALLBACK_ELIGIBLE_CODES is (
+        domain_models.LEGACY_FALLBACK_ELIGIBLE_CODES
+    )
+    assert "unsupported_platform" not in domain_models.LEGACY_FALLBACK_ELIGIBLE_CODES

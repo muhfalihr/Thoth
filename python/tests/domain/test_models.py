@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from thoth_control_plane.domain.models import (
+    LEGACY_FALLBACK_ELIGIBLE_CODES,
     ApprovalDecision,
     ApprovalSignal,
     ArtifactRef,
@@ -258,3 +259,31 @@ def test_source_progress_event_rejects_out_of_set_reason(reason: str) -> None:
     """
     with pytest.raises(ValidationError):
         SourceProgressEvent(kind="stage.failed", payload={"stage": "tiktok_cdn", "reason": reason})
+
+
+def test_unsupported_platform_is_not_legacy_fallback_eligible() -> None:
+    """`unsupported_platform` is a pre-provider rejection, not a Python failure.
+
+    A code rejected before any provider or legacy attempt cannot also be
+    fallback-eligible: the resulting observation would need both
+    `route="legacy_fallback"` and `attempts=[]`, which the soak contract
+    rejects. Routing a non-TikTok platform straight to legacy in an explicit
+    migration mode is a separate routing seam, decided by the mode and the
+    platform, never by this failure code.
+    """
+    assert "unsupported_platform" not in LEGACY_FALLBACK_ELIGIBLE_CODES
+    assert "invalid_tiktok_url" not in LEGACY_FALLBACK_ELIGIBLE_CODES
+
+
+def test_source_progress_event_rejects_unsupported_platform_as_fallback_from() -> None:
+    """A fallback transition can only cite a code that can actually cause one.
+
+    This case violates the `fallback_from` closed set and nothing else -- the
+    stage is valid and the key is allowlisted -- so the rejection can only come
+    from the clause under test.
+    """
+    with pytest.raises(ValidationError):
+        SourceProgressEvent(
+            kind="stage.failed",
+            payload={"stage": "tiktok_cleanup", "fallback_from": "unsupported_platform"},
+        )

@@ -323,7 +323,6 @@ class SourceInvestigationResult(StrictModel):
 
 LEGACY_FALLBACK_ELIGIBLE_CODES = frozenset(
     {
-        "unsupported_platform",
         "headless_timeout",
         "headless_blocked",
         "headless_incomplete",
@@ -336,6 +335,15 @@ LEGACY_FALLBACK_ELIGIBLE_CODES = frozenset(
 
 Imported by the deterministic workflow (routing) and the soak contract
 (allowlist assertions) so the two cannot drift apart.
+
+Membership means "a Python provider attempt was made and failed in a way legacy
+might still recover from". Pre-provider rejections are therefore excluded:
+`invalid_tiktok_url` and `unsupported_platform` are decided before any provider
+or legacy attempt exists, and an observation for them is `route="invalid_input"`
+with zero attempts -- shape the `legacy_fallback` route rejects outright. Sending
+a non-TikTok platform to legacy in an explicit migration mode is a separate
+routing seam, decided by the activity mode and the platform before the Python
+activity runs, never by a failure code returned after it.
 """
 
 SOURCE_EVENT_PAYLOAD_KEYS = frozenset(

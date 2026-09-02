@@ -874,6 +874,22 @@ async def unsafe_python_failure(input_: SourceInvestigationActivityInput):
 
 
 @activity.defn(name="inspect_source_candidates")
+async def unsupported_platform_python_failure(input_: SourceInvestigationActivityInput):
+    """A pre-provider rejection, which must never reach the legacy activity.
+
+    The URL is a real TikTok post, so the pre-activity non-TikTok routing seam
+    does not fire and the Python activity genuinely runs. What is under test is
+    the failure code alone: `unsupported_platform` is not fallback-eligible, so
+    the workflow must fail closed rather than hand off to legacy.
+    """
+    global PYTHON_CALLS
+    PYTHON_CALLS += 1
+    return SourceInvestigationActivityResult(
+        failure={"code": "unsupported_platform", "retryable": False}
+    )
+
+
+@activity.defn(name="inspect_source_candidates")
 async def acquisition_runner_python_failure(input_: SourceInvestigationActivityInput):
     global PYTHON_CALLS
     PYTHON_CALLS += 1
@@ -990,6 +1006,15 @@ async def run_routing_case(workflow_env, *, source_url: str, mode: str, python_a
             unsafe_python_failure,
             "failed",
             "invalid_tiktok_url",
+            1,
+            0,
+        ),
+        (
+            "https://www.tiktok.com/@creator/video/1234567890",
+            "python_tiktok_with_legacy_fallback",
+            unsupported_platform_python_failure,
+            "failed",
+            "unsupported_platform",
             1,
             0,
         ),
