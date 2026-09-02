@@ -140,8 +140,22 @@ async def test_missing_acquisition_dependency_returns_safe_failure_without_runne
     assert result.failure is not None
     assert result.failure.code == "acquisition_dependency_unavailable"
     assert called is False
-    # The runner boundary was never entered, so no cleanup event is owed.
-    assert result.events == []
+    # A capability-unavailable run is a terminal activity result, and the soak
+    # contract requires cleanup evidence for every terminal route. Emitting it
+    # here is what lets an observation be built from activity evidence at all,
+    # which is what keeps the zero-tolerance dependency blocker reachable: a
+    # partial Scrapling outage must not drop exactly the runs that should
+    # block readiness. Nothing was opened, so both booleans are trivially true
+    # -- but they are measured, not assumed.
+    assert [event.payload["stage"] for event in result.events] == ["tiktok_cleanup"]
+    cleanup = result.events[0]
+    assert cleanup.kind == "stage.completed"
+    assert cleanup.payload == {
+        "stage": "tiktok_cleanup",
+        "status": "succeeded",
+        "partial_cleanup_passed": True,
+        "browser_cleanup_passed": True,
+    }
 
 
 @pytest.mark.asyncio

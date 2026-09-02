@@ -186,10 +186,22 @@ async def _run(
 ) -> SourceInvestigationActivityResult:
     """Run the injected acquisition runner and persist its report atomically."""
     if not capability.available:
+        # A capability-unavailable result is terminal, and the soak contract
+        # requires cleanup evidence for every terminal route -- so this branch
+        # owes a cleanup event even though the runner boundary was never
+        # entered and nothing could have been left behind. Without it an
+        # observation cannot be formed from activity evidence at all, which
+        # would make `ACQUISITION_DEPENDENCY_FAILURE_PRESENT` unreachable and
+        # silently drop these runs from the terminal-failure denominator:
+        # a partial Scrapling outage would hide from the readiness gate by
+        # losing exactly the runs that should block it. The booleans are
+        # trivially true here, but they are measured by the same helper as
+        # every other route rather than assumed.
         return SourceInvestigationActivityResult(
             failure=SafeActivityError(
                 code=capability.code or "acquisition_dependency_unavailable", retryable=False
-            )
+            ),
+            events=_terminal_events([], artifact_root, input_.workflow_id),
         )
 
     try:
