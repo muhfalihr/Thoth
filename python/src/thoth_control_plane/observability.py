@@ -43,16 +43,26 @@ def _add_filter_once(target: logging.Filterer) -> None:
 
 
 def _guard_future_handlers(logger: logging.Logger) -> None:
-    """Attach the filter to every handler the `scrapling` logger will ever own.
+    """Attach the filter to every handler this logger will ever own.
 
-    Scrapling attaches its own `StreamHandler` to this exact logger at import
-    time — lazily, inside `check_scrapling_capability()`, long after this
-    module has already run at worker startup. A one-time scan of
-    `logger.handlers` at configure time cannot see a handler that does not
-    exist yet, so instead this wraps `Logger.addHandler` itself: whichever
-    handler object is added, whenever that happens, gets the filter attached
-    the moment it is added. This makes the guarantee independent of import
-    timing rather than relying on being re-armed at the right moment.
+    Applied to two logger objects, for two different late-arrival stories:
+
+    - the `scrapling` logger, because Scrapling attaches its own
+      `StreamHandler` to that exact logger at import time — lazily, inside
+      `check_scrapling_capability()`, long after this module has already run
+      at worker startup;
+    - the **root** logger, because a record propagating up from a child such
+      as `scrapling.fetchers` is never shown the `scrapling` Logger's own
+      filters, so a root handler installed later (`logging.basicConfig()`,
+      structured logging, a log shipper) would otherwise receive it raw.
+
+    A one-time scan of `logger.handlers` at configure time cannot see a
+    handler that does not exist yet, so instead this wraps `addHandler` on
+    that one logger instance: whichever handler object is added, whenever
+    that happens, gets the filter attached the moment it is added. The wrapper
+    is set on the instance, not on `logging.Logger`, so no unrelated logger is
+    affected; and the filter itself returns non-`scrapling` records untouched,
+    so guarding the root handler chain does not alter application logging.
     """
     if getattr(logger.addHandler, _GUARD_MARKER, False):
         return
@@ -81,6 +91,9 @@ def configure_provider_logging() -> None:
     - every handler already attached to the `scrapling` logger and to the
       root logger (covers records propagating up from child loggers such as
       `scrapling.fetchers`, given the handlers that exist right now);
+    - via `_guard_future_handlers`, any handler added to the root logger
+      *after* this function has already run (the same propagation path, for
+      handlers that do not exist yet);
     - `logging.lastResort`, the stdlib's own fallback handler used when a
       record's propagation chain has no handler at all (covers child-logger
       WARNING/ERROR records in the "no handlers configured anywhere" state,
@@ -94,12 +107,13 @@ def configure_provider_logging() -> None:
     """
     try:
         logger = logging.getLogger("scrapling")
+        root_logger = logging.getLogger()
         logger.setLevel(logging.WARNING)
 
         targets: list[logging.Filterer] = [
             logger,
             *logger.handlers,
-            *logging.getLogger().handlers,
+            *root_logger.handlers,
         ]
         if logging.lastResort is not None:
             targets.append(logging.lastResort)
@@ -107,5 +121,6 @@ def configure_provider_logging() -> None:
             _add_filter_once(target)
 
         _guard_future_handlers(logger)
+        _guard_future_handlers(root_logger)
     except Exception:
         return

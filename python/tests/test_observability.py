@@ -44,9 +44,11 @@ def _reset_logging_state():
     original_child_level = child_logger.level
     original_child_propagate = child_logger.propagate
 
+    original_root_handlers = list(root_logger.handlers)
     original_root_handler_filters = {
         handler: list(handler.filters) for handler in root_logger.handlers
     }
+    original_root_add_handler = root_logger.__dict__.get("addHandler")
     original_last_resort_filters = (
         list(logging.lastResort.filters) if logging.lastResort is not None else []
     )
@@ -67,8 +69,13 @@ def _reset_logging_state():
     child_logger.setLevel(original_child_level)
     child_logger.propagate = original_child_propagate
 
+    root_logger.handlers[:] = original_root_handlers
     for handler in root_logger.handlers:
         handler.filters[:] = original_root_handler_filters.get(handler, [])
+    if original_root_add_handler is None:
+        root_logger.__dict__.pop("addHandler", None)
+    else:
+        root_logger.__dict__["addHandler"] = original_root_add_handler
     if logging.lastResort is not None:
         logging.lastResort.filters[:] = original_last_resort_filters
 
@@ -263,3 +270,69 @@ def test_filter_leaves_non_scrapling_records_untouched() -> None:
 
     assert result is True
     assert record.getMessage() == "ordinary debug message"
+
+
+def _quiet_scrapling_chain() -> logging.Logger:
+    """Leave `scrapling` handler-less and propagating, so only root handlers can see records."""
+    scrapling_logger = logging.getLogger("scrapling")
+    scrapling_logger.handlers[:] = []
+    scrapling_logger.propagate = True
+    scrapling_logger.setLevel(logging.NOTSET)
+
+    child_logger = logging.getLogger("scrapling.fetchers")
+    child_logger.handlers[:] = []
+    child_logger.propagate = True
+    child_logger.setLevel(logging.DEBUG)
+    return child_logger
+
+
+def test_root_handler_attached_after_configure_redacts_propagated_child_records() -> None:
+    """A root handler installed AFTER configure time must still never see a raw record.
+
+    Filters on the `scrapling` Logger object are not consulted for records that
+    merely propagate up from `scrapling.fetchers`, so the only thing standing
+    between such a record and a late-added root handler (a `logging.basicConfig()`
+    call, a structured-logging setup, a log shipper) is the handler's own filters.
+    """
+    root_logger = logging.getLogger()
+    root_logger.handlers[:] = []
+    child_logger = _quiet_scrapling_chain()
+
+    configure_provider_logging()
+
+    records: list[logging.LogRecord] = []
+    root_logger.addHandler(_ListHandler(records))  # AFTER configure
+
+    child_logger.debug("cookie jar dump token=SUPER_SECRET_TOKEN")
+    child_logger.info("fetched https://cdn.test/x?sig=SUPER_SECRET_TOKEN")
+    child_logger.warning("blocked %s", "https://cdn.test/y?token=SUPER_SECRET_TOKEN")
+    try:
+        raise RuntimeError("exception text with C:/private/path SUPER_SECRET_TOKEN")
+    except RuntimeError:
+        child_logger.error(
+            "boom %s", "https://cdn.test/z?k=SUPER_SECRET_TOKEN", exc_info=True, stack_info=True
+        )
+
+    assert len(records) == 2  # DEBUG and INFO dropped; WARNING and ERROR redacted
+    for record in records:
+        assert record.getMessage() == REDACTED_PROVIDER_MESSAGE
+        assert record.args == ()
+        assert record.exc_info is None
+        assert record.exc_text is None
+        assert record.stack_info is None
+
+
+def test_root_handler_present_before_configure_receives_redacted_warning() -> None:
+    """The configure-time root handler scan is load-bearing on its own."""
+    root_logger = logging.getLogger()
+    records: list[logging.LogRecord] = []
+    root_logger.handlers[:] = [_ListHandler(records)]  # BEFORE configure
+    child_logger = _quiet_scrapling_chain()
+
+    configure_provider_logging()
+
+    child_logger.warning("signed url %s", "token=SUPER_SECRET_TOKEN")
+
+    assert len(records) == 1
+    assert records[0].getMessage() == REDACTED_PROVIDER_MESSAGE
+    assert records[0].args == ()
