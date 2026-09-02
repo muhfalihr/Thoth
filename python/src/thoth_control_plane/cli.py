@@ -6,6 +6,8 @@ import json
 import os
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
@@ -13,10 +15,18 @@ import typer
 
 from thoth_control_plane.application import ApprovalSubmission, RetryRequest
 from thoth_control_plane.domain import WorkflowEvent, WorkflowRequest
+from thoth_control_plane.operations.tiktok_soak import TikTokSoakDatasetError, evaluate_tiktok_soak
+from thoth_control_plane.operations.tiktok_soak_cli import (
+    TikTokSoakInputError,
+    load_tiktok_soak_observations,
+    write_tiktok_soak_report,
+)
 
 app = typer.Typer(no_args_is_help=True)
 workflow_app = typer.Typer(no_args_is_help=True)
 app.add_typer(workflow_app, name="workflow")
+operations_app = typer.Typer(no_args_is_help=True)
+app.add_typer(operations_app, name="operations")
 
 
 def _settings() -> tuple[str, str]:
@@ -127,3 +137,19 @@ def retry(
             payload=request.model_dump(mode="json", exclude_none=True),
         )
     )
+
+
+@operations_app.command("tiktok-stage1-soak")
+def tiktok_stage1_soak(
+    observations: Annotated[Path, typer.Option("--observations")],
+    output_directory: Annotated[Path, typer.Option("--output-directory")] = Path("."),
+) -> None:
+    """Load a Stage 1 TikTok soak dataset and write the aggregate report."""
+    try:
+        items = load_tiktok_soak_observations(observations)
+        report = evaluate_tiktok_soak(items, generated_at=datetime.now(UTC))
+        write_tiktok_soak_report(report, output_directory)
+    except (TikTokSoakInputError, TikTokSoakDatasetError, OSError):
+        typer.echo("tiktok stage 1 soak evaluation failed", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo("tiktok stage 1 soak report written")

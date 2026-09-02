@@ -96,3 +96,7 @@ api_key.txt
 # Committed Scout package fixture: real media and frames the Rust acceptance
 # suite imports, plans and renders. Must survive the *.mp4 / *.jpg rules above.
 !crates/thoth-core/tests/fixtures/scout_package/**
+
+# ── TikTok Stage 1 soak: never commit observation data or partial writes ────
+/tiktok-stage1-soak-observations*.jsonl
+/tiktok-stage1-soak-report.json.part
