@@ -13,6 +13,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_PYTHON=/usr/local/bin/python3.12 \
+    UV_PYTHON_DOWNLOADS=never \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts \
     PATH=/opt/thoth/python/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -45,6 +47,10 @@ RUN /opt/thoth/python/.venv/bin/scrapling install \
 
 RUN /opt/thoth/python/.venv/bin/python -c \
         "import scrapling, thoth_control_plane" \
+    && /opt/thoth/python/.venv/bin/python -c \
+        "import sys; assert sys.version_info[:2] == (3, 12), sys.version" \
+    && /opt/thoth/python/.venv/bin/python -c \
+        "import thoth_control_plane as m; assert m.__file__.startswith('/opt/thoth/python/src/'), m.__file__" \
     && bun --version \
     && test -f /opt/thoth/scout/cli.ts
 

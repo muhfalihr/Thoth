@@ -112,3 +112,21 @@ def test_operations_documentation_requires_digest_pinning_and_runtime_injection(
     assert "/var/lib/thoth/artifacts" in documentation
     assert "thoth_control_plane.api.app:create_app" in documentation
     assert "Publishing the image does not deploy it to AWS" in documentation
+
+
+def test_dockerfile_pins_base_interpreter_and_editable_layout() -> None:
+    """The spec's runtime line and editable layout must be enforced by the build itself.
+
+    `uv` prefers its own managed interpreters by default, so an unpinned `uv sync`
+    can resolve a downloaded CPython under `/root` instead of the base image's
+    3.12. That would both violate the `python:3.12-slim-bookworm` runtime line and
+    leave `.venv/bin/python` unreadable after dropping to `thoth`. A non-editable
+    install fails the same way silently: `LegacyScoutActivity` resolves its
+    repository root from `thoth_control_plane.__file__`, so the Scout fallback
+    would break at runtime while the build stayed green.
+    """
+    dockerfile = _repo_text("Dockerfile")
+    assert "UV_PYTHON=/usr/local/bin/python3.12" in dockerfile
+    assert "UV_PYTHON_DOWNLOADS=never" in dockerfile
+    assert "assert sys.version_info[:2] == (3, 12), sys.version" in dockerfile
+    assert "assert m.__file__.startswith('/opt/thoth/python/src/'), m.__file__" in dockerfile
