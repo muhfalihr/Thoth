@@ -1,0 +1,51 @@
+# Version control, worktrees, and agent/editor state
+.git
+.worktrees
+.agents
+.claude
+.codex
+.superpowers
+.github
+.vscode
+.idea
+
+# Secrets and local configuration
+**/.env*
+**/*_key
+**/*_key.txt
+**/*.novita_key
+**/*.supabase_url
+config.toml
+
+# Dependency and language caches
+**/node_modules
+python/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/target
+
+# Generated runtime state and media
+output
+scout/output
+.thoth-artifacts
+logs
+downloads
+models
+*.db*
+*.log
+*.mp4
+*.wav
+*.jpg
+
+# Stage 1 operational evidence must never enter a build context
+tiktok-stage1-soak-observations*.jsonl
+tiktok-stage1-soak-report.json*
+
+# Product trees not used by this compatibility image
+assets
+crates
+dashboard
+docs
+test
