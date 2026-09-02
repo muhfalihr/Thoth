@@ -86,15 +86,15 @@ first time you check out a branch whose UI differs, **rebuild it** or the server
 serving a stale UI:
 
 ```
-bun --cwd dashboard install    # first run, or when dashboard deps change
-bun --cwd dashboard run build  # regenerates dashboard/dist
+bun --cwd=dashboard install    # first run, or when dashboard deps change
+bun --cwd=dashboard run build  # regenerates dashboard/dist
 ```
 
 For UI hot-reload during development, run the Vite dev server instead and open its URL
 (default http://localhost:5173):
 
 ```
-bun --cwd dashboard run dev
+bun --cwd=dashboard run dev
 ```
 
 Vite proxies `/api` to `127.0.0.1:8787`, so in dev mode the server must be on the default
@@ -114,7 +114,7 @@ Four local processes, each in its own terminal:
 temporal server start-dev --ip 127.0.0.1 --port 7233 --ui-port 8233   # anywhere
 cd python  && uv run uvicorn thoth_control_plane.api:create_app --factory --port 8000
 cd python  && uv run python -m thoth_control_plane.worker
-bun --cwd dashboard run dev          # Workflows tab; needs VITE_CONTROL_PLANE_URL
+bun --cwd=dashboard run dev          # Workflows tab; needs VITE_CONTROL_PLANE_URL
 ```
 
 The typed operator client is `uv run thoth-control workflow start|watch|approve|cancel|retry`

@@ -302,7 +302,7 @@ Add `#[serde(default)] pub main_footage: Option<MainFootageDescriptor>` to `Cont
 
 - [ ] **Step 8: Run Scout and Rust regression tests**
 
-Run: `rtk bun --cwd scout run test:acquisition`
+Run: `rtk bun --cwd=scout run test:acquisition`
 
 Run: `rtk cargo test -p thoth-core ingest::content_search`
 
@@ -421,7 +421,7 @@ Run: `rtk cargo test -p thoth-jobs`
 
 Run: `rtk cargo test -p thoth-server --test routes_http forced_main`
 
-Run: `rtk bun --cwd dashboard test`
+Run: `rtk bun --cwd=dashboard test`
 
 Expected: all PASS.
 
@@ -482,7 +482,7 @@ Run: `rtk bun test scout/pipeline/run_pipeline_acquisition.test.ts dashboard/src
 
 Run: `rtk cargo test -p thoth-server scout::tests`
 
-Run: `rtk bun --cwd dashboard test`
+Run: `rtk bun --cwd=dashboard test`
 
 Expected: PASS; default request snapshots remain unchanged.
 
@@ -546,9 +546,9 @@ Expected: PASS; a legacy run still invokes `traceSource` exactly once and does n
 
 - [ ] **Step 6: Run Scout typecheck and acquisition suite**
 
-Run: `rtk bun --cwd scout run typecheck`
+Run: `rtk bun --cwd=scout run typecheck`
 
-Run: `rtk bun --cwd scout run test:acquisition`
+Run: `rtk bun --cwd=scout run test:acquisition`
 
 Expected: PASS.
 
@@ -594,9 +594,9 @@ Use FFmpeg scene scores for candidate boundaries, clamp/merge them deterministic
 
 Run: `rtk bun test scout/main_footage/scene_index.test.ts scout/main_footage/source_package.test.ts`
 
-Run: `rtk bun --cwd scout run typecheck`
+Run: `rtk bun --cwd=scout run typecheck`
 
-Run: `rtk bun --cwd scout run lint`
+Run: `rtk bun --cwd=scout run lint`
 
 Expected: PASS with no unsafe absolute/signed URL fields in persisted fixture snapshots.
 
@@ -722,9 +722,9 @@ Natural scene bounds are the only initial time ranges. Boundary refinement can c
 
 Run: `rtk bun test scout/main_footage/candidates.test.ts`
 
-Run: `rtk bun --cwd scout run typecheck`
+Run: `rtk bun --cwd=scout run typecheck`
 
-Run: `rtk bun --cwd scout run lint`
+Run: `rtk bun --cwd=scout run lint`
 
 Expected: PASS.
 
@@ -768,7 +768,7 @@ Remove only the failed item, ban its candidate key for that plan attempt, alloca
 
 Run: `rtk bun test scout/main_footage/allocator.test.ts`
 
-Run: `rtk bun --cwd scout run typecheck`
+Run: `rtk bun --cwd=scout run typecheck`
 
 Expected: PASS and repeated runs serialize byte-identically.
 
@@ -818,9 +818,9 @@ Decode and fingerprint job-local package/timeline, build candidates, allocate, m
 
 Run: `rtk bun test scout/main_footage/cuts.test.ts scout/main_footage/allocator.test.ts scout/main_footage/candidates.test.ts`
 
-Run: `rtk bun --cwd scout run typecheck`
+Run: `rtk bun --cwd=scout run typecheck`
 
-Run: `rtk bun --cwd scout run test:acquisition`
+Run: `rtk bun --cwd=scout run test:acquisition`
 
 Expected: PASS.
 
@@ -1029,11 +1029,11 @@ Map stable warning/error codes to human copy while retaining raw code for diagno
 
 Run: `rtk cargo test -p thoth-server --test routes_http main_footage`
 
-Run: `rtk bun --cwd dashboard test`
+Run: `rtk bun --cwd=dashboard test`
 
-Run: `rtk bun --cwd dashboard run build`
+Run: `rtk bun --cwd=dashboard run build`
 
-Run: `rtk bun --cwd dashboard run lint`
+Run: `rtk bun --cwd=dashboard run lint`
 
 Expected: all PASS.
 
@@ -1081,11 +1081,11 @@ Document exact Dashboard/API/CLI usage, `main_footage` discriminator, job direct
 
 - [ ] **Step 6: Run the complete verification matrix**
 
-Run: `rtk bun --cwd scout run typecheck`
+Run: `rtk bun --cwd=scout run typecheck`
 
-Run: `rtk bun --cwd scout run test:acquisition`
+Run: `rtk bun --cwd=scout run test:acquisition`
 
-Run: `rtk bun --cwd scout run lint`
+Run: `rtk bun --cwd=scout run lint`
 
 Run: `rtk cargo test -p thoth-jobs`
 
@@ -1097,11 +1097,11 @@ Run: `rtk cargo check --workspace`
 
 Run: `rtk cargo fmt --check`
 
-Run: `rtk bun --cwd dashboard test`
+Run: `rtk bun --cwd=dashboard test`
 
-Run: `rtk bun --cwd dashboard run build`
+Run: `rtk bun --cwd=dashboard run build`
 
-Run: `rtk bun --cwd dashboard run lint`
+Run: `rtk bun --cwd=dashboard run lint`
 
 Expected: every command exits 0; acceptance has no live network dependency; legacy direct URL and legacy Content Set regressions are green.
 

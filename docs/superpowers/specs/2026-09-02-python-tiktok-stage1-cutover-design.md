@@ -311,6 +311,36 @@ input still must have zero attempts and no fallback event. Operator cancellation
 to the controlled cancellation cleanup gate; an observation reporting failed cleanup blocks
 readiness.
 
+`unsupported_platform` is an `invalid_input` failure code and is deliberately **not**
+legacy-fallback-eligible. It is decided before any provider or legacy attempt exists, so its
+observation has zero attempts and no fallback transition — a shape the `legacy_fallback` route
+rejects. Routing a non-TikTok platform to legacy under an explicit migration mode is a separate
+routing seam, decided by the activity mode and the platform before the Python activity runs,
+never by a failure code returned after it.
+
+### Cleanup evidence per terminal route
+
+Every terminal route owes cleanup evidence, and the evidence must have a real source. Absence of
+evidence is never a cleanup PASS.
+
+- `acquisition_dependency_unavailable` is a terminal activity result: the activity emits zero
+  attempts and exactly one `tiktok_cleanup` event carrying both cleanup booleans, and the
+  terminal failure code stays `acquisition_dependency_unavailable`. Emitting it is what keeps the
+  zero-tolerance dependency blocker reachable — without it these runs cannot be observed at all
+  and silently leave the terminal-failure denominator, letting a *partial* provider outage hide
+  from the readiness gate by dropping exactly the runs that should block it.
+- `operator_cancelled` cleanup is proven by the **controlled cancellation gate**, not by the
+  workflow. A cancelled activity's result cannot be relied upon to carry terminal events, and the
+  workflow cannot know what the activity actually cleaned up — so the workflow must not synthesize
+  a cleanup event after cancellation. Cancellation propagation and resource cleanup stay as they
+  are; the evidence comes from elsewhere.
+  - An `operator_cancelled` observation may only be produced from that gate.
+  - Its cleanup booleans must come from the gate's measured result, never from a workflow
+    assumption.
+  - Every workflow inside the soak window must reconcile to exactly one observation.
+  - A workflow that is missing, or that has no source of cleanup evidence, leaves the dataset
+    not yet fit to inform a cutover decision.
+
 ## Soak Policy
 
 `TikTokSoakPolicy` has fixed Stage 1 defaults:

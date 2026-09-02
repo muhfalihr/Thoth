@@ -79,13 +79,20 @@ to TikWM/CDN afterward, so any actually-observed fallback trigger today is one o
 `cdn_rate_limited`, `cdn_unavailable`, or `media_validation_failed` — these are the only codes
 `python_tiktok_with_legacy_fallback` can invoke the legacy activity for in practice. The
 allowlist that gates the fallback (`LEGACY_FALLBACK_ELIGIBLE_CODES`) also accepts
-`unsupported_platform`, `headless_timeout`, `headless_blocked`, and `headless_incomplete`; these
-are reserved/attempt-reason codes — they can appear in an activity's `attempts[]` (or, for
-`unsupported_platform`, in a future non-TikTok slice) but never as the terminal failure code for
-a TikTok run, so a fallback debugged at the terminal-failure level will never show one of them.
-The exact non-fallback safe codes are `invalid_tiktok_url`, `artifact_persistence_failed`,
-`acquisition_dependency_unavailable`, and `acquisition_runner_failed`; unsafe input and
-internal/persistence/dependency failures do not silently fall back.
+`headless_timeout`, `headless_blocked`, and `headless_incomplete`; these are attempt-reason codes
+— they can appear in an activity's `attempts[]` but never as the terminal failure code for a
+TikTok run, so a fallback debugged at the terminal-failure level will never show one of them. The
+exact non-fallback safe codes are `invalid_tiktok_url`, `unsupported_platform`,
+`artifact_persistence_failed`, `acquisition_dependency_unavailable`, and
+`acquisition_runner_failed`; unsafe input and internal/persistence/dependency failures do not
+silently fall back.
+
+`unsupported_platform` is deliberately outside the allowlist. It is a pre-provider rejection:
+decided before any provider or legacy attempt exists, so its observation is `route="invalid_input"`
+with zero attempts and no fallback transition — the shape the `legacy_fallback` route rejects.
+Sending a non-TikTok platform to the legacy activity under an explicit migration mode is a
+separate routing seam, decided by the activity mode and the platform before the Python activity
+runs, never by a failure code returned after it.
 
 The worker limits both the Python acquisition queue and isolated legacy queue to one concurrent
 activity. Scrapling fetches have a 45-second deadline, TikWM resolution has a 15-second deadline,
@@ -113,7 +120,8 @@ anyone proposes changing that default. Nothing here performs, simulates, or reco
    operations channel; never export source/provider URLs or raw logs.
 3. Convert each exported run to the strict schema version 1 JSONL observation contract outside
    Git (see "Observation contract" below), and designate at least five of the converted runs as
-   controlled parity samples.
+   controlled parity samples. Reconcile every workflow in the window to exactly one observation,
+   each with a real source of cleanup evidence (see "Cleanup evidence per route").
 4. Collect at least 168 hours (7 days) and 50 valid completed runs before evaluating.
 5. From `python/`, run:
 
@@ -145,6 +153,32 @@ is exactly one of five values:
 An operator does not hand-write this file. It is the output of converting exported, redacted run
 summaries into this strict shape; the loader rejects any line that does not match it, including
 extra fields.
+
+### Cleanup evidence per route
+
+Every observation's cleanup booleans must come from measured evidence. Absence of evidence is
+never a cleanup PASS, and no route may have its cleanup result assumed.
+
+- Routes that reach a terminal activity result — `python_native`, `legacy_fallback`, `failed`,
+  and `invalid_input` — carry cleanup evidence from the activity's own `tiktok_cleanup` event.
+  This includes `acquisition_dependency_unavailable`: that branch returns zero acquisition
+  attempts and exactly one `tiktok_cleanup` event carrying both booleans, keeping those runs
+  inside the terminal-failure denominator instead of silently disappearing from it.
+- `operator_cancelled` is different. A cancelled Temporal activity cannot be relied on to return
+  a terminal result, and the workflow has no way to know what the activity actually cleaned up —
+  so the workflow does not synthesize a cleanup event after cancellation, and an operator must
+  not invent one either. Cleanup for this route is proven by the **controlled cancellation
+  cleanup gate**: a deliberate cancellation run in which the operator, after cancellation
+  settles, measures the same two invariants the activity's cleanup event reports — that no
+  `.part` file remains under the run's report directory, and that no Scrapling browser session
+  is still live — and records those measured values.
+  - An `operator_cancelled` observation may only be created from that gate's result.
+  - Its `partial_cleanup_passed` and `browser_cleanup_passed` values must be the gate's measured
+    values, never a workflow assumption or an operator default.
+  - Every workflow that falls inside the soak window must reconcile to exactly one observation.
+  - A workflow that is missing from the dataset, or that has no source of cleanup evidence,
+    leaves the dataset not yet fit to inform a cutover decision. Reconcile or re-run it; do not
+    drop it and do not record it as passing.
 
 ### Readiness policy, counts, and rates
 

@@ -15,6 +15,9 @@
 - TikTok single-post acquisition remains `Scrapling headless -> TikWM/CDN`; only the explicit fallback mode may then invoke legacy Scout once.
 - The Stage 1 policy is fixed at 7 consecutive days, 50 valid completed runs, 5 parity samples, at least 95% Python-native, at most 5% legacy fallback, and at most 2% terminal failure.
 - `artifact_persistence_failed`, `acquisition_dependency_unavailable`, `acquisition_runner_failed`, redaction audit failure, absolute-path audit failure, either cleanup failure, or any failed parity sample is a zero-tolerance blocker.
+- Every terminal activity route emits exactly one `tiktok_cleanup` event, including `acquisition_dependency_unavailable` (zero attempts, both cleanup booleans, failure code unchanged), so no terminal run can leave the denominator unobserved.
+- `operator_cancelled` cleanup evidence comes only from the controlled cancellation gate, never from a workflow-synthesized event or an operator default; every workflow in the window reconciles to exactly one observation, and a workflow with no cleanup-evidence source leaves the dataset unfit for a cutover decision. Absence of evidence is never a cleanup PASS.
+- `invalid_tiktok_url` and `unsupported_platform` are pre-provider rejections: `route="invalid_input"`, zero attempts, never members of `LEGACY_FALLBACK_ELIGIBLE_CODES`.
 - Source/provider URLs, hosts, cookies, raw HTML, provider bodies, browser traces, exception text, absolute paths, workflow-level evidence, and per-run identity must never enter logs or the aggregate report.
 - Observation models reject extra fields, unknown enum/code values, non-UTC timestamps, duplicates, invalid route/attempt combinations, more than three attempts, and TikWM-before-Scrapling ordering.
 - Invalid JSONL is an error and writes no report; a valid dataset below thresholds writes `ready=false` with lexicographically sorted finite blocker codes.
@@ -247,7 +250,12 @@ Expected: FAIL because `SourceProgressEvent.payload` currently accepts arbitrary
 ```python
 LEGACY_FALLBACK_ELIGIBLE_CODES = frozenset(
     {
-        "unsupported_platform",
+        # `invalid_tiktok_url` and `unsupported_platform` are deliberately absent:
+        # they are pre-provider rejections, decided before any provider or legacy
+        # attempt exists, so their observation is `route="invalid_input"` with zero
+        # attempts -- the shape `legacy_fallback` rejects. Routing a non-TikTok
+        # platform to legacy in an explicit migration mode is a separate routing
+        # seam, not a Python failure that triggers fallback.
         "headless_timeout",
         "headless_blocked",
         "headless_incomplete",
@@ -1330,6 +1338,8 @@ Add these instructions to `docs/python-control-plane.md`:
 
 Document that observation JSONL is sensitive operational evidence even though fields are safe and must not be committed, pasted into tickets, or printed. Include definitions for all five routes and all policy counts/rates.
 
+Also document where each route's cleanup booleans come from: the four terminal-result routes read them from the activity's own `tiktok_cleanup` event (`acquisition_dependency_unavailable` included, with zero attempts), while `operator_cancelled` reads them only from the controlled cancellation gate — a deliberate cancellation run that measures the two invariants after cancellation settles. State that every workflow in the window reconciles to exactly one observation, and that a missing workflow or one with no cleanup-evidence source leaves the dataset unfit for the cutover decision; absence of evidence is never a cleanup PASS.
+
 - [ ] **Step 4: Document the deployment rollback drill and emergency choices**
 
 ```markdown
@@ -1386,9 +1396,9 @@ Expected: all commands PASS.
 
 - [ ] **Step 2: Run focused legacy Scout acquisition regressions**
 
-From repository root run: `rtk proxy bun --cwd scout run typecheck`
+From repository root run: `rtk proxy bun --cwd=scout run typecheck`
 
-From repository root run: `rtk proxy bun --cwd scout run test:acquisition`
+From repository root run: `rtk proxy bun --cwd=scout run test:acquisition`
 
 Expected: both gates PASS without live provider access.
 
