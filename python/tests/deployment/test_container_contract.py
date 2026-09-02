@@ -71,3 +71,33 @@ def test_dockerfile_default_command_is_worker_and_has_no_secret_arguments() -> N
     assert "THOTH_LIVE_TIKTOK_URL" not in dockerfile
     assert "THOTH_CONTROL_PLANE_API_KEY=" not in dockerfile
     assert "ARG THOTH_" not in dockerfile
+
+
+def test_container_workflow_separates_pr_validation_from_publication() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    validation = workflow.split("  validate-image:", 1)[1].split("  publish-image:", 1)[0]
+    publication = workflow.split("  publish-image:", 1)[1]
+    assert "if: github.event_name == 'pull_request'" in validation
+    assert "push: false" in validation
+    assert "packages: write" not in validation
+    assert "if: github.event_name == 'push'" in publication
+    assert "packages: write" in publication
+    assert "push: true" in publication
+    assert workflow.count("packages: write") == 1
+
+
+def test_container_workflow_pins_gates_tags_platform_and_digest_summary() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    assert "REGISTRY_IMAGE: ghcr.io/muhfalihr/thoth" in workflow
+    assert 'uv run --project python pytest -m "not live" -q' in workflow
+    assert "bun --cwd=scout run test:acquisition" in workflow
+    assert "bun --cwd scout" not in workflow
+    assert "platforms: linux/amd64" in workflow
+    assert "type=raw,value=sha-${{ github.sha }}" in workflow
+    assert "type=ref,event=branch" in workflow
+    assert "type=ref,event=tag" in workflow
+    assert "refs/heads/master" in workflow
+    assert "provenance: mode=max" in workflow
+    assert "sbom: true" in workflow
+    assert "steps.build.outputs.digest" in workflow
+    assert "secrets." not in workflow
