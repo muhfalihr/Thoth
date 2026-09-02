@@ -1,1 +1,1 @@
-"""Stage 1 TikTok soak contracts for the Thoth control plane."""
+"""Stage 1 TikTok soak contracts and deterministic readiness evaluation."""

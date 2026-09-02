@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from annotated_types import MaxLen
@@ -23,6 +23,7 @@ from thoth_control_plane.operations.tiktok_soak import (
     TikTokSoakPolicy,
     TikTokSoakReport,
     TikTokSoakRoute,
+    evaluate_tiktok_soak,
 )
 
 HEADLESS_SUCCEEDED = AcquisitionAttempt(
@@ -720,3 +721,458 @@ def test_dataset_error_message_is_fixed_per_code() -> None:
         assert message
         forbidden_substrings = ("http", "://", "obs_", "wf_", "C:", "/", "\\")
         assert not any(term in message for term in forbidden_substrings)
+
+
+# --- Deterministic soak evaluation (evaluate_tiktok_soak) --------------------
+#
+# The fixtures below build datasets purely from `TikTokSoakObservation`
+# instances (never raw dicts), so every dataset already satisfies the
+# per-route evidence invariants enforced by Task 5. Each mutator/boundary
+# helper changes exactly one thing relative to a known-ready baseline, so a
+# rejection or a blocker can only ever be attributed to the one rule it
+# claims to exercise.
+
+GENERATED_AT = datetime(2026, 9, 2, 12, 30, tzinfo=UTC)
+_BASE_TIME = datetime(2026, 8, 1, tzinfo=UTC)
+_READY_WINDOW = timedelta(hours=168)
+
+
+def _obs_id(n: int) -> str:
+    return f"obs_{n:016x}"
+
+
+def _wf_id(n: int) -> str:
+    return f"wf_soak_{n:06d}"
+
+
+def _timestamps(count: int, duration: timedelta) -> list[datetime]:
+    """`count` non-decreasing timestamps spanning exactly `duration`: the
+    first `count - 1` are one second apart starting at `_BASE_TIME`, and the
+    last lands at exactly `_BASE_TIME + duration` so window-duration math
+    stays float-exact for whole-hour durations."""
+    if count == 1:
+        return [_BASE_TIME]
+    return [_BASE_TIME + timedelta(seconds=i) for i in range(count - 1)] + [_BASE_TIME + duration]
+
+
+def _run(
+    n: int,
+    occurred_at: datetime,
+    kind: str,
+    *,
+    parity_passed: bool | None = None,
+) -> TikTokSoakObservation:
+    if kind == "native":
+        return TikTokSoakObservation(
+            observation_id=_obs_id(n),
+            workflow_id=_wf_id(n),
+            occurred_at=occurred_at,
+            activity_mode="python_tiktok_with_legacy_fallback",
+            route=TikTokSoakRoute.PYTHON_NATIVE,
+            attempts=[HEADLESS_SUCCEEDED],
+            failure_code=None,
+            artifact_validated=True,
+            partial_cleanup_passed=True,
+            browser_cleanup_passed=True,
+            parity_passed=parity_passed,
+        )
+    if kind == "fallback":
+        return TikTokSoakObservation(
+            observation_id=_obs_id(n),
+            workflow_id=_wf_id(n),
+            occurred_at=occurred_at,
+            activity_mode="python_tiktok_with_legacy_fallback",
+            route=TikTokSoakRoute.LEGACY_FALLBACK,
+            attempts=[HEADLESS_FAILED],
+            failure_code="cdn_unavailable",
+            artifact_validated=True,
+            partial_cleanup_passed=True,
+            browser_cleanup_passed=True,
+            parity_passed=None,
+        )
+    if kind == "failed":
+        return TikTokSoakObservation(
+            observation_id=_obs_id(n),
+            workflow_id=_wf_id(n),
+            occurred_at=occurred_at,
+            activity_mode="python_tiktok_with_legacy_fallback",
+            route=TikTokSoakRoute.FAILED,
+            attempts=[],
+            failure_code="cdn_unavailable",
+            artifact_validated=False,
+            partial_cleanup_passed=True,
+            browser_cleanup_passed=True,
+            parity_passed=None,
+        )
+    raise ValueError(kind)
+
+
+def _dataset(
+    routes: list[str], *, duration: timedelta = _READY_WINDOW, parity_true: int = 5
+) -> list[TikTokSoakObservation]:
+    timestamps = _timestamps(len(routes), duration)
+    native_seen = 0
+    observations = []
+    for i, (kind, occurred_at) in enumerate(zip(routes, timestamps, strict=True)):
+        parity_passed = None
+        if kind == "native" and native_seen < parity_true:
+            parity_passed = True
+            native_seen += 1
+        observations.append(_run(i, occurred_at, kind, parity_passed=parity_passed))
+    return observations
+
+
+def route_mix(*, native: int, fallback: int, failed: int) -> list[TikTokSoakObservation]:
+    routes = ["native"] * native + ["fallback"] * fallback + ["failed"] * failed
+    return _dataset(routes)
+
+
+def completed_runs(count: int) -> list[TikTokSoakObservation]:
+    return _dataset(["native"] * count)
+
+
+def parity_samples(count: int) -> list[TikTokSoakObservation]:
+    return _dataset(["native"] * 50, parity_true=count)
+
+
+def window_at(*, hours: int, minutes: int, seconds: int) -> list[TikTokSoakObservation]:
+    duration = timedelta(hours=hours, minutes=minutes, seconds=seconds)
+    return _dataset(["native"] * 95 + ["fallback"] * 3 + ["failed"] * 2, duration=duration)
+
+
+def duplicate_observation_id(
+    observations: list[TikTokSoakObservation],
+) -> list[TikTokSoakObservation]:
+    mutated = list(observations)
+    mutated[1] = mutated[1].model_copy(update={"observation_id": mutated[0].observation_id})
+    return mutated
+
+
+def duplicate_workflow_id(
+    observations: list[TikTokSoakObservation],
+) -> list[TikTokSoakObservation]:
+    mutated = list(observations)
+    mutated[1] = mutated[1].model_copy(update={"workflow_id": mutated[0].workflow_id})
+    return mutated
+
+
+def reverse_timestamp_order(
+    observations: list[TikTokSoakObservation],
+) -> list[TikTokSoakObservation]:
+    return list(reversed(observations))
+
+
+def failure_observation(code: str) -> TikTokSoakObservation:
+    return TikTokSoakObservation(
+        observation_id=_obs_id(9000),
+        workflow_id=_wf_id(9000),
+        occurred_at=_BASE_TIME + _READY_WINDOW + timedelta(seconds=1),
+        activity_mode="python_tiktok_with_legacy_fallback",
+        route=TikTokSoakRoute.FAILED,
+        attempts=[],
+        failure_code=code,
+        artifact_validated=False,
+        partial_cleanup_passed=True,
+        browser_cleanup_passed=True,
+        parity_passed=None,
+    )
+
+
+def cleanup_failure(*, partial: bool = True, browser: bool = True) -> TikTokSoakObservation:
+    return TikTokSoakObservation(
+        observation_id=_obs_id(9001),
+        workflow_id=_wf_id(9001),
+        occurred_at=_BASE_TIME + _READY_WINDOW + timedelta(seconds=2),
+        activity_mode="python_tiktok_with_legacy_fallback",
+        route=TikTokSoakRoute.PYTHON_NATIVE,
+        attempts=[HEADLESS_SUCCEEDED],
+        failure_code=None,
+        artifact_validated=True,
+        partial_cleanup_passed=partial,
+        browser_cleanup_passed=browser,
+        parity_passed=None,
+    )
+
+
+def parity_failure() -> TikTokSoakObservation:
+    return TikTokSoakObservation(
+        observation_id=_obs_id(9002),
+        workflow_id=_wf_id(9002),
+        occurred_at=_BASE_TIME + _READY_WINDOW + timedelta(seconds=3),
+        activity_mode="python_tiktok_with_legacy_fallback",
+        route=TikTokSoakRoute.PYTHON_NATIVE,
+        attempts=[HEADLESS_SUCCEEDED],
+        failure_code=None,
+        artifact_validated=True,
+        partial_cleanup_passed=True,
+        browser_cleanup_passed=True,
+        parity_passed=False,
+    )
+
+
+def invalid_input() -> TikTokSoakObservation:
+    return TikTokSoakObservation(
+        observation_id=_obs_id(9003),
+        workflow_id=_wf_id(9003),
+        occurred_at=_BASE_TIME + _READY_WINDOW + timedelta(seconds=4),
+        activity_mode="python_tiktok_with_legacy_fallback",
+        route=TikTokSoakRoute.INVALID_INPUT,
+        attempts=[],
+        failure_code="invalid_tiktok_url",
+        artifact_validated=False,
+        partial_cleanup_passed=True,
+        browser_cleanup_passed=True,
+        parity_passed=None,
+    )
+
+
+def operator_cancelled() -> TikTokSoakObservation:
+    return TikTokSoakObservation(
+        observation_id=_obs_id(9004),
+        workflow_id=_wf_id(9004),
+        occurred_at=_BASE_TIME + _READY_WINDOW + timedelta(seconds=5),
+        activity_mode="python_tiktok_with_legacy_fallback",
+        route=TikTokSoakRoute.OPERATOR_CANCELLED,
+        attempts=[],
+        failure_code=None,
+        artifact_validated=False,
+        partial_cleanup_passed=True,
+        browser_cleanup_passed=True,
+        parity_passed=None,
+    )
+
+
+@pytest.fixture
+def ready_observations() -> list[TikTokSoakObservation]:
+    """A dataset that lands exactly on every Stage 1 threshold at once: a
+    168-hour window, 100 completed runs, 5 parity samples, 95% native,
+    3% fallback, 2% terminal failure — every rate boundary that is a `<=`
+    or `>=` limit sits exactly at its edge, so this fixture alone proves the
+    evaluator treats `==` as passing, not failing."""
+    return route_mix(native=95, fallback=3, failed=2)
+
+
+def test_ready_observations_yield_a_ready_report(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    report = evaluate_tiktok_soak(ready_observations, generated_at=GENERATED_AT)
+    assert report.ready is True
+    assert report.blockers == []
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_code"),
+    [
+        (duplicate_observation_id, "duplicate_observation_id"),
+        (duplicate_workflow_id, "duplicate_workflow_id"),
+        (reverse_timestamp_order, "observations_not_chronological"),
+    ],
+)
+def test_invalid_dataset_raises_safe_finite_error(
+    ready_observations: list[TikTokSoakObservation],
+    mutator,
+    expected_code: str,
+) -> None:
+    with pytest.raises(TikTokSoakDatasetError) as captured:
+        evaluate_tiktok_soak(mutator(ready_observations), generated_at=GENERATED_AT)
+    assert captured.value.code.value == expected_code
+    assert "wf_" not in str(captured.value)
+    assert "obs_" not in str(captured.value)
+
+
+def test_empty_dataset_raises_safe_finite_error() -> None:
+    with pytest.raises(TikTokSoakDatasetError) as captured:
+        evaluate_tiktok_soak([], generated_at=GENERATED_AT)
+    assert captured.value.code is TikTokSoakDatasetErrorCode.EMPTY_DATASET
+
+
+@pytest.mark.parametrize(
+    ("observations", "blocker"),
+    [
+        (window_at(hours=167, minutes=59, seconds=59), "insufficient_window"),
+        (completed_runs(49), "insufficient_valid_completed_runs"),
+        (parity_samples(4), "insufficient_parity_samples"),
+        (route_mix(native=94, fallback=5, failed=1), "python_native_rate_below_minimum"),
+        (route_mix(native=94, fallback=6, failed=0), "legacy_fallback_rate_above_maximum"),
+        (route_mix(native=97, fallback=0, failed=3), "terminal_failure_rate_above_maximum"),
+    ],
+)
+def test_policy_boundary_below_or_above_limit_blocks(
+    observations: list[TikTokSoakObservation], blocker: str
+) -> None:
+    report = evaluate_tiktok_soak(observations, generated_at=GENERATED_AT)
+    assert blocker in [item.value for item in report.blockers]
+
+
+@pytest.mark.parametrize(
+    "observations",
+    [
+        window_at(hours=168, minutes=0, seconds=0),
+        completed_runs(50),
+        parity_samples(5),
+        route_mix(native=95, fallback=5, failed=0),
+        route_mix(native=96, fallback=2, failed=2),
+    ],
+)
+def test_policy_boundary_at_exact_limit_passes(
+    observations: list[TikTokSoakObservation],
+) -> None:
+    report = evaluate_tiktok_soak(observations, generated_at=GENERATED_AT)
+    assert report.ready is True
+    assert report.blockers == []
+
+
+@pytest.mark.parametrize(
+    ("observation", "blocker"),
+    [
+        (
+            failure_observation("artifact_persistence_failed"),
+            "artifact_persistence_failure_present",
+        ),
+        (
+            failure_observation("acquisition_dependency_unavailable"),
+            "acquisition_dependency_failure_present",
+        ),
+        (failure_observation("acquisition_runner_failed"), "acquisition_runner_failure_present"),
+        (failure_observation("redaction_audit_failed"), "redaction_audit_failure_present"),
+        (
+            failure_observation("absolute_path_audit_failed"),
+            "absolute_path_audit_failure_present",
+        ),
+        (cleanup_failure(partial=False), "partial_cleanup_failure_present"),
+        (cleanup_failure(browser=False), "browser_cleanup_failure_present"),
+        (parity_failure(), "parity_failure_present"),
+    ],
+)
+def test_zero_tolerance_evidence_always_blocks(
+    ready_observations: list[TikTokSoakObservation],
+    observation: TikTokSoakObservation,
+    blocker: str,
+) -> None:
+    report = evaluate_tiktok_soak([*ready_observations, observation], generated_at=GENERATED_AT)
+    assert blocker in [item.value for item in report.blockers]
+
+
+def test_invalid_and_cancelled_routes_are_excluded_from_rates(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    baseline = evaluate_tiktok_soak(ready_observations, generated_at=GENERATED_AT)
+    report = evaluate_tiktok_soak(
+        sorted(
+            [*ready_observations, invalid_input(), operator_cancelled()],
+            key=lambda item: item.occurred_at,
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert report.rates == baseline.rates
+    assert report.blockers == sorted(report.blockers, key=lambda item: item.value)
+
+
+def test_invalid_and_cancelled_routes_are_counted_but_not_completed(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    report = evaluate_tiktok_soak(
+        sorted(
+            [*ready_observations, invalid_input(), operator_cancelled()],
+            key=lambda item: item.occurred_at,
+        ),
+        generated_at=GENERATED_AT,
+    )
+    assert report.counts.invalid_input == 1
+    assert report.counts.operator_cancelled == 1
+    assert report.counts.valid_completed == 100
+
+
+def test_evaluator_is_pure_and_uses_the_supplied_generated_at(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    first = evaluate_tiktok_soak(ready_observations, generated_at=GENERATED_AT)
+    second = evaluate_tiktok_soak(list(ready_observations), generated_at=GENERATED_AT)
+    assert first == second
+    assert first.generated_at == GENERATED_AT
+
+
+def test_blocker_order_is_deterministic_lexicographic_by_value() -> None:
+    dataset = [
+        TikTokSoakObservation(
+            observation_id=_obs_id(1),
+            workflow_id=_wf_id(1),
+            occurred_at=_BASE_TIME,
+            activity_mode="python_tiktok_with_legacy_fallback",
+            route=TikTokSoakRoute.FAILED,
+            attempts=[],
+            failure_code="artifact_persistence_failed",
+            artifact_validated=False,
+            partial_cleanup_passed=True,
+            browser_cleanup_passed=True,
+            parity_passed=None,
+        )
+    ]
+    report = evaluate_tiktok_soak(dataset, generated_at=GENERATED_AT)
+    assert [item.value for item in report.blockers] == [
+        "artifact_persistence_failure_present",
+        "insufficient_parity_samples",
+        "insufficient_valid_completed_runs",
+        "insufficient_window",
+        "python_native_rate_below_minimum",
+        "terminal_failure_rate_above_maximum",
+    ]
+    repeat = evaluate_tiktok_soak(list(dataset), generated_at=GENERATED_AT)
+    assert repeat.blockers == report.blockers
+
+
+def test_blocker_order_is_stable_across_input_permutation(
+    ready_observations: list[TikTokSoakObservation],
+) -> None:
+    """Two observations share one timestamp (a tie the chronological-order
+    check permits), so feeding them in either order is a genuine input
+    permutation. Whichever order they are appended in, the final `blockers`
+    sequence must come out identical: this is what proves the evaluator
+    never leaks `set` iteration order into its output."""
+    tie_time = _BASE_TIME + _READY_WINDOW + timedelta(seconds=10)
+    cleanup_break = TikTokSoakObservation(
+        observation_id=_obs_id(9101),
+        workflow_id=_wf_id(9101),
+        occurred_at=tie_time,
+        activity_mode="python_tiktok_with_legacy_fallback",
+        route=TikTokSoakRoute.PYTHON_NATIVE,
+        attempts=[HEADLESS_SUCCEEDED],
+        failure_code=None,
+        artifact_validated=True,
+        partial_cleanup_passed=False,
+        browser_cleanup_passed=True,
+        parity_passed=None,
+    )
+    audit_break = TikTokSoakObservation(
+        observation_id=_obs_id(9102),
+        workflow_id=_wf_id(9102),
+        occurred_at=tie_time,
+        activity_mode="python_tiktok_with_legacy_fallback",
+        route=TikTokSoakRoute.FAILED,
+        attempts=[],
+        failure_code="redaction_audit_failed",
+        artifact_validated=False,
+        partial_cleanup_passed=True,
+        browser_cleanup_passed=True,
+        parity_passed=None,
+    )
+    forward = evaluate_tiktok_soak(
+        [*ready_observations, cleanup_break, audit_break], generated_at=GENERATED_AT
+    )
+    backward = evaluate_tiktok_soak(
+        [*ready_observations, audit_break, cleanup_break], generated_at=GENERATED_AT
+    )
+    assert forward.blockers == backward.blockers
+    values = [item.value for item in forward.blockers]
+    assert "partial_cleanup_failure_present" in values
+    assert "redaction_audit_failure_present" in values
+
+
+def test_dataset_error_from_evaluator_carries_no_raw_identifier() -> None:
+    dataset = route_mix(native=1, fallback=0, failed=0)
+    duplicated = [dataset[0], dataset[0].model_copy(update={"workflow_id": _wf_id(999)})]
+    with pytest.raises(TikTokSoakDatasetError) as captured:
+        evaluate_tiktok_soak(duplicated, generated_at=GENERATED_AT)
+    message = str(captured.value)
+    for forbidden in ("http", "://", "obs_", "wf_", "C:", "/", "\\"):
+        assert forbidden not in message
