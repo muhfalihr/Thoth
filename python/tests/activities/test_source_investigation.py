@@ -465,3 +465,35 @@ def test_activity_input_rejects_extra_legacy_cli_flags() -> None:
                 "cancellation_token": "can_activity_001",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_event_fails_when_a_browser_session_is_still_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The DETECTOR side of the zero-tolerance browser-cleanup gate.
+
+    The evaluator is covered elsewhere, but if this probe ever regressed to a constant the
+    activity would emit `browser_cleanup_passed: True` forever and the soak would pass on
+    evidence that was never actually checked -- exactly the failure the gate exists to catch.
+    """
+
+    async def runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del workflow_id, source_url, artifact_root
+        return TERMINAL_FAILURE_WITH_ATTEMPTS
+
+    monkeypatch.setattr(
+        "thoth_control_plane.activities.source_investigation.active_scrapling_session_count",
+        lambda: 1,
+    )
+
+    result = await build_source_investigation_activity(_settings(tmp_path), runner=runner)(INPUT)
+
+    cleanup = result.events[-1]
+    assert cleanup.kind == "stage.failed"
+    assert cleanup.payload == {
+        "stage": "tiktok_cleanup",
+        "status": "failed",
+        "partial_cleanup_passed": True,
+        "browser_cleanup_passed": False,
+    }

@@ -223,3 +223,38 @@ def test_source_progress_event_accepts_cleanup_booleans() -> None:
         },
     )
     assert event.payload["partial_cleanup_passed"] is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({}, id="stage_absent"),
+        pytest.param({"stage": "https://cdn.test/x?sig=S"}, id="stage_is_a_url"),
+        pytest.param({"stage": "C:/private/report.part"}, id="stage_is_a_windows_path"),
+        pytest.param({"stage": "Tiktok_Cleanup"}, id="stage_outside_charset"),
+    ],
+)
+def test_source_progress_event_rejects_unsafe_stage(payload: dict[str, object]) -> None:
+    """`stage` is one of only two string-typed payload slots, so its charset is the thing
+    that makes it impossible to smuggle a URL or a Windows path into Temporal history.
+
+    Every case here violates ONLY the stage clause: each key is inside
+    `SOURCE_EVENT_PAYLOAD_KEYS`, and no other closed-set or range clause is touched. A case
+    that also tripped the key allowlist would prove nothing about this clause.
+    """
+    with pytest.raises(ValidationError):
+        SourceProgressEvent(kind="stage.failed", payload=payload)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["https://cdn.test/x?sig=S", "provider said no", "HEADLESS_TIMEOUT"],
+)
+def test_source_progress_event_rejects_out_of_set_reason(reason: str) -> None:
+    """`reason` is the other string-typed slot; only the fixed taxonomy may cross the boundary.
+
+    `stage` is valid and `reason` is the only allowlisted key present, so the reason
+    closed-set check is the sole clause under test.
+    """
+    with pytest.raises(ValidationError):
+        SourceProgressEvent(kind="stage.failed", payload={"stage": "tiktok_cdn", "reason": reason})
