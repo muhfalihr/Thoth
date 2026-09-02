@@ -40,3 +40,34 @@ def test_dockerignore_excludes_sensitive_and_generated_inputs() -> None:
     }
     assert required_patterns <= patterns
     assert not any(pattern.startswith("!") for pattern in patterns)
+
+
+def test_dockerfile_uses_locked_full_compatibility_runtime() -> None:
+    dockerfile = _repo_text("Dockerfile")
+    assert "FROM ghcr.io/astral-sh/uv:0.10.8 AS uv-tools" in dockerfile
+    assert "FROM oven/bun:1.3.14 AS bun-tools" in dockerfile
+    assert "FROM python:3.12-slim-bookworm AS runtime" in dockerfile
+    assert "uv sync --frozen --no-dev --extra acquisition" in dockerfile
+    assert "bun --cwd=/opt/thoth/scout install --frozen-lockfile --production" in dockerfile
+    assert "/opt/thoth/python/.venv/bin/scrapling install" in dockerfile
+    assert "COPY . " not in dockerfile
+
+
+def test_dockerfile_preserves_legacy_adapter_layout_and_non_root_runtime() -> None:
+    dockerfile = _repo_text("Dockerfile")
+    assert "COPY --chown=thoth:thoth scout/ /opt/thoth/scout/" in dockerfile
+    assert "test -f /opt/thoth/scout/cli.ts" in dockerfile
+    assert "THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts" in dockerfile
+    assert "USER thoth" in dockerfile
+    assert "RUN test -w /var/lib/thoth/artifacts" in dockerfile
+
+
+def test_dockerfile_default_command_is_worker_and_has_no_secret_arguments() -> None:
+    dockerfile = _repo_text("Dockerfile")
+    assert (
+        'CMD ["/opt/thoth/python/.venv/bin/python", "-m", '
+        '"thoth_control_plane.worker"]' in dockerfile
+    )
+    assert "THOTH_LIVE_TIKTOK_URL" not in dockerfile
+    assert "THOTH_CONTROL_PLANE_API_KEY=" not in dockerfile
+    assert "ARG THOTH_" not in dockerfile
