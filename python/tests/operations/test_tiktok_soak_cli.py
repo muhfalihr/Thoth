@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.operations.test_tiktok_soak import GENERATED_AT, duplicate_observation_id, route_mix
+from thoth_control_plane import cli as cli_module
 from thoth_control_plane.cli import app
 from thoth_control_plane.operations.tiktok_soak import TikTokSoakReport, evaluate_tiktok_soak
 from thoth_control_plane.operations.tiktok_soak_cli import (
@@ -115,7 +116,7 @@ def test_loader_fails_closed_when_any_single_line_is_invalid(tmp_path: Path) -> 
 
 def test_writer_atomically_replaces_report_and_leaves_no_part(tmp_path: Path) -> None:
     destination = write_tiktok_soak_report(READY_REPORT, tmp_path)
-    assert destination == tmp_path / REPORT_NAME
+    assert destination == tmp_path / "tiktok-stage1-soak-report.json"
     assert TikTokSoakReport.model_validate_json(destination.read_text()) == READY_REPORT
     assert not destination.with_suffix(".json.part").exists()
 
@@ -235,9 +236,40 @@ def test_cli_maps_loader_failure_to_exit_code_one_without_report(tmp_path: Path)
         ],
     )
     assert result.exit_code == 1
-    assert "tiktok stage 1 soak evaluation failed" in result.output
+    assert result.output.strip() == "tiktok stage 1 soak evaluation failed"
     assert not (tmp_path / REPORT_NAME).exists()
     assert list(tmp_path.glob("*.part")) == []
+
+
+def test_cli_maps_write_failure_to_exit_code_one_without_leaking_a_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The writer's `OSError` can carry an absolute filesystem path in its
+    `str()`; the CLI must still emit only the fixed safe string, never that
+    path."""
+    observations = tmp_path / "observations.jsonl"
+    observations.write_text(READY_JSONL, encoding="utf-8")
+
+    def fail_write(report: TikTokSoakReport, output_directory: Path) -> Path:
+        del report, output_directory
+        raise OSError(r"C:\secret\absolute\path\tiktok-stage1-soak-report.json")
+
+    monkeypatch.setattr(cli_module, "write_tiktok_soak_report", fail_write)
+    result = runner.invoke(
+        app,
+        [
+            "operations",
+            "tiktok-stage1-soak",
+            "--observations",
+            str(observations),
+            "--output-directory",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 1
+    assert result.output.strip() == "tiktok stage 1 soak evaluation failed"
+    assert "secret" not in result.output
+    assert not (tmp_path / REPORT_NAME).exists()
 
 
 def test_cli_maps_dataset_failure_to_exit_code_one_without_report(tmp_path: Path) -> None:
@@ -260,6 +292,6 @@ def test_cli_maps_dataset_failure_to_exit_code_one_without_report(tmp_path: Path
         ],
     )
     assert result.exit_code == 1
-    assert "tiktok stage 1 soak evaluation failed" in result.output
+    assert result.output.strip() == "tiktok stage 1 soak evaluation failed"
     assert not (tmp_path / REPORT_NAME).exists()
     assert list(tmp_path.glob("*.part")) == []
