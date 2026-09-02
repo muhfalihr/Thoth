@@ -127,8 +127,13 @@ def _cleanup_event(artifact_root: Path, workflow_id: str) -> SourceProgressEvent
     Never includes the report directory path, an exception, or any other
     diagnostic text -- only whether the two safety invariants held.
     """
-    report_dir = (artifact_root / "reports" / workflow_id).resolve()
     try:
+        # Resolution is part of the probe, not a preamble to it: it touches the
+        # filesystem and can raise. Outside this guard an OSError escapes the
+        # activity, which returns no cleanup evidence at all and drops the run
+        # from the soak denominator -- the exact outcome the zero-tolerance
+        # cleanup blockers exist to catch. Fail closed instead.
+        report_dir = (artifact_root / "reports" / workflow_id).resolve()
         partial_cleanup_passed = not report_dir.exists() or not any(report_dir.rglob("*.part"))
     except OSError:
         partial_cleanup_passed = False

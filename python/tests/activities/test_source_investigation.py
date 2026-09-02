@@ -511,3 +511,77 @@ async def test_cleanup_event_fails_when_a_browser_session_is_still_open(
         "partial_cleanup_passed": True,
         "browser_cleanup_passed": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_cleanup_event_fails_closed_when_path_resolution_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolution is part of the partial-cleanup probe, so it must fail closed like the probe.
+
+    Left outside the guard it raises a raw OSError out of the activity, which means the run
+    returns no cleanup evidence at all and disappears from the soak denominator entirely --
+    the one outcome the zero-tolerance cleanup blockers exist to prevent.
+    """
+
+    async def runner(workflow_id: str, source_url: str, artifact_root: Path):
+        del workflow_id, source_url, artifact_root
+        return TERMINAL_FAILURE_WITH_ATTEMPTS
+
+    configured = build_source_investigation_activity(_settings(tmp_path), runner=runner)
+
+    def raising_resolve(self: Path, strict: bool = False) -> Path:
+        raise OSError("resolution failed for /abs/leaked/path")
+
+    monkeypatch.setattr(Path, "resolve", raising_resolve)
+
+    result = await configured(INPUT)
+
+    # The original terminal failure survives; a cleanup probe error never rewrites it.
+    assert result.failure is not None
+    assert result.failure.code == "cdn_unavailable"
+    assert [event.payload["stage"] for event in result.events][-1] == "tiktok_cleanup"
+    cleanup = result.events[-1]
+    assert cleanup.kind == "stage.failed"
+    # The exact payload is also the leak assertion: no exception text, no path.
+    assert cleanup.payload == {
+        "stage": "tiktok_cleanup",
+        "status": "failed",
+        "partial_cleanup_passed": False,
+        "browser_cleanup_passed": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_capability_failure_keeps_its_code_when_cleanup_probe_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dependency blocker must stay reachable even when the cleanup probe itself fails."""
+
+    async def runner(*args, **kwargs):
+        raise AssertionError("runner must not be called when the capability is unavailable")
+
+    configured = build_source_investigation_activity(
+        _settings(tmp_path),
+        runner=runner,
+        capability={"available": False, "code": "acquisition_dependency_unavailable"},
+    )
+
+    def raising_resolve(self: Path, strict: bool = False) -> Path:
+        raise OSError("resolution failed")
+
+    monkeypatch.setattr(Path, "resolve", raising_resolve)
+
+    result = await configured(INPUT)
+
+    assert result.failure is not None
+    assert result.failure.code == "acquisition_dependency_unavailable"
+    assert [event.payload["stage"] for event in result.events] == ["tiktok_cleanup"]
+    cleanup = result.events[0]
+    assert cleanup.kind == "stage.failed"
+    assert cleanup.payload == {
+        "stage": "tiktok_cleanup",
+        "status": "failed",
+        "partial_cleanup_passed": False,
+        "browser_cleanup_passed": True,
+    }
