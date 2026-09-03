@@ -100,3 +100,8 @@ api_key.txt
 # ── TikTok Stage 1 soak: never commit observation data or partial writes ────
 tiktok-stage1-soak-observations*.jsonl
 tiktok-stage1-soak-report.json.part
+
+# ── Stage 1 local Docker deployment ──────────────────────────────────────────
+.env.stage1.local
+stage1-local-observations*.jsonl
+stage1-local-reports/
