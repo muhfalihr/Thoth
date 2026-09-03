@@ -153,15 +153,18 @@ def test_dockerfile_provides_linux_legacy_media_and_cdp_runtime() -> None:
 def test_legacy_cdp_launcher_is_fixed_headless_private_contract() -> None:
     launcher = _repo_text("docker/start-legacy-cdp")
     required = {
-        "from patchright.sync_api import sync_playwright",
+        "/ms-playwright/chromium-[0-9]*/chrome-linux*/chrome",
+        "chromium_count=$((chromium_count + 1))",
+        'if [ "$chromium_count" -ne 1 ]; then',
         "--headless=new",
         "--remote-debugging-address=0.0.0.0",
         "--remote-debugging-port=18800",
-        "--user-data-dir=/var/lib/thoth/browser-profile",
+        '--user-data-dir="$profile_dir"',
         "https://www.tiktok.com/",
     }
     assert all(token in launcher for token in required)
     assert "--check" in launcher
+    assert "sync_playwright" not in launcher
     assert "--no-sandbox" not in launcher
     assert "THOTH_LIVE_TIKTOK_URL" not in launcher
 
@@ -213,3 +216,9 @@ def test_blueprint_records_corrected_container_checkpoint() -> None:
     assert "Stage 1 container checkpoint (2026-09-03)" in blueprint
     assert "worker/API/CDP sidecar" in blueprint
     assert "GHCR publication and the operational soak remain pending" in blueprint
+    assert "| Stage 1 container + CI | ⚠️ 90% |" in blueprint
+    assert (
+        "`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`"
+        in blueprint
+    )
+    assert "controlled fallback smoke" in blueprint

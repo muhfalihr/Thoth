@@ -33,6 +33,7 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
 
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|
+| Stage 1 container + CI | ⚠️ 90% | Runtime image and local Linux/amd64 Docker verification are complete (`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`); GHCR publication, deployment, controlled fallback smoke, and the operational soak remain pending. |
 | Ingest + transkrip | ✅ 100% | yt-dlp + Whisper word-level timestamps |
 | Visual scoring (post-analysis) | ✅ 80% | Frame extraction + vision LLM scoring |
 | LLM synthesis dari teks saja | ✅ 95% | Multi-provider, chunked, trending-aware; **LLM keyword extraction otomatis dari transcript** (gantikan word-frequency approach); `--keywords` CLI jadi optional override |

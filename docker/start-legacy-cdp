@@ -1,19 +1,18 @@
 #!/bin/sh
 set -eu
 
-python_bin=/opt/thoth/python/.venv/bin/python
 profile_dir=/var/lib/thoth/browser-profile
 
-chromium_path="$($python_bin - <<'PY'
-from patchright.sync_api import sync_playwright
+chromium_path=
+chromium_count=0
+for candidate in /ms-playwright/chromium-[0-9]*/chrome-linux*/chrome; do
+    [ -x "$candidate" ] || continue
+    chromium_path=$candidate
+    chromium_count=$((chromium_count + 1))
+done
 
-with sync_playwright() as playwright:
-    print(playwright.chromium.executable_path)
-PY
-)"
-
-if [ ! -x "$chromium_path" ]; then
-    echo "legacy CDP Chromium executable is unavailable" >&2
+if [ "$chromium_count" -ne 1 ]; then
+    echo "legacy CDP requires exactly one Chromium executable; found $chromium_count" >&2
     exit 1
 fi
 
@@ -39,7 +38,7 @@ exec "$chromium_path" \
     --headless=new \
     --remote-debugging-address=0.0.0.0 \
     --remote-debugging-port=18800 \
-    --user-data-dir=/var/lib/thoth/browser-profile \
+    --user-data-dir="$profile_dir" \
     --no-first-run \
     --no-default-browser-check \
     --disable-dev-shm-usage \
