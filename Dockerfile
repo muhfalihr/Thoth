@@ -17,18 +17,23 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_PYTHON_DOWNLOADS=never \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts \
+    THOTH_FFMPEG=/usr/bin/ffmpeg \
+    THOTH_FFPROBE=/usr/bin/ffprobe \
     PATH=/opt/thoth/python/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates tini \
+    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 thoth \
     && useradd --uid 10001 --gid 10001 --create-home \
         --home-dir /home/thoth --shell /usr/sbin/nologin thoth \
-    && mkdir -p /opt/thoth/python /opt/thoth/scout /var/lib/thoth/artifacts /ms-playwright \
+    && mkdir -p /opt/thoth/bin /opt/thoth/python /opt/thoth/scout \
+        /var/lib/thoth/artifacts /var/lib/thoth/browser-profile /ms-playwright \
     && chown -R thoth:thoth /opt/thoth /var/lib/thoth /home/thoth /ms-playwright
 
 WORKDIR /opt/thoth
+
+COPY --chmod=0755 --chown=thoth:thoth docker/start-legacy-cdp /opt/thoth/bin/start-legacy-cdp
 
 COPY --chown=thoth:thoth python/pyproject.toml python/uv.lock /opt/thoth/python/
 RUN cd /opt/thoth/python \
@@ -54,13 +59,19 @@ RUN /opt/thoth/python/.venv/bin/python -c \
     && bun --version \
     && test -f /opt/thoth/scout/cli.ts
 
-EXPOSE 8000
+EXPOSE 8000 18800
 
 USER thoth
 
 RUN test -w /var/lib/thoth/artifacts \
+    && test -w /var/lib/thoth/browser-profile \
     && test -r /opt/thoth/scout/cli.ts \
-    && test -x /opt/thoth/python/.venv/bin/python
+    && test -x /opt/thoth/python/.venv/bin/python \
+    && test -x /usr/bin/ffmpeg \
+    && test -x /usr/bin/ffprobe \
+    && /usr/bin/ffmpeg -version >/dev/null 2>&1 \
+    && /usr/bin/ffprobe -version >/dev/null 2>&1 \
+    && /opt/thoth/bin/start-legacy-cdp --check
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/thoth/python/.venv/bin/python", "-m", "thoth_control_plane.worker"]

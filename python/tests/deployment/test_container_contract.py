@@ -134,3 +134,32 @@ def test_dockerfile_pins_base_interpreter_and_editable_layout() -> None:
     assert "UV_PYTHON_DOWNLOADS=never" in dockerfile
     assert "assert sys.version_info[:2] == (3, 12), sys.version" in dockerfile
     assert "assert m.__file__.startswith('/opt/thoth/python/src/'), m.__file__" in dockerfile
+
+
+def test_dockerfile_provides_linux_legacy_media_and_cdp_runtime() -> None:
+    dockerfile = _repo_text("Dockerfile")
+    assert "ca-certificates ffmpeg tini" in dockerfile
+    assert "THOTH_FFMPEG=/usr/bin/ffmpeg" in dockerfile
+    assert "THOTH_FFPROBE=/usr/bin/ffprobe" in dockerfile
+    assert "/var/lib/thoth/browser-profile" in dockerfile
+    assert "COPY --chmod=0755 --chown=thoth:thoth docker/start-legacy-cdp" in dockerfile
+    assert "/opt/thoth/bin/start-legacy-cdp --check" in dockerfile
+    assert "/usr/bin/ffmpeg -version" in dockerfile
+    assert "/usr/bin/ffprobe -version" in dockerfile
+    assert "EXPOSE 8000 18800" in dockerfile
+
+
+def test_legacy_cdp_launcher_is_fixed_headless_private_contract() -> None:
+    launcher = _repo_text("docker/start-legacy-cdp")
+    required = {
+        "from patchright.sync_api import sync_playwright",
+        "--headless=new",
+        "--remote-debugging-address=0.0.0.0",
+        "--remote-debugging-port=18800",
+        "--user-data-dir=/var/lib/thoth/browser-profile",
+        "https://www.tiktok.com/",
+    }
+    assert all(token in launcher for token in required)
+    assert "--check" in launcher
+    assert "--no-sandbox" not in launcher
+    assert "THOTH_LIVE_TIKTOK_URL" not in launcher

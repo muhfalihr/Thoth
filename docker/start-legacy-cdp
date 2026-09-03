@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+python_bin=/opt/thoth/python/.venv/bin/python
+profile_dir=/var/lib/thoth/browser-profile
+
+chromium_path="$($python_bin - <<'PY'
+from patchright.sync_api import sync_playwright
+
+with sync_playwright() as playwright:
+    print(playwright.chromium.executable_path)
+PY
+)"
+
+if [ ! -x "$chromium_path" ]; then
+    echo "legacy CDP Chromium executable is unavailable" >&2
+    exit 1
+fi
+
+if [ ! -d "$profile_dir" ] || [ ! -w "$profile_dir" ]; then
+    echo "legacy CDP profile directory is unavailable" >&2
+    exit 1
+fi
+
+if [ "${1:-}" = "--check" ]; then
+    if [ "$#" -ne 1 ]; then
+        echo "usage: start-legacy-cdp [--check]" >&2
+        exit 64
+    fi
+    exit 0
+fi
+
+if [ "$#" -ne 0 ]; then
+    echo "usage: start-legacy-cdp [--check]" >&2
+    exit 64
+fi
+
+exec "$chromium_path" \
+    --headless=new \
+    --remote-debugging-address=0.0.0.0 \
+    --remote-debugging-port=18800 \
+    --user-data-dir=/var/lib/thoth/browser-profile \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-dev-shm-usage \
+    https://www.tiktok.com/
