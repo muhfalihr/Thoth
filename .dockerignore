@@ -16,6 +16,8 @@
 **/*.novita_key
 **/*.supabase_url
 config.toml
+data/cookies.txt
+**/*.key
 
 # Dependency and language caches
 **/node_modules
@@ -38,6 +40,8 @@ models
 *.mp4
 *.wav
 *.jpg
+**/*.png
+**/*.part
 
 # Stage 1 operational evidence must never enter a build context
 tiktok-stage1-soak-observations*.jsonl

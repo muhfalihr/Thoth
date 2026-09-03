@@ -21,6 +21,8 @@ def test_dockerignore_excludes_sensitive_and_generated_inputs() -> None:
         ".codex",
         ".superpowers",
         "**/.env*",
+        "data/cookies.txt",
+        "**/*.key",
         "**/node_modules",
         "python/.venv",
         "**/__pycache__",
@@ -35,6 +37,8 @@ def test_dockerignore_excludes_sensitive_and_generated_inputs() -> None:
         "*.mp4",
         "*.wav",
         "*.jpg",
+        "**/*.png",
+        "**/*.part",
         "tiktok-stage1-soak-observations*.jsonl",
         "tiktok-stage1-soak-report.json*",
     }
