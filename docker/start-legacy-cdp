@@ -3,6 +3,23 @@ set -eu
 
 profile_dir=/var/lib/thoth/browser-profile
 
+case "$#" in
+    0)
+        check_only=false
+        ;;
+    1)
+        if [ "$1" != "--check" ]; then
+            echo "usage: start-legacy-cdp [--check]" >&2
+            exit 64
+        fi
+        check_only=true
+        ;;
+    *)
+        echo "usage: start-legacy-cdp [--check]" >&2
+        exit 64
+        ;;
+esac
+
 chromium_path=
 chromium_count=0
 for candidate in /ms-playwright/chromium-[0-9]*/chrome-linux*/chrome; do
@@ -21,17 +38,8 @@ if [ ! -d "$profile_dir" ] || [ ! -w "$profile_dir" ]; then
     exit 1
 fi
 
-if [ "${1:-}" = "--check" ]; then
-    if [ "$#" -ne 1 ]; then
-        echo "usage: start-legacy-cdp [--check]" >&2
-        exit 64
-    fi
+if [ "$check_only" = true ]; then
     exit 0
-fi
-
-if [ "$#" -ne 0 ]; then
-    echo "usage: start-legacy-cdp [--check]" >&2
-    exit 64
 fi
 
 exec "$chromium_path" \

@@ -71,7 +71,8 @@ RUN test -w /var/lib/thoth/artifacts \
     && test -x /usr/bin/ffprobe \
     && /usr/bin/ffmpeg -version >/dev/null 2>&1 \
     && /usr/bin/ffprobe -version >/dev/null 2>&1 \
-    && /opt/thoth/bin/start-legacy-cdp --check
+    && cdp_check_output=$(/opt/thoth/bin/start-legacy-cdp --check 2>&1) \
+    && test -z "$cdp_check_output"
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/thoth/python/.venv/bin/python", "-m", "thoth_control_plane.worker"]

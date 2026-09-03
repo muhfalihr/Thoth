@@ -145,6 +145,8 @@ def test_dockerfile_provides_linux_legacy_media_and_cdp_runtime() -> None:
     assert "/var/lib/thoth/browser-profile" in dockerfile
     assert "COPY --chmod=0755 --chown=thoth:thoth docker/start-legacy-cdp" in dockerfile
     assert "/opt/thoth/bin/start-legacy-cdp --check" in dockerfile
+    assert "cdp_check_output=$(/opt/thoth/bin/start-legacy-cdp --check 2>&1)" in dockerfile
+    assert 'test -z "$cdp_check_output"' in dockerfile
     assert "/usr/bin/ffmpeg -version" in dockerfile
     assert "/usr/bin/ffprobe -version" in dockerfile
     assert "EXPOSE 8000 18800" in dockerfile
@@ -163,6 +165,8 @@ def test_legacy_cdp_launcher_is_fixed_headless_private_contract() -> None:
         "https://www.tiktok.com/",
     }
     assert all(token in launcher for token in required)
+    assert 'case "$#" in' in launcher
+    assert launcher.index('case "$#" in') < launcher.index("chromium_path=")
     assert "--check" in launcher
     assert "sync_playwright" not in launcher
     assert "--no-sandbox" not in launcher
