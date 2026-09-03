@@ -22,9 +22,19 @@ jobs:
   quality:
     name: Offline quality gates
     runs-on: ubuntu-latest
+    env:
+      THOTH_FFMPEG: /usr/bin/ffmpeg
+      THOTH_FFPROBE: /usr/bin/ffprobe
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install media test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          test -x "$THOTH_FFMPEG"
+          test -x "$THOTH_FFPROBE"
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5

@@ -108,6 +108,17 @@ def test_container_workflow_pins_gates_tags_platform_and_digest_summary() -> Non
     assert "secrets." not in workflow
 
 
+def test_quality_workflow_provisions_linux_ffmpeg_for_scout() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    assert "Install media test dependencies" in workflow
+    assert "sudo apt-get update" in workflow
+    assert "sudo apt-get install --yes --no-install-recommends ffmpeg" in workflow
+    assert "THOTH_FFMPEG: /usr/bin/ffmpeg" in workflow
+    assert "THOTH_FFPROBE: /usr/bin/ffprobe" in workflow
+    assert 'test -x "$THOTH_FFMPEG"' in workflow
+    assert 'test -x "$THOTH_FFPROBE"' in workflow
+
+
 def test_operations_documentation_requires_digest_pinning_and_runtime_injection() -> None:
     documentation = _repo_text("docs/python-control-plane.md")
     digest_prompt = 'Read-Host "Paste the sha256 digest from the successful workflow summary"'
