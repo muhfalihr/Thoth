@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -163,3 +164,29 @@ def test_legacy_cdp_launcher_is_fixed_headless_private_contract() -> None:
     assert "--check" in launcher
     assert "--no-sandbox" not in launcher
     assert "THOTH_LIVE_TIKTOK_URL" not in launcher
+
+
+def test_container_workflow_pins_every_action_to_full_commit_sha() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    expected = {
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262": "# v4",
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065": "# v5",
+        "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e": "# v6",
+        "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6": "# v2",
+        "docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f": "# v3",
+        "docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9": "# v3",
+        "docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051": "# v5",
+        "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8": "# v6",
+    }
+    action_lines = [line for line in workflow.splitlines() if "uses:" in line]
+    references = {
+        line.split("uses:", 1)[1].split("#", 1)[0].strip()
+        for line in action_lines
+        if not line.split("uses:", 1)[1].strip().startswith("./")
+    }
+    assert references == set(expected)
+    assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference) for reference in references)
+    for line in action_lines:
+        reference = line.split("uses:", 1)[1].split("#", 1)[0].strip()
+        if reference in expected:
+            assert line.rstrip().endswith(expected[reference])
