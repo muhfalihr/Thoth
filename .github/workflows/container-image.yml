@@ -64,6 +64,9 @@ jobs:
           uv run --project python ruff check python/src python/tests
           uv run --project python ruff format --check python/src python/tests
 
+      - name: Validate local Stage 1 Compose
+        run: docker compose --env-file .env.stage1.local.example -f compose.stage1.local.yml config --quiet
+
       - name: Install locked Scout dependencies
         run: bun --cwd=scout install --frozen-lockfile
 

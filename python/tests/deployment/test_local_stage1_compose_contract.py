@@ -101,3 +101,42 @@ def test_local_stage1_compose_requires_digest_qualified_thoth_image() -> None:
     assert "latest" not in compose
     assert "sha-1c904a7" not in compose
     assert compose.count("${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}") == 3
+
+
+def test_local_stage1_compose_is_validated_by_offline_ci() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    command = (
+        "docker compose --env-file .env.stage1.local.example "
+        "-f compose.stage1.local.yml config --quiet"
+    )
+    assert "Validate local Stage 1 Compose" in workflow
+    assert command in workflow
+
+
+def test_local_stage1_runbook_keeps_live_and_evidence_actions_operator_gated() -> None:
+    runbook = _repo_text("docs/operations/stage1-local-docker.md")
+    required = {
+        "docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config",
+        "docker compose --env-file .env.stage1.local -f compose.stage1.local.yml pull",
+        "127.0.0.1:8000/healthz",
+        "127.0.0.1:8000/readyz",
+        "temporal operator namespace describe --namespace thoth-stage1",
+        "python_tiktok_with_legacy_fallback",
+        "legacy_scout",
+        "s3://clipper-stage1-soak-evidence-20260903-a1d22394/stage1/observations/",
+        "s3://clipper-stage1-soak-evidence-20260903-a1d22394/stage1/reports/",
+        "Do not run `docker compose up` for `legacy-cdp` or `worker` "
+        "without explicit live approval.",
+        "Do not run `docker compose down -v`",
+    }
+    assert all(token in runbook for token in required)
+    assert "https://www.tiktok.com/@" not in runbook
+    assert "THOTH_CONTROL_PLANE_API_KEY=" not in runbook
+    assert "THOTH_POSTGRES_PASSWORD=" not in runbook
+
+
+def test_blueprint_records_local_stage1_orchestration_without_claiming_soak() -> None:
+    blueprint = _repo_text("BLUEPRINT.md")
+    assert "Stage 1 local Docker orchestration" in blueprint
+    assert "PostgreSQL-backed Temporal" in blueprint
+    assert "controlled live smoke and operational soak remain pending" in blueprint

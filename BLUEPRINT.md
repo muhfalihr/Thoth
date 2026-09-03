@@ -30,6 +30,10 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
   includes Linux FFmpeg/FFprobe and the private headless CDP launcher required by temporary Scout
   fallback. GHCR publication and the operational soak remain pending; publishing an image is not a
   deployment or cutover approval.
+- **Stage 1 local Docker orchestration (2026-09-03): implemented, activation pending.** The
+  six-service local topology provides PostgreSQL-backed Temporal, loopback API/UI, persistent
+  artifacts/profile storage, and a private same-digest CDP sidecar. Final digest deployment,
+  controlled live smoke and operational soak remain pending.
 
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|
