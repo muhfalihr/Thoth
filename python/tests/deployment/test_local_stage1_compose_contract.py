@@ -61,3 +61,43 @@ def test_local_stage1_infrastructure_is_pinned_persistent_and_private() -> None:
     assert '"127.0.0.1:8080:8080"' in temporal_ui
     assert "ports:" not in postgres
     assert "ports:" not in temporal
+
+
+def test_local_stage1_thoth_roles_share_one_digest_and_keep_cdp_private() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    api = _service_block(compose, "api")
+    worker = _service_block(compose, "worker")
+    cdp = _service_block(compose, "legacy-cdp")
+
+    required_image = "${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}"
+    assert api.count(required_image) == 1
+    assert worker.count(required_image) == 1
+    assert cdp.count(required_image) == 1
+    assert 'user: "10001:10001"' in api
+    assert 'user: "10001:10001"' in worker
+    assert 'user: "10001:10001"' in cdp
+    assert '"127.0.0.1:8000:8000"' in api
+    assert "ports:" not in worker
+    assert "ports:" not in cdp
+    assert "THOTH_TEMPORAL_TARGET: temporal:7233" in api
+    assert "THOTH_TEMPORAL_TARGET: temporal:7233" in worker
+    assert "THOTH_TEMPORAL_NAMESPACE: thoth-stage1" in api
+    assert "THOTH_TEMPORAL_NAMESPACE: thoth-stage1" in worker
+    assert "THOTH_CDP: http://legacy-cdp:18800" in worker
+    assert "THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: python_tiktok_with_legacy_fallback" in worker
+    assert "/opt/thoth/bin/start-legacy-cdp" in cdp
+    assert "/json/version" in cdp
+    assert "/json" in cdp
+    assert "tiktok.com" in cdp
+    assert "/artifacts" in api
+    assert "/artifacts" in worker
+    assert "/browser-profile" in cdp
+    assert "/browser-profile" not in api
+    assert "/browser-profile" not in worker
+
+
+def test_local_stage1_compose_requires_digest_qualified_thoth_image() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    assert "latest" not in compose
+    assert "sha-1c904a7" not in compose
+    assert compose.count("${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}") == 3

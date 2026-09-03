@@ -57,6 +57,95 @@ services:
     restart: unless-stopped
     networks: [stage1-private]
 
+  legacy-cdp:
+    image: ${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}
+    user: "10001:10001"
+    command: ["/opt/thoth/bin/start-legacy-cdp"]
+    volumes:
+      - type: bind
+        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/browser-profile
+        target: /var/lib/thoth/browser-profile
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/thoth/python/.venv/bin/python -c "import json, urllib.request;
+          version = urllib.request.urlopen('http://127.0.0.1:18800/json/version', timeout=2);
+          assert 200 <= version.status < 300;
+          targets = json.load(urllib.request.urlopen('http://127.0.0.1:18800/json', timeout=2));
+          assert any(target.get('type') == 'page' and 'tiktok.com' in target.get('url', '') for target in targets)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    networks: [stage1-private]
+
+  api:
+    image: ${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}
+    user: "10001:10001"
+    command:
+      - /opt/thoth/python/.venv/bin/uvicorn
+      - thoth_control_plane.api.app:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      THOTH_CONTROL_PLANE_API_KEY: ${THOTH_CONTROL_PLANE_API_KEY:?set THOTH_CONTROL_PLANE_API_KEY}
+      THOTH_TEMPORAL_TARGET: temporal:7233
+      THOTH_TEMPORAL_NAMESPACE: thoth-stage1
+      THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts
+      THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: python_tiktok_with_legacy_fallback
+    volumes:
+      - type: bind
+        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts
+        target: /var/lib/thoth/artifacts
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/thoth/python/.venv/bin/python -c "import urllib.request;
+          assert urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200;
+          assert urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status == 200"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+    networks: [stage1-private]
+
+  worker:
+    image: ${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}
+    user: "10001:10001"
+    depends_on:
+      temporal:
+        condition: service_healthy
+      legacy-cdp:
+        condition: service_healthy
+    environment:
+      THOTH_CONTROL_PLANE_API_KEY: ${THOTH_CONTROL_PLANE_API_KEY:?set THOTH_CONTROL_PLANE_API_KEY}
+      THOTH_TEMPORAL_TARGET: temporal:7233
+      THOTH_TEMPORAL_NAMESPACE: thoth-stage1
+      THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts
+      THOTH_FFMPEG: /usr/bin/ffmpeg
+      THOTH_FFPROBE: /usr/bin/ffprobe
+      THOTH_CDP: http://legacy-cdp:18800
+      THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: python_tiktok_with_legacy_fallback
+      THOTH_LIVE_TIKTOK_URL: ${THOTH_LIVE_TIKTOK_URL:?set approved fixture reference locally}
+    volumes:
+      - type: bind
+        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts
+        target: /var/lib/thoth/artifacts
+    restart: unless-stopped
+    networks: [stage1-private]
+
 networks:
   stage1-private:
     driver: bridge
