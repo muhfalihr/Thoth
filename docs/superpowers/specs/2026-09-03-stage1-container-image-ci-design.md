@@ -1,7 +1,7 @@
 # Stage 1 Container Image and GitHub CI Design
 
 **Date:** 2026-09-03  
-**Status:** Approved for implementation planning  
+**Status:** Corrective amendment pending written review
 **Registry:** `ghcr.io/muhfalihr/thoth`  
 **Target platform:** `linux/amd64`
 
@@ -18,12 +18,29 @@ This design adds one compatibility image and a GitHub-hosted CI pipeline. Publis
 the deployment boundary for this scope; deploying it to AWS and configuring Temporal are separate
 operational steps.
 
+### Corrective review findings
+
+The first implementation reached commit
+`442f51c5dd36b94542e6632f3cd8523f396c2af9`, but independent review found that the image could
+not yet satisfy its advertised legacy-fallback contract. Scout requires executable FFmpeg and
+FFprobe paths and a reachable Chromium DevTools Protocol (CDP) endpoint. The image supplied neither
+Linux media tools nor a managed CDP topology. Review also found missing build-context exclusions,
+mutable GitHub Action references in a package-writing job, missing persistent-volume ownership
+instructions, and a repository-required `BLUEPRINT.md` update.
+
+This amendment keeps one immutable application image. The same image digest is used in three
+separate process roles: worker, API, and (only while legacy fallback is enabled) a headless Chromium
+CDP sidecar. No second project image or registry is introduced. Commit `442f51c...` remains a
+reviewed checkpoint, not a release or soak candidate.
+
 ## Goals
 
 - Build one immutable Linux AMD64 image that can run either the Python worker or FastAPI.
 - Include Scrapling headless support as the primary TikTok acquisition route.
 - Preserve TikWM/CDN behavior from the application and Bun/Scout legacy fallback from the same
   repository revision.
+- Make the temporary Scout fallback operational on Linux by including FFmpeg/FFprobe and defining a
+  private, health-checked CDP sidecar topology.
 - Run all non-live Python and Scout acquisition regression gates before an image is published.
 - Publish images to `ghcr.io/muhfalihr/thoth` with immutable commit tags and useful mutable tags.
 - Record the canonical OCI digest in the GitHub Actions job summary for the operational change
@@ -41,6 +58,8 @@ operational steps.
 - Removing the Bun/Scout compatibility adapter.
 - Building ARM64 or a multi-platform manifest.
 - Building the Rust media pipeline or dashboard into this image.
+- Exposing CDP to the public internet or using CDP to evade authentication, rate limits, bot
+  challenges, or CAPTCHAs.
 
 ## Image Contract
 
@@ -81,7 +100,30 @@ available at `/opt/thoth/scout/cli.ts`, exactly where the adapter's fixed
 The build runs `scrapling install` and fails if browser support cannot be installed. Browser assets
 are placed under the runtime user's home or another image-owned shared path and remain readable and
 executable after dropping root privileges. The image build also fails unless it can import the
-control-plane package, import Scrapling, execute Bun, and find `scout/cli.ts`.
+control-plane package, import Scrapling, execute Bun, find `scout/cli.ts`, execute FFmpeg and
+FFprobe, and resolve the installed Chromium executable.
+
+The runtime installs Debian Bookworm's `ffmpeg` package without recommended packages. The image
+sets these exact compatibility paths:
+
+```text
+THOTH_FFMPEG=/usr/bin/ffmpeg
+THOTH_FFPROBE=/usr/bin/ffprobe
+```
+
+The image contains `/opt/thoth/bin/start-legacy-cdp`, a non-root launcher for the Chromium installed
+by `scrapling install`. The launcher has a non-starting `--check` mode used during the build and a
+normal mode that replaces itself with Chromium using all of these invariants:
+
+- headless mode (`--headless=new`);
+- CDP bound to `0.0.0.0:18800` inside the private container network;
+- persistent profile path `/var/lib/thoth/browser-profile`;
+- one initial `https://www.tiktok.com/` page target so Scout's `requireMatch` probes can attach;
+- no privileged container requirement and no browser `--no-sandbox` flag; and
+- no printing of cookies, profile contents, signed URLs, or CDP target payloads.
+
+The launcher fails closed if Chromium cannot be resolved, the profile directory is not writable,
+or the requested CDP port is not exactly `18800`.
 
 ### Filesystem and process model
 
@@ -89,12 +131,24 @@ The final image runs as the non-root user `thoth`. Its fixed paths are:
 
 - application root: `/opt/thoth`;
 - Python project: `/opt/thoth/python`;
-- persistent artifact root: `/var/lib/thoth/artifacts`; and
+- compatibility executables: `/opt/thoth/bin`;
+- persistent artifact root: `/var/lib/thoth/artifacts`;
+- persistent legacy browser profile: `/var/lib/thoth/browser-profile`; and
 - runtime home/cache: `/home/thoth`.
 
-`/var/lib/thoth/artifacts` is created and owned by `thoth`. A deployment must mount persistent
-storage there and set `THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts` for both API and
-worker. Temporary browser files may use `/tmp`, but durable reports and media may not.
+Both persistent directories are created and owned by the fixed runtime identity UID/GID
+`10001:10001`. A deployment must provision or initialize mounted storage with that ownership. A
+Kubernetes-style deployment may instead use an equivalent `fsGroup: 10001` or an init container
+that performs the ownership change before the non-root process starts. The deployment must never
+solve permissions by running the application or browser as root or by making the volumes
+world-writable.
+
+A deployment mounts durable application storage at `/var/lib/thoth/artifacts` and sets
+`THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts` for both API and worker. The CDP sidecar
+alone mounts a separate persistent profile volume at `/var/lib/thoth/browser-profile`. Temporary
+browser files may use `/tmp`, but durable reports and media may not. The profile volume may contain
+session state and is sensitive operational data: it must not enter Git, the image, application
+logs, soak evidence, or the S3 evidence prefixes.
 
 The default image command is:
 
@@ -109,6 +163,26 @@ The API uses the same image and digest with this command override:
   --factory --host 0.0.0.0 --port 8000
 ```
 
+While `python_tiktok_with_legacy_fallback` is active, a third container uses the exact same image
+digest with this command override:
+
+```text
+/opt/thoth/bin/start-legacy-cdp
+```
+
+The sidecar is named `legacy-cdp` on a private deployment network and publishes port `18800` only
+to that network. It has no public load balancer, host-port mapping, ingress route, or internet-facing
+security-group rule. Network policy permits the worker to connect to the sidecar and denies CDP
+access from unrelated workloads. CDP is an unauthenticated remote-control interface, so a public or
+shared endpoint is a release blocker.
+
+Sidecar readiness requires both `GET http://legacy-cdp:18800/json/version` to return 2xx and
+`GET http://legacy-cdp:18800/json` to contain at least one page target whose URL belongs to
+`tiktok.com`. The deployment restarts an unhealthy sidecar. The worker must not receive a
+legacy-fallback activity until this readiness contract passes. If a controlled fallback smoke sees
+an authentication or challenge page, the release stops for operator review; the system does not
+attempt bypass behavior.
+
 The image has no HTTP health check because its default worker process has no HTTP endpoint. The
 deployment layer must use the API's `/healthz` and `/readyz` endpoints for the API service and
 process/Temporal health for the worker.
@@ -122,6 +196,9 @@ configuration at runtime, including:
 - `THOTH_TEMPORAL_TARGET`;
 - `THOTH_TEMPORAL_NAMESPACE`;
 - `THOTH_CONTROL_PLANE_ARTIFACT_ROOT`;
+- `THOTH_FFMPEG=/usr/bin/ffmpeg`;
+- `THOTH_FFPROBE=/usr/bin/ffprobe`;
+- `THOTH_CDP=http://legacy-cdp:18800` while legacy fallback is enabled;
 - `THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE=python_tiktok_with_legacy_fallback` during soak; and
 - `THOTH_LIVE_TIKTOK_URL` only for an explicitly approved live gate.
 
@@ -140,6 +217,11 @@ The root `.dockerignore` excludes at least:
   files; and
 - unrelated product trees not copied by the Dockerfile.
 
+The denylist explicitly includes `data/cookies.txt`, `**/*.key`, `**/*.png`, and global
+`**/*.part` patterns. The `.part` rule is not limited to an evidence filename or one output
+directory. Contract tests enumerate these exact protections, and no negated allowlist rule may
+re-include them.
+
 The Dockerfile uses explicit `COPY` instructions rather than `COPY . .`. Dependency manifests are
 copied before source to keep cache reuse deterministic without broadening the context boundary.
 
@@ -155,6 +237,13 @@ copied before source to keep cache reuse deterministic without broadening the co
 
 Concurrency is grouped by workflow and ref. A newer run cancels an older in-progress run for the
 same ref, but never cancels a different branch or tag build.
+
+Every third-party `uses:` reference in the workflow is pinned to a full 40-character commit SHA.
+Each pin retains a trailing comment with the human-readable upstream major/version (for example,
+`# v4`). Mutable `@vN`, branch, or tag references are forbidden, including in read-only jobs,
+because the same workflow also contains a `packages: write` publication job. Dependency-update
+automation may propose pin changes, but review must verify the upstream repository and release
+before a SHA changes.
 
 ### Quality job
 
@@ -201,6 +290,9 @@ It never writes runtime configuration or evidence paths.
 ## Failure Behavior
 
 - Any test, lint, dependency-lock, browser-install, or image-build failure prevents publication.
+- A missing/non-executable FFmpeg, FFprobe, or Chromium launcher check prevents publication.
+- A deployment with public CDP exposure, a non-ready TikTok page target, or an unwritable
+  UID/GID-owned persistent volume cannot become the soak candidate.
 - Pull requests from forks remain build-only and never receive package write permission.
 - A failed publish does not move `latest`, branch, or version tags.
 - A published digest is immutable; a retry may update mutable tags only if it produces and reports a
@@ -216,8 +308,17 @@ Operational documentation must include:
 - the worker default command and FastAPI override command;
 - required runtime environment variables without example secret values;
 - the persistent artifact-volume requirement;
+- UID/GID `10001:10001` (or equivalent `fsGroup`/init ownership) for both persistent mounts;
+- the same-digest CDP sidecar command, private network boundary, readiness probes, profile-volume
+  sensitivity, and `THOTH_CDP=http://legacy-cdp:18800`;
+- the fixed Linux `THOTH_FFMPEG` and `THOTH_FFPROBE` paths;
 - where to find the digest in GitHub Actions; and
 - the boundary that publishing is not AWS deployment.
+
+Because this repository treats `BLUEPRINT.md` as implementation/status knowledge, the corrective
+implementation must update its Python control-plane or migration status entry. The entry records
+the one-digest worker/API/CDP topology, Linux FFmpeg compatibility, and the fact that image
+publication still does not constitute deployment or a completed soak.
 
 ## Stage 1 Evidence Implication
 
@@ -236,10 +337,20 @@ or records human approval.
 
 - A clean checkout can build the root Dockerfile for `linux/amd64` without local secrets.
 - The final container runs as non-root and contains the locked Python acquisition runtime,
-  installed Scrapling browser support, Bun 1.3.14, and the active Scout CLI.
+  installed Scrapling browser support, Bun 1.3.14, Linux FFmpeg/FFprobe, the CDP launcher, and the
+  active Scout CLI.
+- `THOTH_FFMPEG` and `THOTH_FFPROBE` resolve to executable Linux binaries and the build exercises
+  both version commands.
+- The same immutable image digest can start a private, non-root headless CDP sidecar; readiness
+  proves a TikTok page target before a legacy fallback is eligible to run.
+- The worker reaches the sidecar only through `THOTH_CDP=http://legacy-cdp:18800`; CDP has no public
+  ingress, host port, or shared-network exposure.
 - The default command starts the Python worker entry point and the documented override addresses
   the FastAPI factory.
 - The artifact root is writable by the runtime user and is not embedded with generated artifacts.
+- Artifact and browser-profile mounts are provisioned as `10001:10001` or with an explicitly
+  equivalent ownership mechanism; the profile is excluded from source, build context, logs, and
+  evidence storage.
 - Pull requests run all offline gates and build without pushing.
 - Every successful branch push publishes a full-SHA tag and normalized branch tag.
 - A successful `master` push also publishes `latest`; a successful `v*` tag push publishes the
@@ -248,4 +359,9 @@ or records human approval.
 - A successful publishing run exposes its canonical digest in the GitHub Actions summary.
 - No committed file contains a real secret, live TikTok URL, workflow-level evidence, or AWS
   credential.
+- `.dockerignore` explicitly excludes `data/cookies.txt`, `**/*.key`, `**/*.png`, and global
+  `**/*.part` files.
+- Every GitHub Action is pinned to a full commit SHA with a readable version comment; no mutable
+  action reference remains.
+- `BLUEPRINT.md` reflects the corrected runtime topology and current pre-publication status.
 - Existing Stage 1 fallback/rollback modes and acquisition behavior remain unchanged.
