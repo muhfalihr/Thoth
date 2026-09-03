@@ -71,8 +71,16 @@ RUN test -w /var/lib/thoth/artifacts \
     && test -x /usr/bin/ffprobe \
     && /usr/bin/ffmpeg -version >/dev/null 2>&1 \
     && /usr/bin/ffprobe -version >/dev/null 2>&1 \
-    && cdp_check_output=$(/opt/thoth/bin/start-legacy-cdp --check 2>&1) \
-    && test -z "$cdp_check_output"
+    && cdp_check_log="$(mktemp)" \
+    && trap 'rm -f "$cdp_check_log"' 0 \
+    && if ! /opt/thoth/bin/start-legacy-cdp --check >"$cdp_check_log" 2>&1; then \
+        cat "$cdp_check_log" >&2; \
+        exit 1; \
+    fi \
+    && if ! test ! -s "$cdp_check_log"; then \
+        cat "$cdp_check_log" >&2; \
+        exit 1; \
+    fi
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/opt/thoth/python/.venv/bin/python", "-m", "thoth_control_plane.worker"]
