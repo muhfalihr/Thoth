@@ -84,6 +84,24 @@ FastAPI process from the exact same digest by overriding the command with
 `/opt/thoth/python/.venv/bin/uvicorn thoth_control_plane.api.app:create_app --factory --host
 0.0.0.0 --port 8000`.
 
+While legacy fallback remains enabled, run a third container from the exact same digest with the
+command `/opt/thoth/bin/start-legacy-cdp`. Give the sidecar the private service name `legacy-cdp`,
+set `THOTH_CDP=http://legacy-cdp:18800` on the worker, and set
+`THOTH_FFMPEG=/usr/bin/ffmpeg` plus `THOTH_FFPROBE=/usr/bin/ffprobe` on the worker. Port `18800` is
+an unauthenticated browser-control boundary: it must not have public ingress or a host-port mapping,
+and network policy must allow only the worker to reach it.
+
+The sidecar mounts its sensitive persistent profile at `/var/lib/thoth/browser-profile`; never
+archive that profile as soak evidence. Provision both that mount and `/var/lib/thoth/artifacts` as
+UID/GID `10001:10001`, or use an equivalent `fsGroup: 10001` or init-container ownership step.
+Do not run either process as root and do not make the mounts world-writable.
+
+Before allowing a legacy-fallback activity, require
+`GET http://legacy-cdp:18800/json/version` to return 2xx and
+`GET http://legacy-cdp:18800/json` to contain a page target on `tiktok.com`. Restart an unhealthy
+sidecar. Treat an authentication or challenge page during the controlled fallback smoke as a
+release blocker; do not attempt bypass behavior.
+
 Both services must receive `THOTH_CONTROL_PLANE_API_KEY`, `THOTH_TEMPORAL_TARGET`,
 `THOTH_TEMPORAL_NAMESPACE`, `THOTH_CONTROL_PLANE_ARTIFACT_ROOT`, and the deployment-owned activity
 mode at runtime through the approved environment or secret manager. During the soak the activity

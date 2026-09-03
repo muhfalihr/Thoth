@@ -190,3 +190,26 @@ def test_container_workflow_pins_every_action_to_full_commit_sha() -> None:
         reference = line.split("uses:", 1)[1].split("#", 1)[0].strip()
         if reference in expected:
             assert line.rstrip().endswith(expected[reference])
+
+
+def test_operations_docs_define_private_same_digest_cdp_sidecar() -> None:
+    documentation = _repo_text("docs/python-control-plane.md")
+    required = {
+        "/opt/thoth/bin/start-legacy-cdp",
+        "THOTH_CDP=http://legacy-cdp:18800",
+        "THOTH_FFMPEG=/usr/bin/ffmpeg",
+        "THOTH_FFPROBE=/usr/bin/ffprobe",
+        "/var/lib/thoth/browser-profile",
+        "10001:10001",
+        "GET http://legacy-cdp:18800/json/version",
+        "GET http://legacy-cdp:18800/json",
+        "must not have public ingress or a host-port mapping",
+    }
+    assert all(token in documentation for token in required)
+
+
+def test_blueprint_records_corrected_container_checkpoint() -> None:
+    blueprint = _repo_text("BLUEPRINT.md")
+    assert "Stage 1 container checkpoint (2026-09-03)" in blueprint
+    assert "worker/API/CDP sidecar" in blueprint
+    assert "GHCR publication and the operational soak remain pending" in blueprint
