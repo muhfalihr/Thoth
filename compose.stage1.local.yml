@@ -138,7 +138,6 @@ services:
       THOTH_FFPROBE: /usr/bin/ffprobe
       THOTH_CDP: http://legacy-cdp:18800
       THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: python_tiktok_with_legacy_fallback
-      THOTH_LIVE_TIKTOK_URL: ${THOTH_LIVE_TIKTOK_URL:?set approved fixture reference locally}
     volumes:
       - type: bind
         source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts

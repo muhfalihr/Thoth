@@ -140,3 +140,26 @@ def test_blueprint_records_local_stage1_orchestration_without_claiming_soak() ->
     assert "Stage 1 local Docker orchestration" in blueprint
     assert "PostgreSQL-backed Temporal" in blueprint
     assert "controlled live smoke and operational soak remain pending" in blueprint
+
+
+def test_local_stage1_live_fixture_never_reaches_a_container() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    runbook = _repo_text("docs/operations/stage1-local-docker.md")
+
+    assert "THOTH_LIVE_TIKTOK_URL" not in compose
+    assert (
+        "`THOTH_LIVE_TIKTOK_URL` is a host-side pytest variable and is never injected into a "
+        "container." in runbook
+    )
+
+
+def test_local_stage1_runbook_never_renders_resolved_secrets() -> None:
+    runbook = _repo_text("docs/operations/stage1-local-docker.md")
+    marker = "compose.stage1.local.yml config"
+    render_commands = [line.strip() for line in runbook.splitlines() if marker in line]
+
+    assert render_commands
+    for command in render_commands:
+        assert (
+            command.endswith(("--quiet", "--images")) or "del(.services[].environment)" in command
+        )

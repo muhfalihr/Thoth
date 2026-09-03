@@ -37,17 +37,25 @@ expected by the pinned image; do not change its ownership manually.
 
 Copy `.env.stage1.local.example` to `.env.stage1.local` and fill the values locally. The file is
 ignored by Git and must never be committed, pasted into a shared terminal, or attached to a change
-record. The required variables are `THOTH_IMAGE`, `THOTH_STAGE1_DATA_ROOT`,
-`THOTH_CONTROL_PLANE_API_KEY`, `THOTH_POSTGRES_PASSWORD`, and `THOTH_LIVE_TIKTOK_URL`.
-
-The fixture is referred to by variable name only. An unset or placeholder fixture prevents the live
-smoke; it never causes another URL to be selected silently. Missing required variables make
+record. The variables Compose requires are `THOTH_IMAGE`, `THOTH_STAGE1_DATA_ROOT`,
+`THOTH_CONTROL_PLANE_API_KEY`, and `THOTH_POSTGRES_PASSWORD`. Missing required variables make
 `docker compose config` fail before any pull or startup.
+
+`THOTH_LIVE_TIKTOK_URL` is a host-side pytest variable and is never injected into a container. It is
+read only by `python/tests/live`, which is not part of the image. The fixture is referred to by
+variable name only. An unset or placeholder fixture prevents the live smoke; it never causes another
+URL to be selected silently.
 
 ## Render and pull
 
+Render with `--quiet` and inspect the resolved topology through filtered views. A bare
+`docker compose config` prints every resolved `environment:` block, including the database password
+and API key, into the terminal and the shell history.
+
 ```powershell
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --quiet
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --images
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --format json | jq 'del(.services[].environment)'
 docker compose --env-file .env.stage1.local -f compose.stage1.local.yml pull
 ```
 
