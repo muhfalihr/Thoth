@@ -48,14 +48,16 @@ URL to be selected silently.
 
 ## Render and pull
 
-Render with `--quiet` and inspect the resolved topology through filtered views. A bare
+Render with `--quiet`, then inspect the topology through views that never resolve secrets. A bare
 `docker compose config` prints every resolved `environment:` block, including the database password
-and API key, into the terminal and the shell history.
+and API key, into the terminal and the shell history. `--no-interpolate` shows the full six-service
+topology with every `${VAR:?...}` left unresolved, which is the safe way to check `ports:`, `user:`,
+and mount targets.
 
 ```powershell
 docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --quiet
 docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --images
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --format json | jq 'del(.services[].environment)'
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --no-interpolate
 docker compose --env-file .env.stage1.local -f compose.stage1.local.yml pull
 ```
 

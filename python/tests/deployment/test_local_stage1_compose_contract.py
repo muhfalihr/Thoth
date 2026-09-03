@@ -160,6 +160,9 @@ def test_local_stage1_runbook_never_renders_resolved_secrets() -> None:
 
     assert render_commands
     for command in render_commands:
-        assert (
-            command.endswith(("--quiet", "--images")) or "del(.services[].environment)" in command
-        )
+        assert command.endswith(("--quiet", "--images", "--no-interpolate"))
+
+
+def test_local_stage1_runbook_inspects_topology_without_extra_tooling() -> None:
+    runbook = _repo_text("docs/operations/stage1-local-docker.md")
+    assert "config --no-interpolate" in runbook
