@@ -1,0 +1,62 @@
+name: thoth-stage1-local
+
+services:
+  postgresql:
+    image: postgres:16.4-bookworm@sha256:e62fbf9d3e2b49816a32c400ed2dba83e3b361e6833e624024309c35d334b412
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: ${THOTH_POSTGRES_PASSWORD:?set THOTH_POSTGRES_PASSWORD}
+    volumes:
+      - type: bind
+        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/postgres
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    networks: [stage1-private]
+
+  temporal:
+    image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${THOTH_POSTGRES_PASSWORD:?set THOTH_POSTGRES_PASSWORD}
+      POSTGRES_SEEDS: postgresql
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      DEFAULT_NAMESPACE: thoth-stage1
+      DEFAULT_NAMESPACE_RETENTION: 30d
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address temporal:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+    networks: [stage1-private]
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0@sha256:cb17ea423d76a8a19a269d0bcd81fc12eee1f6365acd2a56b590dafb35696a95
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://127.0.0.1:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    networks: [stage1-private]
+
+networks:
+  stage1-private:
+    driver: bridge
