@@ -15,6 +15,11 @@ import typer
 
 from thoth_control_plane.application import ApprovalSubmission, RetryRequest
 from thoth_control_plane.domain import WorkflowEvent, WorkflowRequest
+from thoth_control_plane.operations.stage1_local_preflight import (
+    Stage1PreflightError,
+    check_stage1_local_environment,
+    load_stage1_local_environment,
+)
 from thoth_control_plane.operations.tiktok_soak import TikTokSoakDatasetError, evaluate_tiktok_soak
 from thoth_control_plane.operations.tiktok_soak_cli import (
     TikTokSoakInputError,
@@ -153,3 +158,21 @@ def tiktok_stage1_soak(
         typer.echo("tiktok stage 1 soak evaluation failed", err=True)
         raise typer.Exit(code=1) from None
     typer.echo("tiktok stage 1 soak report written")
+
+
+@operations_app.command("stage1-local-preflight")
+def stage1_local_preflight(
+    env_file: Annotated[Path, typer.Option("--env-file")] = Path(".env.stage1.local"),
+) -> None:
+    """Validate the local Stage 1 deployment environment before pulling images.
+
+    Run from the repository root: the working directory is the repository the
+    data root must stay outside of. Output names variables only, never values.
+    """
+    try:
+        values = load_stage1_local_environment(env_file)
+        check_stage1_local_environment(values, repository_root=Path.cwd())
+    except Stage1PreflightError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo("stage 1 local preflight passed")
