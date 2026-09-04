@@ -28,10 +28,11 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
 - **Stage 1 container checkpoint (2026-09-04): published, deployment pending.** One
   immutable `ghcr.io/muhfalihr/thoth` digest serves the worker/API/CDP sidecar roles; the image
   includes Linux FFmpeg/FFprobe and the private headless CDP launcher required by temporary Scout
-  fallback. GitHub Actions published
-  `sha256:38813cab4d0d706aea9d1add5c1f95a422cfc542b53a745c7baf6150924c4d43` from commit `da1c28b`.
-  Deployment, controlled live smoke, and the operational soak remain pending; publishing an image
-  is not a deployment or cutover approval.
+  fallback. GitHub Actions publishes one digest per pushed commit, and the image labels bind that
+  digest to its revision, so every push mints a new release identity. The deployable digest is
+  therefore read from the Actions summary of the exact commit being deployed and recorded in the
+  operator change record, never pinned here. Deployment, controlled live smoke, and the operational
+  soak remain pending; publishing an image is not a deployment or cutover approval.
 - **Stage 1 local Docker orchestration (2026-09-03): implemented, activation pending.** The
   six-service local topology provides PostgreSQL-backed Temporal, loopback API/UI, persistent
   artifacts/profile storage, and a private same-digest CDP sidecar. Operator inputs are gated by

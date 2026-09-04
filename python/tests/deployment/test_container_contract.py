@@ -231,9 +231,10 @@ def test_operations_docs_define_private_same_digest_cdp_sidecar() -> None:
 
 def test_blueprint_records_published_container_checkpoint() -> None:
     blueprint = _repo_text("BLUEPRINT.md")
+    prose = " ".join(blueprint.split())
     assert "Stage 1 container checkpoint (2026-09-04)" in blueprint
     assert "worker/API/CDP sidecar" in blueprint
-    assert "Deployment, controlled live smoke, and the operational soak remain pending" in blueprint
+    assert "Deployment, controlled live smoke, and the operational soak remain pending" in prose
     assert "| Stage 1 container + CI | ⚠️ 95% |" in blueprint
     assert (
         "`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`"
@@ -242,11 +243,14 @@ def test_blueprint_records_published_container_checkpoint() -> None:
     assert "controlled fallback smoke" in blueprint
 
 
-def test_blueprint_binds_the_published_digest_to_its_implementation_commit() -> None:
-    """A published checkpoint is only auditable when the digest and its commit are recorded."""
+def test_blueprint_does_not_pin_a_release_digest_it_cannot_keep_current() -> None:
+    """Every push publishes a new digest, so a digest written here is stale on arrival.
+
+    The image labels bind each digest to its own revision, which means the commit that
+    records a digest can never be the commit that digest was built from. The blueprint
+    therefore names the source of the release identity instead of a literal digest.
+    """
     blueprint = _repo_text("BLUEPRINT.md")
-    published = re.search(
-        r"GitHub Actions published\s+`sha256:[0-9a-f]{64}` from commit `[0-9a-f]{7,40}`",
-        blueprint,
-    )
-    assert published is not None
+    prose = " ".join(blueprint.split())
+    assert not re.search(r"ghcr\.io/muhfalihr/thoth@sha256:[0-9a-f]{64}", blueprint)
+    assert "read from the Actions summary of the exact commit being deployed" in prose
