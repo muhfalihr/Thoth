@@ -36,7 +36,7 @@ def _cdp_probe_source() -> str:
 
 def _handler_factory(targets: list[dict[str, str]], version_status: int) -> Callable[..., object]:
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:  # noqa: N802 - http.server naming
+        def do_GET(self) -> None:
             if self.path == "/json/version":
                 self._respond(version_status, b"{}")
             elif self.path == "/json":

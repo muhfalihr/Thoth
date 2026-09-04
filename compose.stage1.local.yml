@@ -139,7 +139,7 @@ services:
       THOTH_FFMPEG: /usr/bin/ffmpeg
       THOTH_FFPROBE: /usr/bin/ffprobe
       THOTH_CDP: http://legacy-cdp:18800
-      THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: python_tiktok_with_legacy_fallback
+      THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: ${THOTH_STAGE1_ACTIVITY_MODE:-python_tiktok_with_legacy_fallback}
     volumes:
       - type: bind
         source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts
