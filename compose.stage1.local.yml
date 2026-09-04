@@ -61,6 +61,8 @@ services:
     image: ${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}
     user: "10001:10001"
     command: ["/opt/thoth/bin/start-legacy-cdp"]
+    security_opt:
+      - seccomp:unconfined
     volumes:
       - type: bind
         source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/browser-profile
