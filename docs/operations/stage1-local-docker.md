@@ -34,7 +34,7 @@ ownership is not reliable on the Windows drive mount.
 ```bash
 mkdir -p "$THOTH_STAGE1_DATA_ROOT"/{postgres,artifacts,browser-profile,observations,reports}
 sudo chown -R 10001:10001 "$THOTH_STAGE1_DATA_ROOT"/artifacts "$THOTH_STAGE1_DATA_ROOT"/browser-profile
-chmod 750 "$THOTH_STAGE1_DATA_ROOT"/artifacts "$THOTH_STAGE1_DATA_ROOT"/browser-profile
+sudo chmod 750 "$THOTH_STAGE1_DATA_ROOT"/artifacts "$THOTH_STAGE1_DATA_ROOT"/browser-profile
 ```
 
 Root is used only for this bounded ownership initialization. API, worker, and browser processes stay

@@ -211,7 +211,7 @@ jobs:
           mkdir -p "${root}"/postgres "${root}"/artifacts "${root}"/browser-profile
           mkdir -p "${root}"/observations "${root}"/reports
           sudo chown -R 10001:10001 "${root}/artifacts" "${root}/browser-profile"
-          chmod 750 "${root}/artifacts" "${root}/browser-profile"
+          sudo chmod 750 "${root}/artifacts" "${root}/browser-profile"
 
       - name: Write a throwaway local environment
         run: |
@@ -260,8 +260,12 @@ jobs:
 
       - name: Dump service logs on failure
         if: failure()
-        run: docker compose ${COMPOSE_FILE_ARGS} logs --no-color --tail 120
+        run: |
+          test -f stage1.ci.env || exit 0
+          docker compose ${COMPOSE_FILE_ARGS} logs --no-color --tail 120
 
       - name: Stop the stack
         if: always()
-        run: docker compose ${COMPOSE_FILE_ARGS} down --remove-orphans
+        run: |
+          test -f stage1.ci.env || exit 0
+          docker compose ${COMPOSE_FILE_ARGS} down --remove-orphans
