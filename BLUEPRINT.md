@@ -25,19 +25,23 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
 - **Ownership split:** the existing Rust server/worker and legacy Scout console stay in service for
   their current media and discovery paths. This control plane neither replaces them nor exposes
   Scout executor flags through its v1 API/dashboard.
-- **Stage 1 container checkpoint (2026-09-03): locally corrected, publication pending.** One
+- **Stage 1 container checkpoint (2026-09-04): published, deployment pending.** One
   immutable `ghcr.io/muhfalihr/thoth` digest serves the worker/API/CDP sidecar roles; the image
   includes Linux FFmpeg/FFprobe and the private headless CDP launcher required by temporary Scout
-  fallback. GHCR publication and the operational soak remain pending; publishing an image is not a
-  deployment or cutover approval.
+  fallback. GitHub Actions published
+  `sha256:38813cab4d0d706aea9d1add5c1f95a422cfc542b53a745c7baf6150924c4d43` from commit `da1c28b`.
+  Deployment, controlled live smoke, and the operational soak remain pending; publishing an image
+  is not a deployment or cutover approval.
 - **Stage 1 local Docker orchestration (2026-09-03): implemented, activation pending.** The
   six-service local topology provides PostgreSQL-backed Temporal, loopback API/UI, persistent
-  artifacts/profile storage, and a private same-digest CDP sidecar. Final digest deployment,
-  controlled live smoke and operational soak remain pending.
+  artifacts/profile storage, and a private same-digest CDP sidecar. Operator inputs are gated by
+  `thoth-control operations stage1-local-preflight`, which enforces the digest form, an absolute
+  data root outside the repository, an approved worker mode, and non-placeholder credentials.
+  Final digest deployment, controlled live smoke and operational soak remain pending.
 
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|
-| Stage 1 container + CI | ⚠️ 90% | Runtime image and local Linux/amd64 Docker verification are complete (`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`); GHCR publication, deployment, controlled fallback smoke, and the operational soak remain pending. |
+| Stage 1 container + CI | ⚠️ 95% | Runtime image, local Linux/amd64 Docker verification, and GHCR publication are complete (`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`); the published digest is verified non-live in place. Deployment, controlled fallback smoke, and the operational soak remain pending. |
 | Ingest + transkrip | ✅ 100% | yt-dlp + Whisper word-level timestamps |
 | Visual scoring (post-analysis) | ✅ 80% | Frame extraction + vision LLM scoring |
 | LLM synthesis dari teks saja | ✅ 95% | Multi-provider, chunked, trending-aware; **LLM keyword extraction otomatis dari transcript** (gantikan word-frequency approach); `--keywords` CLI jadi optional override |
@@ -703,3 +707,5 @@ headless CDP launcher, while the worker/API/CDP sidecar roles remain pinned to o
 Actions are commit-SHA pinned and build-context exclusions are hardened. GHCR publication and the
 operational soak remain pending; no deployment, live fallback smoke, cutover approval, or default
 mode change occurred.*
+
+*Update: 2026-09-04 — Stage 1 local deployment corrective round and first GHCR publication. The independent review of `8f10efa` returned NO-GO, so three follow-up commits closed every blocking finding: `thoth-control operations stage1-local-preflight` now enforces the immutable digest form, an absolute data root outside the repository, an approved worker mode, and non-placeholder credentials, because Compose interpolation only rejects an empty variable; the `legacy-cdp` health probe fails closed on login walls, captcha and challenge paths, look-alike hosts, and non-HTTPS targets, and is tested by executing the shipped probe against a fake CDP rather than by matching YAML text; the worker activity mode became `${THOTH_STAGE1_ACTIVITY_MODE:-python_tiktok_with_legacy_fallback}` so the documented rollback recreates the worker instead of restarting it into the old environment; and the runbook now gives the exact UID, writability, port, persistence, and mode-verification commands at the phase where the services actually run, in one WSL shell that owns the data root. GitHub Actions then published `sha256:38813cab4d0d706aea9d1add5c1f95a422cfc542b53a745c7baf6150924c4d43` from `da1c28b`; the image was verified non-live (UID/GID 10001, FFmpeg 5.1.9, control-plane import, present but unexecuted CDP launcher, Bun scout runtime, preflight command available, probe fail-closed with no CDP reachable) and Compose renders all four images digest-pinned. No deployment, live smoke, S3 upload, soak, rollback drill, approval, or default mode change occurred.*

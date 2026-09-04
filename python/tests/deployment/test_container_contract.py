@@ -229,14 +229,24 @@ def test_operations_docs_define_private_same_digest_cdp_sidecar() -> None:
     assert all(token in documentation for token in required)
 
 
-def test_blueprint_records_corrected_container_checkpoint() -> None:
+def test_blueprint_records_published_container_checkpoint() -> None:
     blueprint = _repo_text("BLUEPRINT.md")
-    assert "Stage 1 container checkpoint (2026-09-03)" in blueprint
+    assert "Stage 1 container checkpoint (2026-09-04)" in blueprint
     assert "worker/API/CDP sidecar" in blueprint
-    assert "GHCR publication and the operational soak remain pending" in blueprint
-    assert "| Stage 1 container + CI | ⚠️ 90% |" in blueprint
+    assert "Deployment, controlled live smoke, and the operational soak remain pending" in blueprint
+    assert "| Stage 1 container + CI | ⚠️ 95% |" in blueprint
     assert (
         "`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`"
         in blueprint
     )
     assert "controlled fallback smoke" in blueprint
+
+
+def test_blueprint_binds_the_published_digest_to_its_implementation_commit() -> None:
+    """A published checkpoint is only auditable when the digest and its commit are recorded."""
+    blueprint = _repo_text("BLUEPRINT.md")
+    published = re.search(
+        r"GitHub Actions published\s+`sha256:[0-9a-f]{64}` from commit `[0-9a-f]{7,40}`",
+        blueprint,
+    )
+    assert published is not None
