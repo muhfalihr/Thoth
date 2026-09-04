@@ -179,7 +179,7 @@ jobs:
       contents: read
       packages: read
     env:
-      COMPOSE_FILE_ARGS: --env-file ${{ runner.temp }}/stage1.env -f compose.stage1.local.yml
+      COMPOSE_FILE_ARGS: --env-file stage1.ci.env -f compose.stage1.local.yml
       THOTH_IMAGE_REF: ghcr.io/muhfalihr/thoth@${{ needs.publish-image.outputs.digest }}
     steps:
       - name: Check out repository
@@ -224,11 +224,11 @@ jobs:
             echo "THOTH_STAGE1_ACTIVITY_MODE=python_tiktok_with_legacy_fallback"
             echo "THOTH_CONTROL_PLANE_API_KEY=$(openssl rand -hex 24)"
             echo "THOTH_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
-          } > "${RUNNER_TEMP}/stage1.env"
+          } > stage1.ci.env
 
       - name: Validate the operator inputs
         run: |
-          uv run --project python thoth-control operations stage1-local-preflight             --env-file "${RUNNER_TEMP}/stage1.env"
+          uv run --project python thoth-control operations stage1-local-preflight             --env-file stage1.ci.env
 
       - name: Start the non-live services
         run: docker compose ${COMPOSE_FILE_ARGS} up -d --wait postgresql temporal temporal-ui api
