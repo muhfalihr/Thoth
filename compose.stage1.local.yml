@@ -69,11 +69,13 @@ services:
       test:
         - CMD-SHELL
         - >-
-          /opt/thoth/python/.venv/bin/python -c "import json, urllib.request;
+          /opt/thoth/python/.venv/bin/python -c "import json, urllib.parse, urllib.request;
           version = urllib.request.urlopen('http://127.0.0.1:18800/json/version', timeout=2);
           assert 200 <= version.status < 300;
           targets = json.load(urllib.request.urlopen('http://127.0.0.1:18800/json', timeout=2));
-          assert any(target.get('type') == 'page' and 'tiktok.com' in target.get('url', '') for target in targets)"
+          pages = [urllib.parse.urlsplit(target.get('url', '')) for target in targets if target.get('type') == 'page'];
+          blocked = ('login', 'signup', 'captcha', 'challenge', 'verify', 'security-check');
+          assert any(page.scheme == 'https' and page.hostname in ('www.tiktok.com', 'tiktok.com', 'm.tiktok.com') and not any(marker in (page.path + '?' + page.query).lower() for marker in blocked) for page in pages)"
       interval: 10s
       timeout: 5s
       retries: 12
