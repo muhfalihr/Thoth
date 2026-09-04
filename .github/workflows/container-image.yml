@@ -104,6 +104,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -167,3 +169,99 @@ jobs:
             printf '%s\n' "${IMAGE_TAGS}"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  stack-smoke:
+    name: Non-live stack smoke
+    if: github.event_name == 'push'
+    needs: publish-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      COMPOSE_FILE_ARGS: --env-file ${{ runner.temp }}/stage1.env -f compose.stage1.local.yml
+      THOTH_IMAGE_REF: ghcr.io/muhfalihr/thoth@${{ needs.publish-image.outputs.digest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.10.8"
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Prepare a data root outside the checkout
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/thoth-stage1"
+          mkdir -p "${root}"/postgres "${root}"/artifacts "${root}"/browser-profile
+          mkdir -p "${root}"/observations "${root}"/reports
+          sudo chown -R 10001:10001 "${root}/artifacts" "${root}/browser-profile"
+          chmod 750 "${root}/artifacts" "${root}/browser-profile"
+
+      - name: Write a throwaway local environment
+        run: |
+          set -euo pipefail
+          umask 077
+          {
+            echo "COMPOSE_PROJECT_NAME=thoth-stage1-ci"
+            echo "THOTH_IMAGE=${THOTH_IMAGE_REF}"
+            echo "THOTH_STAGE1_DATA_ROOT=${RUNNER_TEMP}/thoth-stage1"
+            echo "THOTH_STAGE1_ACTIVITY_MODE=python_tiktok_with_legacy_fallback"
+            echo "THOTH_CONTROL_PLANE_API_KEY=$(openssl rand -hex 24)"
+            echo "THOTH_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+          } > "${RUNNER_TEMP}/stage1.env"
+
+      - name: Validate the operator inputs
+        run: |
+          uv run --project python thoth-control operations stage1-local-preflight             --env-file "${RUNNER_TEMP}/stage1.env"
+
+      - name: Start the non-live services
+        run: docker compose ${COMPOSE_FILE_ARGS} up -d --wait postgresql temporal temporal-ui api
+
+      - name: Verify identity, storage, and loopback isolation
+        run: |
+          set -euo pipefail
+          test "$(docker compose ${COMPOSE_FILE_ARGS} exec -T api id -u)" = "10001"
+          test "$(docker compose ${COMPOSE_FILE_ARGS} exec -T api id -g)" = "10001"
+          docker compose ${COMPOSE_FILE_ARGS} exec -T api test -w /var/lib/thoth/artifacts
+          curl -fsS http://127.0.0.1:8000/healthz
+          curl -fsS http://127.0.0.1:8000/readyz
+          ports="$(docker compose ${COMPOSE_FILE_ARGS} ps --format '{{.Service}} {{.Ports}}')"
+          echo "${ports}"
+          echo "${ports}" | grep -q '^api .*127\.0\.0\.1:8000->8000'
+          echo "${ports}" | grep -q '^temporal-ui .*127\.0\.0\.1:8080->8080'
+          ! echo "${ports}" | grep -E '^(postgresql|temporal) ' | grep -q -- '->'
+
+      - name: Verify the namespace survives a restart
+        run: |
+          set -euo pipefail
+          describe="exec -T temporal temporal operator namespace describe"
+          # shellcheck disable=SC2086
+          docker compose ${COMPOSE_FILE_ARGS} ${describe}             --namespace thoth-stage1 --address temporal:7233
+          docker compose ${COMPOSE_FILE_ARGS} restart postgresql temporal
+          docker compose ${COMPOSE_FILE_ARGS} up -d --wait postgresql temporal
+          # shellcheck disable=SC2086
+          docker compose ${COMPOSE_FILE_ARGS} ${describe}             --namespace thoth-stage1 --address temporal:7233
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose ${COMPOSE_FILE_ARGS} logs --no-color --tail 120
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose ${COMPOSE_FILE_ARGS} down --remove-orphans

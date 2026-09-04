@@ -91,6 +91,34 @@ def test_container_workflow_separates_pr_validation_from_publication() -> None:
     assert workflow.count("packages: write") == 1
 
 
+def test_container_workflow_boots_the_stack_it_publishes() -> None:
+    """Rendering Compose cannot open a path that lives inside the image.
+
+    `docker compose config` resolved a dynamic-config path that did not exist in the
+    pinned Temporal image, so the offline gate passed while the stack crash-looped.
+    Publication is therefore also gated on the four non-live services reporting
+    healthy against the digest that was just published.
+    """
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    assert "  stack-smoke:" in workflow
+    smoke = workflow.split("  stack-smoke:", 1)[1]
+    assert "needs: publish-image" in smoke
+    assert "up -d --wait postgresql temporal temporal-ui api" in smoke
+    assert "exec -T api id -u" in smoke
+    assert "test -w /var/lib/thoth/artifacts" in smoke
+    assert "operator namespace describe" in smoke
+    assert "stage1-local-preflight" in smoke
+
+
+def test_container_workflow_smoke_never_starts_the_live_services() -> None:
+    """The CDP sidecar opens TikTok and the worker depends on it; CI starts neither."""
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    smoke = workflow.split("  stack-smoke:", 1)[1]
+    assert "up -d --wait legacy-cdp" not in smoke
+    assert " worker" not in smoke.replace("--wait postgresql temporal temporal-ui api", "")
+    assert "down -v" not in smoke
+
+
 def test_container_workflow_pins_gates_tags_platform_and_digest_summary() -> None:
     workflow = _repo_text(".github/workflows/container-image.yml")
     assert "REGISTRY_IMAGE: ghcr.io/muhfalihr/thoth" in workflow
