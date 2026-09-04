@@ -241,7 +241,7 @@ services:
       POSTGRES_USER: temporal
       POSTGRES_PWD: ${THOTH_POSTGRES_PASSWORD:?set THOTH_POSTGRES_PASSWORD}
       POSTGRES_SEEDS: postgresql
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/docker.yaml
       DEFAULT_NAMESPACE: thoth-stage1
       DEFAULT_NAMESPACE_RETENTION: 30d
       TEMPORAL_ADDRESS: temporal:7233
