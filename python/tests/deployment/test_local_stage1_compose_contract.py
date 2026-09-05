@@ -195,3 +195,27 @@ def test_local_stage1_runbook_verifies_the_deployment_before_any_live_action() -
     }
 
     assert all(token in runbook for token in required)
+
+
+def test_local_stage1_runbook_freezes_the_digest_for_the_soak_window() -> None:
+    """Nothing in the evidence says which release produced a run.
+
+    The observation schema has no image field, so the evaluator cannot tell two
+    releases apart and silently merges them. Only the runbook can bind one digest
+    to one window.
+    """
+    runbook = _repo_text("docs/operations/stage1-local-docker.md")
+    prose = " ".join(runbook.split())
+    assert "the deployed digest is frozen until the window closes" in prose
+    assert "restarts the soak window" in prose
+    assert "observation record carries no digest" in prose
+
+
+def test_local_stage1_runbook_explains_the_cdp_seccomp_relaxation() -> None:
+    """A committed sandbox relaxation needs its reason and its boundary written down."""
+    compose = _repo_text("compose.stage1.local.yml")
+    runbook = _repo_text("docs/operations/stage1-local-docker.md")
+    prose = " ".join(runbook.split())
+    assert compose.count("seccomp:unconfined") == 1
+    assert "seccomp:unconfined" in prose
+    assert "no other service may relax its sandbox" in prose

@@ -22,6 +22,12 @@ The digest must be built from the exact implementation commit that will be evalu
 `THOTH_IMAGE` with a different digest creates a new deployment identity, and observations collected
 under different digests cannot be merged into one evaluated dataset.
 
+Once the soak window has started, the deployed digest is frozen until the window closes.
+Recreating any service onto a different digest restarts the soak window and discards every
+observation collected before it. The observation record carries no digest field, so the
+evaluator cannot tell two releases apart; the digest-to-window mapping exists only in the
+operator change record.
+
 ## Prepare persistent storage
 
 Create `postgres`, `artifacts`, `browser-profile`, `observations`, and `reports` below the absolute
@@ -138,6 +144,12 @@ HTTPS from an exact TikTok host whose path carries no authentication or challeng
 wall, a captcha, or a look-alike host is unhealthy by design. A CDP failure blocks worker startup
 while legacy fallback mode is selected; that must not be worked around by relaxing the health check
 or publishing port `18800`.
+
+The sidecar runs with `seccomp:unconfined` because Chromium's own sandbox needs syscalls the
+default Docker profile blocks. The relaxation is deliberate, it is scoped to the single container
+that browses TikTok, and no other service may relax its sandbox. Replace it with a pinned Chromium
+seccomp profile once one is available. It is never a substitute for the health probe, which stays
+fail-closed.
 
 Once the sidecar and worker are approved and running, verify their identity and isolation:
 
