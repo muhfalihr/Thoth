@@ -8,7 +8,12 @@
 
 import { afterAll, expect, test } from 'bun:test';
 import type { Server, ServerWebSocket } from 'bun';
-import { isAllowedDiscoveryPath, rewriteDiscovery, startCdpRelay } from './cdp_relay.ts';
+import {
+  isAllowedDiscoveryPath,
+  rewriteDiscovery,
+  startCdpRelay,
+  watchRelayLiveness,
+} from './cdp_relay.ts';
 
 test('discovery advertises the sibling-reachable authority', () => {
   const target = {
@@ -230,4 +235,110 @@ test('stop() releases the listener', async () => {
   expect((await fetch(`http://127.0.0.1:${disposable.port}/json`)).status).toBe(200);
   await disposable.stop();
   await expect(fetch(`http://127.0.0.1:${disposable.port}/json`)).rejects.toThrow();
+});
+
+// ---------------------------------------------------------------------------
+// Target snapshots and liveness. Both exist because the relay outlives every
+// individual page: a set that only ever grows keeps admitting ids the browser
+// has already forgotten, and a listener that dies quietly leaves the sidecar
+// advertising a port with nothing behind it.
+// ---------------------------------------------------------------------------
+
+async function attemptSession(path: string): Promise<'opened' | 'refused' | 'timeout'> {
+  return await new Promise((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${relay.port}${path}`);
+    socket.addEventListener('open', () => {
+      socket.close();
+      resolve('opened');
+    });
+    socket.addEventListener('error', () => resolve('refused'));
+    setTimeout(() => resolve('timeout'), 3000);
+  });
+}
+
+test('a target that vanished from discovery is refused for new sessions', async () => {
+  await fetch(`${relayBase}/json`);
+  expect(await attemptSession('/devtools/page/page-id')).toBe('opened');
+
+  upstream.bodyOverride = '[]';
+  try {
+    expect((await fetch(`${relayBase}/json`)).status).toBe(200);
+  } finally {
+    upstream.bodyOverride = undefined;
+  }
+
+  expect(await attemptSession('/devtools/page/page-id')).toBe('refused');
+  await fetch(`${relayBase}/json`);
+});
+
+test('page and browser discovery do not evict each other', async () => {
+  await fetch(`${relayBase}/json`);
+  await fetch(`${relayBase}/json/version`);
+  expect(await attemptSession('/devtools/page/page-id')).toBe('opened');
+
+  await fetch(`${relayBase}/json`);
+  expect(await attemptSession('/devtools/browser/browser-id')).toBe('opened');
+});
+
+test('the liveness watch tells a serving socket from a dead one', async () => {
+  const listener = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response('ok'),
+  });
+  const watch = watchRelayLiveness(`http://127.0.0.1:${listener.port}/`, {
+    intervalMs: 20,
+    timeoutMs: 500,
+    strikes: 2,
+  });
+  try {
+    expect(
+      await Promise.race([watch.failed.then(() => 'failed'), Bun.sleep(200).then(() => 'serving')]),
+    ).toBe('serving');
+
+    listener.stop(true);
+    expect(
+      await Promise.race([
+        watch.failed.then(() => 'failed'),
+        Bun.sleep(5000).then(() => 'undetected'),
+      ]),
+    ).toBe('failed');
+  } finally {
+    watch.cancel();
+  }
+}, 15000);
+
+test('a cancelled liveness watch never reports a failure', async () => {
+  const listener = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response('ok'),
+  });
+  const watch = watchRelayLiveness(`http://127.0.0.1:${listener.port}/`, {
+    intervalMs: 20,
+    timeoutMs: 200,
+    strikes: 1,
+  });
+  watch.cancel();
+  listener.stop(true);
+  expect(
+    await Promise.race([watch.failed.then(() => 'failed'), Bun.sleep(400).then(() => 'quiet')]),
+  ).toBe('quiet');
+});
+
+test('stop() ends the relay without reporting it as a failure', async () => {
+  const disposable = startCdpRelay({
+    upstreamBase: upstream.base,
+    advertisedBase: new URL('http://legacy-cdp:18800'),
+    hostname: '127.0.0.1',
+    port: 0,
+    liveness: { intervalMs: 20, timeoutMs: 200, strikes: 1 },
+  });
+  await disposable.stop();
+  expect(
+    await Promise.race([
+      disposable.failed.then(() => 'failed'),
+      Bun.sleep(400).then(() => 'quiet'),
+    ]),
+  ).toBe('quiet');
 });

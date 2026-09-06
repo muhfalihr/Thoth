@@ -40,10 +40,29 @@ function stubChild(): StubChild {
   };
 }
 
+/** A relay that serves for as long as the supervisor lets it. */
 function stubRelay(): RelayHandle & { stopped: boolean } {
   return {
     port: 18800,
     stopped: false,
+    failed: new Promise<void>(() => {}),
+    async stop() {
+      this.stopped = true;
+    },
+  };
+}
+
+/** A relay whose lifecycle signal the test drives directly. */
+function breakableRelay(): RelayHandle & { stopped: boolean; reportFailure: () => void } {
+  let reportFailure: () => void = () => {};
+  const failed = new Promise<void>((resolve) => {
+    reportFailure = resolve;
+  });
+  return {
+    port: 18800,
+    stopped: false,
+    failed,
+    reportFailure,
     async stop() {
       this.stopped = true;
     },
@@ -230,4 +249,42 @@ test('the relay is never started for a browser that already died', async () => {
   child.finish(1);
   expect(await supervision).not.toBe(0);
   expect(relayStarted).toBe(false);
+});
+
+test('a relay that stops serving takes the browser down and fails the sidecar', async () => {
+  const child = stubChild();
+  const relay = breakableRelay();
+  const supervision = superviseLegacyCdp(
+    {
+      chromium: '/c/chrome',
+      profile: '/p',
+      offlineSmoke: false,
+      shutdown: new AbortController().signal,
+      killGraceMs: 30,
+    },
+    { spawn: () => child, startRelay: () => relay, probeReady: async () => true },
+  );
+  await Bun.sleep(10);
+  relay.reportFailure();
+
+  expect(await supervision).not.toBe(0);
+  expect(relay.stopped).toBe(true);
+  expect(child.signals).toContain('SIGTERM');
+});
+
+test('a healthy relay never resolves its signal, so shutdown still wins the race', async () => {
+  const child = stubChild();
+  const relay = stubRelay();
+  const shutdown = new AbortController();
+  const supervision = superviseLegacyCdp(
+    { chromium: '/c/chrome', profile: '/p', offlineSmoke: false, shutdown: shutdown.signal },
+    { spawn: () => child, startRelay: () => relay, probeReady: async () => true },
+  );
+  await Bun.sleep(10);
+  shutdown.abort();
+  await Bun.sleep(10);
+  child.finish(0);
+
+  expect(await supervision).toBe(0);
+  expect(relay.stopped).toBe(true);
 });

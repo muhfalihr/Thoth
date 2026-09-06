@@ -81,6 +81,25 @@ Keep the production service name `legacy-cdp`, advertised endpoint `http://legac
   if necessary. `tini` remains PID 1 and reaps descendants. Browser output is not copied to logs;
   expose fixed diagnostic codes and exit status only.
 
+### Refinement, 2026-09-07
+
+Two clauses above were satisfied only in part by the first implementation and are tightened here.
+
+- *"Only discovered target IDs"* now means **currently** discovered. Each discovery route replaces
+  the target set for its own scope: `/json` and `/json/list` speak for `page` targets, `/json/version`
+  speaks for the `browser` target, and neither retires the other's. A target that has left discovery
+  is refused for new upgrades instead of remaining admissible for the life of the container.
+- *"Either process failing ends the container nonzero"* now covers a relay that stops serving after a
+  successful bind, not only one that fails to bind. Bun.serve raises no event for this, so the relay
+  carries a liveness watch that probes its own socket on a bounded timeout and exposes a promise the
+  supervisor races alongside browser exit; a requested `stop()` cancels the watch rather than
+  resolving it. Relay failure terminates Chromium and exits `70`. The container healthcheck cannot
+  substitute: Docker acts on container exit, not on an unhealthy status.
+
+Known and deliberately unclosed: the 32-session limit is checked before the upgrade and recorded at
+socket open, so concurrent upgrades may overshoot it by the number in flight. Scout drives a single
+client, so the ceiling is not reachable in this deployment. Tracked in code, not filed externally.
+
 Keep `start-legacy-cdp --check` a silent, non-launching capability check. Add exactly one explicit
 test mode, `--offline-smoke`, opening `about:blank` with a disposable profile supplied by the test
 stack. No arbitrary startup URL option is introduced. Default production startup still opens

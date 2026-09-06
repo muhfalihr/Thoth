@@ -3,9 +3,11 @@
 // WHY: Chromium serves DevTools on loopback only, so the container cannot simply
 // `exec` it and expose the port. It runs the browser on a private loopback port and
 // publishes the relay (see cdp_relay.ts) on the container network instead. Both
-// processes are then a single failure domain: if the browser dies, or the relay
-// cannot bind, the sidecar exits nonzero so the orchestrator restarts it rather than
-// leaving a reachable port with no debugger behind it.
+// processes are then a single failure domain: if the browser dies, or the relay cannot
+// bind, or the relay stops answering later, the sidecar exits nonzero so the
+// orchestrator restarts it rather than leaving a reachable port with no debugger
+// behind it. The container healthcheck alone would not do: Docker restarts on exit,
+// not on an unhealthy status, so a quietly dead relay would otherwise sit there.
 //
 // tini remains PID 1; this process only forwards TERM/INT and force-kills after a
 // bounded grace period. Browser output is never copied into the container log.
@@ -17,6 +19,9 @@ export const RELAY_ADVERTISED_BASE = new URL('http://legacy-cdp:18800');
 export const RELAY_BIND_HOSTNAME = '0.0.0.0';
 export const LAUNCHER_TARGET_URL = 'https://www.tiktok.com/';
 export const OFFLINE_SMOKE_TARGET_URL = 'about:blank';
+
+// sysexits: an internal failure rather than a bad invocation (64) or a dead browser.
+const RELAY_FAILURE_EXIT = 70;
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_KILL_GRACE_MS = 5_000;
@@ -179,12 +184,15 @@ export async function superviseLegacyCdp(
 
   const reason = await Promise.race([
     browserExit,
+    relay.failed.then(() => ({ kind: 'relay' as const, code: RELAY_FAILURE_EXIT })),
     aborted(options.shutdown).then(() => ({ kind: 'shutdown' as const, code: 0 })),
   ]);
   await relay.stop();
   if (reason.kind === 'browser') return reason.code === 0 ? 1 : reason.code;
+  // A relay that stopped serving leaves a browser nobody can reach, so the browser is
+  // cleaned up on that path too and only a requested shutdown reports success.
   await terminate(child, killGraceMs);
-  return 0;
+  return reason.kind === 'relay' ? reason.code : 0;
 }
 
 async function main(): Promise<void> {

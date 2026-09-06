@@ -13,7 +13,15 @@
 // always the configured one — never an authority read back out of browser output.
 // Nothing here logs a page url, a target id, or a protocol frame.
 
-const DISCOVERY_PATHS = new Set(['/json', '/json/list', '/json/version']);
+// Each discovery route is authoritative for exactly one kind of target: `/json` and
+// `/json/list` enumerate pages, `/json/version` describes the browser. Keeping the
+// scopes apart is what lets a poll REPLACE what it reported without a browser-level
+// poll silently retiring live pages, or a page poll retiring the browser endpoint.
+const DISCOVERY_SCOPES = new Map<string, TargetKind>([
+  ['/json', 'page'],
+  ['/json/list', 'page'],
+  ['/json/version', 'browser'],
+]);
 const DEVTOOLS_PATH = /^\/devtools\/(page|browser)\/[A-Za-z0-9._-]{1,128}$/;
 
 const DISCOVERY_TIMEOUT_MS = 5_000;
@@ -21,15 +29,43 @@ const DISCOVERY_MAX_BYTES = 1024 * 1024;
 const UPGRADE_TIMEOUT_MS = 5_000;
 const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
+// FOLLOW-UP (local, unfiled): the limit is checked before the upgrade and the session
+// is recorded when the socket opens, so concurrent upgrades can overshoot it by the
+// number in flight. Scout drives one client, so the ceiling is not reachable today;
+// closing it means re-checking inside `open` and closing over the limit.
 const MAX_SESSIONS = 32;
+const LIVENESS_INTERVAL_MS = 5_000;
+const LIVENESS_TIMEOUT_MS = 2_000;
+// One missed probe can be a scheduling hiccup; two in a row is a socket that stopped
+// answering. Restarting a healthy sidecar is worse than noticing a dead one a beat late.
+const LIVENESS_STRIKES = 2;
 
-export type RelayHandle = { port: number; stop(): Promise<void> };
+type TargetKind = 'page' | 'browser';
+
+export type RelayHandle = {
+  port: number;
+  /**
+   * Resolves when the relay stops answering on its own socket. A `stop()` cancels the
+   * watch instead of resolving it, so a requested shutdown is never a failure.
+   */
+  failed: Promise<void>;
+  stop(): Promise<void>;
+};
+
+export interface LivenessWatchOptions {
+  intervalMs?: number;
+  timeoutMs?: number;
+  strikes?: number;
+  /** Overridden only by tests; the default probes the socket over real HTTP. */
+  probe?: (url: string, timeoutMs: number) => Promise<boolean>;
+}
 
 export interface CdpRelayOptions {
   upstreamBase: URL;
   advertisedBase: URL;
   hostname: string;
   port: number;
+  liveness?: LivenessWatchOptions;
 }
 
 interface SessionData {
@@ -41,7 +77,76 @@ interface SessionData {
 }
 
 export function isAllowedDiscoveryPath(path: string): boolean {
-  return DISCOVERY_PATHS.has(path);
+  return DISCOVERY_SCOPES.has(path);
+}
+
+function devtoolsKind(pathname: string): TargetKind | null {
+  const match = DEVTOOLS_PATH.exec(pathname);
+  return match ? (match[1] as TargetKind) : null;
+}
+
+/**
+ * Bun.serve reports no event when a listener stops serving, so liveness is observed
+ * the same way a sibling container would: a bounded request against the socket. The
+ * probe asks for a path the relay refuses locally, which keeps a stalled browser from
+ * reading as a dead relay.
+ */
+export function watchRelayLiveness(
+  url: string,
+  options: LivenessWatchOptions = {},
+): { failed: Promise<void>; cancel(): void } {
+  const intervalMs = options.intervalMs ?? LIVENESS_INTERVAL_MS;
+  const timeoutMs = options.timeoutMs ?? LIVENESS_TIMEOUT_MS;
+  const allowedStrikes = options.strikes ?? LIVENESS_STRIKES;
+  const probe = options.probe ?? defaultLivenessProbe;
+
+  let cancelled = false;
+  let inFlight = false;
+  let strikes = 0;
+  let report: () => void = () => {};
+  const failed = new Promise<void>((resolve) => {
+    report = resolve;
+  });
+
+  const timer = setInterval(() => {
+    if (cancelled || inFlight) return;
+    inFlight = true;
+    void (async () => {
+      let alive: boolean;
+      try {
+        alive = await probe(url, timeoutMs);
+      } catch {
+        alive = false;
+      }
+      inFlight = false;
+      if (cancelled) return;
+      strikes = alive ? 0 : strikes + 1;
+      if (strikes >= allowedStrikes) {
+        cancelled = true;
+        clearInterval(timer);
+        report();
+      }
+    })();
+  }, intervalMs);
+
+  return {
+    failed,
+    cancel() {
+      cancelled = true;
+      clearInterval(timer);
+    },
+  };
+}
+
+/** Any HTTP answer proves the listener accepted a connection and ran the handler. */
+async function defaultLivenessProbe(url: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    await response.arrayBuffer();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function websocketProtocol(base: URL): string {
@@ -69,7 +174,13 @@ export function rewriteDiscovery(value: unknown, advertisedBase: URL): unknown {
   return rewriteEntry(value, advertisedBase);
 }
 
-function collectTargetPaths(value: unknown, into: Set<string>): void {
+/**
+ * The targets of one kind that a discovery response reports, as a fresh set. A route
+ * may only speak for its own scope, so a page listing can never introduce a browser
+ * endpoint and the reverse cannot happen either.
+ */
+function collectTargetPaths(value: unknown, scope: TargetKind): Set<string> {
+  const found = new Set<string>();
   const entries = Array.isArray(value) ? value : [value];
   for (const entry of entries) {
     if (entry === null || typeof entry !== 'object') continue;
@@ -77,11 +188,12 @@ function collectTargetPaths(value: unknown, into: Set<string>): void {
     if (typeof advertised !== 'string') continue;
     try {
       const { pathname } = new URL(advertised);
-      if (DEVTOOLS_PATH.test(pathname)) into.add(pathname);
+      if (devtoolsKind(pathname) === scope) found.add(pathname);
     } catch {
       /* an unparseable debugger url simply never becomes reachable */
     }
   }
+  return found;
 }
 
 async function readCapped(response: Response): Promise<string | null> {
@@ -117,7 +229,13 @@ function safeError(status: number, code: string): Response {
 
 export function startCdpRelay(options: CdpRelayOptions): RelayHandle {
   const { upstreamBase, advertisedBase, hostname, port } = options;
-  const knownTargets = new Set<string>();
+  // A snapshot per scope, replaced wholesale by each successful poll: an id the
+  // browser has forgotten stops being admissible instead of lingering for the life
+  // of the container.
+  const knownTargets: Record<TargetKind, Set<string>> = {
+    page: new Set<string>(),
+    browser: new Set<string>(),
+  };
   const sessions = new Set<{ close(code?: number, reason?: string): void; data: SessionData }>();
 
   const upstreamWebSocketUrl = (path: string): string =>
@@ -150,7 +268,8 @@ export function startCdpRelay(options: CdpRelayOptions): RelayHandle {
 
       if (url.pathname.startsWith('/devtools/')) {
         if (request.method !== 'GET') return safeError(405, 'method_not_allowed');
-        if (!DEVTOOLS_PATH.test(url.pathname) || !knownTargets.has(url.pathname)) {
+        const kind = devtoolsKind(url.pathname);
+        if (!kind || !knownTargets[kind].has(url.pathname)) {
           return safeError(404, 'unknown_target');
         }
         if (sessions.size >= MAX_SESSIONS) return safeError(503, 'session_limit_reached');
@@ -165,9 +284,8 @@ export function startCdpRelay(options: CdpRelayOptions): RelayHandle {
         return safeError(400, 'websocket_upgrade_required');
       }
 
-      if (!isAllowedDiscoveryPath(`${url.pathname}${url.search}`)) {
-        return safeError(404, 'not_found');
-      }
+      const scope = DISCOVERY_SCOPES.get(`${url.pathname}${url.search}`);
+      if (scope === undefined) return safeError(404, 'not_found');
       if (request.method !== 'GET') return safeError(405, 'method_not_allowed');
 
       let body: string | null;
@@ -192,7 +310,7 @@ export function startCdpRelay(options: CdpRelayOptions): RelayHandle {
       } catch {
         return safeError(502, 'upstream_body_rejected');
       }
-      collectTargetPaths(parsed, knownTargets);
+      knownTargets[scope] = collectTargetPaths(parsed, scope);
       return Response.json(rewriteDiscovery(parsed, advertisedBase));
     },
     websocket: {
@@ -253,9 +371,16 @@ export function startCdpRelay(options: CdpRelayOptions): RelayHandle {
     },
   });
 
+  // The watch probes the socket the way a sibling would. A wildcard bind is reachable
+  // over loopback, which keeps the probe inside the container.
+  const probeHost = hostname === '0.0.0.0' || hostname === '::' ? '127.0.0.1' : hostname;
+  const watch = watchRelayLiveness(`http://${probeHost}:${server.port}/`, options.liveness);
+
   return {
     port: server.port,
+    failed: watch.failed,
     async stop() {
+      watch.cancel();
       for (const socket of [...sessions]) {
         releaseSession(socket);
         try {
