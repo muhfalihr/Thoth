@@ -53,15 +53,14 @@ export function checkReferenceProviders(env: EnvRecord): ReferenceProviderReport
   return report;
 }
 
-/** Role readiness only: booleans and the model name, never a key or a base URL. */
+/** Do not echo model input: even a well-shaped identifier may be a misplaced key. */
 export function renderProviderReport(env: EnvRecord): string[] {
   const report = checkReferenceProviders(env);
   const lines = REFERENCE_ROLES.map(
     (role) =>
       `${role}_provider=${selectedProvider(role, env) ?? 'unknown'} ${role}_ready=${report[role]}`,
   );
-  const model = (env[OCR_MODEL_VARIABLE] ?? '').trim() || '(unset)';
-  lines.push(`ocr_model=${model} ocr_model_ready=${report.ocrModel}`);
+  lines.push(`ocr_model_ready=${report.ocrModel}`);
   return lines;
 }
 

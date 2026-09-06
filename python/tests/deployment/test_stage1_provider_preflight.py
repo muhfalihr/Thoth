@@ -78,8 +78,20 @@ def test_provider_file_rejects_extra_environment(tmp_path: Path) -> None:
 
     with pytest.raises(Stage1PreflightError) as failure:
         check_stage1_provider_file(candidate, repository_root=tmp_path / "repo")
-    assert "AWS_SECRET_ACCESS_KEY" in str(failure.value)
+    assert "unrecognized variable" in str(failure.value)
     assert "do-not-print-this" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    "unknown", ["synthetic-key/with+padding", "SyntheticKeyWithoutPunctuation"]
+)
+def test_provider_file_does_not_echo_unrecognized_assignment_names(
+    tmp_path: Path, unknown: str
+) -> None:
+    candidate = _provider_file(_outside_repository(tmp_path), VALID_CONTENT + f"{unknown}==\n")
+    with pytest.raises(Stage1PreflightError) as failure:
+        check_stage1_provider_file(candidate, repository_root=tmp_path / "repo")
+    assert unknown not in str(failure.value)
 
 
 def test_provider_file_requires_both_variables(tmp_path: Path) -> None:
@@ -281,6 +293,6 @@ def test_preflight_command_rejects_a_wide_provider_file_without_echoing_it(tmp_p
     )
 
     assert result.exit_code == 1
-    assert "AWS_SECRET_ACCESS_KEY" in result.output
+    assert "unrecognized variable" in result.output
     assert CANARY_KEY not in result.output
     assert "do-not-print" not in result.output

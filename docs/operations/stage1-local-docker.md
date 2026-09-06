@@ -122,7 +122,9 @@ docker compose --env-file .env.stage1.local -f compose.stage1.local.yml pull
 For a fallback-ready deployment, validate the merged pair as well. `--no-interpolate` alone stops
 being a safe diagnostic here: interpolation and service `env_file` resolution are separate steps, so
 an un-interpolated render still resolves the provider file into the worker's `environment:`. Use
-`--quiet`, `--images`, or the combination below, which was verified on Docker Compose v5.5.0.
+`--quiet`, `--images`, or the combination below. The current host reports Docker Compose v5.5.0;
+on another host, verify `docker compose config --help` includes `--no-env-resolution` first.
+If unsupported, use `--quiet` or `--images`; do not remove just the no-env-resolution flag.
 
 ```bash
 docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml config --quiet

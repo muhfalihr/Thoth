@@ -73,10 +73,11 @@ for entry in os.listdir('/proc'):
         continue
     try:
         with open(f'/proc/{entry}/cmdline', 'rb') as handle:
-            executable = handle.read().split(b'\x00')[0].decode()
+            arguments = handle.read().split(b'\x00')
+            executable = arguments[0].decode()
     except OSError:
         continue
-    if executable.endswith('/chrome'):
+    if executable.endswith('/chrome') and not any(arg.startswith(b'--type=') for arg in arguments):
         os.kill(int(entry), signal.SIGKILL)
         break
 else:

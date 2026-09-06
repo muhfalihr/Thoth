@@ -181,7 +181,8 @@ Verify it before spending a fixture with
 `$COMPOSE run --rm --no-deps -T worker bun /opt/thoth/scout/runtime/provider_check.ts`, which prints
 role readiness only and contacts no provider.
 
-The reference-only alternative is `docker compose run --env-from-file` (Compose 5.5 and newer)
+The reference-only alternative is `docker compose run --env-from-file` (verify this option in
+`docker compose run --help` on the executing host; observed on this host's v5.5.0)
 pointing at a `600` file on restricted storage that holds the provider variables and nothing else.
 It remains valid for a window whose deployment is frozen without the override, and it is superseded
 by the shared override for any new window. The global `docker compose --env-file` is not an

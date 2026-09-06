@@ -94,7 +94,7 @@ def _parse_provider_file(path: Path) -> dict[str, str]:
         name = name.strip()
         if name not in REQUIRED_PROVIDER_VARIABLES:
             raise Stage1PreflightError(
-                f"the provider env file must not define {name or '(unnamed variable)'}; "
+                "the provider env file contains an unrecognized variable; "
                 f"it admits only {' and '.join(REQUIRED_PROVIDER_VARIABLES)}"
             )
         if name in values:

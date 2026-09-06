@@ -81,14 +81,14 @@ test('the ocr model must be provider qualified', () => {
   }
 });
 
-test('the report renders booleans and the model name, never the key', () => {
+test('the report renders known provider names and readiness without input values', () => {
   const lines = renderProviderReport(READY);
 
   expect(lines).toEqual([
     'chat_provider=novita chat_ready=true',
     'vision_provider=novita vision_ready=true',
     'embed_provider=novita embed_ready=true',
-    'ocr_model=deepseek/deepseek-ocr ocr_model_ready=true',
+    'ocr_model_ready=true',
   ]);
   expect(lines.join('\n')).not.toContain(CANARY_KEY);
 });
@@ -101,8 +101,15 @@ test('an unusable selection is named without echoing any value', () => {
   });
 
   expect(lines[0]).toBe('chat_provider=unknown chat_ready=false');
-  expect(lines[3]).toBe('ocr_model=not-qualified ocr_model_ready=false');
+  expect(lines[3]).toBe('ocr_model_ready=false');
   expect(lines.join('\n')).not.toContain(CANARY_KEY);
+});
+
+test('an accidentally pasted credential in the model field is never rendered', () => {
+  for (const model of [CANARY_KEY, 'synthetic-canary/secret-shaped-like-model']) {
+    const lines = renderProviderReport({ ...READY, THOTH_SUBTITLE_OCR_MODEL: model });
+    expect(lines.join('\n')).not.toContain(model);
+  }
 });
 
 test('the module never reaches a provider endpoint', async () => {

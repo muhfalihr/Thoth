@@ -1,3 +1,8 @@
 # Shell entrypoints are copied into a Linux image; a CRLF checkout would break them.
 *.sh text eol=lf
 docker/start-legacy-cdp text eol=lf
+
+# TypeScript and Python are edited from Windows; a CRLF write is invisible until a
+# formatter or a Linux consumer rejects it.
+*.ts text eol=lf
+*.py text eol=lf
