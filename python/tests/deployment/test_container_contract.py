@@ -195,25 +195,49 @@ def test_dockerfile_provides_linux_legacy_media_and_cdp_runtime() -> None:
     assert "EXPOSE 8000 18800" in dockerfile
 
 
-def test_legacy_cdp_launcher_is_fixed_headless_private_contract() -> None:
+def test_legacy_cdp_launcher_is_fixed_private_contract() -> None:
+    """The launcher validates the container, then hands off to the supervisor.
+
+    It used to `exec` Chromium with `--remote-debugging-address=0.0.0.0`, which
+    Chromium ignores: DevTools stayed bound to loopback, so the sidecar answered its
+    own healthcheck while refusing every sibling container. The browser flags now live
+    in `scout/runtime/legacy_cdp.ts`; what stays here is argument validation, single
+    Chromium discovery, the writable profile, and the silent `--check`.
+    """
     launcher = _repo_text("docker/start-legacy-cdp")
     required = {
         "/ms-playwright/chromium-[0-9]*/chrome-linux*/chrome",
         "chromium_count=$((chromium_count + 1))",
         'if [ "$chromium_count" -ne 1 ]; then',
-        "--headless=new",
-        "--remote-debugging-address=0.0.0.0",
-        "--remote-debugging-port=18800",
-        '--user-data-dir="$profile_dir"',
-        "https://www.tiktok.com/",
+        'if [ ! -d "$profile_dir" ] || [ ! -w "$profile_dir" ]; then',
+        'runtime=/opt/thoth/scout/runtime/legacy_cdp.ts',
+        'exec bun "$runtime" \\',
+        '--chromium "$chromium_path" --profile "$profile_dir"',
+        "--offline-smoke",
     }
     assert all(token in launcher for token in required)
     assert 'case "$#" in' in launcher
     assert launcher.index('case "$#" in') < launcher.index("chromium_path=")
-    assert "--check" in launcher
+    assert launcher.index("offline_smoke=false") < launcher.index('case "$#" in')
+    assert '--check' in launcher
+    assert launcher.index('if [ "$check_only" = true ]') < launcher.index("exec bun")
     assert "sync_playwright" not in launcher
     assert "--no-sandbox" not in launcher
     assert "THOTH_LIVE_TIKTOK_URL" not in launcher
+    assert "--remote-debugging" not in launcher
+
+
+def test_legacy_cdp_supervisor_keeps_the_browser_private_and_sandboxed() -> None:
+    supervisor = _repo_text("scout/runtime/legacy_cdp.ts")
+    relay = _repo_text("scout/runtime/cdp_relay.ts")
+    assert "new URL('http://127.0.0.1:18801')" in supervisor
+    assert "new URL('http://legacy-cdp:18800')" in supervisor
+    assert "'--remote-debugging-address=127.0.0.1'" in supervisor
+    assert "'--headless=new'" in supervisor
+    assert "'https://www.tiktok.com/'" in supervisor
+    assert "'about:blank'" in supervisor
+    assert "--no-sandbox" not in supervisor
+    assert "--remote-allow-origins" not in supervisor and "--remote-allow-origins" not in relay
 
 
 def test_container_workflow_pins_every_action_to_full_commit_sha() -> None:

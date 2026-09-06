@@ -2,21 +2,34 @@
 set -eu
 
 profile_dir=/var/lib/thoth/browser-profile
+runtime=/opt/thoth/scout/runtime/legacy_cdp.ts
+
+usage() {
+    echo "usage: start-legacy-cdp [--check|--offline-smoke]" >&2
+    exit 64
+}
+
+check_only=false
+offline_smoke=false
 
 case "$#" in
     0)
-        check_only=false
         ;;
     1)
-        if [ "$1" != "--check" ]; then
-            echo "usage: start-legacy-cdp [--check]" >&2
-            exit 64
-        fi
-        check_only=true
+        case "$1" in
+            --check)
+                check_only=true
+                ;;
+            --offline-smoke)
+                offline_smoke=true
+                ;;
+            *)
+                usage
+                ;;
+        esac
         ;;
     *)
-        echo "usage: start-legacy-cdp [--check]" >&2
-        exit 64
+        usage
         ;;
 esac
 
@@ -38,16 +51,21 @@ if [ ! -d "$profile_dir" ] || [ ! -w "$profile_dir" ]; then
     exit 1
 fi
 
+if [ ! -r "$runtime" ]; then
+    echo "legacy CDP supervisor is unavailable" >&2
+    exit 1
+fi
+
 if [ "$check_only" = true ]; then
     exit 0
 fi
 
-exec "$chromium_path" \
-    --headless=new \
-    --remote-debugging-address=0.0.0.0 \
-    --remote-debugging-port=18800 \
-    --user-data-dir="$profile_dir" \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-dev-shm-usage \
-    https://www.tiktok.com/
+# Chromium binds DevTools to loopback whatever address it is given, so the browser
+# stays private and the supervisor publishes the relay on the container network.
+if [ "$offline_smoke" = true ]; then
+    exec bun "$runtime" \
+        --chromium "$chromium_path" --profile "$profile_dir" --offline-smoke
+fi
+
+exec bun "$runtime" \
+    --chromium "$chromium_path" --profile "$profile_dir"
