@@ -35,10 +35,15 @@ const ordered = [
 // final word rather than something that aborts the suite before anything else ran.
 const boundary = 'acquisition/boundary.test.ts';
 
+// Files written against `bun:test` throw on a bare import, so they are excluded here and
+// covered by `bun run test:runtime` instead. Excluding them by what they import rather than
+// by directory keeps discovery automatic for both styles.
+const isBunTest = (f: string) => fs.readFileSync(path.join(root, f), 'utf8').includes("'bun:test'");
+
 const discovered = fs
   .readdirSync(root, { recursive: true, encoding: 'utf8' })
   .map(posix)
-  .filter((f) => f.endsWith('.test.ts') && !f.startsWith('node_modules/'));
+  .filter((f) => f.endsWith('.test.ts') && !f.startsWith('node_modules/') && !isBunTest(f));
 
 // A rename that orphans an ordered entry must fail loudly, not quietly skip it —
 // otherwise this file rots the same way the old list did, just less visibly.

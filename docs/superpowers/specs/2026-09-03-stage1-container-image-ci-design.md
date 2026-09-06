@@ -116,7 +116,7 @@ by `scrapling install`. The launcher has a non-starting `--check` mode used duri
 normal mode that replaces itself with Chromium using all of these invariants:
 
 - headless mode (`--headless=new`);
-- CDP bound to `0.0.0.0:18800` inside the private container network;
+- CDP requested on `0.0.0.0:18800` inside the private container network;
 - persistent profile path `/var/lib/thoth/browser-profile`;
 - one initial `https://www.tiktok.com/` page target so Scout's `requireMatch` probes can attach;
 - no privileged container requirement and no browser `--no-sandbox` flag; and
@@ -124,6 +124,13 @@ normal mode that replaces itself with Chromium using all of these invariants:
 
 The launcher fails closed if Chromium cannot be resolved, the profile directory is not writable,
 or the requested CDP port is not exactly `18800`.
+
+> **Superseded in part on 2026-09-06.** Chromium binds DevTools to loopback regardless of
+> `--remote-debugging-address`, so requesting `0.0.0.0` never made the endpoint reachable from a
+> sibling container, and the sidecar's own `127.0.0.1` healthcheck could not detect that. The
+> launcher now supervises Chromium behind a private in-container relay that owns `18800`; see
+> [the Scout runtime corrective design](2026-09-06-stage1-scout-runtime-corrective-design.md). The
+> invariants above otherwise stand. Recorded test evidence from this design is unchanged.
 
 ### Filesystem and process model
 

@@ -180,7 +180,8 @@ export function startCdpRelay(options: CdpRelayOptions): RelayHandle {
         body = await readCapped(upstream);
       } catch (error) {
         const name = (error as { name?: string })?.name;
-        if (name === 'TimeoutError' || name === 'AbortError') return safeError(504, 'upstream_timeout');
+        if (name === 'TimeoutError' || name === 'AbortError')
+          return safeError(504, 'upstream_timeout');
         return safeError(502, 'upstream_unreachable');
       }
       if (body === null) return safeError(502, 'upstream_body_rejected');

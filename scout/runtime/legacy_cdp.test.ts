@@ -8,14 +8,14 @@
 // Every test drives a harmless stub child; no Chromium is launched here.
 
 import { expect, test } from 'bun:test';
+import type { RelayHandle } from './cdp_relay.ts';
 import {
   CHROMIUM_DEVTOOLS_BASE,
-  RELAY_ADVERTISED_BASE,
   chromiumArguments,
   parseLegacyCdpArgs,
+  RELAY_ADVERTISED_BASE,
   superviseLegacyCdp,
 } from './legacy_cdp.ts';
-import type { RelayHandle } from './cdp_relay.ts';
 
 interface StubChild {
   exited: Promise<number>;

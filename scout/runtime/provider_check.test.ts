@@ -65,7 +65,10 @@ test('a non-novita role fails even when that provider is fully credentialed', ()
 });
 
 test('an unknown provider name fails the role instead of throwing', () => {
-  const report = checkReferenceProviders({ ...READY, THOTH_SCOUT_EMBED_PROVIDER: 'not-a-provider' });
+  const report = checkReferenceProviders({
+    ...READY,
+    THOTH_SCOUT_EMBED_PROVIDER: 'not-a-provider',
+  });
 
   expect(report).toEqual({ chat: true, vision: true, embed: false, ocrModel: true });
 });

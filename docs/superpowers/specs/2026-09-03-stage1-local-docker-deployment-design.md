@@ -147,6 +147,14 @@ Its health probe checks both `/json/version` and `/json`, requiring at least one
 URL belongs to `tiktok.com`. An authentication challenge, CAPTCHA, or non-TikTok target is not
 healthy and blocks controlled fallback smoke. No bypass behavior is permitted.
 
+> **Superseded in part on 2026-09-06.** Exposing `18800` inside the network was not sufficient:
+> Chromium binds DevTools to loopback, so the port resolved by DNS and refused TCP from every other
+> container, while the sidecar's own `127.0.0.1` probe still reported healthy. The sidecar now runs a
+> private in-container relay in front of Chromium; see
+> [the Scout runtime corrective design](2026-09-06-stage1-scout-runtime-corrective-design.md). The
+> absence of a host binding and the fail-closed health contract are unchanged, and the evidence
+> recorded under this design stands as recorded.
+
 ## Persistence and Ownership
 
 `THOTH_STAGE1_DATA_ROOT` is a required absolute host path outside the repository. For the current
@@ -283,7 +291,9 @@ No automated repository test contacts TikTok or uploads evidence to S3.
 - Namespace `thoth-stage1` exists and API/worker connect to `temporal:7233`.
 - API, worker, and CDP run the same immutable THOTH digest as non-root UID/GID `10001:10001`.
 - API is reachable only at `127.0.0.1:8000`; Temporal UI only at `127.0.0.1:8080`.
-- Port 18800 is reachable by the worker network but has no host binding.
+- Port 18800 is reachable by the worker network but has no host binding. Reachability must be
+  proven from a second container, not from a health probe inside the sidecar, and not with
+  `docker compose port`, which reports an exposed port as `invalid IP:0` either way.
 - Artifact and browser-profile directories are persistent, writable by THOTH, and isolated from
   each other.
 - Compose restarts recover without losing workflow history, artifacts, or browser profile.

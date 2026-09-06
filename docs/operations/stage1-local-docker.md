@@ -100,7 +100,7 @@ root outside the repository, an approved activity mode, and non-placeholder cred
 variables and never prints their values.
 
 ```bash
-uv run --project python thoth-control operations stage1-local-preflight   --env-file .env.stage1.local   --provider-env-file "$THOTH_STAGE1_PROVIDER_ENV_FILE"
+uv run --project python thoth-control operations stage1-local-preflight --env-file .env.stage1.local --provider-env-file "$THOTH_STAGE1_PROVIDER_ENV_FILE"
 ```
 
 Omitting `--provider-env-file` preserves the earlier non-live behaviour and validates the base
@@ -125,8 +125,8 @@ an un-interpolated render still resolves the provider file into the worker's `en
 `--quiet`, `--images`, or the combination below, which was verified on Docker Compose v5.5.0.
 
 ```bash
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml config --quiet
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml config --no-interpolate --no-env-resolution
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml config --quiet
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml config --no-interpolate --no-env-resolution
 ```
 
 `config --quiet` exits `0` and prints nothing when the merge is valid; a missing or unset
@@ -181,6 +181,41 @@ docker compose --env-file .env.stage1.local -f compose.stage1.local.yml exec tem
 
 Then run the non-live control-plane smoke before any live gate is considered.
 
+## Scout runtime contents
+
+The legacy Scout fallback needs two things the earlier image did not provide, both corrected by
+[the Scout runtime corrective design](../superpowers/specs/2026-09-06-stage1-scout-runtime-corrective-design.md).
+Verify them against the digest actually deployed rather than assuming any image has them.
+
+| Requirement | State in a corrected image | How Scout uses it |
+| --- | --- | --- |
+| `yt-dlp` | pinned `2026.8.19`, which reports itself as `2026.08.19`, installed as `/opt/thoth/python/.venv/bin/yt-dlp` | video acquisition and thumbnail resolution in `trace_source` and `build_footage` |
+| `gallery-dl` | pinned `1.32.11`, installed as `/opt/thoth/python/.venv/bin/gallery-dl` | image-post acquisition where no video stream exists |
+| Sibling-reachable CDP | supervisor relay on `18800`, Chromium itself still on loopback | `THOTH_CDP` from the worker container |
+
+Scout resolves each downloader from `YTDLP` and `GALLERY_DL`, falling back to `PATH`; the image
+sets both to the absolute paths above and both also resolve on `PATH` for its non-root user. The
+build itself gates their presence and exact versions after switching to that user, so an image that
+builds cannot be missing them. The Python TikTok path stays headless-first with its CDN fallback
+and does not use either downloader, so their absence does not fail every direct-CDN branch; it
+fails the legacy Scout steps that shell out to them.
+
+The sidecar's healthcheck probes `127.0.0.1` from inside the container, so a `healthy` sidecar is
+not evidence that any other container can reach it. Chromium binds DevTools to loopback whatever
+address it is given; sibling reachability comes from the relay in front of it. The two-container
+smoke is what proves that transport:
+
+```bash
+bash docker/test-cdp-offline.sh <image-ref>
+```
+
+It starts the browser on a throwaway internal network with no published ports, then, from a second
+container, proves HTTP discovery, a browser-level WebSocket session, and a page session opened by
+Scout's own CDP client. It also proves the supervisor dies with Chromium and that it leaves nothing
+behind. CI runs the same script on the pull-request candidate and on the published digest. It
+targets `about:blank` and reaches no external site, so it is an offline transport proof and says
+nothing about live acquisition, parity, or provider acceptance.
+
 ## Controlled live gate
 
 The approved mode is `python_tiktok_with_legacy_fallback`. Starting the CDP sidecar opens TikTok and
@@ -202,19 +237,21 @@ fail-closed.
 Once the sidecar and worker are approved and running, verify their identity and isolation:
 
 ```bash
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker id -u
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec legacy-cdp id -u
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml port legacy-cdp 18800
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml   run --rm --no-deps -T worker bun /opt/thoth/scout/runtime/provider_check.ts
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker id -u
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml exec legacy-cdp id -u
+docker inspect -f '{{json .NetworkSettings.Ports}}' "$(docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml ps -q legacy-cdp)"
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml run --rm --no-deps -T worker bun /opt/thoth/scout/runtime/provider_check.ts
 ```
 
 - Both identity commands must print `10001`.
 - The provider check prints one line per reference role and must report `chat_ready=true`,
   `vision_ready=true`, `embed_ready=true`, and `ocr_model_ready=true`. It contacts no provider, so
   it proves the configuration arrived, not that the account can serve a request.
-- The `port` command must print nothing and exit non-zero; a printed host binding means the sidecar
-  is reachable outside the private network and the gate stops here.
+- The bindings command must print a map whose every value is `null`. A `HostPort` entry means
+  the sidecar is reachable outside the private network and the gate stops here. `docker compose
+  port` is not a substitute: it reports an exposed port as `invalid IP:0` and exits `0` whether
+  or not that port is published, so it cannot distinguish the two.
 - The worker mode must print `python_tiktok_with_legacy_fallback`.
 
 Perform exactly one controlled fallback smoke on first activation. Establish the soak start
@@ -241,12 +278,48 @@ contents, fixture URLs, or workflow identifiers.
 Only the aggregate `tiktok-stage1-soak-report.json` may be attached to the change record. Raw JSONL
 stays restricted operational evidence and must not enter Git, chat, issue comments, or code review.
 
+## Activating a corrected image on a new window
+
+This sequence has not been executed. It is the recorded procedure for the operator who later deploys
+a corrected image, and every step below is an operator action that requires its own approval. A
+soak window in flight is frozen: do not apply any of this to it.
+
+1. Archive the existing window intact. Keep the old observations, references, capture logs, and
+   pairing records exactly as recorded; do not re-label, re-run, or delete them. Record the closure
+   of the old window with its digest, its start timestamp, and the reason it is closing.
+2. Publish the corrected image and wait for every gate on that push to pass, including the
+   published-digest infrastructure smoke and `docker/test-cdp-offline.sh`. A build that is green
+   locally is not a published artefact. Every push mints a new digest, so a digest read from an
+   earlier run is the wrong artefact.
+3. Record the exact implementation commit, the digest from that commit's Actions summary, and the
+   revision of the provider configuration being deployed. These three are the identity of the new
+   window. Adding or rotating the provider file changes runtime configuration, not the digest, so
+   both must be recorded separately.
+4. Validate the operator inputs against that digest with `stage1-local-preflight --provider-env-file`
+   before pulling, then render the merged Compose pair with `config --quiet`.
+5. Deploy every THOTH role — API, worker, and the CDP sidecar — on that one digest. A mixed
+   deployment invalidates the window before it starts.
+6. Keep the existing persistent state: the artifact root, the browser profile, and the PostgreSQL
+   volume carry forward. Do not recreate them for a version change.
+7. Reconcile in-flight workflows before accruing anything new. Let them finish, cancel them
+   explicitly, or record them as carried over; a workflow that spans two digests belongs to neither
+   window.
+8. Verify identity, isolation, provider readiness, and worker mode as in the controlled live gate
+   above, then run one explicitly approved parity pair and one controlled fallback exercise. Both
+   need their own approval; neither is implied by this document.
+9. Only after those pass, start a separate new dataset with a new start timestamp. Do not merge it
+   with the archived window's observations, and do not carry the old window's parity results forward.
+
+Every retry at any step is explicit and recorded. A failure is evidence and is recorded as such: a
+failed reference, a failed fallback exercise, or a failed smoke is a result, not something to retry
+until it succeeds.
+
 ## Restart and rollback preparation
 
 An ordinary restart keeps the same digest and the same environment:
 
 ```bash
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml restart worker
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml restart worker
 ```
 
 The rollback mode is `legacy_scout` and may be applied only during the approved rollback drill. Set
@@ -255,8 +328,8 @@ Restarting the container reuses the environment it was created with, so a restar
 silently keep the previous mode:
 
 ```bash
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml   up -d --no-deps --force-recreate worker
-docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml up -d --no-deps --force-recreate worker
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
 ```
 
 The mode command must print the mode that was just selected; if it prints the previous mode, the

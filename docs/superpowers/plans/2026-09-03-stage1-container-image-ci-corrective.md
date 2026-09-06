@@ -5,6 +5,14 @@
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox
 > (`- [ ]`) syntax for tracking.
 
+> **Superseded in part on 2026-09-06.** This plan's Chromium launcher passed
+> `--remote-debugging-address=0.0.0.0`, but Chromium binds DevTools to loopback regardless, so no
+> sibling container could reach the sidecar and the image shipped without the downloaders Scout
+> shells out to. Both are corrected by
+> [the Scout runtime corrective design](../specs/2026-09-06-stage1-scout-runtime-corrective-design.md)
+> and its plan. The steps and evidence recorded here are unchanged and remain the record of what
+> was executed.
+
 **Goal:** Correct the Stage 1 compatibility image so its Linux legacy Scout fallback is actually
 operational, and harden its build context, GitHub Actions supply chain, and operator documentation
 before any branch push or GHCR publication.

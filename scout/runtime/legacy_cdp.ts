@@ -120,7 +120,9 @@ async function pollDevtools(base: URL, deadlineMs: number): Promise<boolean> {
 
 function aborted(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+  return new Promise((resolve) =>
+    signal.addEventListener('abort', () => resolve(), { once: true }),
+  );
 }
 
 async function terminate(child: ChildLike, graceMs: number): Promise<void> {
@@ -151,7 +153,9 @@ export async function superviseLegacyCdp(
   const browserExit = child.exited.then((code) => ({ kind: 'browser' as const, code }));
 
   const ready = await Promise.race([
-    deps.probeReady(CHROMIUM_DEVTOOLS_BASE, startupTimeoutMs).then((value) => (value ? 'ready' : 'unready')),
+    deps
+      .probeReady(CHROMIUM_DEVTOOLS_BASE, startupTimeoutMs)
+      .then((value) => (value ? 'ready' : 'unready')),
     browserExit.then(() => 'gone' as const),
     Bun.sleep(startupTimeoutMs).then(() => 'unready' as const),
   ]);

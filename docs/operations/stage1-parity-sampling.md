@@ -92,7 +92,7 @@ repository checkout, exactly as [Stage 1 Local Docker Operations](stage1-local-d
 requires. `COMPOSE` below stands for the runbook's invocation:
 
 ```bash
-COMPOSE="docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml"
+COMPOSE="docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compose.stage1.providers.yml"
 ```
 
 The second `-f` is the provider override described in the deployment runbook and requires
@@ -190,17 +190,27 @@ override or the key to a deployment that is frozen for an in-flight window; that
 deployment under evaluation.
 
 Two further preconditions are properties of the image itself, so they cannot be fixed by an
-env-file, and both block a reference on the *required* `trace_source` and `build_footage` steps:
+env-file, and both block a reference on the *required* `trace_source` and `build_footage` steps.
+They were observed on the digest deployed for the window that opened on 2026-09-04, and that
+observation stands as recorded evidence for that window:
 
-- `yt-dlp` is not installed in the image — no binary on `PATH`, no `yt_dlp` module in the bundled
+- `yt-dlp` was not installed in that image — no binary on `PATH`, no `yt_dlp` module in the bundled
   virtualenv — and Scout shells out to it from those steps.
-- The DevTools port of the `legacy-cdp` sidecar is bound to loopback inside that container even
-  though its launcher passes `--remote-debugging-address=0.0.0.0`, so `THOTH_CDP` resolves by DNS
-  but refuses TCP from every other container. The service's own healthcheck passes because it probes
+- The DevTools port of the `legacy-cdp` sidecar was bound to loopback inside that container even
+  though its launcher passed `--remote-debugging-address=0.0.0.0`, so `THOTH_CDP` resolved by DNS
+  but refused TCP from every other container. The service's own healthcheck passed because it probes
   `127.0.0.1` from inside.
 
-Verify both before spending a fixture on a reference run; the same two gaps would also break the
-deployed worker's legacy fallback if it ever fired. Confirm afterwards that nothing was recreated
+Both are addressed by
+[the Scout runtime corrective design](../superpowers/specs/2026-09-06-stage1-scout-runtime-corrective-design.md):
+the image now pins `yt-dlp` and `gallery-dl` as executables owned by the image's non-root user, and
+the sidecar runs a private in-container relay that accepts sibling connections while Chromium itself
+stays on loopback. That correction lives in an unpublished image, it changes nothing for a window
+already in flight, and it is proven only offline. A frozen window keeps its own digest.
+
+Verify both against the digest actually deployed before spending a fixture on a reference run;
+the same two gaps would also break the deployed worker's legacy fallback if it ever fired.
+Confirm afterwards that nothing was recreated
 and that no reference container is left behind:
 
 ```bash

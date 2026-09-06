@@ -187,12 +187,13 @@ def test_local_stage1_rollback_recreates_the_worker_with_the_selected_mode() -> 
 def test_local_stage1_runbook_verifies_the_deployment_before_any_live_action() -> None:
     runbook = _repo_text("docs/operations/stage1-local-docker.md")
     required = {
-        "operations stage1-local-preflight \
-  --env-file .env.stage1.local \
-  --provider-env-file",
+        "operations stage1-local-preflight --env-file .env.stage1.local --provider-env-file",
         "exec api id -u",
         "exec api test -w /var/lib/thoth/artifacts",
-        "port legacy-cdp 18800",
+        # `compose port` reports an exposed port as `invalid IP:0` whether or not it is
+        # published, so the runbook must read the container's own bindings instead.
+        "{{json .NetworkSettings.Ports}}",
+        "ps -q legacy-cdp",
         "exec worker id -u",
     }
 

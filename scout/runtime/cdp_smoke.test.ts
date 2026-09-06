@@ -47,7 +47,10 @@ test('an endpoint that advertises loopback sockets fails instead of passing', as
   const base = serve((request) => {
     const loopback = `ws://${new URL(request.url).host}/devtools`;
     if (new URL(request.url).pathname === '/json/version') {
-      return Response.json({ Browser: 'HeadlessChrome/140.0.0.0', webSocketDebuggerUrl: `${loopback}/browser/abc` });
+      return Response.json({
+        Browser: 'HeadlessChrome/140.0.0.0',
+        webSocketDebuggerUrl: `${loopback}/browser/abc`,
+      });
     }
     return Response.json([
       { type: 'page', url: 'about:blank', webSocketDebuggerUrl: `${loopback}/page/abc` },

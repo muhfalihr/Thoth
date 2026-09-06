@@ -2,6 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Superseded in part on 2026-09-06.** This plan's Chromium launcher passed
+> `--remote-debugging-address=0.0.0.0`, but Chromium binds DevTools to loopback regardless, so no
+> sibling container could reach the sidecar and the image shipped without the downloaders Scout
+> shells out to. Both are corrected by
+> [the Scout runtime corrective design](../specs/2026-09-06-stage1-scout-runtime-corrective-design.md)
+> and its plan. The steps and evidence recorded here are unchanged and remain the record of what
+> was executed.
+
 **Goal:** Add a persistent, Docker-only local Stage 1 topology for PostgreSQL-backed Temporal, Temporal UI, THOTH API, THOTH worker, and a private legacy CDP sidecar without starting a live TikTok gate.
 
 **Architecture:** One Compose project owns six services on one bridge network. PostgreSQL and THOTH state use operator-selected bind mounts outside the repository; API and UI bind only to loopback, while Temporal gRPC, PostgreSQL, and CDP remain un-published. API, worker, and CDP interpolate one required digest-qualified THOTH image reference.
