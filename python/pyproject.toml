@@ -14,6 +14,8 @@ dependencies = [
 
 [project.optional-dependencies]
 acquisition = ["scrapling[fetchers]>=0.4.15,<0.5"]
+# Legacy Scout shells out to both executables; the compatibility image must ship them.
+scout-runtime = ["gallery-dl==1.32.11", "yt-dlp==2026.8.19"]
 
 [project.scripts]
 thoth-control = "thoth_control_plane.cli:app"

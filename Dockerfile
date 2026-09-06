@@ -19,6 +19,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts \
     THOTH_FFMPEG=/usr/bin/ffmpeg \
     THOTH_FFPROBE=/usr/bin/ffprobe \
+    GALLERY_DL=/opt/thoth/python/.venv/bin/gallery-dl \
+    YTDLP=/opt/thoth/python/.venv/bin/yt-dlp \
     PATH=/opt/thoth/python/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update \
@@ -37,11 +39,11 @@ COPY --chmod=0755 --chown=thoth:thoth docker/start-legacy-cdp /opt/thoth/bin/sta
 
 COPY --chown=thoth:thoth python/pyproject.toml python/uv.lock /opt/thoth/python/
 RUN cd /opt/thoth/python \
-    && uv sync --frozen --no-dev --extra acquisition --no-install-project
+    && uv sync --frozen --no-dev --extra acquisition --extra scout-runtime --no-install-project
 
 COPY --chown=thoth:thoth python/src/ /opt/thoth/python/src/
 RUN cd /opt/thoth/python \
-    && uv sync --frozen --no-dev --extra acquisition
+    && uv sync --frozen --no-dev --extra acquisition --extra scout-runtime
 
 COPY --chown=thoth:thoth scout/package.json scout/bun.lock /opt/thoth/scout/
 RUN bun --cwd=/opt/thoth/scout install --frozen-lockfile --production
@@ -69,6 +71,10 @@ RUN test -w /var/lib/thoth/artifacts \
     && test -x /opt/thoth/python/.venv/bin/python \
     && test -x /usr/bin/ffmpeg \
     && test -x /usr/bin/ffprobe \
+    && test -x "$GALLERY_DL" \
+    && test -x "$YTDLP" \
+    && test "$("$GALLERY_DL" --version)" = "1.32.11" \
+    && test "$("$YTDLP" --version)" = "2026.08.19" \
     && /usr/bin/ffmpeg -version >/dev/null 2>&1 \
     && /usr/bin/ffprobe -version >/dev/null 2>&1 \
     && cdp_check_log="$(mktemp)" \

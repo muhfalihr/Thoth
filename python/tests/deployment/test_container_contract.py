@@ -1,4 +1,5 @@
 import re
+import tomllib
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -282,3 +283,53 @@ def test_blueprint_does_not_pin_a_release_digest_it_cannot_keep_current() -> Non
     prose = " ".join(blueprint.split())
     assert not re.search(r"ghcr\.io/muhfalihr/thoth@sha256:[0-9a-f]{64}", blueprint)
     assert "read from the Actions summary of the exact commit being deployed" in prose
+
+
+def test_scout_runtime_downloader_versions_are_exact() -> None:
+    """Scout shells out to both downloaders; neither was installed in the image.
+
+    Images are acquired with gallery-dl and the existing video/probe callers shell
+    out to yt-dlp, so a compatibility image that omits either one cannot run the
+    legacy fallback it exists to host. Both are pinned exactly so a rebuilt image
+    keeps the runtime the recorded evidence was produced against.
+    """
+    project = tomllib.loads(_repo_text("python/pyproject.toml"))
+    assert project["project"]["optional-dependencies"]["scout-runtime"] == [
+        "gallery-dl==1.32.11",
+        "yt-dlp==2026.8.19",
+    ]
+
+
+def test_uv_lock_resolves_the_pinned_downloaders() -> None:
+    lock = tomllib.loads(_repo_text("python/uv.lock"))
+    locked = {package["name"]: package["version"] for package in lock["package"]}
+    assert locked["gallery-dl"] == "1.32.11"
+    assert locked["yt-dlp"] == "2026.8.19"
+
+
+def test_dockerfile_syncs_the_scout_runtime_extra_in_every_locked_install() -> None:
+    dockerfile = _repo_text("Dockerfile")
+    sync_commands = [
+        line.strip()
+        for line in dockerfile.splitlines()
+        if "uv sync --frozen" in line
+    ]
+    assert len(sync_commands) == 2
+    assert all("--extra acquisition" in command for command in sync_commands)
+    assert all("--extra scout-runtime" in command for command in sync_commands)
+
+
+def test_dockerfile_probes_downloader_executables_as_the_runtime_user() -> None:
+    """A source-level pin proves nothing about the layer the worker actually runs.
+
+    The probes live after `USER thoth` so the build fails when the executables are
+    missing, unreadable by the runtime user, or a different version than the lock.
+    """
+    dockerfile = _repo_text("Dockerfile")
+    runtime_stage = dockerfile.split("USER thoth", 1)[1]
+    assert "GALLERY_DL=/opt/thoth/python/.venv/bin/gallery-dl" in dockerfile
+    assert "YTDLP=/opt/thoth/python/.venv/bin/yt-dlp" in dockerfile
+    assert 'test -x "$GALLERY_DL"' in runtime_stage
+    assert 'test -x "$YTDLP"' in runtime_stage
+    assert 'test "$("$GALLERY_DL" --version)" = "1.32.11"' in runtime_stage
+    assert 'test "$("$YTDLP" --version)" = "2026.08.19"' in runtime_stage
