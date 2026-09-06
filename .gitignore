@@ -103,5 +103,7 @@ tiktok-stage1-soak-report.json.part
 
 # ── Stage 1 local Docker deployment ──────────────────────────────────────────
 .env.stage1.local
+# Defense in depth: the real provider file belongs outside the repository.
+/stage1.providers.env
 stage1-local-observations*.jsonl
 stage1-local-reports/

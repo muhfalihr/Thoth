@@ -11,6 +11,7 @@
 
 # Secrets and local configuration
 **/.env*
+/stage1.providers.env
 **/*_key
 **/*_key.txt
 **/*.novita_key

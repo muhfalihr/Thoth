@@ -20,6 +20,9 @@ from thoth_control_plane.operations.stage1_local_preflight import (
     check_stage1_local_environment,
     load_stage1_local_environment,
 )
+from thoth_control_plane.operations.stage1_provider_preflight import (
+    check_stage1_provider_file,
+)
 from thoth_control_plane.operations.tiktok_parity import (
     DEFAULT_SCOUT_RECORDED_ROOT,
     TikTokParityEvidenceError,
@@ -218,15 +221,22 @@ def tiktok_stage1_parity_compare(
 @operations_app.command("stage1-local-preflight")
 def stage1_local_preflight(
     env_file: Annotated[Path, typer.Option("--env-file")] = Path(".env.stage1.local"),
+    provider_env_file: Annotated[Path | None, typer.Option("--provider-env-file")] = None,
 ) -> None:
     """Validate the local Stage 1 deployment environment before pulling images.
 
     Run from the repository root: the working directory is the repository the
     data root must stay outside of. Output names variables only, never values.
+
+    `--provider-env-file` additionally validates the restricted Scout provider file
+    required for a fallback-ready deployment. Omitting it preserves the existing
+    non-live behaviour.
     """
     try:
         values = load_stage1_local_environment(env_file)
         check_stage1_local_environment(values, repository_root=Path.cwd())
+        if provider_env_file is not None:
+            check_stage1_provider_file(provider_env_file, repository_root=Path.cwd())
     except Stage1PreflightError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=1) from None

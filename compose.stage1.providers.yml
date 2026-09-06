@@ -1,0 +1,21 @@
+# Fallback-ready overlay: `-f compose.stage1.local.yml -f compose.stage1.providers.yml`.
+#
+# Legacy Scout aborts its first pipeline step without a model provider key, so the
+# fallback worker cannot reach the legacy path with the base stack alone. The
+# credential is an operator-held file on restricted storage outside the repository;
+# only its absolute path is configuration here.
+#
+# A service-level `env_file` is resolved by the daemon and injects every line of the
+# referenced file into that one container, which is why the overlay touches the
+# worker only. The API, the browser, and the infrastructure smoke keep starting with
+# no provider input at all.
+services:
+  worker:
+    env_file:
+      - path: ${THOTH_STAGE1_PROVIDER_ENV_FILE:?set restricted provider env file}
+        required: true
+    environment:
+      THOTH_SCOUT_PROVIDER: novita
+      THOTH_SCOUT_CHAT_PROVIDER: novita
+      THOTH_SCOUT_VISION_PROVIDER: novita
+      THOTH_SCOUT_EMBED_PROVIDER: novita

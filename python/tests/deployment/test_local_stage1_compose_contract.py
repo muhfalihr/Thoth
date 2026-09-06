@@ -187,7 +187,9 @@ def test_local_stage1_rollback_recreates_the_worker_with_the_selected_mode() -> 
 def test_local_stage1_runbook_verifies_the_deployment_before_any_live_action() -> None:
     runbook = _repo_text("docs/operations/stage1-local-docker.md")
     required = {
-        "operations stage1-local-preflight --env-file .env.stage1.local",
+        "operations stage1-local-preflight \
+  --env-file .env.stage1.local \
+  --provider-env-file",
         "exec api id -u",
         "exec api test -w /var/lib/thoth/artifacts",
         "port legacy-cdp 18800",
@@ -219,3 +221,39 @@ def test_local_stage1_runbook_explains_the_cdp_seccomp_relaxation() -> None:
     assert compose.count("seccomp:unconfined") == 1
     assert "seccomp:unconfined" in prose
     assert "no other service may relax its sandbox" in prose
+
+
+def test_provider_override_only_configures_the_worker() -> None:
+    """The provider file is a live credential, so only the fallback worker receives it.
+
+    The override is a second `-f` file rather than an edit to the base stack: the
+    infrastructure smoke, the API, and the browser must keep starting without any
+    provider input at all.
+    """
+    override = _repo_text("compose.stage1.providers.yml")
+
+    assert re.findall(r"(?m)^  [a-z][a-z0-9-]*:$", override) == ["  worker:"]
+    assert "${THOTH_STAGE1_PROVIDER_ENV_FILE:?" in override
+    assert "required: true" in override
+    for role in (
+        "THOTH_SCOUT_PROVIDER",
+        "THOTH_SCOUT_CHAT_PROVIDER",
+        "THOTH_SCOUT_VISION_PROVIDER",
+        "THOTH_SCOUT_EMBED_PROVIDER",
+    ):
+        assert f"{role}: novita" in override
+    assert "ports:" not in override
+    assert "image:" not in override
+
+
+def test_provider_inputs_stay_out_of_git_and_the_build_context() -> None:
+    example = _repo_text(".env.stage1.providers.example")
+    gitignore = _repo_text(".gitignore")
+    dockerignore = _repo_text(".dockerignore")
+
+    assert "THOTH_NOVITA_API_KEY=replace-with-local-secret" in example
+    assert "THOTH_SUBTITLE_OCR_MODEL=deepseek/deepseek-ocr" in example
+    assert "not a usable provider file" in example
+    assert "/stage1.providers.env" in gitignore
+    assert "/stage1.providers.env" in dockerignore
+    assert "**/.env*" in dockerignore

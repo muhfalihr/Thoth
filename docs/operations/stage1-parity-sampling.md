@@ -92,8 +92,13 @@ repository checkout, exactly as [Stage 1 Local Docker Operations](stage1-local-d
 requires. `COMPOSE` below stands for the runbook's invocation:
 
 ```bash
-COMPOSE="docker compose --env-file .env.stage1.local -f compose.stage1.local.yml"
+COMPOSE="docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml"
 ```
+
+The second `-f` is the provider override described in the deployment runbook and requires
+`THOTH_STAGE1_PROVIDER_ENV_FILE` to be exported. A window that was deployed without the override
+omits it here too: the `-f` set must match the one the deployment was created with, or a command
+that touches the worker recreates it with different configuration.
 
 None of these commands redeploy, recreate, or restart a service, and none of them change the
 worker's activity mode. The deployed worker keeps running its Temporal workflows throughout.
@@ -106,19 +111,27 @@ land inside it and none of them may be pasted into chat, an issue, or the change
 
 ```bash
 SAMPLE_DIR="$HOME/thoth-stage1-parity/<sample-id>"
+IMAGE=$(docker inspect -f '{{.Image}}' "$($COMPOSE ps -q worker)")
 mkdir -p "$SAMPLE_DIR/python/reports" "$SAMPLE_DIR/scout-output" "$SAMPLE_DIR/reference-input"
 chmod 700 "$SAMPLE_DIR"
 # Write the approved fixture URL into "$SAMPLE_DIR/url.txt" with an editor, then:
 chmod 600 "$SAMPLE_DIR/url.txt"
-sudo chown -R 10001:10001 "$SAMPLE_DIR/scout-output"
-sudo install -o 10001 -g 10001 -m 400 "$SAMPLE_DIR/url.txt" "$SAMPLE_DIR/reference-input/url"
-sudo chmod 500 "$SAMPLE_DIR/reference-input"
+cp "$SAMPLE_DIR/url.txt" "$SAMPLE_DIR/reference-input/url"
+chmod 555 "$SAMPLE_DIR/reference-input"
+chmod 444 "$SAMPLE_DIR/reference-input/url"
+docker run --rm --network none --user 0:0 -v "$SAMPLE_DIR/scout-output:/w" "$IMAGE" \
+  sh -c 'chown -R 10001:10001 /w && install -d -o 10001 -g 10001 -m 755 /w/legacy-scout/<reference-id>'
 ```
 
 `url.txt` stays readable by the operator because the offline comparison reads it. The
-`10001:10001` copy exists only so the reference container, which runs as that non-root identity,
-can read the fixture without it being typed into a command. The Scout output directory has the same
-owner because the container writes into it. Neither may be world-writable.
+`reference-input` copy exists only so the reference container can read the fixture without it being
+typed into a command; it is readable by any identity *inside* that container, and protected on the
+host by the `700` sample directory above it. The Scout output directory must be owned by
+`10001:10001` because the container writes into it, and `<reference-id>` must exist before the run
+because the Scout CLI does not create its `--out` parent — `LegacyScoutActivity` does that itself
+before it spawns Bun. A one-shot root container from the pinned image performs both, so the
+procedure needs no host root; use `sudo chown -R 10001:10001` instead where passwordless `sudo` is
+available. Nothing here may be world-writable.
 
 ### 2. Capture the Scout reference on the pinned image
 
@@ -155,7 +168,39 @@ echo "reference exit: $?"
 ```
 
 Preconditions: `legacy-cdp` is already healthy under the controlled live gate, and the deployed
-worker stays in `python_tiktok_with_legacy_fallback`. Confirm afterwards that nothing was recreated
+worker stays in `python_tiktok_with_legacy_fallback`. One more precondition is easy to miss and
+fails the reference late: Scout's `trace_source` step calls a vision model, so the reference
+container needs a provider key — `THOTH_NOVITA_API_KEY` for the default provider, or the key
+variable belonging to whatever `THOTH_SCOUT_VISION_PROVIDER` selects. The Stage 1 deployment
+deliberately carries no model provider secret, so a reference launched with the worker service's
+environment alone aborts with `OCR analysis failed (missing_api_key)` and writes a report with no
+media. For a window deployed with `compose.stage1.providers.yml`, that input is already part of the
+worker service definition, and `run` creates its container from that definition — so the reference
+and the deployed worker receive identical provider configuration with no separate injection step.
+Verify it before spending a fixture with
+`$COMPOSE run --rm --no-deps -T worker bun /opt/thoth/scout/runtime/provider_check.ts`, which prints
+role readiness only and contacts no provider.
+
+The reference-only alternative is `docker compose run --env-from-file` (Compose 5.5 and newer)
+pointing at a `600` file on restricted storage that holds the provider variables and nothing else.
+It remains valid for a window whose deployment is frozen without the override, and it is superseded
+by the shared override for any new window. The global `docker compose --env-file` is not an
+alternative: it only feeds interpolation and injects nothing into the container. Never add the
+override or the key to a deployment that is frozen for an in-flight window; that changes the
+deployment under evaluation.
+
+Two further preconditions are properties of the image itself, so they cannot be fixed by an
+env-file, and both block a reference on the *required* `trace_source` and `build_footage` steps:
+
+- `yt-dlp` is not installed in the image — no binary on `PATH`, no `yt_dlp` module in the bundled
+  virtualenv — and Scout shells out to it from those steps.
+- The DevTools port of the `legacy-cdp` sidecar is bound to loopback inside that container even
+  though its launcher passes `--remote-debugging-address=0.0.0.0`, so `THOTH_CDP` resolves by DNS
+  but refuses TCP from every other container. The service's own healthcheck passes because it probes
+  `127.0.0.1` from inside.
+
+Verify both before spending a fixture on a reference run; the same two gaps would also break the
+deployed worker's legacy fallback if it ever fired. Confirm afterwards that nothing was recreated
 and that no reference container is left behind:
 
 ```bash
@@ -167,7 +212,7 @@ Remove the container-readable fixture copy once the reference has run, and keep 
 logs with the sample as restricted evidence:
 
 ```bash
-sudo rm -rf "$SAMPLE_DIR/reference-input"
+chmod 700 "$SAMPLE_DIR/reference-input" && rm -rf "$SAMPLE_DIR/reference-input"
 ```
 
 Diagnose a failed reference from those logs privately. Record only the exit status and a short
@@ -274,17 +319,23 @@ cp "$THOTH_STAGE1_DATA_ROOT/observations/<dataset>.jsonl" \
    "$THOTH_STAGE1_DATA_ROOT/observations/<dataset>.jsonl.<utc-timestamp>.bak"
 ```
 
-Apply exactly one of these, matching what the comparison actually produced:
+`artifact_validated` and `parity_passed` answer different questions, and conflating them corrupts
+the dataset. `artifact_validated` is about the Python workflow's own artifacts, which is why schema
+v1 requires it to be true on every `python_native` and `legacy_fallback` observation: an observation
+whose own report or media failed validation is not a valid completed run at all. `parity_passed`
+is about the comparison against the reference. Set them from the six Python-side artifact booleans
+and the comparison outcome respectively:
 
-- All twelve artifact booleans true and all nine fields matching: set `artifact_validated=true` and
-  `parity_passed=true`.
-- All twelve artifact booleans true and at least one field mismatching: set
-  `artifact_validated=true` and `parity_passed=false`. The mismatch stays; it is a real result.
-- Any artifact boolean false, or evidence that could not be compared: leave
-  `artifact_validated=false`, set no parity boolean, keep the failure in both the observation and
-  the pairing record, and block operator readiness. Schema v1 cannot express a parity verdict for a
-  sample whose artifacts are not valid, and forcing `artifact_validated=true` to make it fit is
-  falsifying evidence.
+- Six Python-side artifact booleans true: `artifact_validated=true`. Any of them false: the run is
+  not a valid completed observation; record it as a failure, not as a `python_native` row.
+- Comparison ran and all nine fields matched: `parity_passed=true`.
+- Comparison ran and at least one field mismatched: `parity_passed=false`. The mismatch stays; it
+  is a real result.
+- Comparison could not run — a reference failure, missing reference media, or any false Scout-side
+  artifact boolean: leave `parity_passed` unset. The sample counts as zero parity samples, the
+  failure stays in both the pairing record and the change record, and operator readiness stays
+  blocked. Schema v1 has no way to express "compared partially", and inventing a verdict to fill
+  the field is falsifying evidence.
 
 Do not append a second observation for the same workflow, do not change its recorded route, and do
 not count the Scout reference as a production run or as a legacy fallback. Then re-evaluate:

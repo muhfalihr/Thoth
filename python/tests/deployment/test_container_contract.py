@@ -210,7 +210,7 @@ def test_legacy_cdp_launcher_is_fixed_private_contract() -> None:
         "chromium_count=$((chromium_count + 1))",
         'if [ "$chromium_count" -ne 1 ]; then',
         'if [ ! -d "$profile_dir" ] || [ ! -w "$profile_dir" ]; then',
-        'runtime=/opt/thoth/scout/runtime/legacy_cdp.ts',
+        "runtime=/opt/thoth/scout/runtime/legacy_cdp.ts",
         'exec bun "$runtime" \\',
         '--chromium "$chromium_path" --profile "$profile_dir"',
         "--offline-smoke",
@@ -219,7 +219,7 @@ def test_legacy_cdp_launcher_is_fixed_private_contract() -> None:
     assert 'case "$#" in' in launcher
     assert launcher.index('case "$#" in') < launcher.index("chromium_path=")
     assert launcher.index("offline_smoke=false") < launcher.index('case "$#" in')
-    assert '--check' in launcher
+    assert "--check" in launcher
     assert launcher.index('if [ "$check_only" = true ]') < launcher.index("exec bun")
     assert "sync_playwright" not in launcher
     assert "--no-sandbox" not in launcher
@@ -333,11 +333,7 @@ def test_uv_lock_resolves_the_pinned_downloaders() -> None:
 
 def test_dockerfile_syncs_the_scout_runtime_extra_in_every_locked_install() -> None:
     dockerfile = _repo_text("Dockerfile")
-    sync_commands = [
-        line.strip()
-        for line in dockerfile.splitlines()
-        if "uv sync --frozen" in line
-    ]
+    sync_commands = [line.strip() for line in dockerfile.splitlines() if "uv sync --frozen" in line]
     assert len(sync_commands) == 2
     assert all("--extra acquisition" in command for command in sync_commands)
     assert all("--extra scout-runtime" in command for command in sync_commands)

@@ -64,6 +64,34 @@ read only by `python/tests/live`, which is not part of the image. The fixture is
 variable name only. An unset or placeholder fixture prevents the live smoke; it never causes another
 URL to be selected silently.
 
+## Configure the shared provider input
+
+Legacy Scout aborts its first pipeline step without a model provider key, so the digest alone is not
+fallback-ready: the worker and every one-off reference need the same provider input. Keep that input
+in a file outside the repository and give Compose only its absolute path.
+
+`.env.stage1.providers.example` shows the shape and is not a usable provider file. Create the real
+file on restricted storage, then export its path:
+
+```bash
+install -m 600 /dev/null "$HOME/secrets/stage1.providers.env"
+$EDITOR "$HOME/secrets/stage1.providers.env"
+export THOTH_STAGE1_PROVIDER_ENV_FILE="$HOME/secrets/stage1.providers.env"
+```
+
+The file holds exactly `THOTH_NOVITA_API_KEY` and `THOTH_SUBTITLE_OCR_MODEL`. A wider file is
+usually an accidental copy of the repository `.env`, and a service-level `env_file` injects every
+line of the file it names into that container, so the extra variables would become container
+environment. The preflight rejects a third variable, a placeholder key, a relative or
+in-repository path, and, on Linux, a group- or world-readable mode.
+
+`compose.stage1.providers.yml` attaches that file to the worker and to nothing else. The API, the
+browser sidecar, and the infrastructure preflight keep starting with no provider input at all.
+
+Providing credentials changes runtime configuration only. It does not change the image, its digest,
+or anything already recorded for a deployment that is already running, and a present key is not
+evidence of authentication, quota, or model availability.
+
 ## Preflight, render, and pull
 
 Validate the operator-supplied values before pulling anything. Compose interpolation only rejects an
@@ -72,8 +100,11 @@ root outside the repository, an approved activity mode, and non-placeholder cred
 variables and never prints their values.
 
 ```bash
-uv run --project python thoth-control operations stage1-local-preflight --env-file .env.stage1.local
+uv run --project python thoth-control operations stage1-local-preflight   --env-file .env.stage1.local   --provider-env-file "$THOTH_STAGE1_PROVIDER_ENV_FILE"
 ```
+
+Omitting `--provider-env-file` preserves the earlier non-live behaviour and validates the base
+environment only. Fallback-ready activation always supplies it.
 
 Then render with `--quiet` and inspect the topology through views that never resolve secrets. A bare
 `docker compose config` prints every resolved `environment:` block, including the database password
@@ -87,6 +118,23 @@ docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config -
 docker compose --env-file .env.stage1.local -f compose.stage1.local.yml config --no-interpolate
 docker compose --env-file .env.stage1.local -f compose.stage1.local.yml pull
 ```
+
+For a fallback-ready deployment, validate the merged pair as well. `--no-interpolate` alone stops
+being a safe diagnostic here: interpolation and service `env_file` resolution are separate steps, so
+an un-interpolated render still resolves the provider file into the worker's `environment:`. Use
+`--quiet`, `--images`, or the combination below, which was verified on Docker Compose v5.5.0.
+
+```bash
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml config --quiet
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml config --no-interpolate --no-env-resolution
+```
+
+`config --quiet` exits `0` and prints nothing when the merge is valid; a missing or unset
+`THOTH_STAGE1_PROVIDER_ENV_FILE` fails there, before any container is created.
+
+Once the override is in use, every later Compose command for this project repeats both `-f` flags. A
+command that omits the override and recreates the worker silently rebuilds it without the provider
+input, which is the same failure the override exists to prevent.
 
 Reject the rendered configuration if any image reference is mutable or missing a digest, if a host
 binding appears for PostgreSQL, Temporal, or the CDP sidecar, or if any application service resolves
@@ -154,13 +202,17 @@ fail-closed.
 Once the sidecar and worker are approved and running, verify their identity and isolation:
 
 ```bash
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml exec worker id -u
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml exec legacy-cdp id -u
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml port legacy-cdp 18800
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker id -u
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec legacy-cdp id -u
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml port legacy-cdp 18800
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml   run --rm --no-deps -T worker bun /opt/thoth/scout/runtime/provider_check.ts
 ```
 
 - Both identity commands must print `10001`.
+- The provider check prints one line per reference role and must report `chat_ready=true`,
+  `vision_ready=true`, `embed_ready=true`, and `ocr_model_ready=true`. It contacts no provider, so
+  it proves the configuration arrived, not that the account can serve a request.
 - The `port` command must print nothing and exit non-zero; a printed host binding means the sidecar
   is reachable outside the private network and the gate stops here.
 - The worker mode must print `python_tiktok_with_legacy_fallback`.
@@ -194,7 +246,7 @@ stays restricted operational evidence and must not enter Git, chat, issue commen
 An ordinary restart keeps the same digest and the same environment:
 
 ```bash
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml restart worker
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml restart worker
 ```
 
 The rollback mode is `legacy_scout` and may be applied only during the approved rollback drill. Set
@@ -203,8 +255,8 @@ Restarting the container reuses the environment it was created with, so a restar
 silently keep the previous mode:
 
 ```bash
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml up -d --no-deps --force-recreate worker
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml   up -d --no-deps --force-recreate worker
+docker compose --env-file .env.stage1.local   -f compose.stage1.local.yml -f compose.stage1.providers.yml exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
 ```
 
 The mode command must print the mode that was just selected; if it prints the previous mode, the
