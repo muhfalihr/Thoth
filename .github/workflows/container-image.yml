@@ -73,6 +73,9 @@ jobs:
       - name: Run Scout acquisition regressions
         run: bun --cwd=scout run test:acquisition
 
+      - name: Run Scout runtime tests
+        run: bun --cwd=scout run test:runtime
+
   validate-image:
     name: Validate image build
     if: github.event_name == 'pull_request'
@@ -80,6 +83,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      CANDIDATE_IMAGE: thoth-stage1:pr-${{ github.sha }}
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -93,8 +98,15 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          load: true
+          tags: ${{ env.CANDIDATE_IMAGE }}
           cache-from: type=gha,scope=thoth-container
           cache-to: type=gha,mode=max,scope=thoth-container
+
+      # Chromium answers on loopback even when no sibling container can reach it, so a
+      # build that succeeds proves nothing about the transport the worker depends on.
+      - name: Verify private CDP transport
+        run: bash docker/test-cdp-offline.sh "${CANDIDATE_IMAGE}"
 
   publish-image:
     name: Publish image
@@ -257,6 +269,9 @@ jobs:
           docker compose ${COMPOSE_FILE_ARGS} up -d --wait postgresql temporal
           # shellcheck disable=SC2086
           docker compose ${COMPOSE_FILE_ARGS} ${describe}             --namespace thoth-stage1 --address temporal:7233
+
+      - name: Verify private CDP transport on the published digest
+        run: bash docker/test-cdp-offline.sh "${THOTH_IMAGE_REF}"
 
       - name: Dump service logs on failure
         if: failure()

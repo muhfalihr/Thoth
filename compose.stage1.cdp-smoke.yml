@@ -1,0 +1,53 @@
+# Offline transport smoke for the private CDP relay. Not a deployment file.
+#
+# Chromium binds DevTools to loopback whatever address it is given, so a browser can
+# be perfectly healthy from inside its own container and unreachable from every other
+# one. Only a second container can tell the difference, which is why this file exists
+# and why the probe never shares the browser's network namespace.
+#
+# Everything here is disposable: an internal network with no host ports, a tmpfs
+# profile, `about:blank`, and no provider input, credentials, or bind mounts.
+services:
+  browser:
+    image: ${THOTH_TEST_IMAGE:?set candidate image}
+    user: "10001:10001"
+    command: ["/opt/thoth/bin/start-legacy-cdp", "--offline-smoke"]
+    # Chromium's own sandbox needs syscalls the default profile blocks. The relaxation
+    # is scoped to the browser, exactly as in the deployment, and never to the probe.
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /var/lib/thoth/browser-profile:uid=10001,gid=10001,mode=0700
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/thoth/python/.venv/bin/python -c "import json, urllib.request;
+          targets = json.load(urllib.request.urlopen('http://127.0.0.1:18800/json', timeout=2));
+          assert any(target.get('type') == 'page' and target.get('url') == 'about:blank'
+          for target in targets)"
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      cdp-smoke:
+        aliases:
+          - legacy-cdp
+
+  probe:
+    image: ${THOTH_TEST_IMAGE:?set candidate image}
+    user: "10001:10001"
+    command: ["bun", "/opt/thoth/scout/runtime/cdp_smoke.ts"]
+    environment:
+      THOTH_CDP: http://legacy-cdp:18800
+    depends_on:
+      browser:
+        condition: service_healthy
+    networks:
+      - cdp-smoke
+
+networks:
+  cdp-smoke:
+    driver: bridge
+    internal: true

@@ -353,3 +353,66 @@ def test_dockerfile_probes_downloader_executables_as_the_runtime_user() -> None:
     assert 'test -x "$YTDLP"' in runtime_stage
     assert 'test "$("$GALLERY_DL" --version)" = "1.32.11"' in runtime_stage
     assert 'test "$("$YTDLP" --version)" = "2026.08.19"' in runtime_stage
+
+
+def test_pull_request_builds_load_the_image_and_prove_cdp_transport() -> None:
+    """A PR must fail on a broken relay, which requires the image locally.
+
+    `push: false` alone leaves the build in the buildx cache with nothing to run, so
+    the loopback-only regression this harness exists to catch would pass review.
+    """
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    validate = workflow[workflow.index("  validate-image:") : workflow.index("  publish-image:")]
+
+    assert "push: false" in validate
+    assert "load: true" in validate
+    assert "tags: ${{ env.CANDIDATE_IMAGE }}" in validate
+    assert 'bash docker/test-cdp-offline.sh "${CANDIDATE_IMAGE}"' in validate
+    assert "compose.stage1.local.yml" not in validate
+
+
+def test_published_digest_is_proved_by_the_same_harness() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    smoke = workflow[workflow.index("  stack-smoke:") :]
+
+    assert (
+        "THOTH_IMAGE_REF: ghcr.io/muhfalihr/thoth@${{ needs.publish-image.outputs.digest }}"
+        in smoke
+    )
+    assert 'bash docker/test-cdp-offline.sh "${THOTH_IMAGE_REF}"' in smoke
+    assert "up -d --wait postgresql temporal temporal-ui api" in smoke
+    assert "curl -fsS http://127.0.0.1:8000/readyz" in smoke
+
+
+def test_quality_gates_run_the_scout_runtime_tests() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    package = _repo_text("scout/package.json")
+
+    assert "bun --cwd=scout run test:runtime" in workflow
+    assert "bun --cwd=scout run test:acquisition" in workflow
+    assert '"test:runtime": "bun test runtime/"' in package
+
+
+def test_cdp_harness_owns_everything_it_creates() -> None:
+    """The harness runs beside a real deployment, so its blast radius is the contract."""
+    harness = _repo_text("docker/test-cdp-offline.sh")
+    smoke_compose = _repo_text("compose.stage1.cdp-smoke.yml")
+
+    assert "set -euo pipefail" in harness
+    assert "trap teardown EXIT" in harness
+    assert "project_prefix=stage1-cdp-smoke" in harness
+    assert '"${project_prefix}"-*)' in harness
+    assert "--wait-timeout" in harness
+    assert "compose.stage1.local.yml" not in harness
+    assert 'docker compose -p "$test_project" -f "$compose_file"' in harness
+    assert "compose logs" not in harness and "docker logs" not in harness
+
+    assert "${THOTH_TEST_IMAGE:?set candidate image}" in smoke_compose
+    assert "internal: true" in smoke_compose
+    assert "ports:" not in smoke_compose
+    assert "- /var/lib/thoth/browser-profile:uid=10001,gid=10001,mode=0700" in smoke_compose
+    assert "/opt/thoth/bin/start-legacy-cdp" in smoke_compose
+    assert "--offline-smoke" in smoke_compose
+    assert "THOTH_CDP: http://legacy-cdp:18800" in smoke_compose
+    assert "NOVITA" not in smoke_compose
+    assert smoke_compose.count("seccomp:unconfined") == 1
