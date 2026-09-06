@@ -11,7 +11,6 @@ parity test inside legacy Scout, not in the Python acquisition path.
 """
 
 import asyncio
-import hashlib
 import json
 import os
 from datetime import timedelta
@@ -19,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-from thoth_control_plane.acquisition.adapters.tiktok import canonicalize_tiktok_post_url
 from thoth_control_plane.acquisition.browser import (
     active_scrapling_session_count,
     check_scrapling_capability,
@@ -30,6 +28,14 @@ from thoth_control_plane.activities.source_investigation import (
     build_source_investigation_activity,
 )
 from thoth_control_plane.config import Settings
+from thoth_control_plane.operations.tiktok_parity import (
+    file_checksum as _file_checksum,
+)
+from thoth_control_plane.operations.tiktok_parity import (
+    normalize_legacy_tiktok,
+    normalize_python_tiktok,
+    resolve_artifact_path,
+)
 
 LIVE_URL = os.getenv("THOTH_LIVE_TIKTOK_URL")
 _SCOUT_ACQUISITION_MEDIA_ROOT = (
@@ -61,15 +67,14 @@ _BANNED_PERSISTED_KEYS = frozenset(
 def _artifact_path(
     artifact_root: Path, location: str, *, absolute_roots: tuple[Path, ...] = ()
 ) -> Path:
-    """Resolve one location below its relative root or an explicit absolute root."""
-    path = Path(location)
-    assert ".." not in path.parts
-    if path.is_absolute():
-        resolved_path = path.resolve()
-        assert any(resolved_path.is_relative_to(root.resolve()) for root in absolute_roots)
-    else:
-        resolved_path = (artifact_root / path).resolve()
-        assert resolved_path.is_relative_to(artifact_root.resolve())
+    """Resolve one location below its root, failing the test when it escapes.
+
+    Containment itself lives in `resolve_artifact_path`, which the offline
+    parity helper shares: this smoke and that helper must never disagree about
+    what an artifact root contains.
+    """
+    resolved_path = resolve_artifact_path(artifact_root, location, absolute_roots=absolute_roots)
+    assert resolved_path is not None
     return resolved_path
 
 
@@ -91,52 +96,6 @@ def _persisted_strings(value: object) -> set[str]:
     if isinstance(value, list):
         return set().union(*(_persisted_strings(item) for item in value)) if value else set()
     return set()
-
-
-def _file_checksum(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return f"sha256:{digest.hexdigest()}"
-
-
-def normalize_legacy_tiktok(payload: dict, input_url: str, artifact_root: Path) -> dict:
-    main = payload["main"]
-    page_url = main.get("source_url") or input_url
-    identity = canonicalize_tiktok_post_url(page_url)
-    profile = main.get("profile") or {}
-    return {
-        "canonical_url": str(identity.canonical_url),
-        "platform": main.get("platform"),
-        "post_id": identity.post_id,
-        "owner_handle": profile.get("username") or identity.owner_handle,
-        "caption": main.get("description") or "",
-        "media_kind": "video" if main.get("is_video", True) else "image",
-        "media_index": 1,
-        "local_media_present": isinstance(main.get("source_local"), str)
-        and _artifact_path(
-            artifact_root,
-            main["source_local"],
-            absolute_roots=(_SCOUT_ACQUISITION_MEDIA_ROOT,),
-        ).is_file(),
-        "outcome": "resolved",
-    }
-
-
-def normalize_python_tiktok(payload: dict, artifact_root: Path) -> dict:
-    media = payload["media"][0]
-    return {
-        "canonical_url": payload["source"]["canonical_url"],
-        "platform": payload["source"]["platform"],
-        "post_id": payload["post"]["post_id"],
-        "owner_handle": payload["post"]["owner_handle"],
-        "caption": payload["post"]["caption"],
-        "media_kind": media["kind"],
-        "media_index": media["index"],
-        "local_media_present": _artifact_path(artifact_root, media["location"]).is_file(),
-        "outcome": payload["outcome"]["status"],
-    }
 
 
 def _live_activity(tmp_path: Path, capability: object):
@@ -256,5 +215,5 @@ async def test_live_python_and_legacy_tiktok_contracts_match(tmp_path: Path) -> 
     )
 
     assert normalize_python_tiktok(python_payload, tmp_path) == normalize_legacy_tiktok(
-        legacy_payload, url, legacy_root
+        legacy_payload, url, legacy_root, absolute_roots=(_SCOUT_ACQUISITION_MEDIA_ROOT,)
     )

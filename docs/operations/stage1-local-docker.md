@@ -168,6 +168,12 @@ docker compose --env-file .env.stage1.local -f compose.stage1.local.yml exec wor
 Perform exactly one controlled fallback smoke on first activation. Establish the soak start
 timestamp only after that smoke passes.
 
+## Soak parity samples
+
+Follow [Stage 1 Soak Parity Sampling](stage1-parity-sampling.md) for the five required same-URL
+Python/Scout comparisons, artifact integrity checks, workflow-to-reference evidence, and rules for
+recording `parity_passed`. Cross-provider checksum equality is not the parity criterion.
+
 ## Evidence export
 
 Use host AWS authentication to sync observation JSONL and aggregate reports separately to:

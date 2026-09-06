@@ -20,6 +20,12 @@ from thoth_control_plane.operations.stage1_local_preflight import (
     check_stage1_local_environment,
     load_stage1_local_environment,
 )
+from thoth_control_plane.operations.tiktok_parity import (
+    DEFAULT_SCOUT_RECORDED_ROOT,
+    TikTokParityEvidenceError,
+    compare_parity_sample,
+    render_parity_comparison,
+)
 from thoth_control_plane.operations.tiktok_soak import TikTokSoakDatasetError, evaluate_tiktok_soak
 from thoth_control_plane.operations.tiktok_soak_cli import (
     TikTokSoakInputError,
@@ -158,6 +164,55 @@ def tiktok_stage1_soak(
         typer.echo("tiktok stage 1 soak evaluation failed", err=True)
         raise typer.Exit(code=1) from None
     typer.echo("tiktok stage 1 soak report written")
+
+
+@operations_app.command("tiktok-stage1-parity-compare")
+def tiktok_stage1_parity_compare(
+    python_report: Annotated[Path, typer.Option("--python-report")],
+    python_artifact_root: Annotated[Path, typer.Option("--python-artifact-root")],
+    python_report_checksum: Annotated[str, typer.Option("--python-report-checksum")],
+    scout_report: Annotated[Path, typer.Option("--scout-report")],
+    scout_artifact_root: Annotated[Path, typer.Option("--scout-artifact-root")],
+    scout_report_checksum: Annotated[str, typer.Option("--scout-report-checksum")],
+    scout_media_checksum: Annotated[str, typer.Option("--scout-media-checksum")],
+    scout_media_bytes: Annotated[int, typer.Option("--scout-media-bytes")],
+    scout_recorded_root: Annotated[
+        str, typer.Option("--scout-recorded-root")
+    ] = DEFAULT_SCOUT_RECORDED_ROOT,
+    input_url_file: Annotated[Path | None, typer.Option("--input-url-file")] = None,
+) -> None:
+    """Compare one designated Python/Scout parity sample from existing reports.
+
+    Read-only and offline: it acquires nothing, contacts nothing, writes nothing,
+    and never labels an observation. Output is field names and booleans only, so
+    the sample's URL, caption, identity, checksums, and paths stay in restricted
+    evidence. Exits non-zero when the sample does not pass.
+    """
+    try:
+        input_url = input_url_file.read_text(encoding="utf-8").strip() if input_url_file else ""
+    except (OSError, UnicodeError):
+        typer.echo("parity evidence url file is missing or unreadable", err=True)
+        raise typer.Exit(code=1) from None
+    try:
+        comparison = compare_parity_sample(
+            python_report=python_report,
+            python_artifact_root=python_artifact_root,
+            python_report_checksum=python_report_checksum,
+            scout_report=scout_report,
+            scout_artifact_root=scout_artifact_root,
+            scout_report_checksum=scout_report_checksum,
+            scout_media_checksum=scout_media_checksum,
+            scout_media_bytes=scout_media_bytes,
+            scout_recorded_root=scout_recorded_root,
+            input_url=input_url,
+        )
+    except TikTokParityEvidenceError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from None
+    for line in render_parity_comparison(comparison):
+        typer.echo(line)
+    if not comparison.passed:
+        raise typer.Exit(code=1)
 
 
 @operations_app.command("stage1-local-preflight")
