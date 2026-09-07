@@ -77,6 +77,27 @@ rollback — is governed by its own
 "TikTok Stage 1 operational soak" section of [python-control-plane.md](python-control-plane.md)
 for the exact operator sequence.
 
+The active Stage 1 cutover policy is accelerated acceptance:
+[design specification](superpowers/specs/2026-09-07-stage1-accelerated-acceptance-design.md) and
+[implementation plan](superpowers/plans/2026-09-07-stage1-accelerated-acceptance.md). It supersedes
+only the window, run-count, and parity numbers of the cutover spec: at least 24 hours of valid
+completed runs, at least 12 valid completed runs, and at least 2 in-window evidence-backed parity
+samples from distinct approved, public, first-party TikTok posts. The success, fallback, and
+terminal-failure rates stay 0.95, 0.05, and 0.02. Archived datasets keep the policy embedded in
+their own reports and are never reclassified under the accelerated defaults.
+
+The passed parity gate above is the offline/live implementation comparison, not the containerized
+activation parity gate. That activation gate has not passed: its single authorized pair, sample
+`p3`, is `evidence_incomparable` because the Scout reference failed and produced no reference media.
+`p3` cannot count toward an acceptance dataset or the two in-window samples, and no accelerated
+acceptance window has been opened. The isolated activation parity pair is pre-window evidence in
+every case, separate from the two in-window samples.
+
+An evaluator verdict of `ready: true` is necessary but not sufficient for cutover. The controlled
+fallback exercise, restart recovery, the rollback drill, and explicit human approval all remain
+required, and approving Python as the default neither removes nor disables the TypeScript Scout
+path. Stage 10 retirement stays open.
+
 The first slice accepts one public TikTok post URL.
 
 ```text
@@ -297,12 +318,14 @@ Retirement then proceeds in this order:
 
 ## Immediate Next Step
 
-The Stage 1 live gate has passed. Complete the agreed operational soak on the Python acquisition
-path — see the "TikTok Stage 1 operational soak" section of
+The Stage 1 implementation live gate has passed; the containerized activation parity gate has not.
+Resolve that blocked gate first, then complete the accelerated acceptance window on the Python
+acquisition path — see the "TikTok Stage 1 operational soak" section of
 [python-control-plane.md](python-control-plane.md) — then make the capability-specific retirement
 decision for TikTok single-post acquisition, following its own
-[design specification](superpowers/specs/2026-09-02-python-tiktok-stage1-cutover-design.md) and
-[implementation plan](superpowers/plans/2026-09-02-python-tiktok-stage1-cutover.md). Keep
+[design specification](superpowers/specs/2026-09-02-python-tiktok-stage1-cutover-design.md),
+[implementation plan](superpowers/plans/2026-09-02-python-tiktok-stage1-cutover.md), and the
+superseding accelerated-acceptance thresholds above. Keep
 `legacy_scout` and `python_tiktok_with_legacy_fallback` reachable until that decision is made, and
 do not widen Stage 1 scope beyond one public TikTok post URL. Stage 2 ("Complete the TikTok
 Vertical Slice" above) starts only after the Stage 1 cutover decision is completed.

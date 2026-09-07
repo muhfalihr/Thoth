@@ -172,10 +172,16 @@ anyone proposes changing that default. Nothing here performs, simulates, or reco
 2. Export only completed workflow summaries plus safe source events through the approved Temporal
    operations channel; never export source/provider URLs or raw logs.
 3. Convert each exported run to the strict schema version 1 JSONL observation contract outside
-   Git (see "Observation contract" below), and designate at least five of the converted runs as
-   controlled parity samples. Reconcile every workflow in the window to exactly one observation,
-   each with a real source of cleanup evidence (see "Cleanup evidence per route").
-4. Collect at least 168 hours (7 days) and 50 valid completed runs before evaluating.
+   Git (see "Observation contract" below), and designate at least two of the converted runs as
+   controlled parity samples, each from a distinct approved, public, first-party TikTok post. The
+   isolated activation parity pair is separate pre-window evidence: it is collected before the
+   window opens, it is not an observation, and it never counts toward those two samples. The one
+   authorized activation pair so far, sample `p3`, is `evidence_incomparable` — its Scout reference
+   failed and produced no reference media — so it did not pass the activation parity gate and
+   cannot count toward an acceptance dataset.
+   Reconcile every workflow in the window to exactly one observation, each with a real source of
+   cleanup evidence (see "Cleanup evidence per route").
+4. Collect at least 24 hours (1 day) and 12 valid completed runs before evaluating.
 5. From `python/`, run:
 
    ```powershell
@@ -188,7 +194,10 @@ anyone proposes changing that default. Nothing here performs, simulates, or reco
 7. Require `ready: true` in that report, explicit human approval, and the rollback drill under
    "Verification and smoke scope" below, in that order, before anyone proposes the default-mode
    commit. A passing report is evidence for that decision, never the decision itself, and never a
-   substitute for the human approval step.
+   substitute for the human approval step. `ready: true` is necessary but not sufficient: the
+   controlled fallback exercise, the restart-recovery check, the rollback drill, and the human
+   approval all remain required, and approving Python as the default neither removes nor disables
+   the TypeScript Scout path, which stays available as the bounded rollback mechanism.
 
 ### Observation contract
 
@@ -239,12 +248,24 @@ never a cleanup PASS, and no route may have its cleanup result assumed.
 
 | Policy field | Value |
 | --- | --- |
-| `minimum_window_days` | 7 |
-| `minimum_valid_completed_runs` | 50 |
-| `minimum_parity_samples` | 5 |
+| `minimum_window_days` | 1 |
+| `minimum_valid_completed_runs` | 12 |
+| `minimum_parity_samples` | 2 |
 | `minimum_python_native_success_rate` | 0.95 |
 | `maximum_legacy_fallback_rate` | 0.05 |
 | `maximum_terminal_failure_rate` | 0.02 |
+
+The window, run-count, and parity values are the accelerated acceptance policy defined in
+`docs/superpowers/specs/2026-09-07-stage1-accelerated-acceptance-design.md`, which supersedes only
+those three numbers from the original Stage 1 cutover design. The three rate thresholds, the
+zero-tolerance cleanup and audit rules, the schema version, and every human gate are unchanged. At
+12 valid completed runs the unchanged rates leave no room for a single legacy fallback (one is
+8.33 percent against a 5 percent ceiling) or a single terminal failure.
+
+Each report embeds the policy it was evaluated with, so an archived report keeps its own original
+thresholds. Archived evidence is never re-evaluated or reclassified under the accelerated defaults;
+an accelerated decision requires a new dataset collected after the accelerated window is approved
+and opened.
 
 The aggregate report carries only counts, rates, a window, `ready`, and blockers — never a
 per-run identity, URL, or timestamp.

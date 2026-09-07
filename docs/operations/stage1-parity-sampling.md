@@ -433,7 +433,7 @@ uv run --project python thoth-control operations tiktok-stage1-soak \
 
 The existing pytest test is useful for a controlled implementation comparison. It launches Python
 and Scout directly, uses fixed test workflow IDs, and writes into temporary directories. Running it
-five times does **not** create five durable soak observations. Its success must not be attached to
+repeatedly does **not** create durable soak observations. Its success must not be attached to
 an unrelated workflow, an earlier report, or a different image release. Tests are absent from the
 runtime image, so running the latest host checkout can also evaluate a different implementation.
 
@@ -447,20 +447,36 @@ only. Its passing offline tests say the comparison is correct, not that any pari
 
 ## Window completion
 
-Collect at least five separately identified, evidence-backed parity samples. Reusing a single
-approved fixture is not prohibited by the current policy, but each sample needs a fresh actual run
-and its own paired evidence; copying one result five times is invalid. Fixture diversity is useful,
-not an additional gate imposed by this document. Keep every failed designated sample visible.
+Collect at least two separately identified, evidence-backed parity samples inside the window. Each
+sample needs a fresh actual run and its own paired evidence; copying one result twice is invalid.
+The two samples must use distinct approved, public, first-party TikTok posts, so a single fixture
+cannot supply both. Keep every failed designated sample visible.
 
-The evaluator measures seven days from the earliest to latest included valid-completed observation,
-not from container startup or an operator's planned start time. It also requires at least fifty
-valid-completed runs and the existing success/fallback/failure and zero-tolerance gates. Five parity
-samples may be part of those fifty runs; they do not replace them. An estimate of eight runs per day
-is scheduling guidance, not permission to fabricate timestamps or observations.
+The isolated activation parity pair is collected before the window opens. It is not an observation
+and never counts toward these two in-window samples. Activation sample `p3` is `evidence_incomparable`:
+its Scout reference failed during `trace_source`, produced no reference media, and left Scout-side
+artifact-integrity checks false. `p3` did not pass the activation parity gate, is not a parity pass,
+and cannot count toward an acceptance dataset. Its evidence stays preserved and unmodified; a retry,
+replacement sample, or evidence correction requires separate approval.
+
+The evaluator measures 24 hours from the earliest to latest included valid-completed observation,
+not from container startup or an operator's planned start time. It also requires at least twelve
+valid-completed runs and the existing success/fallback/failure and zero-tolerance gates. The two
+parity samples may be part of those twelve runs; they do not replace them. At twelve runs a single
+legacy fallback is 8.33 percent and breaches the unchanged 5 percent ceiling, so schedule accordingly.
+Run-per-day estimates are scheduling guidance, not permission to fabricate timestamps or observations.
+These thresholds come from
+`docs/superpowers/specs/2026-09-07-stage1-accelerated-acceptance-design.md`, which supersedes only
+the window, run-count, and parity numbers. Every report embeds the policy it was evaluated with, so
+archived datasets retain their original thresholds and are never reclassified under the accelerated
+defaults.
 
 A laptop resume or restart on the same digest does not automatically invalidate the window, but
 failed or interrupted workflows must be reconciled and preserved. Capture evidence promptly;
 in-memory API events can disappear after restart. Recover missing events from retained Temporal
 history when available; absence of cleanup evidence is never cleanup success. Extend collection if
 the run count or time span is insufficient. Readiness still requires the existing operator review,
-rollback drill, and human decision; parity completion alone does not authorize Task 10.
+the controlled fallback exercise, restart recovery, the rollback drill, and the human decision;
+parity completion alone does not authorize Task 10. An evaluator verdict of `ready: true` is
+necessary but not sufficient, and approving Python as the default neither removes nor disables the
+TypeScript Scout path.

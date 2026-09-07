@@ -276,8 +276,40 @@ docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compo
   or not that port is published, so it cannot distinguish the two.
 - The worker mode must print `python_tiktok_with_legacy_fallback`.
 
-Perform exactly one controlled fallback smoke on first activation. Establish the soak start
-timestamp only after that smoke passes.
+Perform exactly one controlled fallback smoke on first activation. Establish the acceptance start
+timestamp only after that smoke passes and the operator explicitly approves opening the window.
+
+The isolated activation parity pair and the controlled fallback smoke are pre-window gates, each
+separately approved. Neither is an observation, and the activation pair is not one of the two
+in-window parity samples. An activation pair whose reference fails, produces no reference media, or
+leaves any Scout-side artifact-integrity check false is `evidence_incomparable`: preserved failure
+evidence, never a parity pass, and never usable to satisfy this gate or an acceptance dataset.
+
+The activation parity gate is currently blocked. Sample `p3` consumed the single authorization for
+an isolated activation pair: the Python workflow completed, but the Scout reference exited nonzero
+during `trace_source` and produced no reference media, so its Scout-side artifact-integrity checks
+are false. `p3` is therefore `evidence_incomparable`. It did not pass the activation parity gate, it
+is not a parity pass, and it cannot count toward an acceptance dataset or the two in-window samples.
+Its evidence is preserved unchanged; any retry, replacement sample, or evidence correction needs a
+separate approval.
+
+## Accelerated acceptance target
+
+A new dataset is evaluated against the accelerated acceptance policy in
+`docs/superpowers/specs/2026-09-07-stage1-accelerated-acceptance-design.md`:
+
+- at least 24 hours between the first and last valid completed run;
+- at least 12 valid completed runs;
+- at least 2 in-window evidence-backed parity samples, each from a distinct approved, public,
+  first-party TikTok post.
+
+The success, fallback, and terminal-failure rates are unchanged at 0.95, 0.05, and 0.02, and the
+zero-tolerance cleanup and audit rules still apply to every observation. Archived windows keep the
+policy embedded in their own reports; they are never re-evaluated under these defaults.
+
+An aggregate report of `ready: true` is necessary but not sufficient. The controlled fallback
+exercise, the restart-recovery check, the rollback drill, and explicit human approval all remain
+required, and a Python-default decision neither removes nor disables the TypeScript Scout path.
 
 ## Soak parity samples
 
@@ -288,9 +320,10 @@ fixture behind a login wall stops the reference; seeding a profile or provisioni
 separate approval. The deployed worker's real legacy fallback is unchanged and still drives the
 shared sidecar.
 
-Follow [Stage 1 Soak Parity Sampling](stage1-parity-sampling.md) for the five required same-URL
-Python/Scout comparisons, artifact integrity checks, workflow-to-reference evidence, and rules for
-recording `parity_passed`. Cross-provider checksum equality is not the parity criterion.
+Follow [Stage 1 Soak Parity Sampling](stage1-parity-sampling.md) for the two required in-window
+same-URL Python/Scout comparisons, artifact integrity checks, workflow-to-reference evidence, and
+rules for recording `parity_passed`. Cross-provider checksum equality is not the parity criterion.
+The two samples must come from distinct approved, public, first-party TikTok posts.
 
 ## Evidence export
 
@@ -336,8 +369,12 @@ soak window in flight is frozen: do not apply any of this to it.
 8. Verify identity, isolation, provider readiness, and worker mode as in the controlled live gate
    above, then run one explicitly approved parity pair and one controlled fallback exercise. Both
    need their own approval; neither is implied by this document.
-9. Only after those pass, start a separate new dataset with a new start timestamp. Do not merge it
-   with the archived window's observations, and do not carry the old window's parity results forward.
+9. Only after those pass, and only after the operator explicitly approves opening the window, start
+   a separate new dataset with a new start timestamp. Do not merge it with the archived window's
+   observations, and do not carry the old window's parity results forward. That dataset is the one
+   evaluated against the accelerated acceptance target above; the activation pair from step 8 is not
+   one of its two in-window parity samples. Archived windows keep the policy embedded in their own
+   reports and are never reclassified under the accelerated defaults.
 
 Every retry at any step is explicit and recorded. A failure is evidence and is recorded as such: a
 failed reference, a failed fallback exercise, or a failed smoke is a result, not something to retry
