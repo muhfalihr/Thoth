@@ -167,4 +167,3 @@ The operation is complete only when:
 8. no restricted value appears in terminal output or the Issue comment;
 9. no repository, deployment, workflow, fixture, observation, or other evidence is changed;
 10. the executor stops for independent review without entering another live gate.
-
