@@ -1,0 +1,59 @@
+# One-shot parity reference container. Standalone, never an overlay.
+#
+# A reference drives the browser wherever the source trail leads, so it must not
+# share the deployment's sidecar: one reference already left that sidecar's only
+# page on another platform, which fails the production healthcheck. This file
+# therefore composes exactly one disposable service that starts its own Chromium
+# on a fresh tmpfs profile and exits when the reference does.
+#
+# It deliberately does not reference `compose.stage1.local.yml`. No production
+# network, artifact mount, browser profile, or published port appears here, and
+# nothing in this file can be merged into the deployment by accident.
+#
+# The image must be the same immutable release as the Python worker: a reference
+# wrapper mounted over an older image is not evidence about a single release. The
+# host preflight validates that and every path below before this file is used.
+name: thoth-stage1-parity
+
+services:
+  reference:
+    image: ${THOTH_PARITY_IMAGE:?set digest-qualified reference image}
+    user: "10001:10001"
+    command: ["/opt/thoth/bin/start-parity-reference"]
+    restart: "no"
+    # Chromium's own sandbox needs syscalls the default profile blocks. The
+    # relaxation is scoped to this browser-bearing container only, exactly as it
+    # is for the deployment sidecar; no --no-sandbox and no added capabilities.
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      # Stated explicitly so a stray host value cannot redirect the reference.
+      # The supervisor refuses any other endpoint before starting anything.
+      THOTH_CDP: http://127.0.0.1:18801
+      THOTH_PARITY_REFERENCE_ID: ${THOTH_PARITY_REFERENCE_ID:?set fresh reference id}
+      THOTH_SCOUT_PROVIDER: novita
+      THOTH_SCOUT_CHAT_PROVIDER: novita
+      THOTH_SCOUT_VISION_PROVIDER: novita
+      THOTH_SCOUT_EMBED_PROVIDER: novita
+    env_file:
+      - path: ${THOTH_STAGE1_PROVIDER_ENV_FILE:?set restricted provider file}
+        required: true
+    # Anonymous by design: a fresh profile per container, discarded with it.
+    # Seeding it from a production profile or a cookie export is out of scope and
+    # needs its own approval, so an authentication wall here is a recorded stop.
+    tmpfs:
+      - /var/lib/thoth/parity-profile:uid=10001,gid=10001,mode=0700
+    volumes:
+      # The fixture is read from the mount, so it never reaches a host shell
+      # history, a Docker command line, or this file.
+      - type: bind
+        source: ${THOTH_PARITY_SAMPLE_DIR:?set external sample directory}/reference-input/url
+        target: /run/parity/url
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${THOTH_PARITY_SAMPLE_DIR:?set external sample directory}/scout-output
+        target: /opt/thoth/scout/output
+        bind:
+          create_host_path: false
