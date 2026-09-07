@@ -1,0 +1,86 @@
+#!/bin/sh
+set -eu
+
+# The reference container owns its browser, so both paths below are fixed. They are
+# not configurable in a real run: a reference that could be pointed at the production
+# profile or at another sample's evidence would defeat the isolation this exists for.
+profile_dir=/var/lib/thoth/parity-profile
+output_dir=/opt/thoth/scout/output
+runtime=/opt/thoth/scout/runtime/parity_reference.ts
+
+usage() {
+    echo "usage: start-parity-reference [--check|--offline-smoke]" >&2
+    exit 64
+}
+
+check_only=false
+offline_smoke=false
+
+case "$#" in
+    0)
+        ;;
+    1)
+        case "$1" in
+            --check)
+                check_only=true
+                ;;
+            --offline-smoke)
+                offline_smoke=true
+                ;;
+            *)
+                usage
+                ;;
+        esac
+        ;;
+    *)
+        usage
+        ;;
+esac
+
+# The image build has neither the tmpfs profile nor a mounted sample, so the build
+# probe points --check at throwaway directories. The override is read in check mode
+# only, which keeps it useless as a way to redirect a real reference.
+if [ "$check_only" = true ]; then
+    profile_dir=${THOTH_PARITY_CHECK_PROFILE_DIR:-$profile_dir}
+    output_dir=${THOTH_PARITY_CHECK_OUTPUT_DIR:-$output_dir}
+fi
+
+chromium_path=
+chromium_count=0
+for candidate in /ms-playwright/chromium-[0-9]*/chrome-linux*/chrome; do
+    [ -x "$candidate" ] || continue
+    chromium_path=$candidate
+    chromium_count=$((chromium_count + 1))
+done
+
+if [ "$chromium_count" -ne 1 ]; then
+    echo "parity reference requires exactly one Chromium executable; found $chromium_count" >&2
+    exit 1
+fi
+
+if [ ! -d "$profile_dir" ] || [ ! -w "$profile_dir" ]; then
+    echo "parity reference profile directory is unavailable" >&2
+    exit 1
+fi
+
+if [ ! -d "$output_dir" ] || [ ! -w "$output_dir" ]; then
+    echo "parity reference output directory is unavailable" >&2
+    exit 1
+fi
+
+if [ ! -r "$runtime" ]; then
+    echo "parity reference supervisor is unavailable" >&2
+    exit 1
+fi
+
+if [ "$check_only" = true ]; then
+    exit 0
+fi
+
+# The supervisor reads the reference id from the environment and the fixture from the
+# mount; neither is passed here, so neither reaches this process table entry.
+if [ "$offline_smoke" = true ]; then
+    exec bun "$runtime" --chromium "$chromium_path" --offline-smoke
+fi
+
+exec bun "$runtime" --chromium "$chromium_path"

@@ -30,12 +30,15 @@ RUN apt-get update \
     && useradd --uid 10001 --gid 10001 --create-home \
         --home-dir /home/thoth --shell /usr/sbin/nologin thoth \
     && mkdir -p /opt/thoth/bin /opt/thoth/python /opt/thoth/scout \
-        /var/lib/thoth/artifacts /var/lib/thoth/browser-profile /ms-playwright \
+        /var/lib/thoth/artifacts /var/lib/thoth/browser-profile \
+        /var/lib/thoth/parity-profile /ms-playwright \
     && chown -R thoth:thoth /opt/thoth /var/lib/thoth /home/thoth /ms-playwright
 
 WORKDIR /opt/thoth
 
 COPY --chmod=0755 --chown=thoth:thoth docker/start-legacy-cdp /opt/thoth/bin/start-legacy-cdp
+COPY --chmod=0755 --chown=thoth:thoth docker/start-parity-reference \
+    /opt/thoth/bin/start-parity-reference
 
 COPY --chown=thoth:thoth python/pyproject.toml python/uv.lock /opt/thoth/python/
 RUN cd /opt/thoth/python \
@@ -85,6 +88,30 @@ RUN test -w /var/lib/thoth/artifacts \
     fi \
     && if ! test ! -s "$cdp_check_log"; then \
         cat "$cdp_check_log" >&2; \
+        exit 1; \
+    fi
+
+# The parity reference has neither its tmpfs profile nor a mounted sample at build
+# time, so its check runs against throwaway directories. It starts no browser, and it
+# also proves the launcher refuses an argument shape it does not recognise.
+RUN test -w /var/lib/thoth/parity-profile \
+    && test -r /opt/thoth/scout/runtime/parity_reference.ts \
+    && parity_root="$(mktemp -d)" \
+    && parity_check_log="$(mktemp)" \
+    && trap 'rm -rf "$parity_root" "$parity_check_log"' 0 \
+    && mkdir -p "$parity_root/profile" "$parity_root/output" \
+    && if ! THOTH_PARITY_CHECK_PROFILE_DIR="$parity_root/profile" \
+        THOTH_PARITY_CHECK_OUTPUT_DIR="$parity_root/output" \
+        /opt/thoth/bin/start-parity-reference --check >"$parity_check_log" 2>&1; then \
+        cat "$parity_check_log" >&2; \
+        exit 1; \
+    fi \
+    && if ! test ! -s "$parity_check_log"; then \
+        cat "$parity_check_log" >&2; \
+        exit 1; \
+    fi \
+    && if /opt/thoth/bin/start-parity-reference --unsupported >/dev/null 2>&1; then \
+        echo "parity launcher accepted an unsupported argument" >&2; \
         exit 1; \
     fi
 
