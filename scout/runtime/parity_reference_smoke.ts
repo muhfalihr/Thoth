@@ -23,6 +23,25 @@ export const PROBE_TIMEOUT_MS = 10_000;
 export const LOCAL_PAGE_TITLE = 'parity-local';
 export const PROFILE_MARKER_NAME = 'parity-smoke.marker';
 
+/**
+ * How long to stay alive after reporting, for a harness that must signal a probe
+ * that is still running.
+ *
+ * A cancellation test that stops a container which already exited proves nothing
+ * about signal forwarding or child reaping, so the image harness asks for a hold
+ * and cancels during it. Anything unparseable, negative, or longer than the cap
+ * means no hold at all: a probe that outlives its own job is a hung container,
+ * and a typo must not become one.
+ */
+export const MAX_HOLD_MS = 120_000;
+
+export function holdDurationMs(env: Record<string, string | undefined>): number {
+  const requested = env.THOTH_PARITY_SMOKE_HOLD_MS ?? '';
+  if (!/^\d+$/.test(requested)) return 0;
+  const milliseconds = Number(requested);
+  return milliseconds > 0 && milliseconds <= MAX_HOLD_MS ? milliseconds : 0;
+}
+
 /** A live loopback page, owned by this process. */
 export interface LocalPage {
   url: string;
@@ -141,6 +160,9 @@ async function main(): Promise<void> {
     Bun.stdout,
     `fresh_profile=${freshProfile}\nowned_cdp_pass=${ownedPass}\nlocal_navigation_pass=${navigationPass}\n`,
   );
+  // The hold comes after the verdict, never before it: a harness that cancels
+  // mid-hold still reads the same three booleans on the way out.
+  await Bun.sleep(holdDurationMs(process.env));
   process.exit(freshProfile && ownedPass && navigationPass ? 0 : 1);
 }
 

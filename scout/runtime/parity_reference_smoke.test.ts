@@ -9,7 +9,12 @@ import { expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { claimFreshProfile, LOCAL_PAGE_TITLE, serveLocalPage } from './parity_reference_smoke.ts';
+import {
+  claimFreshProfile,
+  holdDurationMs,
+  LOCAL_PAGE_TITLE,
+  serveLocalPage,
+} from './parity_reference_smoke.ts';
 
 test('the local page is served on an ephemeral loopback port', async () => {
   const page = serveLocalPage();
@@ -40,4 +45,16 @@ test('an unwritable profile is a failure, not a silent pass', () => {
   writeFileSync(join(profile, 'parity-smoke.marker'), '');
 
   expect(() => claimFreshProfile(profile)).toThrow('profile_not_fresh');
+});
+
+// The cancellation phase of the image harness needs a reference that is still
+// running when the signal arrives. Without a hold the probe finishes in seconds,
+// and a container that had already exited would prove nothing about signal
+// forwarding or child reaping — it would just race, and pass by accident.
+test('the probe holds only when the harness asks it to, and only for a sane budget', () => {
+  expect(holdDurationMs({})).toBe(0);
+  expect(holdDurationMs({ THOTH_PARITY_SMOKE_HOLD_MS: '120000' })).toBe(120_000);
+  for (const value of ['', '-1', 'soon', '0.5', '999999999']) {
+    expect(holdDurationMs({ THOTH_PARITY_SMOKE_HOLD_MS: value })).toBe(0);
+  }
 });

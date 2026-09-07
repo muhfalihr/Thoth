@@ -471,3 +471,28 @@ def test_parity_smoke_network_is_internal_and_carries_a_synthetic_sentinel() -> 
     assert "NOVITA" not in smoke_compose
     # Only the browser-bearing container may relax seccomp.
     assert smoke_compose.count("seccomp:unconfined") == 1
+
+
+def test_the_parity_harness_accepts_only_the_supervisor_own_verdicts() -> None:
+    """A nonzero container exit is not evidence that the supervisor decided anything.
+
+    Docker's own forced kill after a stop timeout is nonzero too, so a harness that
+    accepts any failure would pass a reference whose signal handling and child
+    reaping are both broken. The supervisor emits 143 only when it was cancelled,
+    reaped both children, and recorded the attempt, and 70 when its browser died,
+    so the smoke asserts those codes rather than their absence from zero.
+    """
+    harness = _repo_text("docker/test-parity-offline.sh")
+
+    assert "docker wait" in harness
+    # Every wait is bounded: an unbounded one turns a hung reference into a hung job.
+    for wait in re.findall(r"^.*docker wait.*$", harness, re.MULTILINE):
+        assert "timeout" in wait, "an unbounded docker wait can hang the whole job"
+    assert "-eq 143" in harness
+    assert "-eq 70" in harness
+    # The declared budgets must be used, not merely declared.
+    assert harness.count("$exit_timeout") >= 2
+    # The cancellation phase must reach a probe that is still running. Without the
+    # hold, a probe that finished first would exit 0 and the phase would fail for a
+    # reason that has nothing to do with signal handling.
+    assert "THOTH_PARITY_SMOKE_HOLD_MS" in harness

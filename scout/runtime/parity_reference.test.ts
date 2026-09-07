@@ -179,7 +179,9 @@ test('an interruption during startup reports the operator signal', async () => {
 
 test('an interruption during the run reports SIGINT distinctly', async () => {
   const controller = new AbortController();
-  const dependencies = deps({ startReference: () => deferredChild(null) });
+  // The child stops on SIGTERM: a signal code is only reported when the stop it
+  // claims actually happened, which the leaked-child case below asserts directly.
+  const dependencies = deps({ startReference: () => deferredChild() });
   const pending = runReference(options({ shutdown: controller.signal }), dependencies);
   controller.abort('SIGINT');
 
@@ -296,4 +298,146 @@ test('the reference refuses to run against a CDP endpoint it does not own', () =
 test('the module exposes boundaries without acting on import', async () => {
   const source = await Bun.file(new URL('./parity_reference.ts', import.meta.url)).text();
   expect(source).toContain('if (import.meta.main)');
+});
+
+// --- failure-safe lifecycle -------------------------------------------------
+//
+// The cases above all reach teardown because every dependency resolves. A
+// dependency that *throws* is the interesting one: a supervisor that lets the
+// exception escape leaves an owned Chromium running with nobody to reap it, and
+// writes no record of the attempt that leaked it. Ownership has to survive the
+// failure of the very code that establishes it.
+
+test('a readiness probe that throws still stops the browser it was probing', async () => {
+  const browser = deferredChild();
+  let started = 0;
+  const dependencies = deps({
+    startBrowser: () => browser,
+    waitReady: async () => {
+      throw new Error('probe_failed');
+    },
+    startReference: () => {
+      started += 1;
+      return exitedChild(0);
+    },
+  });
+
+  expect(await runReference(options(), dependencies)).toBe(70);
+  expect(started).toBe(0);
+  expect(browser.signals).toContain('SIGTERM');
+  expect(dependencies.recorded[0]).toMatchObject({ cleanupPassed: true, referenceExit: null });
+});
+
+test('a reference that cannot be spawned still stops the browser it was given', async () => {
+  const browser = deferredChild();
+  const dependencies = deps({
+    startBrowser: () => browser,
+    startReference: () => {
+      throw new Error('spawn_failed');
+    },
+  });
+
+  expect(await runReference(options(), dependencies)).toBe(70);
+  expect(browser.signals).toContain('SIGTERM');
+  expect(dependencies.recorded).toHaveLength(1);
+});
+
+test('a browser that cannot be spawned is still a recorded attempt', async () => {
+  let started = 0;
+  const dependencies = deps({
+    startBrowser: () => {
+      throw new Error('spawn_failed');
+    },
+    startReference: () => {
+      started += 1;
+      return exitedChild(0);
+    },
+  });
+
+  expect(await runReference(options(), dependencies)).toBe(70);
+  expect(started).toBe(0);
+  expect(dependencies.recorded[0]).toMatchObject({ browserExit: null, referenceExit: null });
+});
+
+test('a leaked child outranks the cancellation that was supposed to reap it', async () => {
+  const controller = new AbortController();
+  const browser = deferredChild(null);
+  const dependencies = deps({
+    startBrowser: () => browser,
+    startReference: () => deferredChild(null),
+  });
+  const pending = runReference(options({ shutdown: controller.signal }), dependencies);
+  controller.abort('SIGTERM');
+
+  // 143 would say "cancelled, and everything was cleaned up". It was not.
+  expect(await pending).toBe(70);
+  expect(dependencies.recorded[0]).toMatchObject({ interrupted: true, cleanupPassed: false });
+});
+
+test('a leaked child outranks the deadline that was supposed to reap it', async () => {
+  const dependencies = deps({
+    startBrowser: () => deferredChild(null),
+    startReference: () => deferredChild(null),
+  });
+
+  expect(await runReference(options({ deadlineMs: 5 }), dependencies)).toBe(70);
+  expect(dependencies.recorded[0]).toMatchObject({ timedOut: true, cleanupPassed: false });
+});
+
+// --- attempt evidence -------------------------------------------------------
+//
+// The attempt record is the only structured trace a reference leaves. Creating it
+// after acquisition means a container can drive a real browser through a real
+// Scout run and then discover it has nowhere to say so. It is therefore reserved
+// exclusively before the browser starts: main() cannot reach runReference without
+// a workspace, so a reservation that fails is a run that never acquires anything.
+
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { finalizeAttempt, prepareWorkspace, readFixture } from './parity_reference.ts';
+
+function evidenceRoot(): string {
+  return mkdtempSync(join(tmpdir(), 'parity-evidence-'));
+}
+
+test('the attempt record is reserved before anything can be acquired', () => {
+  const workspace = prepareWorkspace('ref-p3', evidenceRoot());
+
+  expect(existsSync(workspace.attemptPath)).toBe(true);
+  expect(JSON.parse(readFileSync(workspace.attemptPath, 'utf8'))).toMatchObject({
+    status: 'pending',
+    browser_isolation: 'fresh_ephemeral',
+  });
+});
+
+test('finalizing replaces the reservation and leaves no partial record behind', async () => {
+  const workspace = prepareWorkspace('ref-p3', evidenceRoot());
+
+  await finalizeAttempt(workspace, {
+    referenceExit: 0,
+    browserExit: 0,
+    cleanupPassed: true,
+    timedOut: false,
+    interrupted: false,
+  });
+
+  expect(JSON.parse(readFileSync(workspace.attemptPath, 'utf8'))).toMatchObject({
+    status: 'complete',
+    browser_isolation: 'fresh_ephemeral',
+    cleanupPassed: true,
+  });
+  expect(readdirSync(workspace.directory).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+});
+
+test('a workspace cannot be prepared twice, or without a mounted evidence root', () => {
+  const root = evidenceRoot();
+  prepareWorkspace('ref-p3', root);
+
+  expect(() => prepareWorkspace('ref-p3', root)).toThrow();
+  expect(() => prepareWorkspace('ref-p3', join(root, 'absent'))).toThrow(/^missing_output_mount$/);
+});
+
+test('an unreadable fixture raises a fixed code, not a filesystem error', () => {
+  expect(() => readFixture(join(evidenceRoot(), 'absent', 'url'))).toThrow(/^fixture_unreadable$/);
 });

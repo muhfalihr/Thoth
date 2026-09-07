@@ -15,6 +15,7 @@ compose_file=compose.stage1.parity-smoke.yml
 readiness_timeout=120
 browser_timeout=60
 exit_timeout=60
+hold_ms=120000
 
 if [ "$#" -ne 1 ]; then
     echo "usage: docker/test-parity-offline.sh IMAGE" >&2
@@ -71,11 +72,15 @@ print(state['identity'], state['health'], state['requests'])
 }
 
 # Chromium's parent only: a renderer dying is not the failure domain under test.
-kill_browser_parent() {
+# The second argument selects the action, so finding the browser and killing it
+# share one definition of what "the browser" is.
+browser_parent() {
     docker exec "$1" /opt/thoth/python/.venv/bin/python -c "
 import os
 import signal
+import sys
 
+action = sys.argv[1]
 for entry in os.listdir('/proc'):
     if not entry.isdigit():
         continue
@@ -86,19 +91,20 @@ for entry in os.listdir('/proc'):
     except OSError:
         continue
     if executable.endswith('/chrome') and not any(arg.startswith(b'--type=') for arg in arguments):
-        os.kill(int(entry), signal.SIGKILL)
+        if action == 'kill':
+            os.kill(int(entry), signal.SIGKILL)
         break
 else:
     raise SystemExit('chromium_not_found')
-"
+" "$2"
 }
 
-# Poll until Chromium exists, then kill it in the same call: there is no separate
-# readiness signal for the browser a reference started for itself.
-signal_browser_when_ready() {
+# Poll until Chromium exists: there is no separate readiness signal for the browser
+# a reference started for itself, and acting before it exists would test nothing.
+wait_for_browser() {
     local deadline=$((SECONDS + browser_timeout))
     while [ "$SECONDS" -lt "$deadline" ]; do
-        if kill_browser_parent "$1" >/dev/null 2>&1; then
+        if browser_parent "$1" "$2" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -125,21 +131,36 @@ echo "sentinel_untouched=true"
 compose run --no-deps -T reference >/dev/null || fail profile_not_reused
 echo "profile_not_reused=true"
 
+# The supervisor's own verdict, or nothing. A bare "nonzero" would also accept
+# Docker's forced kill after a stop timeout, which is what a reference with broken
+# signal handling produces, so each phase names the code it expects. The wait is
+# bounded because a hung reference must fail this job rather than hold it open.
+wait_for_exit() {
+    timeout "$exit_timeout" docker wait "$1" 2>/dev/null || echo "unbounded"
+}
+
 # Third phase: the reference and its browser are one failure domain. Killing
 # Chromium must fail the reference rather than leave a supervisor with no browser.
+# 70 is the supervisor saying so; 137 would only mean Docker killed the container.
 dying=$(compose run -d --no-deps reference) || fail forced_death_started
-signal_browser_when_ready "$dying" || fail browser_signalled
-if [ "$(docker wait "$dying")" -eq 0 ]; then
-    fail supervisor_fails_on_browser_death
-fi
+wait_for_browser "$dying" kill || fail browser_signalled
+[ "$(wait_for_exit "$dying")" -eq 70 ] 2>/dev/null || fail supervisor_fails_on_browser_death
 echo "supervisor_fails_on_browser_death=true"
 
 # Fourth phase: a cancelled reference must stop on request and still tear down.
-cancelled=$(compose run -d --no-deps reference) || fail cancellation_started
-docker stop --timeout 10 "$cancelled" >/dev/null || fail cancellation_signalled
-if [ "$(docker wait "$cancelled")" -eq 0 ]; then
-    fail cancelled_reference_reports_failure
-fi
+#
+# 143 is the whole verdict. The supervisor reports it only when it received the
+# signal, reaped both children, and finalized its attempt record: a child that
+# outlived SIGKILL returns 70 instead, and a record it could not write returns 70
+# too. The stop timeout is the supervisor's own budget, not Docker's patience, so
+# a cleanup that takes its full grace period is not mistaken for a hang.
+# The probe is asked to hold so the signal lands on a reference that is still
+# running: cancelling one that already finished would assert nothing about signal
+# handling, and waiting for its browser alone would still be a race with the exit.
+cancelled=$(compose run -d --no-deps -e THOTH_PARITY_SMOKE_HOLD_MS="$hold_ms" reference)     || fail cancellation_started
+wait_for_browser "$cancelled" find || fail cancellation_reached_a_running_reference
+docker stop --timeout "$exit_timeout" "$cancelled" >/dev/null || fail cancellation_signalled
+[ "$(wait_for_exit "$cancelled")" -eq 143 ] 2>/dev/null || fail cancelled_reference_reports_failure
 echo "cancelled_reference_reports_failure=true"
 
 teardown

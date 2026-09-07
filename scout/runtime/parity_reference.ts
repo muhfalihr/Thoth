@@ -182,6 +182,7 @@ async function stop(child: OwnedChild, exit: Tracked, graceMs: number): Promise<
 type Outcome =
   | { kind: 'ready' }
   | { kind: 'unready' }
+  | { kind: 'failed' }
   | { kind: 'browser' }
   | { kind: 'reference'; code: number }
   | { kind: 'interrupted'; signal: unknown }
@@ -203,8 +204,8 @@ export async function runReference(
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), options.deadlineMs ?? DEFAULT_DEADLINE_MS);
 
-  const browser = deps.startBrowser(options);
-  const browserExit = track(browser.exited);
+  let browser: OwnedChild | null = null;
+  let browserExit: Tracked | null = null;
   let reference: OwnedChild | null = null;
   let referenceExit: Tracked | null = null;
 
@@ -213,8 +214,13 @@ export async function runReference(
   );
   const expired = aborted(deadline.signal).then(() => ({ kind: 'deadline' }) as Outcome);
 
-  let outcome: Outcome;
+  // Startup lives inside the same block as the run: a dependency that throws
+  // must not carry the exception past teardown, or an owned Chromium survives
+  // with nobody left to reap it and no record that it was ever started.
+  let outcome: Outcome = { kind: 'failed' };
   try {
+    browser = deps.startBrowser(options);
+    browserExit = track(browser.exited);
     outcome = await Promise.race([
       deps
         .waitReady(AbortSignal.any([options.shutdown, deadline.signal]))
@@ -237,26 +243,32 @@ export async function runReference(
       // handlers are allowed to run before the outcome is judged.
       await Promise.resolve();
     }
+  } catch {
+    // A dependency failure is a failed attempt, not an escaping exception. Its
+    // text is never echoed: it can name the fixture path or the environment.
+    outcome = { kind: 'failed' };
   } finally {
     clearTimeout(timer);
   }
 
   // Snapshot the browser before teardown: after it, every path shows a stopped
   // browser, and a normal shutdown would be indistinguishable from an early death.
-  const browserDiedEarly = browserExit.settled;
+  const browserDiedEarly = browserExit?.settled ?? false;
 
   let cleanupPassed = true;
   if (reference && referenceExit) {
     cleanupPassed = (await stop(reference, referenceExit, killGraceMs)) && cleanupPassed;
   }
-  cleanupPassed = (await stop(browser, browserExit, killGraceMs)) && cleanupPassed;
+  if (browser && browserExit) {
+    cleanupPassed = (await stop(browser, browserExit, killGraceMs)) && cleanupPassed;
+  }
 
   const timedOut = outcome.kind === 'deadline';
   const interrupted = outcome.kind === 'interrupted';
   try {
     await deps.writeResult({
       referenceExit: referenceExit?.code ?? null,
-      browserExit: browserExit.code,
+      browserExit: browserExit?.code ?? null,
       cleanupPassed,
       timedOut,
       interrupted,
@@ -267,12 +279,17 @@ export async function runReference(
     return UNEXPECTED_FAILURE_EXIT;
   }
 
+  // A child that outlived SIGKILL outranks every other verdict. It is the leak
+  // this entrypoint exists to prevent, and neither a cancellation nor a deadline
+  // explains it away: reporting 143 there would claim a clean stop that did not
+  // happen, and CI would accept broken reaping as a pass.
+  if (!cleanupPassed) return UNEXPECTED_FAILURE_EXIT;
   if (outcome.kind === 'interrupted') {
     return outcome.signal === 'SIGINT' ? SIGINT_EXIT : SIGTERM_EXIT;
   }
   if (timedOut) return DEADLINE_EXIT;
   if (outcome.kind !== 'reference') return UNEXPECTED_FAILURE_EXIT;
-  if (browserDiedEarly || !cleanupPassed) return UNEXPECTED_FAILURE_EXIT;
+  if (browserDiedEarly) return UNEXPECTED_FAILURE_EXIT;
   return outcome.code;
 }
 
@@ -282,7 +299,14 @@ export async function runReference(
 // It is deliberately thin: the decisions live in the pure boundaries and in
 // runReference above, which the tests drive with injected children.
 
-import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs';
 import { chromiumArguments } from './legacy_cdp.ts';
 
 /** The sample evidence mount. Absent means the container was started wrongly. */
@@ -339,34 +363,104 @@ async function waitForDevtools(signal: AbortSignal): Promise<boolean> {
   return false;
 }
 
-interface ReferenceWorkspace {
+export interface ReferenceWorkspace {
   directory: string;
   reportPath: string;
+  attemptPath: string;
+  startedAt: string;
   stdout: number;
   stderr: number;
   browserLog: number;
 }
 
 /**
- * Create the evidence directory and open every restricted stream before anything
- * is acquired, so a run that cannot be recorded never starts.
+ * Create the evidence directory, reserve the attempt record, and open every
+ * restricted stream before anything is acquired, so a run that cannot be recorded
+ * never starts.
+ *
+ * The attempt record is reserved rather than written at the end. Creating it last
+ * would let a container drive a real browser through a real Scout run and only
+ * then discover it has nowhere to say so, which is the one failure that leaves an
+ * operator with an acquisition and no structured evidence of it. Reserving it here
+ * also means `main` cannot reach `runReference` without one: the workspace is the
+ * value it needs to build the production dependencies at all.
  *
  * The directory is created non-recursively on purpose: EEXIST means this reference
  * id already produced evidence, and silently reusing it would overwrite the record
  * of an earlier attempt.
  */
-function prepareWorkspace(referenceId: string): ReferenceWorkspace {
-  if (!existsSync(OUTPUT_MOUNT)) throw new Error('missing_output_mount');
-  const directory = `${OUTPUT_MOUNT}/legacy-scout/${validateReferenceId(referenceId)}`;
-  mkdirSync(`${OUTPUT_MOUNT}/legacy-scout`, { recursive: true, mode: RESTRICTED_DIR_MODE });
+export function prepareWorkspace(
+  referenceId: string,
+  root: string = OUTPUT_MOUNT,
+): ReferenceWorkspace {
+  if (!existsSync(root)) throw new Error('missing_output_mount');
+  const directory = `${root}/legacy-scout/${validateReferenceId(referenceId)}`;
+  mkdirSync(`${root}/legacy-scout`, { recursive: true, mode: RESTRICTED_DIR_MODE });
   mkdirSync(directory, { mode: RESTRICTED_DIR_MODE });
+
+  const startedAt = new Date().toISOString();
+  const attemptPath = `${directory}/reference-attempt.json`;
+  writeAttempt(attemptPath, { started_at: startedAt, status: 'pending' }, 'wx');
+
   return {
     directory,
     reportPath: referenceOutputPath(referenceId),
+    attemptPath,
+    startedAt,
     stdout: openSync(`${directory}/reference.stdout.log`, 'wx', RESTRICTED_FILE_MODE),
     stderr: openSync(`${directory}/reference.stderr.log`, 'wx', RESTRICTED_FILE_MODE),
     browserLog: openSync(`${directory}/browser.log`, 'wx', RESTRICTED_FILE_MODE),
   };
+}
+
+function writeAttempt(path: string, body: Record<string, unknown>, flag: 'w' | 'wx'): void {
+  writeFileSync(
+    path,
+    `${JSON.stringify({ browser_isolation: 'fresh_ephemeral', ...body }, null, 2)}\n`,
+    { mode: RESTRICTED_FILE_MODE, flag },
+  );
+}
+
+/**
+ * Replace the reservation with the lifecycle result, atomically.
+ *
+ * The final record is written beside the reservation and renamed over it, so a
+ * reader never sees a half-written attempt: the file is either the reservation or
+ * the complete result, and `rename` on the same directory is the primitive that
+ * guarantees it.
+ */
+export async function finalizeAttempt(
+  workspace: ReferenceWorkspace,
+  result: ReferenceResult,
+): Promise<void> {
+  const pending = `${workspace.attemptPath}.tmp`;
+  writeAttempt(
+    pending,
+    {
+      started_at: workspace.startedAt,
+      finished_at: new Date().toISOString(),
+      status: 'complete',
+      ...result,
+    },
+    'w',
+  );
+  renameSync(pending, workspace.attemptPath);
+}
+
+/**
+ * Read the fixture from its mount, mapping any filesystem failure to a fixed code.
+ *
+ * A raw `readFileSync` error carries a path and an errno string into the console,
+ * and this entrypoint's contract is fixed codes only.
+ */
+export function readFixture(path: string = FIXTURE_PATH): string {
+  let contents: string;
+  try {
+    contents = readFileSync(path, 'utf8');
+  } catch {
+    throw new Error('fixture_unreadable');
+  }
+  return validateFixtureUrl(contents);
 }
 
 interface SpawnedChild {
@@ -382,7 +476,6 @@ function owned(child: SpawnedChild): OwnedChild {
 }
 
 function productionDeps(workspace: ReferenceWorkspace, fixtureUrl: string): ReferenceDeps {
-  const startedAt = new Date().toISOString();
   return {
     // about:blank always: this browser exists to serve the reference, and the
     // production launcher target would be a page nobody asked for.
@@ -413,22 +506,7 @@ function productionDeps(workspace: ReferenceWorkspace, fixtureUrl: string): Refe
           },
         ),
       ),
-    writeResult: async (result) => {
-      writeFileSync(
-        `${workspace.directory}/reference-attempt.json`,
-        `${JSON.stringify(
-          {
-            started_at: startedAt,
-            finished_at: new Date().toISOString(),
-            browser_isolation: 'fresh_ephemeral',
-            ...result,
-          },
-          null,
-          2,
-        )}\n`,
-        { mode: RESTRICTED_FILE_MODE, flag: 'wx' },
-      );
-    },
+    writeResult: (result) => finalizeAttempt(workspace, result),
   };
 }
 
@@ -447,7 +525,7 @@ async function main(): Promise<void> {
   let fixtureUrl = '';
   try {
     referenceId = resolveReferenceEnvironment(process.env).referenceId;
-    if (!args.offlineSmoke) fixtureUrl = validateFixtureUrl(readFileSync(FIXTURE_PATH, 'utf8'));
+    if (!args.offlineSmoke) fixtureUrl = readFixture();
   } catch (error) {
     console.error((error as Error).message);
     process.exit(64);

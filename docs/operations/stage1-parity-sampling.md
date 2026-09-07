@@ -290,8 +290,11 @@ chmod 700 "$SAMPLE_DIR/reference-input" && rm -rf "$SAMPLE_DIR/reference-input"
 
 The run leaves four files under `$SAMPLE_DIR/scout-output/legacy-scout/<reference-id>/`:
 `reference-attempt.json` with the supervisor's own lifecycle result, and `reference.stdout.log`,
-`reference.stderr.log`, and `browser.log`. The attempt record carries the reference exit code, the
-browser's exit signal, and `browser_isolation: fresh_ephemeral`. All four are restricted evidence:
+`reference.stderr.log`, and `browser.log`. The attempt record is reserved as
+`{"status": "pending"}` before the browser starts and replaced in one step when the supervisor
+finishes, so a record still reading `pending` means the container died without a verdict and its
+evidence is incomplete. A finished record carries the reference exit code, the browser's exit
+signal, and `browser_isolation: fresh_ephemeral`. All four are restricted evidence:
 diagnose a failed reference from them privately and record only the exit status and a short
 non-quoting summary in the pairing record.
 
