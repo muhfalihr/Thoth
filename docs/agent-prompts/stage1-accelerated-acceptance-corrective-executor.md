@@ -33,7 +33,7 @@ Use:
 
 Current checkpoint:
 
-- Planning baseline commit: 7d0d1e6 (`docs: define accelerated stage1 acceptance`).
+- Planning and prompt baseline commit: fc95f5c (`docs: add accelerated acceptance executor prompt`).
 - The branch may contain later operator-owned commits. Inspect drift rather than resetting or checking out the baseline.
 - The published acquisition release currently deployed is:
   ghcr.io/muhfalihr/thoth@sha256:9187c97f059b8fa55907aa481edc44c771f0ca060f87954c4c55d7ad0f1276af
@@ -41,14 +41,19 @@ Current checkpoint:
   433f3938f8b0ca2468541972801a472a8cb9a256
 - The deployment is not the target of this task.
 - The accelerated acceptance window has not been opened.
-- One isolated activation parity pair is separately authorized operational work, not part of this implementation prompt.
-- Controlled fallback, acceptance-window activation, evidence collection, and cutover remain separately gated.
+- The authorization for one isolated activation parity pair has already been consumed by sample `p3`; it is not reusable authorization.
+- `p3` ran exactly one Python workflow and one isolated Scout reference against the deployed digest. The Python side completed through `scrapling_headless -> failed` then `tikwm_cdn -> succeeded`, with its artifact checks passing.
+- The Scout reference exited nonzero during `trace_source`, reported `no acceptable main video candidate` / `media_unavailable`, produced no media, and therefore had false Scout-side media integrity checks. Browser isolation and teardown passed, and the deployed `legacy-cdp` identity and health remained unchanged.
+- The executor report labelled `p3` as `mismatch`, but the authoritative rule in `docs/operations/stage1-parity-sampling.md` classifies a reference failure, missing reference media, or any false Scout-side artifact check as `evidence_incomparable`. Treat `p3` as preserved failed/incomplete comparison evidence pending a separately approved evidence correction; it is not a parity pass and cannot satisfy an activation or in-window parity count.
+- Restricted evidence remains under `~/thoth-stage1-parity/p3` and `~/thoth-stage1-parity/pairing-record.jsonl`. Do not read raw values into chat and do not mutate these files in this task.
+- No observation was created or changed for `p3`, and no Issue #5 comment was posted.
+- Controlled fallback, any parity retry or replacement sample, acceptance-window activation, evidence collection, and cutover remain separately gated.
 
 Before editing:
 
 1. Capture branch, HEAD, upstream, and worktree status.
-2. Confirm the planning baseline is an ancestor of HEAD and both new design/plan files exist.
-3. Inspect every change after 7d0d1e6 and every pre-existing worktree change.
+2. Confirm the prompt baseline is an ancestor of HEAD and the design, plan, and executor-prompt files exist.
+3. Inspect every change after fc95f5c and every pre-existing worktree change.
 4. Preserve operator-owned changes and keep them out of your commits.
 5. If the approved spec or plan has materially changed, or repository drift conflicts with it, stop and report the exact conflict.
 
@@ -85,6 +90,7 @@ Authorized deliverables:
    - evaluator `ready` is necessary but not sufficient for cutover;
    - controlled fallback, restart recovery, rollback drill, and human approval remain required external gates;
    - Python-default approval does not remove or disable TypeScript Scout.
+10. Do not state or imply that the activation parity gate passed. The current operational checkpoint is blocked on preserved `p3` evidence until a separate review and corrective decision.
 
 TDD and verification requirements:
 
@@ -120,6 +126,8 @@ Hard stops:
 - Do not run TikTok acquisition, parity, controlled fallback, rollback, or provider requests.
 - Do not open an acceptance/soak window.
 - Do not create or mutate observations, pairing records, aggregate reports, S3 evidence, fixtures, environment files, secrets, or GitHub Issue #5.
+- Do not relabel, repair, append to, or normalize the `p3` pairing entry during this policy task. Report the classification conflict without changing restricted evidence.
+- Do not retry `p3`, create `p4`, replace its fixture, seed authentication, or diagnose the live provider through another request.
 - Do not change success/fallback/failure rates, cleanup semantics, blocker ordering, route definitions, parity meaning, or redaction behavior.
 - Do not enable Python-only mode, disable fallback, delete Scout, or begin Task 10.
 - Do not fix unrelated test failures. Diagnose, preserve evidence, and report them.
@@ -136,7 +144,8 @@ Required final report in Indonesian:
 8. Documentation consistency scan result.
 9. Any pre-existing changes or environmental limitations preserved.
 10. Explicit list of operational actions not performed.
-11. Final handoff: `Ready for independent review before push; no live gate was entered.`
+11. Confirmation that `p3` remains excluded from every parity count and that its restricted evidence was untouched.
+12. Final handoff: `Ready for independent review before push; p3 remains a blocked evidence-incomparable activation gate and no new live gate was entered.`
 
-Stop after the report. Do not push and do not continue into the already approved isolated parity operation.
+Stop after the report. Do not push, retry parity, start controlled fallback, or open the accelerated acceptance window.
 ```
