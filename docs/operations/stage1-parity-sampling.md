@@ -453,11 +453,13 @@ The two samples must use distinct approved, public, first-party TikTok posts, so
 cannot supply both. Keep every failed designated sample visible.
 
 The isolated activation parity pair is collected before the window opens. It is not an observation
-and never counts toward these two in-window samples. Activation sample `p3` is `evidence_incomparable`:
-its Scout reference failed during `trace_source`, produced no reference media, and left Scout-side
-artifact-integrity checks false. `p3` did not pass the activation parity gate, is not a parity pass,
-and cannot count toward an acceptance dataset. Its evidence stays preserved and unmodified; a retry,
-replacement sample, or evidence correction requires separate approval.
+and never counts toward these two in-window samples. That gate must pass before a window opens. An
+activation pair whose reference fails, produces no Scout media, or leaves any Scout-side
+artifact-integrity check false is `evidence_incomparable`: preserved failure evidence, never a
+parity pass, and never usable to satisfy the gate or an acceptance dataset. Failed activation
+evidence stays in restricted evidence and is recorded in the operator change record; a retry,
+replacement sample, or evidence correction requires separate approval. Read the current gate state
+from that change record rather than from this runbook.
 
 The evaluator measures 24 hours from the earliest to latest included valid-completed observation,
 not from container startup or an operator's planned start time. It also requires at least twelve

@@ -87,11 +87,11 @@ terminal-failure rates stay 0.95, 0.05, and 0.02. Archived datasets keep the pol
 their own reports and are never reclassified under the accelerated defaults.
 
 The passed parity gate above is the offline/live implementation comparison, not the containerized
-activation parity gate. That activation gate has not passed: its single authorized pair, sample
-`p3`, is `evidence_incomparable` because the Scout reference failed and produced no reference media.
-`p3` cannot count toward an acceptance dataset or the two in-window samples, and no accelerated
-acceptance window has been opened. The isolated activation parity pair is pre-window evidence in
-every case, separate from the two in-window samples.
+activation parity gate. The activation gate is separate and must pass before an accelerated
+acceptance window opens; its current state lives in the operator change record, not here. The
+isolated activation parity pair is pre-window evidence in every case, separate from the two
+in-window samples, and an activation pair whose Scout reference fails or produces no media is
+`evidence_incomparable` rather than a pass. No accelerated acceptance window has been opened.
 
 An evaluator verdict of `ready: true` is necessary but not sufficient for cutover. The controlled
 fallback exercise, restart recovery, the rollback drill, and explicit human approval all remain
@@ -318,8 +318,9 @@ Retirement then proceeds in this order:
 
 ## Immediate Next Step
 
-The Stage 1 implementation live gate has passed; the containerized activation parity gate has not.
-Resolve that blocked gate first, then complete the accelerated acceptance window on the Python
+The Stage 1 implementation live gate has passed. Clear the containerized activation parity gate,
+whose current state is recorded in the operator change record, then complete the accelerated
+acceptance window on the Python
 acquisition path — see the "TikTok Stage 1 operational soak" section of
 [python-control-plane.md](python-control-plane.md) — then make the capability-specific retirement
 decision for TikTok single-post acquisition, following its own

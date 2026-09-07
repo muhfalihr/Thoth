@@ -175,10 +175,11 @@ anyone proposes changing that default. Nothing here performs, simulates, or reco
    Git (see "Observation contract" below), and designate at least two of the converted runs as
    controlled parity samples, each from a distinct approved, public, first-party TikTok post. The
    isolated activation parity pair is separate pre-window evidence: it is collected before the
-   window opens, it is not an observation, and it never counts toward those two samples. The one
-   authorized activation pair so far, sample `p3`, is `evidence_incomparable` — its Scout reference
-   failed and produced no reference media — so it did not pass the activation parity gate and
-   cannot count toward an acceptance dataset.
+   window opens, it is not an observation, and it never counts toward those two samples. The
+   activation parity gate must pass before a window opens; read its current state from the operator
+   change record. An activation pair whose reference fails, produces no Scout media, or leaves any
+   Scout-side artifact-integrity check false is `evidence_incomparable`, and that failed evidence
+   stays in restricted evidence and the change record rather than satisfying the gate.
    Reconcile every workflow in the window to exactly one observation, each with a real source of
    cleanup evidence (see "Cleanup evidence per route").
 4. Collect at least 24 hours (1 day) and 12 valid completed runs before evaluating.
@@ -190,7 +191,17 @@ anyone proposes changing that default. Nothing here performs, simulates, or reco
 
 6. Archive only the aggregate report file, `tiktok-stage1-soak-report.json`, written into
    `<approved-aggregate-directory>`. Investigate every sorted blocker it lists without editing the
-   evidence to force a pass.
+   evidence to force a pass. Bind that report in the operator change record to all six evidence
+   identities: the deployed acquisition digest, the acquisition implementation commit, the
+   evaluator implementation commit, the policy values embedded in the report, the provider
+   configuration reference, and the dataset/window identity. Acquisition identity and evaluator
+   identity are distinct: the evaluator implementation commit is the commit containing the
+   `TikTokSoakPolicy` and `evaluate_tiktok_soak` implementation that produced the report, resolved
+   per evaluation with
+   `git log -1 --format=%H -- python/src/thoth_control_plane/operations/tiktok_soak.py`. A later
+   documentation-only commit does not replace it. At the current checkpoint that resolves to
+   `c7b2def746e5f0cc27b71cb747db5d1e846329e4`; treat that as an example, not a fixed value.
+   Archived reports keep their original embedded policy and recorded provenance.
 7. Require `ready: true` in that report, explicit human approval, and the rollback drill under
    "Verification and smoke scope" below, in that order, before anyone proposes the default-mode
    commit. A passing report is evidence for that decision, never the decision itself, and never a

@@ -16,6 +16,8 @@
 - Success/fallback/failure rates remain 0.95, 0.05, and 0.02.
 - Observation and aggregate report schemas remain version 1 with no new fields.
 - The activation parity pair remains pre-window evidence and does not count toward the two in-window samples.
+- Acquisition identity and evaluator identity are distinct evidence identities. Every new aggregate report is bound in the operator change record to the acquisition digest, the acquisition implementation commit, the evaluator implementation commit, the policy values embedded in that report, the provider configuration reference, and the dataset/window identity.
+- The evaluator implementation commit is the commit containing the evaluated `TikTokSoakPolicy` and `evaluate_tiktok_soak` implementation, resolved per evaluation with `git log -1 --format=%H -- python/src/thoth_control_plane/operations/tiktok_soak.py`. A later documentation-only commit does not replace it. For this unpushed implementation it is `c7b2def746e5f0cc27b71cb747db5d1e846329e4`, recorded as the current checkpoint example rather than a permanent value.
 - A new window requires separate controlled-fallback and operator approvals.
 - Archived datasets must not be reclassified using the new defaults.
 - The deployed acquisition digest remains `ghcr.io/muhfalihr/thoth@sha256:9187c97f059b8fa55907aa481edc44c771f0ca060f87954c4c55d7ad0f1276af` unless a later operator-approved deployment replaces it.
@@ -180,7 +182,8 @@ In `docs/python-control-plane.md`:
 - replace active `7 days / 168 hours / 50 / 5` instructions with `24 hours / 12 / 2`;
 - retain the existing success, fallback, failure, cleanup, and human-approval rules;
 - link the superseding accelerated-acceptance design;
-- state that archived reports retain their embedded original policy.
+- state that archived reports retain their embedded original policy and recorded provenance;
+- require every new aggregate report to be bound to the acquisition digest, the acquisition implementation commit, the evaluator implementation commit, the embedded policy values, the provider configuration reference, and the dataset/window identity.
 
 - [ ] **Step 2: Update the local Docker activation sequence**
 
@@ -190,7 +193,8 @@ In `docs/operations/stage1-local-docker.md`:
 - state that the activation parity pair is not one of the two in-window parity samples;
 - require explicit operator approval before creating the accelerated dataset;
 - add the 24-hour, 12-run, two-parity completion target;
-- retain restart-recovery, rollback, and human approval as external gates.
+- retain restart-recovery, rollback, and human approval as external gates;
+- document the six evidence identities of an aggregate report and how the operator resolves the evaluator implementation commit for each evaluation.
 
 - [ ] **Step 3: Update parity sampling completion language**
 

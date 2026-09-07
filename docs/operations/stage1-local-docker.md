@@ -285,13 +285,10 @@ in-window parity samples. An activation pair whose reference fails, produces no 
 leaves any Scout-side artifact-integrity check false is `evidence_incomparable`: preserved failure
 evidence, never a parity pass, and never usable to satisfy this gate or an acceptance dataset.
 
-The activation parity gate is currently blocked. Sample `p3` consumed the single authorization for
-an isolated activation pair: the Python workflow completed, but the Scout reference exited nonzero
-during `trace_source` and produced no reference media, so its Scout-side artifact-integrity checks
-are false. `p3` is therefore `evidence_incomparable`. It did not pass the activation parity gate, it
-is not a parity pass, and it cannot count toward an acceptance dataset or the two in-window samples.
-Its evidence is preserved unchanged; any retry, replacement sample, or evidence correction needs a
-separate approval.
+The activation parity gate must pass before a window opens. Failed activation evidence stays in
+restricted evidence and is recorded in the operator change record; it is never deleted, relabelled,
+or retried without its own approval. Read the current gate state from the operator change record.
+Do not copy a gate verdict into this runbook.
 
 ## Accelerated acceptance target
 
@@ -310,6 +307,35 @@ policy embedded in their own reports; they are never re-evaluated under these de
 An aggregate report of `ready: true` is necessary but not sufficient. The controlled fallback
 exercise, the restart-recovery check, the rollback drill, and explicit human approval all remain
 required, and a Python-default decision neither removes nor disables the TypeScript Scout path.
+
+## Evidence identity of an aggregate report
+
+Acquisition identity and evaluator identity are two distinct evidence identities. The acquisition
+identity is what produced the observations; the evaluator identity is what turned them into a
+verdict. Bind every new aggregate report in the operator change record to all six:
+
+| Identity | What it is |
+| --- | --- |
+| Acquisition digest | The deployed `ghcr.io/muhfalihr/thoth@sha256:…` every THOTH role runs |
+| Acquisition implementation commit | The commit that built that digest |
+| Evaluator implementation commit | The commit containing the `TikTokSoakPolicy` and `evaluate_tiktok_soak` implementation that generated the report |
+| Embedded policy values | The window, run-count, parity, and rate values recorded inside that report |
+| Provider configuration reference | The revision of the provider environment file that was deployed |
+| Dataset/window identity | The observation dataset and window start timestamp the report evaluated |
+
+Resolve the evaluator implementation commit for each evaluation; do not carry a previous one
+forward. It is the commit that last changed
+`python/src/thoth_control_plane/operations/tiktok_soak.py`, which the operator resolves with:
+
+```bash
+git log -1 --format=%H -- python/src/thoth_control_plane/operations/tiktok_soak.py
+```
+
+A later documentation-only commit does not replace the evaluator implementation identity: HEAD at
+evaluation time is not automatically the evaluator commit. At the current checkpoint that commit is
+`c7b2def746e5f0cc27b71cb747db5d1e846329e4`, which is an example of the resolution above and not a
+permanent value. Archived reports keep their own embedded policy and their own recorded provenance;
+they are never rebound to a later evaluator commit.
 
 ## Soak parity samples
 
@@ -353,10 +379,12 @@ soak window in flight is frozen: do not apply any of this to it.
    published-digest infrastructure smoke and `docker/test-cdp-offline.sh`. A build that is green
    locally is not a published artefact. Every push mints a new digest, so a digest read from an
    earlier run is the wrong artefact.
-3. Record the exact implementation commit, the digest from that commit's Actions summary, and the
-   revision of the provider configuration being deployed. These three are the identity of the new
-   window. Adding or rotating the provider file changes runtime configuration, not the digest, so
-   both must be recorded separately.
+3. Record the exact acquisition implementation commit, the digest from that commit's Actions
+   summary, and the revision of the provider configuration being deployed. These three are the
+   acquisition identity of the new window. Adding or rotating the provider file changes runtime
+   configuration, not the digest, so both must be recorded separately. Record the evaluator
+   implementation commit separately when the window's report is generated, as in "Evidence identity
+   of an aggregate report" above.
 4. Validate the operator inputs against that digest with `stage1-local-preflight --provider-env-file`
    before pulling, then render the merged Compose pair with `config --quiet`.
 5. Deploy every THOTH role — API, worker, and the CDP sidecar — on that one digest. A mixed
