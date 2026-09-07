@@ -107,14 +107,17 @@ Required verification evidence, using only safe output:
 Required final report in Indonesian:
 1. Baseline/final repository identity, branch/upstream, clean worktree.
 2. Safe preflight booleans and original sample-row count.
-3. Backup-created, exact-mode, and byte-identical booleans; omit path and digest.
-4. Amendment count/validity, prefix preservation, rows added, and effective result; omit amendment ID and target hash.
-5. Issue #5 comment ID/URL, count, and exact-body boolean.
+3. When reached, backup-created, exact-mode, and byte-identical booleans; omit path and digest.
+4. When reached, amendment count/validity, prefix preservation, rows added, and effective result; omit amendment ID and target hash.
+5. When reached, Issue #5 comment ID/URL, count, and exact-body boolean.
 6. Explicitly state that the immutable original p3 row still says `mismatch`, while amendment-aware effective classification is `evidence_incomparable`.
 7. Explicitly state that p3 remains excluded from every parity count.
 8. List all hard-stop actions not performed.
 9. State any safe failure stage or environmental limitation without restricted data.
-10. End exactly with: `p3 evidence correction recorded and ready for independent review; no parity retry, deployment, controlled fallback, or acceptance window was entered.`
+10. Use exactly one truthful ending:
+    - Full success: `p3 evidence correction recorded and ready for independent review; no parity retry, deployment, controlled fallback, or acceptance window was entered.`
+    - Stopped before append: `p3 evidence correction was not performed; execution stopped safely before mutation.`
+    - Append preserved but Issue checkpoint incomplete: `p3 restricted amendment was preserved; Issue #5 checkpoint is incomplete and requires separate operator authorization.`
 
 Stop after this report. Do not continue to another parity sample or operational gate.
 ```
