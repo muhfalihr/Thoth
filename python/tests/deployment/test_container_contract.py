@@ -416,3 +416,58 @@ def test_cdp_harness_owns_everything_it_creates() -> None:
     assert "THOTH_CDP: http://legacy-cdp:18800" in smoke_compose
     assert "NOVITA" not in smoke_compose
     assert smoke_compose.count("seccomp:unconfined") == 1
+
+
+def test_both_image_jobs_prove_the_reference_owns_its_browser() -> None:
+    """Isolation is a property of the image, so both gates must exercise it.
+
+    The PR gate catches a regression before it is published; the digest gate
+    catches one in the artifact that operators actually run.
+    """
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    validate = workflow[workflow.index("  validate-image:") : workflow.index("  publish-image:")]
+    smoke = workflow[workflow.index("  stack-smoke:") :]
+
+    assert 'bash docker/test-parity-offline.sh "${CANDIDATE_IMAGE}"' in validate
+    assert 'bash docker/test-parity-offline.sh "${THOTH_IMAGE_REF}"' in smoke
+    # The parity harness is additional evidence, never a replacement.
+    assert 'bash docker/test-cdp-offline.sh "${CANDIDATE_IMAGE}"' in validate
+    assert 'bash docker/test-cdp-offline.sh "${THOTH_IMAGE_REF}"' in smoke
+
+
+def test_parity_harness_owns_everything_it_creates() -> None:
+    """The harness runs beside a real deployment, so its blast radius is the contract."""
+    harness = _repo_text("docker/test-parity-offline.sh")
+
+    assert "set -euo pipefail" in harness
+    assert "trap teardown EXIT INT TERM" in harness
+    assert "project_prefix=stage1-parity-smoke" in harness
+    assert '"${project_prefix}"-*)' in harness
+    assert 'docker compose -p "$test_project" -f "$compose_file"' in harness
+    # A forced browser death must be signalled at Chromium's parent only; a
+    # renderer dying is not the failure this proves.
+    assert "--type=" in harness
+    # Neither the deployment nor the operator file may be driven from a test.
+    assert "compose.stage1.local.yml" not in harness
+    assert "compose.stage1.parity.yml" not in harness
+    assert "docker system prune" not in harness
+    assert "compose logs" not in harness and "docker logs" not in harness
+
+
+def test_parity_smoke_network_is_internal_and_carries_a_synthetic_sentinel() -> None:
+    """The sentinel stands in for a production relay and must stay untouched."""
+    smoke_compose = _repo_text("compose.stage1.parity-smoke.yml")
+
+    assert "${THOTH_TEST_IMAGE:?set candidate image}" in smoke_compose
+    assert "internal: true" in smoke_compose
+    assert "ports:" not in smoke_compose
+    assert "- /var/lib/thoth/parity-profile:uid=10001,gid=10001,mode=0700" in smoke_compose
+    assert "/opt/thoth/bin/start-parity-reference" in smoke_compose
+    assert "--offline-smoke" in smoke_compose
+    # The reference drives only the browser it started, never the alias a
+    # deployment sidecar answers on.
+    assert "THOTH_CDP: http://127.0.0.1:18801" in smoke_compose
+    assert "- legacy-cdp" in smoke_compose
+    assert "NOVITA" not in smoke_compose
+    # Only the browser-bearing container may relax seccomp.
+    assert smoke_compose.count("seccomp:unconfined") == 1

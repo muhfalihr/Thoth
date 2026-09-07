@@ -6,37 +6,62 @@
 // would still fail every reference.
 //
 // It proves three things and only three: the owned browser on loopback is reachable,
-// the Scout client can navigate it to a page, and the production relay authority is
-// not reachable from here. Navigation goes to an explicit local sentinel, never to a
-// site, so this is transport and isolation evidence — not a run, not parity, and not
-// evidence about the legacy fallback path.
+// the Scout client can navigate it to a page, and the profile it was given is empty.
+// The page is served by this process on an ephemeral loopback port, so no name is
+// resolved and no packet leaves the container. Nothing here is a run, parity
+// evidence, or evidence about the legacy fallback path.
+//
+// It deliberately never contacts the relay authority a deployment sidecar answers
+// on. The smoke stack aliases a synthetic sentinel there and asserts it was never
+// called; a probe that dialled it to prove absence would destroy that evidence.
 
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { connect } from '../lib/cdp.ts';
-import { REFERENCE_CDP_BASE } from './parity_reference.ts';
+import { REFERENCE_CDP_BASE, REFERENCE_PROFILE_DIR } from './parity_reference.ts';
 
-/** The production relay authority, checked for absence rather than used. */
-export const PRODUCTION_CDP_BASE = 'http://legacy-cdp:18800';
 export const PROBE_TIMEOUT_MS = 10_000;
+export const LOCAL_PAGE_TITLE = 'parity-local';
+export const PROFILE_MARKER_NAME = 'parity-smoke.marker';
 
-const FORBIDDEN_SENTINEL_HOSTS = /(^|\.)tiktok\.com$/;
+/** A live loopback page, owned by this process. */
+export interface LocalPage {
+  url: string;
+  stop(): Promise<void>;
+}
 
 /**
- * The sentinel must be named explicitly and must be plain HTTP to a host that is not
- * TikTok. There is no default: a probe that silently picks its own target is one
- * network policy change away from contacting a real site.
+ * Serve one fixed page on an ephemeral loopback port.
+ *
+ * Port 0 is the point: a fixed port would make two concurrent smoke containers
+ * collide, and a reachable address would make this something other than a probe.
  */
-export function sentinelTarget(env: Record<string, string | undefined>): string {
-  const value = (env.THOTH_PARITY_SENTINEL_URL ?? '').trim();
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error('invalid_sentinel_url');
-  }
-  if (parsed.protocol !== 'http:' || FORBIDDEN_SENTINEL_HOSTS.test(parsed.hostname)) {
-    throw new Error('invalid_sentinel_url');
-  }
-  return value;
+export function serveLocalPage(): LocalPage {
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () =>
+      new Response(`<title>${LOCAL_PAGE_TITLE}</title>`, {
+        headers: { 'content-type': 'text/html' },
+      }),
+  });
+  return {
+    url: `http://127.0.0.1:${server.port}/reference`,
+    stop: () => server.stop(true),
+  };
+}
+
+/**
+ * Assert the profile is empty, then mark it, failing if the mark did not persist.
+ *
+ * The marker is what makes "fresh profile" falsifiable across runs: a second
+ * container that finds it has been handed a profile the first one used, which is
+ * exactly the sharing this container exists to avoid.
+ */
+export function claimFreshProfile(profileDir: string = REFERENCE_PROFILE_DIR): void {
+  const marker = `${profileDir}/${PROFILE_MARKER_NAME}`;
+  if (existsSync(marker)) throw new Error('profile_not_fresh');
+  writeFileSync(marker, `${new Date().toISOString()}\n`, { mode: 0o600, flag: 'wx' });
+  if (!readFileSync(marker, 'utf8').trim()) throw new Error('profile_marker_unwritable');
 }
 
 async function withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
@@ -63,40 +88,34 @@ export async function probeOwnedBrowser(): Promise<void> {
   await response.arrayBuffer();
 }
 
-/** The real Scout client, navigating the owned browser to the local sentinel. */
-export async function probeSentinelNavigation(target: string): Promise<void> {
-  const client = await withTimeout(connect({ navigate: target, waitMs: 500 }), 'scout_connect');
+/**
+ * The real Scout client, navigating the owned browser to the local page.
+ *
+ * The page is left loaded on purpose: a reference ends wherever its source trail
+ * led, and a shared sidecar could not survive that. This one is discarded.
+ */
+export async function probeLocalNavigation(page: LocalPage): Promise<void> {
+  const client = await withTimeout(connect({ navigate: page.url, waitMs: 500 }), 'scout_connect');
   try {
-    const href = await withTimeout(client.evaluate('location.href'), 'scout_evaluate');
-    if (String(href) !== target) throw new Error('sentinel_navigation_failed');
+    const answer = await withTimeout(client.evaluate('6 * 7'), 'scout_evaluate');
+    if (Number(answer) !== 42) throw new Error('local_cdp_failed');
+    const title = await withTimeout(client.evaluate('document.title'), 'scout_title');
+    if (String(title) !== LOCAL_PAGE_TITLE) throw new Error('local_navigation_failed');
   } finally {
     client.close();
   }
 }
 
-/** Absence evidence: the production relay must not answer from inside a reference. */
-export async function productionCdpUnreachable(): Promise<boolean> {
-  try {
-    const response = await fetch(new URL('/json/version', PRODUCTION_CDP_BASE), {
-      signal: AbortSignal.timeout(2_000),
-    });
-    await response.arrayBuffer();
-    return false;
-  } catch {
-    return true;
-  }
-}
-
 async function main(): Promise<void> {
-  let target = '';
+  let freshProfile = false;
   let ownedPass = false;
   let navigationPass = false;
 
   try {
-    target = sentinelTarget(process.env);
-  } catch (error) {
-    console.error((error as Error).message);
-    process.exit(64);
+    claimFreshProfile();
+    freshProfile = true;
+  } catch {
+    /* the printed booleans are the result; a message could carry a profile path */
   }
 
   try {
@@ -105,21 +124,24 @@ async function main(): Promise<void> {
   } catch {
     /* the printed booleans are the result; a message could carry browser payload */
   }
+
   if (ownedPass) {
+    const page = serveLocalPage();
     try {
-      await probeSentinelNavigation(target);
+      await probeLocalNavigation(page);
       navigationPass = true;
     } catch {
       /* same */
+    } finally {
+      await page.stop();
     }
   }
-  const isolated = await productionCdpUnreachable();
 
   await Bun.write(
     Bun.stdout,
-    `owned_cdp_pass=${ownedPass}\nsentinel_navigation_pass=${navigationPass}\nproduction_cdp_unreachable=${isolated}\n`,
+    `fresh_profile=${freshProfile}\nowned_cdp_pass=${ownedPass}\nlocal_navigation_pass=${navigationPass}\n`,
   );
-  process.exit(ownedPass && navigationPass && isolated ? 0 : 1);
+  process.exit(freshProfile && ownedPass && navigationPass ? 0 : 1);
 }
 
 if (import.meta.main) await main();

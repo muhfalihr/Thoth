@@ -108,6 +108,12 @@ jobs:
       - name: Verify private CDP transport
         run: bash docker/test-cdp-offline.sh "${CANDIDATE_IMAGE}"
 
+      # A reference that attaches to the deployment sidecar leaves it parked on
+      # another platform, which fails the production healthcheck. Isolation is a
+      # property of the image, so it is gated here before anything is published.
+      - name: Verify parity reference browser isolation
+        run: bash docker/test-parity-offline.sh "${CANDIDATE_IMAGE}"
+
   publish-image:
     name: Publish image
     if: github.event_name == 'push'
@@ -272,6 +278,9 @@ jobs:
 
       - name: Verify private CDP transport on the published digest
         run: bash docker/test-cdp-offline.sh "${THOTH_IMAGE_REF}"
+
+      - name: Verify parity reference browser isolation on the published digest
+        run: bash docker/test-parity-offline.sh "${THOTH_IMAGE_REF}"
 
       - name: Dump service logs on failure
         if: failure()

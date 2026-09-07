@@ -1,0 +1,56 @@
+# Offline isolation smoke for the parity reference. Not a deployment file.
+#
+# The claim under test is negative: a reference must drive only the browser it
+# started, and must never reach the relay authority a deployment sidecar answers
+# on. A negative claim needs a witness, so a synthetic sentinel takes that alias
+# and records that nobody called it. It is not a browser and holds no profile.
+#
+# Everything here is disposable: an internal network with no published address, a
+# tmpfs profile, a tmpfs evidence directory, and no provider input, credential, or
+# bind mount. The reference runs with --offline-smoke, so it never reads a fixture.
+services:
+  sentinel:
+    image: ${THOTH_TEST_IMAGE:?set candidate image}
+    user: "10001:10001"
+    command: ["bun", "/opt/thoth/scout/runtime/parity_sentinel.ts"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/thoth/python/.venv/bin/python -c "import json, urllib.request;
+          state = json.load(urllib.request.urlopen('http://127.0.0.1:18800/__identity', timeout=2));
+          assert state['identity'] == 'stage1-parity-sentinel'"
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      parity-smoke:
+        aliases:
+          # The authority a deployment reference would have inherited.
+          - legacy-cdp
+
+  reference:
+    image: ${THOTH_TEST_IMAGE:?set candidate image}
+    user: "10001:10001"
+    command: ["/opt/thoth/bin/start-parity-reference", "--offline-smoke"]
+    restart: "no"
+    # Chromium's own sandbox needs syscalls the default profile blocks. The
+    # relaxation is scoped to the browser-bearing container, never to the sentinel.
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      THOTH_CDP: http://127.0.0.1:18801
+      THOTH_PARITY_REFERENCE_ID: smoke-reference
+    tmpfs:
+      # Fresh per container: the marker the probe writes must never survive into
+      # the next run, which is what makes the fresh-profile check falsifiable.
+      - /var/lib/thoth/parity-profile:uid=10001,gid=10001,mode=0700
+      - /opt/thoth/scout/output:uid=10001,gid=10001,mode=0700
+    networks:
+      - parity-smoke
+
+networks:
+  parity-smoke:
+    driver: bridge
+    internal: true
