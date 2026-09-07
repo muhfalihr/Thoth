@@ -100,8 +100,34 @@ The second `-f` is the provider override described in the deployment runbook and
 omits it here too: the `-f` set must match the one the deployment was created with, or a command
 that touches the worker recreates it with different configuration.
 
+The reference itself no longer uses that file set. It runs from `compose.stage1.parity.yml`, a
+standalone file with its own project name, described in step 2. `$COMPOSE` below is used only to
+read the deployment's state and to copy the Python side's evidence out of it.
+
 None of these commands redeploy, recreate, or restart a service, and none of them change the
 worker's activity mode. The deployed worker keeps running its Temporal workflows throughout.
+
+## Anonymous profile and the authentication stop
+
+The reference container starts Chromium on a fresh, anonymous tmpfs profile and discards it when the
+container exits. That is the property that keeps a reference from disturbing the deployment, and it
+is also a hard limit: the reference is signed out. A fixture behind a login wall, a captcha, or an
+age gate will stop the reference, and that stop is the recorded result.
+
+Seeding the profile is out of scope for this procedure and needs its own operator approval. Copying
+a live browser profile, exporting cookies from one, or provisioning a login into the reference
+container are all separate decisions, and none of them is authorised by this document. Each of the
+following is its own gate, and none of them follows automatically from a stopped reference:
+
+- **Cookie or profile provisioning** — a separate approval, not a workaround for this stop.
+- **Fixture replacement** — swapping in an easier URL changes what the window measured.
+- **Reference retry** — re-running until it succeeds discards the failure that was the result.
+- **Production fallback recovery** — the deployed worker's own path is untouched by this document.
+- **New window activation** — a stopped reference is not a reason to open or close a window.
+
+This isolation applies to parity references only. The deployed worker's real legacy fallback still
+drives the shared `legacy-cdp` sidecar exactly as before; nothing here changes that path, its
+profile, or its acquisition policy.
 
 ### 1. Prepare one isolated sample directory
 
@@ -109,91 +135,118 @@ Keep the directory outside this repository and outside the deployed data root, o
 is restricted storage: the fixture URL, the reference process output, and both sides' artifacts all
 land inside it and none of them may be pasted into chat, an issue, or the change record.
 
+The reference identifier must be new. The reference container creates its evidence directory
+non-recursively and opens every log with an exclusive create, so a repeated identifier aborts the
+run instead of overwriting an earlier attempt; the host preflight rejects a sample that already
+holds a `reference-attempt.json` for the same reason.
+
 ```bash
 SAMPLE_DIR="$HOME/thoth-stage1-parity/<sample-id>"
-IMAGE=$(docker inspect -f '{{.Image}}' "$($COMPOSE ps -q worker)")
+export THOTH_PARITY_SAMPLE_DIR="$SAMPLE_DIR"
+export THOTH_PARITY_REFERENCE_ID=<reference-id>
+export THOTH_PARITY_IMAGE=ghcr.io/muhfalihr/thoth@sha256:<the window's pinned digest>
 mkdir -p "$SAMPLE_DIR/python/reports" "$SAMPLE_DIR/scout-output" "$SAMPLE_DIR/reference-input"
 chmod 700 "$SAMPLE_DIR"
 # Write the approved fixture URL into "$SAMPLE_DIR/url.txt" with an editor, then:
 chmod 600 "$SAMPLE_DIR/url.txt"
 cp "$SAMPLE_DIR/url.txt" "$SAMPLE_DIR/reference-input/url"
-chmod 555 "$SAMPLE_DIR/reference-input"
-chmod 444 "$SAMPLE_DIR/reference-input/url"
-docker run --rm --network none --user 0:0 -v "$SAMPLE_DIR/scout-output:/w" "$IMAGE" \
-  sh -c 'chown -R 10001:10001 /w && install -d -o 10001 -g 10001 -m 755 /w/legacy-scout/<reference-id>'
+docker run --rm --network none --user 0:0 -v "$SAMPLE_DIR/scout-output:/w" -v "$SAMPLE_DIR/reference-input:/f" "$THOTH_PARITY_IMAGE" sh -c 'chown -R 10001:10001 /w && chgrp 10001 /f/url && chmod 640 /f/url'
 ```
 
-`url.txt` stays readable by the operator because the offline comparison reads it. The
+`url.txt` stays owned by the operator because the offline comparison reads it. The
 `reference-input` copy exists only so the reference container can read the fixture without it being
-typed into a command; it is readable by any identity *inside* that container, and protected on the
-host by the `700` sample directory above it. The Scout output directory must be owned by
-`10001:10001` because the container writes into it, and `<reference-id>` must exist before the run
-because the Scout CLI does not create its `--out` parent — `LegacyScoutActivity` does that itself
-before it spawns Bun. A one-shot root container from the pinned image performs both, so the
-procedure needs no host root; use `sudo chown -R 10001:10001` instead where passwordless `sudo` is
-available. Nothing here may be world-writable.
+typed into a command. Docker honours host permissions on a bind mount, so that copy must be
+readable by the container's group: `640` with group `10001` is the narrowest mode that works, and
+the `700` sample directory above it is what keeps it private on the host. The Scout output
+directory must be owned by `10001:10001` because the container writes into it. The reference
+container creates its own `legacy-scout/<reference-id>` directory, so nothing pre-creates it. A
+one-shot root container from the pinned image performs both ownership changes, so the procedure
+needs no host root; use `sudo` directly where passwordless `sudo` is available. Nothing here may be
+world-readable or world-writable.
 
-### 2. Capture the Scout reference on the pinned image
+Then check the inputs before creating anything. The gate is fail-closed and prints booleans and
+contract descriptions only — never a rejected value:
 
-The reference runs `bun scout/cli.ts run <url> --out <path>`, the same fixed command the legacy
-Scout activity builds, inside a throwaway container created from the window's pinned image on the
-existing `stage1-private` network. `--no-deps` keeps Compose from starting or recreating any
-service, and the already-running `legacy-cdp` sidecar is reached over that network. The Scout
-output directory is fixed at `/opt/thoth/scout/output`, so the sample directory is bound onto that
-path and Scout's media lands beside the reference report.
+```bash
+uv run --project python -m thoth_control_plane.operations.stage1_parity_preflight --image "$THOTH_PARITY_IMAGE" --sample "$SAMPLE_DIR" --provider "$THOTH_STAGE1_PROVIDER_ENV_FILE" --repository-root "$PWD" --data-root "$THOTH_STAGE1_DATA_ROOT"
+```
+
+It refuses a mutable image tag, a sample inside this checkout or inside the deployed data root, a
+symlink anywhere in the sample, a fixture that is not a canonical TikTok post URL, a sample that
+already holds an attempt record, and a `THOTH_CDP` inherited from the operator's shell. That last
+one is not a nuisance check: a reference that can be pointed at the deployment's sidecar is the
+failure this container exists to prevent.
+
+The pinned image must be the same release the deployed worker runs. A reference captured on a
+different image is not evidence about this window:
+
+```bash
+test "$THOTH_PARITY_IMAGE" = "$(docker inspect -f '{{index .RepoDigests 0}}' "$(docker inspect -f '{{.Image}}' "$($COMPOSE ps -q worker)")")" && echo digest_equal=true
+```
+
+### 2. Capture the Scout reference in its own container
+
+The reference runs from `compose.stage1.parity.yml`, a standalone file that composes exactly one
+disposable service. It is never merged with the deployment file and never overrides the `worker`
+service. The container starts its own Chromium on a fresh tmpfs profile, exposes DevTools on its own
+loopback address only, supervises Scout against it, and exits when Scout exits.
+
+```bash
+PARITY="docker compose -f compose.stage1.parity.yml"
+```
+
+That separation exists because of an observed incident, not a theoretical risk. A reference driven
+against the shared `legacy-cdp` sidecar navigates that sidecar's only page wherever the source trail
+leads. The sidecar's healthcheck asserts a live non-login `tiktok.com` page, so the sidecar went
+unhealthy while CDP itself stayed reachable and its restart count stayed at zero. One incident
+establishes the risk; it does not establish that every reference degrades the sidecar.
 
 Three properties of this invocation are deliberate:
 
-- The URL is read inside the container from the read-only mount, not interpolated on the host. The
-  Scout CLI takes the URL positionally, so it necessarily reaches the argument vector of the `bun`
-  process; what this avoids is the URL entering the operator's shell history, the `docker compose`
-  argument vector, the Docker API request, and the container configuration that `docker inspect`
-  reports. Treat the in-container argument as a real residual exposure on a shared host: anyone who
-  can read the host process table during the run can see it, and `docker inspect` output must not
-  be pasted anywhere regardless.
-- `-T` disables the pseudo-TTY so stdout and stderr stay separate streams, and both are captured
-  into restricted files instead of the terminal. Scout inherits its child processes' stdio and logs
-  the URL, captions, and local paths; the Python legacy adapter pipes both streams and keeps them
-  out of its diagnostics for exactly this reason, so an operator-run reference must not print them.
-- `umask 077` makes those capture files readable only by the operator.
+- The URL is read inside the container from the read-only mount, and it never reaches an argument
+  vector the host can see. The supervisor reads `/run/parity/url`, validates it, and passes it to
+  Scout inside the container. `docker inspect` on the reference reports the mount, not the URL.
+- The supervisor redirects Scout's stdout, Scout's stderr, and the browser's output into three
+  restricted files inside the sample directory. Scout logs the URL, captions, and local paths, so
+  none of that reaches the terminal.
+- `THOTH_CDP` is set to the container's own loopback endpoint by the Compose file, and the
+  supervisor refuses to start if it is anything else. The reference cannot attach to the deployment
+  sidecar even if the operator's shell says otherwise.
+
+Record the deployment's identity and health before the run, so the after-check has something to
+compare against:
 
 ```bash
-( umask 077 && $COMPOSE run --rm --no-deps -T \
-    -v "$SAMPLE_DIR/scout-output:/opt/thoth/scout/output" \
-    -v "$SAMPLE_DIR/reference-input:/run/parity:ro" \
-    worker sh -c 'exec bun scout/cli.ts run "$(cat /run/parity/url)" --out "$0"' \
-    /opt/thoth/scout/output/legacy-scout/<reference-id>/source-report.json \
-    >"$SAMPLE_DIR/reference.stdout.log" 2>"$SAMPLE_DIR/reference.stderr.log" )
-echo "reference exit: $?"
+$COMPOSE ps --format '{{.Service}} {{.Status}}'
+docker inspect -f '{{.Id}} {{.State.Health.Status}} {{.RestartCount}}' "$($COMPOSE ps -q legacy-cdp)"
 ```
 
-Preconditions: `legacy-cdp` is already healthy under the controlled live gate, and the deployed
-worker stays in `python_tiktok_with_legacy_fallback`. One more precondition is easy to miss and
-fails the reference late: Scout's `trace_source` step calls a vision model, so the reference
-container needs a provider key — `THOTH_NOVITA_API_KEY` for the default provider, or the key
-variable belonging to whatever `THOTH_SCOUT_VISION_PROVIDER` selects. The Stage 1 deployment
-deliberately carries no model provider secret, so a reference launched with the worker service's
-environment alone aborts with `OCR analysis failed (missing_api_key)` and writes a report with no
-media. For a window deployed with `compose.stage1.providers.yml`, that input is already part of the
-worker service definition, and `run` creates its container from that definition — so the reference
-and the deployed worker receive identical provider configuration with no separate injection step.
-Verify it before spending a fixture with
-`$COMPOSE run --rm --no-deps -T worker bun /opt/thoth/scout/runtime/provider_check.ts`, which prints
-role readiness only and contacts no provider.
+Then run the reference and tear down the sample's own project:
 
-The reference-only alternative is `docker compose run --env-from-file` (verify this option in
-`docker compose run --help` on the executing host; observed on this host's v5.5.0)
-pointing at a `600` file on restricted storage that holds the provider variables and nothing else.
-It remains valid for a window whose deployment is frozen without the override, and it is superseded
-by the shared override for any new window. The global `docker compose --env-file` is not an
-alternative: it only feeds interpolation and injects nothing into the container. Never add the
-override or the key to a deployment that is frozen for an in-flight window; that changes the
-deployment under evaluation.
+```bash
+( umask 077 && $PARITY up --abort-on-container-exit --exit-code-from reference >"$SAMPLE_DIR/reference.console.log" 2>&1 )
+echo "reference exit: $?"
+$PARITY down --volumes --remove-orphans
+```
 
-Two further preconditions are properties of the image itself, so they cannot be fixed by an
-env-file, and both block a reference on the *required* `trace_source` and `build_footage` steps.
-They were observed on the digest deployed for the window that opened on 2026-09-04, and that
-observation stands as recorded evidence for that window:
+Preconditions: the provider file exists and carries a key for whatever
+`THOTH_SCOUT_VISION_PROVIDER` selects. Scout's `trace_source` step calls a vision model, so a
+reference launched without one aborts with `OCR analysis failed (missing_api_key)` and writes a
+report with no media. The Stage 1 deployment deliberately carries no model provider secret, which is
+why the parity file takes a restricted `env_file` of its own. Verify readiness before spending a
+fixture with
+
+```bash
+$PARITY run --rm reference bun /opt/thoth/scout/runtime/provider_check.ts
+```
+
+which prints role readiness only and contacts no provider. Offline provider readiness is not
+evidence of authentication, quota, or model health.
+
+Two further preconditions are properties of the image itself, so no env-file can fix them, and both
+block a reference on the *required* `trace_source` and `build_footage` steps. They were observed on
+the digest deployed for the window that opened on 2026-09-04, and that observation stands as
+recorded evidence for that window:
 
 - `yt-dlp` was not installed in that image — no binary on `PATH`, no `yt_dlp` module in the bundled
   virtualenv — and Scout shells out to it from those steps.
@@ -209,27 +262,43 @@ the sidecar runs a private in-container relay that accepts sibling connections w
 stays on loopback. That correction lives in an unpublished image, it changes nothing for a window
 already in flight, and it is proven only offline. A frozen window keeps its own digest.
 
-Verify both against the digest actually deployed before spending a fixture on a reference run;
-the same two gaps would also break the deployed worker's legacy fallback if it ever fired.
-Confirm afterwards that nothing was recreated
-and that no reference container is left behind:
+Verify both against the digest actually deployed before spending a fixture on a reference run; the
+same two gaps would also break the deployed worker's legacy fallback if it ever fired.
+
+Confirm afterwards that the deployment was not touched, that no reference container survived, and
+that the disposable profile went with it:
 
 ```bash
-$COMPOSE ps --format '{{.Service}} {{.Status}}'
+docker inspect -f '{{.Id}} {{.State.Health.Status}} {{.RestartCount}}' "$($COMPOSE ps -q legacy-cdp)"
 $COMPOSE exec worker printenv THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE
+docker ps --all --filter 'label=com.docker.compose.project=thoth-stage1-parity' --format '{{.Names}} {{.Status}}'
 ```
 
-Remove the container-readable fixture copy once the reference has run, and keep the two capture
-logs with the sample as restricted evidence:
+The sidecar's container id, health, and restart count must be unchanged, the worker's activity mode
+must be unchanged, and the last command must print nothing. The profile lives only in the
+container's tmpfs, so an empty listing is the confirmation that it was discarded; there is no host
+path to inspect and nothing to clean up by hand.
+
+Remove the container-readable fixture copy once the reference has run, and hand the evidence back to
+the operator identity — the container writes it as `10001` with owner-only modes, so it is otherwise
+unreadable on the host:
 
 ```bash
+docker run --rm --network none --user 0:0 -v "$SAMPLE_DIR/scout-output:/w" "$THOTH_PARITY_IMAGE" sh -c "chown -R $(id -u):$(id -g) /w"
 chmod 700 "$SAMPLE_DIR/reference-input" && rm -rf "$SAMPLE_DIR/reference-input"
 ```
 
-Diagnose a failed reference from those logs privately. Record only the exit status and a short
-non-quoting summary in the pairing record. Stop on an authentication wall, a captcha, or a
-challenge; record the reference failure rather than retrying until it succeeds. A failed reference
-is evidence, not a discard.
+The run leaves four files under `$SAMPLE_DIR/scout-output/legacy-scout/<reference-id>/`:
+`reference-attempt.json` with the supervisor's own lifecycle result, and `reference.stdout.log`,
+`reference.stderr.log`, and `browser.log`. The attempt record carries the reference exit code, the
+browser's exit signal, and `browser_isolation: fresh_ephemeral`. All four are restricted evidence:
+diagnose a failed reference from them privately and record only the exit status and a short
+non-quoting summary in the pairing record.
+
+**A reference exit of zero is not a parity pass.** It says the reference ran to completion in its
+own container; the comparison in step 4 is the only thing that speaks to parity. Stop on an
+authentication wall, a captcha, or a challenge; record the reference failure rather than retrying
+until it succeeds. A failed reference is evidence, not a discard.
 
 Then record the reference artifacts' integrity. Read `main.source_local` privately from the
 reference report and rebase its `/opt/thoth/scout/output` prefix onto `$SAMPLE_DIR/scout-output`:

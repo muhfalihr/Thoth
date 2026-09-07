@@ -229,14 +229,30 @@ def test_a_world_readable_sample_directory_is_rejected(tmp_path: Path) -> None:
 
 
 @posix_only
-def test_a_group_readable_fixture_is_rejected(tmp_path: Path) -> None:
+def test_the_container_group_may_read_the_fixture(tmp_path: Path) -> None:
+    """The fixture is bind-mounted into a container that runs as another identity.
+
+    Docker honours host permissions on a bind mount, so an owner-only fixture is
+    unreadable to the reference. Group read is the narrowest mode that works.
+    """
     sample = _sample(tmp_path)
     (sample / "reference-input" / "url").chmod(0o640)
+
+    _check(tmp_path, sample=sample)
+
+
+@posix_only
+@pytest.mark.parametrize("mode", [0o644, 0o604, 0o660, 0o666])
+def test_a_fixture_the_world_can_read_or_the_group_can_write_is_rejected(
+    tmp_path: Path, mode: int
+) -> None:
+    sample = _sample(tmp_path)
+    (sample / "reference-input" / "url").chmod(mode)
 
     with pytest.raises(Stage1PreflightError) as failure:
         _check(tmp_path, sample=sample)
 
-    assert "0600" in str(failure.value)
+    assert "0640" in str(failure.value)
 
 
 # --- standalone topology ----------------------------------------------------
@@ -371,3 +387,23 @@ def test_the_preflight_cli_reports_booleans_without_echoing_its_inputs(tmp_path:
     assert "parity_inputs_valid=false" in result.stdout
     assert CANARY_KEY not in result.stdout + result.stderr
     assert "synthetic-canary" not in result.stdout + result.stderr
+
+
+@docker_only
+def test_the_fixture_url_never_reaches_the_container_configuration(tmp_path: Path) -> None:
+    """The fixture is read from a mount, so it must not appear in the topology.
+
+    A URL placed in an environment variable or an argument vector is visible to
+    anyone who can run `docker inspect`, which is the leak the read-only mount
+    exists to prevent. The rendered configuration is the only place that could
+    reintroduce it.
+
+    The provider key does appear in the rendered configuration, because that is
+    how the container receives it; that is why this module captures the
+    rendering instead of printing it. The fixture has no such excuse.
+    """
+    rendered = json.dumps(_render(tmp_path))
+
+    assert CANARY_FIXTURE not in rendered
+    assert CANARY_FIXTURE.rsplit("/", 1)[-1] not in rendered
+    assert "tiktok.com" not in rendered

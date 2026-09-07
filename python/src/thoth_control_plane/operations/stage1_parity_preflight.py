@@ -151,11 +151,19 @@ def _check_fixture(sample: Path) -> None:
 
 
 def _check_fixture_mode(fixture: Path) -> None:
+    """Allow group read, because the reference runs as a different identity.
+
+    The fixture is bind-mounted into the container, and Docker honours the host
+    file's permissions there, so an owner-only fixture is simply unreadable to the
+    reference. Group read is the narrowest mode that works; anything the world can
+    read, or the group can write, is not.
+    """
     if os.name != "posix":
         return
-    if stat.S_IMODE(fixture.stat().st_mode) & 0o077:
+    if stat.S_IMODE(fixture.stat().st_mode) & 0o027:
         raise Stage1PreflightError(
-            "the parity fixture file must be readable by its owner only (chmod 0600)"
+            "the parity fixture file must be readable by its owner and the "
+            "container group only (chmod 0640)"
         )
 
 

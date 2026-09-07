@@ -88,6 +88,11 @@ in-repository path, and, on Linux, a group- or world-readable mode.
 `compose.stage1.providers.yml` attaches that file to the worker and to nothing else. The API, the
 browser sidecar, and the infrastructure preflight keep starting with no provider input at all.
 
+The same path is read by `compose.stage1.parity.yml`, the standalone one-shot file a parity
+reference runs from. That file is never merged with the deployment: it names the provider input
+independently so a reference and the worker receive the same configuration without the reference
+inheriting anything else the deployment holds.
+
 Providing credentials changes runtime configuration only. It does not change the image, its digest,
 or anything already recorded for a deployment that is already running, and a present key is not
 evidence of authentication, quota, or model availability.
@@ -218,6 +223,21 @@ behind. CI runs the same script on the pull-request candidate and on the publish
 targets `about:blank` and reaches no external site, so it is an offline transport proof and says
 nothing about live acquisition, parity, or provider acceptance.
 
+A second offline harness proves the other half: that a parity reference owns its browser instead of
+borrowing the deployment's.
+
+```bash
+bash docker/test-parity-offline.sh <image-ref>
+```
+
+It runs the one-shot reference container on a throwaway internal network next to a synthetic
+sentinel that takes the `legacy-cdp` alias and counts every request made to it. A pass requires the
+reference to start its own Chromium, drive it with Scout's own CDP client to a page the probe serves
+itself on loopback, find its profile empty, leave the sentinel's request count at zero, fail when
+its browser is killed, stop when cancelled, and leave no container or network behind. CI runs it on
+the pull-request candidate and on the published digest. Like the transport smoke, it contacts no
+site and no provider, so it says nothing about live acquisition, parity, or provider acceptance.
+
 ## Controlled live gate
 
 The approved mode is `python_tiktok_with_legacy_fallback`. Starting the CDP sidecar opens TikTok and
@@ -260,6 +280,13 @@ Perform exactly one controlled fallback smoke on first activation. Establish the
 timestamp only after that smoke passes.
 
 ## Soak parity samples
+
+A reference is captured in its own disposable container from `compose.stage1.parity.yml`, with its
+own Chromium on a fresh anonymous profile. It never attaches to the deployment's `legacy-cdp`
+sidecar, and it never overrides the `worker` service. That profile is anonymous by design, so a
+fixture behind a login wall stops the reference; seeding a profile or provisioning cookies is a
+separate approval. The deployed worker's real legacy fallback is unchanged and still drives the
+shared sidecar.
 
 Follow [Stage 1 Soak Parity Sampling](stage1-parity-sampling.md) for the five required same-URL
 Python/Scout comparisons, artifact integrity checks, workflow-to-reference evidence, and rules for
