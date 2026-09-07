@@ -7,6 +7,13 @@
 - **Artefak tetap bahasa Inggris:** kode, komentar & docstring, nama variabel, pesan commit,
   plan, spec, dokumen desain/ADR, isu GitHub, dan seluruh file di `docs/`.
 
+## Git Commits
+
+- Write each commit message as one concise subject line, preferably no more than 72 characters.
+- Use exactly one `git commit -m "<subject>"`; do not add a body, detailed description,
+  blank-line continuation, or trailer.
+- Never add `Co-Authored-By` or any Claude/Anthropic attribution to a commit message.
+
 ## Context Memory
 
 **WAJIB DIBACA di setiap sesi:** `BLUEPRINT.md` di root project ini.
