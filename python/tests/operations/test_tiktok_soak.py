@@ -466,9 +466,9 @@ def test_parity_requires_validated_artifact(valid_observation: dict[str, object]
 
 def test_policy_defaults_match_fixed_stage1_thresholds() -> None:
     policy = TikTokSoakPolicy()
-    assert policy.minimum_window_days == 7
-    assert policy.minimum_valid_completed_runs == 50
-    assert policy.minimum_parity_samples == 5
+    assert policy.minimum_window_days == 1
+    assert policy.minimum_valid_completed_runs == 12
+    assert policy.minimum_parity_samples == 2
     assert policy.minimum_python_native_success_rate == 0.95
     assert policy.maximum_legacy_fallback_rate == 0.05
     assert policy.maximum_terminal_failure_rate == 0.02
@@ -476,7 +476,7 @@ def test_policy_defaults_match_fixed_stage1_thresholds() -> None:
 
 def test_policy_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
-        TikTokSoakPolicy.model_validate({"minimum_window_days": 7, "extra": 1})
+        TikTokSoakPolicy.model_validate({"minimum_window_days": 1, "extra": 1})
 
 
 def test_policy_rejects_out_of_range_rate() -> None:
@@ -735,7 +735,7 @@ def test_dataset_error_message_is_fixed_per_code() -> None:
 
 GENERATED_AT = datetime(2026, 9, 2, 12, 30, tzinfo=UTC)
 _BASE_TIME = datetime(2026, 8, 1, tzinfo=UTC)
-_READY_WINDOW = timedelta(hours=168)
+_READY_WINDOW = timedelta(hours=24)
 
 
 def _obs_id(n: int) -> str:
@@ -809,7 +809,7 @@ def _run(
 
 
 def _dataset(
-    routes: list[str], *, duration: timedelta = _READY_WINDOW, parity_true: int = 5
+    routes: list[str], *, duration: timedelta = _READY_WINDOW, parity_true: int = 2
 ) -> list[TikTokSoakObservation]:
     timestamps = _timestamps(len(routes), duration)
     native_seen = 0
@@ -833,7 +833,7 @@ def completed_runs(count: int) -> list[TikTokSoakObservation]:
 
 
 def parity_samples(count: int) -> list[TikTokSoakObservation]:
-    return _dataset(["native"] * 50, parity_true=count)
+    return _dataset(["native"] * 12, parity_true=count)
 
 
 def window_at(*, hours: int, minutes: int, seconds: int) -> list[TikTokSoakObservation]:
@@ -959,11 +959,13 @@ def operator_cancelled() -> TikTokSoakObservation:
 
 @pytest.fixture
 def ready_observations() -> list[TikTokSoakObservation]:
-    """A dataset that lands exactly on every Stage 1 threshold at once: a
-    168-hour window, 100 completed runs, 5 parity samples, 95% native,
+    """A dataset that lands on or above every accelerated Stage 1 threshold at
+    once: a 24-hour window, 100 completed runs, 2 parity samples, 95% native,
     3% fallback, 2% terminal failure — every rate boundary that is a `<=`
     or `>=` limit sits exactly at its edge, so this fixture alone proves the
-    evaluator treats `==` as passing, not failing."""
+    evaluator treats `==` as passing, not failing. The run count deliberately
+    stays at 100 so the rate boundaries keep an exact-percentage denominator;
+    the 12-run count boundary is exercised by `completed_runs` instead."""
     return route_mix(native=95, fallback=3, failed=2)
 
 
@@ -975,7 +977,7 @@ def test_ready_observations_yield_a_ready_report(
     assert report.blockers == []
     assert report.window.started_at == ready_observations[0].occurred_at
     assert report.window.ended_at == ready_observations[-1].occurred_at
-    assert report.window.duration_hours == 168.0
+    assert report.window.duration_hours == 24.0
     assert (
         report.counts.valid_completed,
         report.counts.python_native,
@@ -984,7 +986,7 @@ def test_ready_observations_yield_a_ready_report(
         report.counts.invalid_input,
         report.counts.operator_cancelled,
         report.counts.parity_samples,
-    ) == (100, 95, 3, 2, 0, 0, 5)
+    ) == (100, 95, 3, 2, 0, 0, 2)
     assert (
         report.rates.python_native,
         report.rates.legacy_fallback,
@@ -1022,9 +1024,9 @@ def test_empty_dataset_raises_safe_finite_error() -> None:
 @pytest.mark.parametrize(
     ("observations", "blocker"),
     [
-        (window_at(hours=167, minutes=59, seconds=59), "insufficient_window"),
-        (completed_runs(49), "insufficient_valid_completed_runs"),
-        (parity_samples(4), "insufficient_parity_samples"),
+        (window_at(hours=23, minutes=59, seconds=59), "insufficient_window"),
+        (completed_runs(11), "insufficient_valid_completed_runs"),
+        (parity_samples(1), "insufficient_parity_samples"),
         (route_mix(native=94, fallback=5, failed=1), "python_native_rate_below_minimum"),
         (route_mix(native=94, fallback=6, failed=0), "legacy_fallback_rate_above_maximum"),
         (route_mix(native=97, fallback=0, failed=3), "terminal_failure_rate_above_maximum"),
@@ -1040,9 +1042,9 @@ def test_policy_boundary_below_or_above_limit_blocks(
 @pytest.mark.parametrize(
     "observations",
     [
-        window_at(hours=168, minutes=0, seconds=0),
-        completed_runs(50),
-        parity_samples(5),
+        window_at(hours=24, minutes=0, seconds=0),
+        completed_runs(12),
+        parity_samples(2),
         route_mix(native=95, fallback=5, failed=0),
         route_mix(native=96, fallback=2, failed=2),
     ],
@@ -1138,7 +1140,7 @@ def test_report_window_end_ignores_a_trailing_non_completed_run(
     )
     report = evaluate_tiktok_soak([*ready_observations, trailing], generated_at=GENERATED_AT)
     assert report.window.ended_at == ready_observations[-1].occurred_at
-    assert report.window.duration_hours == 168.0
+    assert report.window.duration_hours == 24.0
 
 
 def test_zero_tolerance_cleanup_failure_blocks_on_a_non_completed_route(
