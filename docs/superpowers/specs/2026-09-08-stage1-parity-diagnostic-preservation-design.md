@@ -70,16 +70,25 @@ contract.
 ```typescript
 export const SAFE_DIAGNOSTIC_PREFIX = 'THOTH_DIAGNOSTIC ';
 
-export type SafeRuntimeDiagnostic = {
-  schema_version: 1;
-  kind: 'signal' | 'terminal';
-  stage: 'trace_source';
-  category: 'media_candidate_discovery' | 'unknown';
-  code:
-    | 'profile_discovery_exception'
-    | 'profile_discovery_empty'
-    | 'required_stage_failed';
-};
+// A discriminated union of the three approved events, one member per row of the table
+// below, not four independent field unions: a cross product would make combinations such
+// as terminal/media_candidate_discovery type-legal even though no such event exists.
+export type SafeRuntimeDiagnostic =
+  | {
+      schema_version: 1;
+      kind: 'signal';
+      stage: 'trace_source';
+      category: 'media_candidate_discovery';
+      code: 'profile_discovery_exception';
+    }
+  | { /* profile_discovery_empty, same signal shape */ }
+  | {
+      schema_version: 1;
+      kind: 'terminal';
+      stage: 'trace_source';
+      category: 'unknown';
+      code: 'required_stage_failed';
+    };
 
 export function formatSafeRuntimeDiagnostic(event: SafeRuntimeDiagnostic): string;
 export function parseSafeRuntimeDiagnostics(text: string): {
@@ -88,9 +97,15 @@ export function parseSafeRuntimeDiagnostics(text: string): {
 };
 ```
 
-The formatter accepts only an exact valid object and returns one single-line frame.
+The formatter re-checks its argument at runtime rather than trusting the static type,
+because a structurally typed variable, a cast, or a hostile `toJSON` all reach it
+unchecked. It rejects a non-plain object, a missing or extra key, an invalid
+`schema_version`, and any combination outside the table with a fixed `TypeError` that
+does not echo the rejected value, and it serializes a canonical object it builds itself
+rather than the caller's. Valid input returns one single-line frame.
 The parser considers only lines beginning with the exact prefix. Every prefixed
-line must be valid JSON with exactly the four defined keys and a valid combination:
+line must be valid JSON with exactly five keys — `schema_version`, `kind`,
+`stage`, `category`, and `code` — and a valid combination of the last four:
 
 | kind | stage | category | code |
 | --- | --- | --- | --- |

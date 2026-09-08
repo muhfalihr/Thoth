@@ -88,11 +88,12 @@ Run: `rtk bun test scout/lib/safe_runtime_diagnostic.test.ts`
 
 Expected: FAIL because the module or exports do not exist.
 
-- [ ] **Step 3: Implement the exact four-key allowlist**
+- [ ] **Step 3: Implement the exact five-key allowlist**
 
 Implement the type and combination table from the spec. Split input by line, ignore
 ordinary lines, parse only exact-prefix frames, validate `Object.keys(value).sort()`
-against the four keys, reject duplicates, cap input at 1 MiB and frames at 32, and
+against the five keys — `schema_version`, `kind`, `stage`, `category`, and `code` —
+reject duplicates, cap input at 1 MiB and frames at 32, and
 return no rejected value.
 
 - [ ] **Step 4: Add boundary tests**

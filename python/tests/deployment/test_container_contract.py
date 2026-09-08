@@ -549,3 +549,20 @@ def test_the_parity_harness_accepts_only_the_supervisor_own_verdicts() -> None:
     # hold, a probe that finished first would exit 0 and the phase would fail for a
     # reason that has nothing to do with signal handling.
     assert "THOTH_PARITY_SMOKE_HOLD_MS" in harness
+
+
+def test_the_diagnostic_contract_documents_describe_all_five_frame_keys() -> None:
+    """A frame carries five keys. A four-key description legitimizes dropping one of them,
+    and `schema_version` is the one a shortened count keeps losing."""
+    documents = (
+        "docs/superpowers/specs/2026-09-08-stage1-parity-diagnostic-preservation-design.md",
+        "docs/superpowers/plans/2026-09-08-stage1-parity-diagnostic-preservation.md",
+        "docs/agent-prompts/stage1-parity-diagnostic-preservation-executor.md",
+    )
+    for relative in documents:
+        prose = " ".join(_repo_text(relative).split())
+        assert "five keys" in prose, f"{relative} does not state the five-key count"
+        for key in ("schema_version", "kind", "stage", "category", "code"):
+            assert f"`{key}`" in prose, f"{relative} does not name `{key}`"
+        for wrong in ("four-key", "four defined keys", "four keys"):
+            assert wrong not in prose, f"{relative} still describes a {wrong} contract"

@@ -72,7 +72,8 @@ Implementation invariants:
 - Pending attempt records remain unchanged. Complete current records add
   `diagnostics_valid` and `diagnostic_events`. Missing fields in old records mean
   `diagnostic_contract=legacy`; never migrate or amend p1-p4.
-- Parser limits: at most 1 MiB input, at most 32 frames, exact four-key objects,
+- Parser limits: at most 1 MiB input, at most 32 frames, objects with exactly the
+  five keys `schema_version`, `kind`, `stage`, `category`, and `code`,
   exact allowlisted combinations, no duplicates. Invalid input returns no events.
 - The Python summary validates and reads one contained known path. It never walks
   the sample directory and never opens raw logs, reports, fixtures, or media.
