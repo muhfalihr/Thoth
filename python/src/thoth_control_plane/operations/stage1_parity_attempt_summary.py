@@ -70,13 +70,28 @@ def _attempt_path(sample: Path, reference_id: str) -> Path | None:
             "letter followed by up to 63 lowercase letters, digits, or hyphens"
         )
     try:
+        # A symlink anywhere in this chain is how a reader gets steered at evidence it was
+        # told not to open. Containment catches only redirects that leave the sample; a
+        # redirected sample root or an intermediate directory pointing at a sibling attempt
+        # lands squarely inside it, so every existing component is inspected on its own.
+        if sample.is_symlink():
+            return None
         root = sample.resolve()
-        candidate = root.joinpath(
-            OUTPUT_DIRECTORY_NAME, LEGACY_SCOUT_DIRECTORY_NAME, reference_id, ATTEMPT_RECORD_NAME
+        chain = (
+            OUTPUT_DIRECTORY_NAME,
+            LEGACY_SCOUT_DIRECTORY_NAME,
+            reference_id,
+            ATTEMPT_RECORD_NAME,
         )
-        # A symlink is how a reader gets steered at evidence it was told not to open,
-        # whether it points outside the sample or at a sibling file inside it.
-        if candidate.is_symlink() or not candidate.resolve().is_relative_to(root):
+        component = root
+        for name in chain:
+            component = component / name
+            if component.is_symlink():
+                return None
+        candidate = component
+        # Kept as defense in depth: it is the check that still holds if the walk above ever
+        # races a link created between the inspection and the read.
+        if not candidate.resolve().is_relative_to(root):
             return None
     except OSError:
         return None
@@ -125,9 +140,16 @@ def _validated_events(value: object) -> list[Event] | None:
 
 def _diagnostics(record: dict[str, object] | None) -> tuple[str, bool, list[Event]]:
     """Classify a record as carrying the current diagnostic contract or predating it."""
-    if record is None or "diagnostics_valid" not in record or "diagnostic_events" not in record:
+    if record is None:
         return "legacy", False, []
-    if record["diagnostics_valid"] is not True:
+    has_flag = "diagnostics_valid" in record
+    has_events = "diagnostic_events" in record
+    # Only a record predating the contract entirely is legacy. One field alone means a writer
+    # that knew about the contract and did not complete it, which is current-era evidence and
+    # exactly the kind not worth trusting.
+    if not has_flag and not has_events:
+        return "legacy", False, []
+    if not (has_flag and has_events) or record["diagnostics_valid"] is not True:
         return "current", False, []
     events = _validated_events(record["diagnostic_events"])
     if events is None:

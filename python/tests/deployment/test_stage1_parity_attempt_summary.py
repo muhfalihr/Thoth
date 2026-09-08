@@ -464,3 +464,84 @@ def test_the_summary_cli_rejects_an_invalid_identifier_without_echoing_it(tmp_pa
     assert result.stdout == ""
     for canary in CANARIES:
         assert canary not in result.stdout + result.stderr
+
+
+@posix_only
+def test_a_reference_directory_symlinked_to_a_sibling_attempt_is_refused(tmp_path: Path) -> None:
+    """Containment cannot see this one: the redirect lands on a sibling inside the same sample."""
+    sample = _sample(tmp_path)
+    directory = sample / "scout-output" / "legacy-scout" / REFERENCE_ID
+    shutil.rmtree(directory)
+    directory.symlink_to(
+        sample / "scout-output" / "legacy-scout" / "ref-other", target_is_directory=True
+    )
+
+    summary = _summarize_attempt(sample, REFERENCE_ID)
+
+    assert summary["attempt_present"] is False
+    assert summary["attempt_complete"] is False
+    _assert_contained(summary)
+
+
+@posix_only
+def test_a_symlinked_sample_root_is_refused(tmp_path: Path) -> None:
+    """Resolving the root first would silently accept a sample that is itself a redirect."""
+    real = _sample(tmp_path)
+    _write_attempt(real, _record())
+    link = tmp_path / "sample-link"
+    link.symlink_to(real, target_is_directory=True)
+
+    summary = _summarize_attempt(link, REFERENCE_ID)
+
+    assert summary["attempt_present"] is False
+    assert summary["attempt_complete"] is False
+    _assert_contained(summary)
+
+
+@posix_only
+def test_an_intermediate_output_directory_symlink_is_refused(tmp_path: Path) -> None:
+    """Every component of the chain is checked, and the redirect stays inside the sample so
+    containment cannot be the thing that catches it."""
+    sample = _sample(tmp_path)
+    output = sample / "scout-output"
+    relocated = sample / "relocated-output"
+    shutil.move(str(output), str(relocated))
+    output.symlink_to(relocated, target_is_directory=True)
+    _write_attempt(sample, _record())
+
+    summary = _summarize_attempt(sample, REFERENCE_ID)
+
+    assert summary["attempt_present"] is False
+    assert summary["attempt_complete"] is False
+
+
+def test_a_record_carrying_only_the_validity_flag_is_current_but_untrusted(tmp_path: Path) -> None:
+    """Half the contract is not the contract: a partial writer is not a legacy writer."""
+    sample = _sample(tmp_path)
+    _write_attempt(sample, _record(diagnostics_valid=True))
+
+    summary = _summarize_attempt(sample, REFERENCE_ID)
+
+    assert summary["attempt_complete"] is True
+    assert summary["diagnostic_contract"] == "current"
+    assert summary["diagnostics_valid"] is False
+    assert summary["diagnostic_event_count"] == 0
+    assert summary["terminal_stage"] is None
+    assert summary["media_candidate_discovery_signal"] is False
+    _assert_contained(summary)
+
+
+def test_a_record_carrying_only_the_event_list_is_current_but_untrusted(tmp_path: Path) -> None:
+    """Events without the flag that vouches for them are evidence nobody signed."""
+    sample = _sample(tmp_path)
+    _write_attempt(sample, _record(diagnostic_events=[DISCOVERY_SIGNAL, TERMINAL_EVENT]))
+
+    summary = _summarize_attempt(sample, REFERENCE_ID)
+
+    assert summary["attempt_complete"] is True
+    assert summary["diagnostic_contract"] == "current"
+    assert summary["diagnostics_valid"] is False
+    assert summary["diagnostic_event_count"] == 0
+    assert summary["terminal_stage"] is None
+    assert summary["media_candidate_discovery_signal"] is False
+    _assert_contained(summary)
