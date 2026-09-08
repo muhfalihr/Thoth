@@ -392,9 +392,10 @@ test('a leaked child outranks the deadline that was supposed to reap it', async 
 // exclusively before the browser starts: main() cannot reach runReference without
 // a workspace, so a reservation that fails is a run that never acquires anything.
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ReferenceResult } from './parity_reference.ts';
 import { finalizeAttempt, prepareWorkspace, readFixture } from './parity_reference.ts';
 
 function evidenceRoot(): string {
@@ -440,4 +441,153 @@ test('a workspace cannot be prepared twice, or without a mounted evidence root',
 
 test('an unreadable fixture raises a fixed code, not a filesystem error', () => {
   expect(() => readFixture(join(evidenceRoot(), 'absent', 'url'))).toThrow(/^fixture_unreadable$/);
+});
+
+// --- diagnostic preservation ------------------------------------------------
+//
+// p3 and p4 proved a nonzero Scout exit and clean teardown, but the cause survived
+// only as free-form log text nobody may quote. Scout now emits allowlisted frames on
+// the stderr this workspace already owns, and finalization lifts the validated ones
+// into the record. Everything else in that stream stays where it is: the frames are
+// reconstructed from the allowlist, never copied out of the file.
+
+import {
+  formatSafeRuntimeDiagnostic,
+  type SafeRuntimeDiagnostic,
+} from '../lib/safe_runtime_diagnostic.ts';
+
+const DISCOVERY_SIGNAL: SafeRuntimeDiagnostic = {
+  schema_version: 1,
+  kind: 'signal',
+  stage: 'trace_source',
+  category: 'media_candidate_discovery',
+  code: 'profile_discovery_exception',
+};
+
+const TERMINAL_EVENT: SafeRuntimeDiagnostic = {
+  schema_version: 1,
+  kind: 'terminal',
+  stage: 'trace_source',
+  category: 'unknown',
+  code: 'required_stage_failed',
+};
+
+const CLEAN_RESULT: ReferenceResult = {
+  referenceExit: 1,
+  browserExit: 0,
+  cleanupPassed: true,
+  timedOut: false,
+  interrupted: false,
+};
+
+// Everything an operator must never find in structured evidence, in the one stream
+// that legitimately contains such values.
+const CANARIES = [
+  'https://www.tiktok.com/@private.handle/video/7677137235434687752',
+  '/opt/thoth/scout/output/legacy-scout/ref-p3/source-report.json',
+  '7677137235434687752',
+  'sessionid=private-session-value',
+  'Bearer private-token',
+  'reference.stderr.log',
+  'TypeError: cannot read properties of undefined',
+];
+
+async function finalizeWith(stderrText: string | null): Promise<Record<string, unknown>> {
+  const workspace = prepareWorkspace('ref-p3', evidenceRoot());
+  if (stderrText === null) rmSync(workspace.stderrPath);
+  else writeFileSync(workspace.stderrPath, stderrText);
+  await finalizeAttempt(workspace, CLEAN_RESULT);
+  return JSON.parse(readFileSync(workspace.attemptPath, 'utf8'));
+}
+
+test('the reservation carries no diagnostic claim at all', () => {
+  const workspace = prepareWorkspace('ref-p3', evidenceRoot());
+  const reserved = JSON.parse(readFileSync(workspace.attemptPath, 'utf8'));
+
+  expect(reserved.status).toBe('pending');
+  // Absent, not false: a pending record has made no diagnostic observation, and a
+  // `false` here would read as one that failed.
+  expect('diagnostics_valid' in reserved).toBe(false);
+  expect('diagnostic_events' in reserved).toBe(false);
+});
+
+test('validated frames reach the complete record in emission order', async () => {
+  const finalized = await finalizeWith(
+    `${formatSafeRuntimeDiagnostic(DISCOVERY_SIGNAL)}\n` +
+      `some ordinary scout log line\n` +
+      `${formatSafeRuntimeDiagnostic(TERMINAL_EVENT)}\n`,
+  );
+
+  expect(finalized).toMatchObject({
+    status: 'complete',
+    diagnostics_valid: true,
+    diagnostic_events: [DISCOVERY_SIGNAL, TERMINAL_EVENT],
+  });
+});
+
+test('a clean stream with no frames is a valid empty observation', async () => {
+  expect(await finalizeWith('')).toMatchObject({
+    diagnostics_valid: true,
+    diagnostic_events: [],
+  });
+  expect(await finalizeWith('scout ran and said ordinary things\n')).toMatchObject({
+    diagnostics_valid: true,
+    diagnostic_events: [],
+  });
+});
+
+test('an untrustworthy stream records invalid diagnostics and no events', async () => {
+  const oversized = `${'x'.repeat(1024 * 1024 + 1)}\n${formatSafeRuntimeDiagnostic(TERMINAL_EVENT)}\n`;
+  const duplicated = `${formatSafeRuntimeDiagnostic(TERMINAL_EVENT)}\n`.repeat(2);
+  const malformed = `THOTH_DIAGNOSTIC {"schema_version":1,"kind":"signal","stage":"trace_source",${''}"category":"media_candidate_discovery","code":"profile_discovery_empty","note":"free form"}\n`;
+
+  for (const stream of [malformed, oversized, duplicated, 'THOTH_DIAGNOSTIC not-json\n', null]) {
+    expect(await finalizeWith(stream)).toMatchObject({
+      status: 'complete',
+      diagnostics_valid: false,
+      diagnostic_events: [],
+    });
+  }
+});
+
+test('no value from the stderr stream can reach the attempt record', async () => {
+  const hostile =
+    CANARIES.map((canary) => `error: ${canary}`).join('\n') +
+    '\n' +
+    CANARIES.map(
+      (canary) =>
+        `THOTH_DIAGNOSTIC {"schema_version":1,"kind":"signal","stage":"trace_source",` +
+        `"category":"media_candidate_discovery","code":"profile_discovery_empty","leak":"${canary}"}`,
+    ).join('\n') +
+    `\n${formatSafeRuntimeDiagnostic(TERMINAL_EVENT)}\n`;
+
+  const serialized = JSON.stringify(await finalizeWith(hostile));
+  for (const canary of CANARIES) {
+    expect(serialized).not.toContain(canary);
+  }
+});
+
+test('a malformed stream cannot change the lifecycle verdict', async () => {
+  const workspace = prepareWorkspace('ref-p3', evidenceRoot());
+  writeFileSync(workspace.stderrPath, 'THOTH_DIAGNOSTIC {"kind":"signal"}\n');
+  const reference = exitedChild(1);
+
+  const status = await runReference(
+    options(),
+    deps({
+      startReference: () => reference,
+      writeResult: (result) => finalizeAttempt(workspace, result),
+    }),
+  );
+
+  // The Scout exit code, the cleanup verdict, and the record's own lifecycle fields
+  // are the same as they would be with a pristine stream.
+  expect(status).toBe(1);
+  expect(JSON.parse(readFileSync(workspace.attemptPath, 'utf8'))).toMatchObject({
+    status: 'complete',
+    referenceExit: 1,
+    cleanupPassed: true,
+    diagnostics_valid: false,
+    diagnostic_events: [],
+  });
 });

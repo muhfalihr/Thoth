@@ -300,13 +300,19 @@ export async function runReference(
 // runReference above, which the tests drive with injected children.
 
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
+import {
+  parseSafeRuntimeDiagnostics,
+  type SafeRuntimeDiagnostic,
+} from '../lib/safe_runtime_diagnostic.ts';
 import { chromiumArguments } from './legacy_cdp.ts';
 
 /** The sample evidence mount. Absent means the container was started wrongly. */
@@ -319,6 +325,8 @@ const READY_PROBE_TIMEOUT_MS = 2_000;
 const READY_POLL_INTERVAL_MS = 250;
 const RESTRICTED_FILE_MODE = 0o600;
 const RESTRICTED_DIR_MODE = 0o700;
+/** The diagnostic contract's own input limit, enforced before the file is read. */
+const MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
 
 export interface ReferenceEnvironment {
   referenceId: string;
@@ -367,6 +375,8 @@ export interface ReferenceWorkspace {
   directory: string;
   reportPath: string;
   attemptPath: string;
+  /** The same restricted stream `stderr` writes to, named so finalization can read it back. */
+  stderrPath: string;
   startedAt: string;
   stdout: number;
   stderr: number;
@@ -401,16 +411,43 @@ export function prepareWorkspace(
   const startedAt = new Date().toISOString();
   const attemptPath = `${directory}/reference-attempt.json`;
   writeAttempt(attemptPath, { started_at: startedAt, status: 'pending' }, 'wx');
+  const stderrPath = `${directory}/reference.stderr.log`;
 
   return {
     directory,
     reportPath: referenceOutputPath(referenceId),
     attemptPath,
+    stderrPath,
     startedAt,
     stdout: openSync(`${directory}/reference.stdout.log`, 'wx', RESTRICTED_FILE_MODE),
-    stderr: openSync(`${directory}/reference.stderr.log`, 'wx', RESTRICTED_FILE_MODE),
+    stderr: openSync(stderrPath, 'wx', RESTRICTED_FILE_MODE),
     browserLog: openSync(`${directory}/browser.log`, 'wx', RESTRICTED_FILE_MODE),
   };
+}
+
+/**
+ * Lift the allowlisted frames out of the reference's own restricted stderr.
+ *
+ * At most one byte past the size limit is ever held: that is enough for the parser's
+ * own guard to reject an oversized stream without this process reading it. A stream
+ * that cannot be read at all is an unknown diagnostic state, not a lifecycle
+ * failure, and the filesystem error behind it never becomes evidence.
+ */
+function readDiagnostics(path: string): {
+  events: SafeRuntimeDiagnostic[];
+  valid: boolean;
+} {
+  let handle: number | undefined;
+  try {
+    handle = openSync(path, 'r');
+    const buffer = Buffer.allocUnsafe(MAX_DIAGNOSTIC_BYTES + 1);
+    const read = readSync(handle, buffer, 0, buffer.length, 0);
+    return parseSafeRuntimeDiagnostics(buffer.subarray(0, read).toString('utf8'));
+  } catch {
+    return { events: [], valid: false };
+  } finally {
+    if (handle !== undefined) closeSync(handle);
+  }
 }
 
 function writeAttempt(path: string, body: Record<string, unknown>, flag: 'w' | 'wx'): void {
@@ -428,11 +465,17 @@ function writeAttempt(path: string, body: Record<string, unknown>, flag: 'w' | '
  * reader never sees a half-written attempt: the file is either the reservation or
  * the complete result, and `rename` on the same directory is the primitive that
  * guarantees it.
+ *
+ * Diagnostics are read here, after the Scout child has been reaped and before the
+ * record exists, so they land in the same atomic write as the lifecycle result. They
+ * are additive and advisory: an unreadable or untrustworthy stream marks itself
+ * invalid and changes nothing else in this record.
  */
 export async function finalizeAttempt(
   workspace: ReferenceWorkspace,
   result: ReferenceResult,
 ): Promise<void> {
+  const diagnostics = readDiagnostics(workspace.stderrPath);
   const pending = `${workspace.attemptPath}.tmp`;
   writeAttempt(
     pending,
@@ -441,6 +484,8 @@ export async function finalizeAttempt(
       finished_at: new Date().toISOString(),
       status: 'complete',
       ...result,
+      diagnostics_valid: diagnostics.valid,
+      diagnostic_events: diagnostics.events,
     },
     'w',
   );
