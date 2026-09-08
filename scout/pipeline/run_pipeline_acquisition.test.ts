@@ -1,9 +1,11 @@
 // scout/pipeline/run_pipeline_acquisition.test.ts
 import assert from 'node:assert/strict';
-import { parseRunPipelineOptions, runPipelineWithDeps } from './run_pipeline.ts';
+import type { SafeRuntimeDiagnostic } from '../lib/safe_runtime_diagnostic.ts';
+import { parseRunPipelineOptions, type RunPipelineDeps, runPipelineWithDeps } from './run_pipeline.ts';
 
 const contexts = new Set<unknown>();
 const stages: string[] = [];
+const happyEvents: SafeRuntimeDiagnostic[] = [];
 const context = { runId: 'test', service: {} } as any;
 await runPipelineWithDeps(
   {
@@ -15,6 +17,7 @@ await runPipelineWithDeps(
   },
   {
     createContext: async () => context,
+    emitDiagnostic: (event) => happyEvents.push(event),
     inspectSeed: async (_url, received) => {
       contexts.add(received);
       return { title: 'caption', description: 'caption', platform: 'instagram', is_video: true };
@@ -58,6 +61,8 @@ await runPipelineWithDeps(
 );
 assert.deepEqual(stages, ['trace', 'comments', 'dossier', 'footage', 'figures', 'validate']);
 assert.equal(contexts.size, 1);
+// A run where every stage succeeds emits no terminal frame at all.
+assert.deepEqual(happyEvents, []);
 
 const forcedStages: string[] = [];
 const forcedContext = { runId: 'forced-test', service: {} } as any;
@@ -172,4 +177,111 @@ for (const mainCoverageTarget of [0.59, 1.01, Number.NaN, undefined]) {
   );
   assert.equal(createContextCalls, 0);
 }
+
+// A required trace_source failure is the fact p3/p4 could only recover from free-form log text.
+// The pipeline now records it as one allowlisted terminal frame — and still fails exactly as before.
+function failingTraceDeps(
+  traceSource: RunPipelineDeps['traceSource'],
+  emitDiagnostic: (event: SafeRuntimeDiagnostic) => void,
+) {
+  return {
+    createContext: async () => context,
+    emitDiagnostic,
+    inspectSeed: async () => ({ platform: 'instagram', description: 'caption', is_video: true }),
+    writeSeed: async () => {},
+    traceSource,
+    collectComments: async () => assert.fail('a failed required stage must abort the run'),
+    topicDossier: async () => assert.fail('a failed required stage must abort the run'),
+    buildFootage: async () => assert.fail('a failed required stage must abort the run'),
+    packageExternalFootage: async () => assert.fail('a failed required stage must abort the run'),
+    extractFigures: async () => assert.fail('a failed required stage must abort the run'),
+    validate: async () => assert.fail('a failed required stage must abort the run'),
+    summarize: async () => assert.fail('a failed required stage must abort the run'),
+  } as unknown as RunPipelineDeps;
+}
+
+const traceFailureOptions = {
+  url: 'https://www.instagram.com/p/ABC/',
+  out: 'set.json',
+  noComments: false,
+  useInputAsMain: false,
+  mainCoverageTarget: 0.6,
+};
+
+const TERMINAL_EVENT: SafeRuntimeDiagnostic = {
+  schema_version: 1,
+  kind: 'terminal',
+  stage: 'trace_source',
+  category: 'unknown',
+  code: 'required_stage_failed',
+};
+
+{
+  const events: SafeRuntimeDiagnostic[] = [];
+  await assert.rejects(
+    () =>
+      runPipelineWithDeps(
+        traceFailureOptions,
+        failingTraceDeps(async () => {
+          throw new Error(
+            'no main candidate for https://www.tiktok.com/@private.handle token=Bearer-private-token',
+          );
+        }, (event) => events.push(event)),
+      ),
+    (failure: Error) => {
+      // The original failure reaches the caller unchanged: same wrapper, same stage, same reason.
+      assert.equal(failure.name, 'PipelineStepError');
+      assert.match(failure.message, /^Required pipeline step failed: trace_source \(sumber\/main\)/);
+      assert.match(failure.message, /no main candidate/);
+      return true;
+    },
+  );
+  assert.deepEqual(events, [TERMINAL_EVENT]);
+  // Nothing from the caught error crosses into the structured frame.
+  assert.doesNotMatch(
+    JSON.stringify(events),
+    /no main candidate|tiktok\.com|private\.handle|Bearer-private-token/,
+  );
+}
+
+// An earlier discovery signal is evidence, not a root cause: the terminal frame stays category
+// `unknown` and never inherits the preceding signal's category or code.
+{
+  const events: SafeRuntimeDiagnostic[] = [];
+  const discoverySignal: SafeRuntimeDiagnostic = {
+    schema_version: 1,
+    kind: 'signal',
+    stage: 'trace_source',
+    category: 'media_candidate_discovery',
+    code: 'profile_discovery_exception',
+  };
+  await assert.rejects(() =>
+    runPipelineWithDeps(
+      traceFailureOptions,
+      failingTraceDeps(async () => {
+        events.push(discoverySignal);
+        throw new Error('trace_source gave up');
+      }, (event) => events.push(event)),
+    ),
+  );
+  assert.deepEqual(events, [discoverySignal, TERMINAL_EVENT]);
+}
+
+// Only trace_source is wrapped. Another required stage failing must not claim trace_source as the
+// terminal stage — that would be exactly the false attribution this frame exists to prevent.
+{
+  const events: SafeRuntimeDiagnostic[] = [];
+  await assert.rejects(() =>
+    runPipelineWithDeps(traceFailureOptions, {
+      ...failingTraceDeps(async () => {}, (event) => events.push(event)),
+      collectComments: async () => {},
+      topicDossier: async () => {},
+      buildFootage: async () => {
+        throw new Error('build_footage failed');
+      },
+    } as unknown as RunPipelineDeps),
+  );
+  assert.deepEqual(events, []);
+}
+
 console.log('ok run_pipeline_acquisition');

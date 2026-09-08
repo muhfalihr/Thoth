@@ -40,6 +40,15 @@ export function formatSafeRuntimeDiagnostic(event: SafeRuntimeDiagnostic): strin
   return `${SAFE_DIAGNOSTIC_PREFIX}${JSON.stringify(event)}`;
 }
 
+export type DiagnosticSink = (event: SafeRuntimeDiagnostic) => void;
+
+// Production sink: one frame per line on the emitting process's own stderr. For a parity reference
+// that stream is already a restricted file the supervisor owns, so the frame needs no new artifact,
+// no reservation, and no cleanup rule of its own. Tests inject a collector instead.
+export const defaultDiagnosticSink: DiagnosticSink = (event) => {
+  console.error(formatSafeRuntimeDiagnostic(event));
+};
+
 function parseOneFrame(raw: string): SafeRuntimeDiagnostic | null {
   let value: unknown;
   try {

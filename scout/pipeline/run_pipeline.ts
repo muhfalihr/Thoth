@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { OUTPUT_DIR, outPath } from '../lib/paths.ts';
+import { defaultDiagnosticSink, type DiagnosticSink } from '../lib/safe_runtime_diagnostic.ts';
 import { ui } from '../lib/ui.ts';
 import { runPipelineStep } from './run_pipeline_step.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
@@ -75,6 +76,7 @@ export interface RunPipelineDeps {
   extractFigures(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
   validate(options: FileStageOptions, context: AcquisitionRunContext): Promise<void>;
   summarize(file: string): Promise<void>;
+  emitDiagnostic?: DiagnosticSink;
 }
 
 const STEP_TIMEOUT_MS = 600_000;
@@ -221,13 +223,26 @@ export async function runPipelineWithDeps(
   // can also read footage descriptions. Every step is awaited: they run strictly in order and each one
   // reads the file the previous step wrote.
   if (!options.useInputAsMain) {
+    // trace_source is the stage p3 and p4 both died in, and afterwards only free-form log text said
+    // so. Record that one fact as an allowlisted frame before rethrowing — `unknown` category on
+    // purpose: this marks WHERE the run ended, never WHY. Any earlier discovery signal stays a
+    // separate observation rather than being promoted into a claimed cause.
     await runStage(
       'trace_source (sumber/main)',
       true,
       () =>
         deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
       TRACE_SOURCE_TIMEOUT_MS,
-    );
+    ).catch((failure) => {
+      (deps.emitDiagnostic ?? defaultDiagnosticSink)({
+        schema_version: 1,
+        kind: 'terminal',
+        stage: 'trace_source',
+        category: 'unknown',
+        code: 'required_stage_failed',
+      });
+      throw failure;
+    });
   } else {
     // trace_source also OCRs the main it resolves. A forced main is never resolved, so this is the
     // only stage that gives it the ocr_status both the lint and the Rust video safety gate demand.

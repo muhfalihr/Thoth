@@ -39,6 +39,7 @@ import {
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
+import { defaultDiagnosticSink, type DiagnosticSink } from '../lib/safe_runtime_diagnostic.ts';
 import { tikwmLookup } from '../lib/tikwm.ts';
 import { matchesTopic } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
@@ -456,9 +457,15 @@ export async function findOriginalInstagramCandidates(
 
 // Find the ORIGINAL on TikTok by PROFILE (not search): discover() 'profile' request over the video
 // grid, returning every profile video so the shared gate can evaluate and rank them against the story.
-async function findOriginalTiktokCandidates(
+//
+// Both failure branches return [] — that is deliberate and unchanged. What the caller could not tell
+// afterwards is WHICH branch it was: a thrown discovery (login wall, CDP fault, provider error) and a
+// genuinely empty profile grid look identical from the empty list alone. The sink emits that one bit
+// as an allowlisted enum; the caught value itself is never passed on.
+export async function findOriginalTiktokCandidates(
   username,
   context: AcquisitionRunContext,
+  emitDiagnostic: DiagnosticSink = defaultDiagnosticSink,
 ): Promise<MainCandidate[]> {
   let items: PostRecord[] = [];
   try {
@@ -469,10 +476,24 @@ async function findOriginalTiktokCandidates(
       limit: 30,
     }));
   } catch (e) {
+    emitDiagnostic({
+      schema_version: 1,
+      kind: 'signal',
+      stage: 'trace_source',
+      category: 'media_candidate_discovery',
+      code: 'profile_discovery_exception',
+    });
     return [];
   }
   if (!items.length) {
     console.log(`    [tiktok] profil @${username}: 0 video terbaca (login/tab?).`);
+    emitDiagnostic({
+      schema_version: 1,
+      kind: 'signal',
+      stage: 'trace_source',
+      category: 'media_candidate_discovery',
+      code: 'profile_discovery_empty',
+    });
     return [];
   }
   return items.map((item) => candidateFromDiscovery(item, username));
