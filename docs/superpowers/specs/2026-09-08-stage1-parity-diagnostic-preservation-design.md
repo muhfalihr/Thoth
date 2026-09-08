@@ -110,6 +110,9 @@ Valid input returns one single-line frame, selected from the three frames this m
 serialized at initialization rather than serialized on demand, so a side effect a caller
 arranges while its value is being inspected — an inherited `toJSON`, a replaced
 `JSON.stringify`, a setter on `Object.prototype` — cannot reach the emitted bytes.
+The fixed rejection `TypeError` constructor is captured at module initialization as well.
+After caller-controlled reflection can begin, validation, canonical frame selection, and
+rejection use only captured bindings, language operators, or private module state.
 The parser considers only lines beginning with the exact prefix. Every prefixed
 line must be valid JSON with exactly five keys — `schema_version`, `kind`,
 `stage`, `category`, and `code` — and a valid combination of the last four:

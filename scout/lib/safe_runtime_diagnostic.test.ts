@@ -344,8 +344,21 @@ const CANONICAL = [empty, exception, terminal].map(
   (event) => `${SAFE_DIAGNOSTIC_PREFIX}${JSON.stringify(event)}`,
 );
 
+const restoreProperty = (
+  target: object,
+  key: PropertyKey,
+  descriptor: PropertyDescriptor | undefined,
+): void => {
+  if (descriptor) {
+    Object.defineProperty(target, key, descriptor);
+    return;
+  }
+  assert.equal(Reflect.deleteProperty(target, key), true);
+};
+
 // A trap that installs `Object.prototype.toJSON` and then returns the five real keys.
 {
+  const original = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
   const keys = Reflect.ownKeys({ ...empty });
   const hostile = new Proxy(
     { ...empty },
@@ -365,13 +378,14 @@ const CANONICAL = [empty, exception, terminal].map(
     assert.equal(frame, CANONICAL[0]);
     assert.doesNotMatch(frame, /canary|side_effect/i);
   } finally {
-    delete (Object.prototype as Record<string, unknown>).toJSON;
+    restoreProperty(Object.prototype, 'toJSON', original);
   }
+  assert.deepEqual(Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON'), original);
 }
 
 // A trap that replaces the global serializer.
 {
-  const original = JSON.stringify;
+  const original = Object.getOwnPropertyDescriptor(JSON, 'stringify');
   const keys = Reflect.ownKeys({ ...exception });
   const hostile = new Proxy(
     { ...exception },
@@ -387,14 +401,16 @@ const CANONICAL = [empty, exception, terminal].map(
     assert.equal(frame, CANONICAL[1]);
     assert.doesNotMatch(frame, /canary|side_effect/i);
   } finally {
-    JSON.stringify = original;
+    restoreProperty(JSON, 'stringify', original);
   }
+  assert.deepEqual(Object.getOwnPropertyDescriptor(JSON, 'stringify'), original);
 }
 
 // A trap that installs an allowed-key accessor on `Object.prototype`: a plain `{}` accumulator
 // would run that setter instead of storing the value, which both executes caller code and lets
 // the inherited getter answer in its place.
 {
+  const original = Object.getOwnPropertyDescriptor(Object.prototype, 'code');
   let invoked = 0;
   const keys = Reflect.ownKeys({ ...terminal });
   const hostile = new Proxy(
@@ -420,15 +436,16 @@ const CANONICAL = [empty, exception, terminal].map(
     assert.doesNotMatch(frame, /canary|side_effect/i);
     assert.equal(invoked, 0);
   } finally {
-    delete (Object.prototype as Record<string, unknown>).code;
+    restoreProperty(Object.prototype, 'code', original);
   }
+  assert.deepEqual(Object.getOwnPropertyDescriptor(Object.prototype, 'code'), original);
 }
 
 // A trap that swaps out reflection the validator has not performed yet, so that the remaining
 // steps would describe a different event. The validator captured its reflection at import, so the
 // swap changes nothing; reading `Reflect` mid-walk would let a caller choose which frame is sent.
 {
-  const original = Reflect.getOwnPropertyDescriptor;
+  const original = Object.getOwnPropertyDescriptor(Reflect, 'getOwnPropertyDescriptor');
   const keys = Reflect.ownKeys({ ...empty });
   const hostile = new Proxy(
     { ...empty },
@@ -447,8 +464,53 @@ const CANONICAL = [empty, exception, terminal].map(
   try {
     assert.equal(formatSafeRuntimeDiagnostic(hostile as SafeRuntimeDiagnostic), CANONICAL[0]);
   } finally {
-    Reflect.getOwnPropertyDescriptor = original;
+    restoreProperty(Reflect, 'getOwnPropertyDescriptor', original);
   }
+  assert.deepEqual(Object.getOwnPropertyDescriptor(Reflect, 'getOwnPropertyDescriptor'), original);
+}
+
+// A trap can replace the rejection constructor before returning an invalid key set. Rejection
+// must use the constructor captured by the module before caller code ran, not the global binding
+// that exists after classification.
+{
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'TypeError');
+  assert.ok(original?.value);
+  const OriginalTypeError = original.value as TypeErrorConstructor;
+  const ReplacementTypeError = (() =>
+    new Error(
+      'TYPEERROR_SIDE_EFFECT_CANARY https://private.example.test/evidence',
+    )) as unknown as TypeErrorConstructor;
+  const target = { ...empty, extra: 'force-rejection' };
+  const hostile = new Proxy(target, {
+    ownKeys() {
+      Object.defineProperty(globalThis, 'TypeError', {
+        ...original,
+        value: ReplacementTypeError,
+      });
+      return Reflect.ownKeys(target);
+    },
+  });
+
+  let thrown: unknown;
+  try {
+    formatSafeRuntimeDiagnostic(hostile as unknown as SafeRuntimeDiagnostic);
+  } catch (error) {
+    thrown = error;
+  } finally {
+    restoreProperty(globalThis, 'TypeError', original);
+  }
+
+  assert.deepEqual(Object.getOwnPropertyDescriptor(globalThis, 'TypeError'), original);
+  assert.ok(thrown instanceof OriginalTypeError);
+  assert.equal(
+    (thrown as Error).message,
+    'safe runtime diagnostic rejected by the closed contract',
+  );
+  assert.notStrictEqual((thrown as Error).constructor, ReplacementTypeError);
+  assert.doesNotMatch(
+    `${(thrown as Error).name}:${(thrown as Error).message}`,
+    /canary|side_effect|private|evidence|https?:/i,
+  );
 }
 
 // --- A parsed event is a copy, not a handle on the allowlist. ---

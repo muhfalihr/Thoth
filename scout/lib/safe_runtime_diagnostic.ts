@@ -41,6 +41,7 @@ const getOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const hasOwn = Object.hasOwn;
 const create = Object.create;
 const objectPrototype = Object.prototype;
+const DiagnosticContractTypeError = TypeError;
 
 // The runtime half of that union. These objects never leave the module: callers get a fresh copy
 // or a precomputed string, so nobody holds a mutable alias of the allowlist. Freezing is defense
@@ -171,7 +172,9 @@ export function formatSafeRuntimeDiagnostic(event: SafeRuntimeDiagnostic): strin
   // Fail before a prefixed frame exists: a half-written frame on the supervisor's stream is
   // worse than no frame. The message is fixed so the rejected value cannot leak through it.
   if (index === REJECTED) {
-    throw new TypeError('safe runtime diagnostic rejected by the closed contract');
+    throw new DiagnosticContractTypeError(
+      'safe runtime diagnostic rejected by the closed contract',
+    );
   }
   return CANONICAL_FRAMES[index];
 }

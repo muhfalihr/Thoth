@@ -101,6 +101,9 @@ initialization and answer a successful format with one of those strings, so a ca
 effect arranged during reflection cannot influence the emitted bytes. Return fresh event
 values from the parser and never hand a caller one of the internal allowlist objects.
 
+Capture the fixed rejection `TypeError` constructor at module initialization too. After caller
+reflection begins, use only captured bindings, language operators, or private module state.
+
 - [ ] **Step 4: Add boundary tests**
 
 Cover malformed JSON, extra/missing keys, all invalid kind/category/code
