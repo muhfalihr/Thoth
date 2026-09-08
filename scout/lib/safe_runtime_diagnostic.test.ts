@@ -96,12 +96,14 @@ assert.deepEqual(
   { events: [], valid: false },
 );
 
-// Every combination outside the allowlisted table is rejected, whichever field is wrong.
-const invalidCombinations: SafeRuntimeDiagnostic[] = [
-  { ...empty, stage: 'other_stage' as SafeRuntimeDiagnostic['stage'] },
+// Every combination outside the allowlisted table is rejected, whichever field is wrong. These
+// are deliberately untyped: the discriminated union already refuses them at compile time, so
+// annotating them as diagnostics would be a type error rather than a wire-format test.
+const invalidCombinations: Record<string, unknown>[] = [
+  { ...empty, stage: 'other_stage' },
   { ...empty, category: 'unknown' },
   { ...terminal, category: 'media_candidate_discovery' },
-  { ...terminal, code: 'profile_discovery_empty' as SafeRuntimeDiagnostic['code'] },
+  { ...terminal, code: 'profile_discovery_empty' },
   { ...exception, kind: 'terminal' },
 ];
 for (const invalid of invalidCombinations) {
@@ -163,5 +165,99 @@ assert.deepEqual(parseSafeRuntimeDiagnostics('no diagnostic lines here\n'), {
   events: [],
   valid: true,
 });
+
+// --- Formatter input is validated at runtime, not only by the type checker. ---
+// The static type is a closed union, but a structurally typed variable, a runtime cast, or a
+// value crossing a module boundary all reach the formatter unchecked. Since the formatter is
+// what writes to a stream the supervisor later parses, it re-checks the object itself.
+
+const rejected = (value: unknown) =>
+  assert.throws(
+    () => formatSafeRuntimeDiagnostic(value as SafeRuntimeDiagnostic),
+    (error: unknown) => {
+      assert.ok(error instanceof TypeError);
+      // The rejected value is never echoed back — not in the message, not in a property.
+      assert.doesNotMatch(
+        `${(error as TypeError).message}${JSON.stringify(error, Object.getOwnPropertyNames(error))}`,
+        /private|canary|evidence|sessionid|https?:/i,
+      );
+      return true;
+    },
+  );
+
+// An extra property riding along on a structurally typed variable is not serialized.
+rejected({ ...empty, path: '/private/evidence/p4.json' });
+
+// A combination made of otherwise-legal enum values is still not one of the three events.
+rejected({
+  schema_version: 1,
+  kind: 'terminal',
+  stage: 'trace_source',
+  category: 'media_candidate_discovery',
+  code: 'profile_discovery_empty',
+});
+
+// An invalid schema version, including the boolean that `== 1` would have admitted.
+rejected({ ...empty, schema_version: 2 });
+rejected({ ...empty, schema_version: '1' });
+rejected({ ...empty, schema_version: true });
+
+// Missing key.
+rejected({
+  kind: 'signal',
+  stage: 'trace_source',
+  category: 'media_candidate_discovery',
+  code: 'profile_discovery_empty',
+});
+
+// Non-plain objects: null, arrays, primitives, and class instances whose prototype could
+// carry behavior the formatter would otherwise inherit.
+rejected(null);
+rejected(undefined);
+rejected('THOTH_DIAGNOSTIC {}');
+rejected([empty]);
+{
+  class Diagnostic {
+    schema_version = 1 as const;
+    kind = 'signal' as const;
+    stage = 'trace_source' as const;
+    category = 'media_candidate_discovery' as const;
+    code = 'profile_discovery_empty' as const;
+    toJSON() {
+      return { canary: 'https://private.example.test/evidence' };
+    }
+  }
+  rejected(new Diagnostic());
+}
+
+// A hostile `toJSON` is the direct bypass of a closed contract: `JSON.stringify` would call it
+// and emit whatever it returns, so the formatter must never hand the caller's object to it.
+rejected({ ...empty, toJSON: () => ({ canary: 'sessionid=private' }) });
+{
+  // Same attack with the hook hidden from `Object.keys`.
+  const hostile: Record<string, unknown> = { ...empty };
+  Object.defineProperty(hostile, 'toJSON', {
+    value: () => ({ canary: 'sessionid=private' }),
+    enumerable: false,
+  });
+  rejected(hostile);
+}
+
+// Valid events survive all of that and still serialize canonically, in a fixed key order that
+// does not depend on how the caller happened to build the object.
+{
+  const shuffled = {
+    code: 'profile_discovery_empty',
+    category: 'media_candidate_discovery',
+    stage: 'trace_source',
+    kind: 'signal',
+    schema_version: 1,
+  } as SafeRuntimeDiagnostic;
+  assert.equal(formatSafeRuntimeDiagnostic(shuffled), formatSafeRuntimeDiagnostic(empty));
+  assert.deepEqual(parseSafeRuntimeDiagnostics(formatSafeRuntimeDiagnostic(shuffled)), {
+    events: [empty],
+    valid: true,
+  });
+}
 
 console.log('ok safe_runtime_diagnostic');

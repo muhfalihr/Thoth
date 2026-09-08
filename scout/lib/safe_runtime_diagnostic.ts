@@ -6,38 +6,99 @@
 
 export const SAFE_DIAGNOSTIC_PREFIX = 'THOTH_DIAGNOSTIC ';
 
-export type SafeRuntimeDiagnostic = {
-  schema_version: 1;
-  kind: 'signal' | 'terminal';
-  stage: 'trace_source';
-  category: 'media_candidate_discovery' | 'unknown';
-  code: 'profile_discovery_exception' | 'profile_discovery_empty' | 'required_stage_failed';
-};
+// A discriminated union of the three approved events, not a cross product of four independent
+// enums: a mix such as terminal/media_candidate_discovery is legal in every field and still is
+// not an event this contract defines, so the type itself has to refuse it.
+export type SafeRuntimeDiagnostic =
+  | {
+      schema_version: 1;
+      kind: 'signal';
+      stage: 'trace_source';
+      category: 'media_candidate_discovery';
+      code: 'profile_discovery_exception';
+    }
+  | {
+      schema_version: 1;
+      kind: 'signal';
+      stage: 'trace_source';
+      category: 'media_candidate_discovery';
+      code: 'profile_discovery_empty';
+    }
+  | {
+      schema_version: 1;
+      kind: 'terminal';
+      stage: 'trace_source';
+      category: 'unknown';
+      code: 'required_stage_failed';
+    };
 
-// The only combinations of kind/stage/category/code this contract recognizes. Anything else —
-// including a technically-plausible mix of otherwise-valid enum values — is rejected.
-const VALID_COMBINATIONS: readonly Omit<SafeRuntimeDiagnostic, 'schema_version'>[] = [
+// The runtime half of that union. Both the formatter and the parser answer with an element of
+// this table rather than with the object they were handed, so no caller-owned value is ever
+// serialized or returned.
+const VALID_EVENTS: readonly SafeRuntimeDiagnostic[] = [
   {
+    schema_version: 1,
     kind: 'signal',
     stage: 'trace_source',
     category: 'media_candidate_discovery',
     code: 'profile_discovery_exception',
   },
   {
+    schema_version: 1,
     kind: 'signal',
     stage: 'trace_source',
     category: 'media_candidate_discovery',
     code: 'profile_discovery_empty',
   },
-  { kind: 'terminal', stage: 'trace_source', category: 'unknown', code: 'required_stage_failed' },
+  {
+    schema_version: 1,
+    kind: 'terminal',
+    stage: 'trace_source',
+    category: 'unknown',
+    code: 'required_stage_failed',
+  },
 ];
 
 const EXPECTED_KEYS = ['category', 'code', 'kind', 'schema_version', 'stage'];
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_FRAMES = 32;
 
+// Reduce any value to the table entry it claims to be, or to null. A caller-owned object is only
+// ever read from here; what comes back is the canonical entry, so an extra property, a hidden
+// `toJSON`, a getter, or an inherited member has nothing left to influence.
+function canonicalize(value: unknown): SafeRuntimeDiagnostic | null {
+  if (typeof value !== 'object' || value === null) return null;
+
+  // A prototype other than the plain-object one can carry a `toJSON` or accessors the formatter
+  // would otherwise inherit; JSON.parse never produces one, so nothing legitimate is lost.
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+
+  // Own property NAMES rather than keys: a non-enumerable `toJSON` is invisible to Object.keys
+  // and is still both an extra property and a way to replace what gets serialized.
+  const names = Object.getOwnPropertyNames(value).sort();
+  if (names.length !== EXPECTED_KEYS.length || names.some((name, i) => name !== EXPECTED_KEYS[i]))
+    return null;
+
+  const candidate = value as Record<string, unknown>;
+  if (candidate.schema_version !== 1) return null;
+  return (
+    VALID_EVENTS.find(
+      (event) =>
+        event.kind === candidate.kind &&
+        event.stage === candidate.stage &&
+        event.category === candidate.category &&
+        event.code === candidate.code,
+    ) ?? null
+  );
+}
+
 export function formatSafeRuntimeDiagnostic(event: SafeRuntimeDiagnostic): string {
-  return `${SAFE_DIAGNOSTIC_PREFIX}${JSON.stringify(event)}`;
+  const canonical = canonicalize(event);
+  // Fail before a prefixed frame exists: a half-written frame on the supervisor's stream is
+  // worse than no frame. The message is fixed so the rejected value cannot leak through it.
+  if (!canonical) throw new TypeError('safe runtime diagnostic rejected by the closed contract');
+  return `${SAFE_DIAGNOSTIC_PREFIX}${JSON.stringify({ ...canonical })}`;
 }
 
 export type DiagnosticSink = (event: SafeRuntimeDiagnostic) => void;
@@ -56,23 +117,9 @@ function parseOneFrame(raw: string): SafeRuntimeDiagnostic | null {
   } catch {
     return null;
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-
-  const keys = Object.keys(value).sort();
-  if (keys.length !== EXPECTED_KEYS.length || keys.some((key, i) => key !== EXPECTED_KEYS[i]))
-    return null;
-
-  const candidate = value as Record<string, unknown>;
-  if (candidate.schema_version !== 1) return null;
-
-  const match = VALID_COMBINATIONS.find(
-    (combo) =>
-      combo.kind === candidate.kind &&
-      combo.stage === candidate.stage &&
-      combo.category === candidate.category &&
-      combo.code === candidate.code,
-  );
-  return match ? { schema_version: 1, ...match } : null;
+  // Same closed check the formatter applies: parsed input gets no weaker validation than a
+  // caller in this process does.
+  return canonicalize(value);
 }
 
 export function parseSafeRuntimeDiagnostics(text: string): {
