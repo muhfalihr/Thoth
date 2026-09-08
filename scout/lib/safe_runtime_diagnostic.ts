@@ -110,6 +110,22 @@ export const defaultDiagnosticSink: DiagnosticSink = (event) => {
   console.error(formatSafeRuntimeDiagnostic(event));
 };
 
+// The only way emission sites should call a sink. A diagnostic describes what a run did; it must
+// never become what the run did instead, so a closed stream, a full disk, or a sink rejecting a
+// malformed event all end here rather than replacing the caller's return value or its failure.
+// The suppressed error is deliberately not logged: reporting it would re-enter the stream that
+// just failed, and its text is unbounded caller-owned data this contract exists to keep out.
+export function emitSafeRuntimeDiagnostic(
+  sink: DiagnosticSink,
+  event: SafeRuntimeDiagnostic,
+): void {
+  try {
+    sink(event);
+  } catch {
+    // Intentionally empty; see above.
+  }
+}
+
 function parseOneFrame(raw: string): SafeRuntimeDiagnostic | null {
   let value: unknown;
   try {

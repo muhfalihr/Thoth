@@ -126,4 +126,38 @@ async function collect(
   );
 }
 
+// A diagnostic is an observation about a run, so it must never become the thing that changed the
+// run. A sink that throws — a closed stderr, a full disk, a formatter rejecting a bad event —
+// would otherwise replace the `[]` this function promises with an exception its callers have no
+// handling for.
+{
+  const explode = () => {
+    throw new Error('sink exploded writing /private/evidence/p4.stderr.log');
+  };
+
+  const thrownDiscovery = await findOriginalTiktokCandidates(
+    HANDLE,
+    contextWith(() => {
+      throw new Error('discover failed');
+    }) as never,
+    explode,
+  );
+  assert.deepEqual(thrownDiscovery, []);
+
+  const emptyDiscovery = await findOriginalTiktokCandidates(
+    HANDLE,
+    contextWith(async () => ({ items: [] })) as never,
+    explode,
+  );
+  assert.deepEqual(emptyDiscovery, []);
+
+  // The successful branch emits nothing, so a hostile sink cannot reach it at all.
+  const found = await findOriginalTiktokCandidates(
+    HANDLE,
+    contextWith(async () => ({ items: [tiktokRecord()] })) as never,
+    explode,
+  );
+  assert.equal(found.length, 1);
+}
+
 console.log('ok trace_source_diagnostic');

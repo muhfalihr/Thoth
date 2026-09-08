@@ -39,7 +39,11 @@ import {
   shouldAttachVideoOcr,
 } from '../lib/ocr_content.ts';
 import { outPath } from '../lib/paths.ts';
-import { defaultDiagnosticSink, type DiagnosticSink } from '../lib/safe_runtime_diagnostic.ts';
+import {
+  defaultDiagnosticSink,
+  type DiagnosticSink,
+  emitSafeRuntimeDiagnostic,
+} from '../lib/safe_runtime_diagnostic.ts';
 import { tikwmLookup } from '../lib/tikwm.ts';
 import { matchesTopic } from '../lib/verify.ts';
 import { cropProfile } from '../scrapers/profile_crop.ts';
@@ -476,7 +480,7 @@ export async function findOriginalTiktokCandidates(
       limit: 30,
     }));
   } catch (e) {
-    emitDiagnostic({
+    emitSafeRuntimeDiagnostic(emitDiagnostic, {
       schema_version: 1,
       kind: 'signal',
       stage: 'trace_source',
@@ -487,7 +491,7 @@ export async function findOriginalTiktokCandidates(
   }
   if (!items.length) {
     console.log(`    [tiktok] profil @${username}: 0 video terbaca (login/tab?).`);
-    emitDiagnostic({
+    emitSafeRuntimeDiagnostic(emitDiagnostic, {
       schema_version: 1,
       kind: 'signal',
       stage: 'trace_source',

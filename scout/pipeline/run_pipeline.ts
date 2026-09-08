@@ -16,7 +16,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { OUTPUT_DIR, outPath } from '../lib/paths.ts';
-import { defaultDiagnosticSink, type DiagnosticSink } from '../lib/safe_runtime_diagnostic.ts';
+import {
+  defaultDiagnosticSink,
+  type DiagnosticSink,
+  emitSafeRuntimeDiagnostic,
+} from '../lib/safe_runtime_diagnostic.ts';
 import { ui } from '../lib/ui.ts';
 import { runPipelineStep } from './run_pipeline_step.ts';
 import type { AcquisitionRunContext } from '../acquisition/index.ts';
@@ -234,7 +238,7 @@ export async function runPipelineWithDeps(
         deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
       TRACE_SOURCE_TIMEOUT_MS,
     ).catch((failure) => {
-      (deps.emitDiagnostic ?? defaultDiagnosticSink)({
+      emitSafeRuntimeDiagnostic(deps.emitDiagnostic ?? defaultDiagnosticSink, {
         schema_version: 1,
         kind: 'terminal',
         stage: 'trace_source',

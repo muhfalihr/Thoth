@@ -284,4 +284,38 @@ const TERMINAL_EVENT: SafeRuntimeDiagnostic = {
   assert.deepEqual(events, []);
 }
 
+// A sink that throws must not become the failure the operator sees. The pipeline's own failure is
+// the fact that matters; a diagnostic that could overwrite it would turn a recorded observation
+// into an invented cause and hide the stage that actually stopped the run.
+{
+  let captured: unknown;
+  await assert.rejects(
+    () =>
+      runPipelineWithDeps(
+        traceFailureOptions,
+        failingTraceDeps(
+          async () => {
+            throw new Error('no main candidate');
+          },
+          () => {
+            throw new Error('sink exploded writing /private/evidence/p4.stderr.log');
+          },
+        ),
+      ),
+    (failure: Error) => {
+      captured = failure;
+      assert.equal(failure.name, 'PipelineStepError');
+      assert.match(failure.message, /^Required pipeline step failed: trace_source \(sumber\/main\)/);
+      assert.match(failure.message, /no main candidate/);
+      // The sink's own error text is not what surfaced, anywhere in the thrown object.
+      assert.doesNotMatch(
+        JSON.stringify(failure, Object.getOwnPropertyNames(failure)),
+        /sink exploded|private\/evidence/,
+      );
+      return true;
+    },
+  );
+  assert.ok(captured instanceof Error);
+}
+
 console.log('ok run_pipeline_acquisition');
