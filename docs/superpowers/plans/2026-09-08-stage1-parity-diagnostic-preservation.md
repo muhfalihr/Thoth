@@ -91,10 +91,12 @@ Expected: FAIL because the module or exports do not exist.
 - [ ] **Step 3: Implement the exact five-key allowlist**
 
 Implement the type and combination table from the spec. Split input by line, ignore
-ordinary lines, parse only exact-prefix frames, validate `Object.keys(value).sort()`
-against the five keys — `schema_version`, `kind`, `stage`, `category`, and `code` —
-reject duplicates, cap input at 1 MiB and frames at 32, and
-return no rejected value.
+ordinary lines, parse only exact-prefix frames, and validate own keys with
+`Reflect.ownKeys()` so symbol keys are seen and rejected, requiring exactly five keys
+— `schema_version`, `kind`, `stage`, `category`, and `code`. Read each value from its
+own data-property descriptor, reject accessor descriptors without invoking them, treat
+any reflection failure as a rejection, reject duplicates, cap input at 1 MiB and frames
+at 32, and return no rejected value.
 
 - [ ] **Step 4: Add boundary tests**
 

@@ -69,28 +69,47 @@ const MAX_FRAMES = 32;
 function canonicalize(value: unknown): SafeRuntimeDiagnostic | null {
   if (typeof value !== 'object' || value === null) return null;
 
-  // A prototype other than the plain-object one can carry a `toJSON` or accessors the formatter
-  // would otherwise inherit; JSON.parse never produces one, so nothing legitimate is lost.
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return null;
+  // Everything below is caller-controlled: a Proxy runs caller code for each reflection step and
+  // an accessor runs caller code for each read. Both can throw, and the error they throw carries
+  // caller text — the same leak a frame would, routed through an exception. So the whole
+  // inspection is fail-closed: any reflection failure is just "not a diagnostic".
+  try {
+    // A prototype other than the plain-object one can carry a `toJSON` or accessors the formatter
+    // would otherwise inherit; JSON.parse never produces one, so nothing legitimate is lost.
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
 
-  // Own property NAMES rather than keys: a non-enumerable `toJSON` is invisible to Object.keys
-  // and is still both an extra property and a way to replace what gets serialized.
-  const names = Object.getOwnPropertyNames(value).sort();
-  if (names.length !== EXPECTED_KEYS.length || names.some((name, i) => name !== EXPECTED_KEYS[i]))
+    // Own KEYS, not names: `getOwnPropertyNames` skips symbols, so a symbol-keyed extra property
+    // rode along invisibly. Non-enumerable keys are still included, which is what keeps a hidden
+    // `toJSON` from passing the count.
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== EXPECTED_KEYS.length) return null;
+
+    const fields: Record<string, unknown> = {};
+    for (const key of keys) {
+      if (typeof key !== 'string' || !EXPECTED_KEYS.includes(key)) return null;
+      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+      // Only a plain data property is readable without running caller code. An accessor is
+      // rejected on its descriptor alone, so the getter is never invoked, and the value used
+      // below comes from the descriptor rather than from a second read that could differ.
+      if (!descriptor || 'get' in descriptor || 'set' in descriptor || !('value' in descriptor))
+        return null;
+      fields[key] = descriptor.value;
+    }
+
+    if (fields.schema_version !== 1) return null;
+    return (
+      VALID_EVENTS.find(
+        (event) =>
+          event.kind === fields.kind &&
+          event.stage === fields.stage &&
+          event.category === fields.category &&
+          event.code === fields.code,
+      ) ?? null
+    );
+  } catch {
     return null;
-
-  const candidate = value as Record<string, unknown>;
-  if (candidate.schema_version !== 1) return null;
-  return (
-    VALID_EVENTS.find(
-      (event) =>
-        event.kind === candidate.kind &&
-        event.stage === candidate.stage &&
-        event.category === candidate.category &&
-        event.code === candidate.code,
-    ) ?? null
-  );
+  }
 }
 
 export function formatSafeRuntimeDiagnostic(event: SafeRuntimeDiagnostic): string {

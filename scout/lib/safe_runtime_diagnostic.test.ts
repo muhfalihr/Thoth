@@ -260,4 +260,77 @@ rejected({ ...empty, toJSON: () => ({ canary: 'sessionid=private' }) });
   });
 }
 
+// --- Validation is total: caller-owned code never runs, and never escapes. ---
+// Reading a field is not a neutral act. A getter runs caller code, and a Proxy runs caller code
+// for the reflection the validator itself performs. Either one could throw an error carrying
+// arbitrary text out of the formatter, which is the same leak the closed contract exists to
+// prevent — only routed through an exception instead of through a frame.
+
+// An extra symbol key is invisible to string-key reflection and is still an extra own property.
+rejected({ ...empty, [Symbol('extra')]: 'canary-symbol-value' });
+
+// A throwing getter is rejected on the descriptor alone; the getter is never called.
+{
+  let invoked = 0;
+  const hostile: Record<string, unknown> = { ...empty };
+  Object.defineProperty(hostile, 'schema_version', {
+    get() {
+      invoked += 1;
+      throw new Error('GETTER_CANARY https://private.example.test/evidence');
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  rejected(hostile);
+  assert.equal(invoked, 0);
+}
+
+// A setter-only accessor is a data-shaped lie: reading it yields undefined rather than a value.
+{
+  const hostile: Record<string, unknown> = { ...empty };
+  Object.defineProperty(hostile, 'code', {
+    set(_value: unknown) {
+      /* never invoked */
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  rejected(hostile);
+}
+
+// Every reflection step the validator performs is a trap a Proxy can throw from.
+for (const trap of ['getPrototypeOf', 'ownKeys', 'getOwnPropertyDescriptor'] as const) {
+  const explode = () => {
+    throw new Error(`PROXY_CANARY sessionid=private ${trap}`);
+  };
+  rejected(new Proxy({ ...empty }, { [trap]: explode }));
+}
+
+// Rejection produces no frame at all: a partially written prefixed line on the supervisor's
+// stream would parse as a diagnostic that nothing ever emitted.
+{
+  const hostile = new Proxy(
+    { ...empty },
+    {
+      ownKeys() {
+        throw new Error('PROXY_CANARY');
+      },
+    },
+  );
+  let produced: string | undefined;
+  try {
+    produced = formatSafeRuntimeDiagnostic(hostile as SafeRuntimeDiagnostic);
+  } catch {
+    produced = undefined;
+  }
+  assert.equal(produced, undefined);
+}
+
+// After all of that, the three approved events are unaffected and still round-trip canonically.
+for (const event of [empty, exception, terminal]) {
+  const frame = formatSafeRuntimeDiagnostic(event);
+  assert.ok(frame.startsWith(SAFE_DIAGNOSTIC_PREFIX));
+  assert.deepEqual(parseSafeRuntimeDiagnostics(frame), { events: [event], valid: true });
+}
+
 console.log('ok safe_runtime_diagnostic');

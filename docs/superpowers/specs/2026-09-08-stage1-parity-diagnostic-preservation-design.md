@@ -102,7 +102,11 @@ because a structurally typed variable, a cast, or a hostile `toJSON` all reach i
 unchecked. It rejects a non-plain object, a missing or extra key, an invalid
 `schema_version`, and any combination outside the table with a fixed `TypeError` that
 does not echo the rejected value, and it serializes a canonical object it builds itself
-rather than the caller's. Valid input returns one single-line frame.
+rather than the caller's. An own key means any string or symbol key, so an extra symbol
+key is an extra key; each value is read from its own data-property descriptor, which
+rejects an accessor without invoking it, and any reflection failure — including from a
+hostile Proxy trap — is a rejection rather than an escaping error.
+Valid input returns one single-line frame.
 The parser considers only lines beginning with the exact prefix. Every prefixed
 line must be valid JSON with exactly five keys — `schema_version`, `kind`,
 `stage`, `category`, and `code` — and a valid combination of the last four:
