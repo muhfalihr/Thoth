@@ -32,42 +32,70 @@ export type SafeRuntimeDiagnostic =
       code: 'required_stage_failed';
     };
 
-// The runtime half of that union. Both the formatter and the parser answer with an element of
-// this table rather than with the object they were handed, so no caller-owned value is ever
-// serialized or returned.
-const VALID_EVENTS: readonly SafeRuntimeDiagnostic[] = [
-  {
+// Captured at module initialization. Validation inspects caller-controlled objects, and a Proxy
+// trap gets to run caller code in the middle of that inspection; reaching for these through the
+// global objects afterwards would let the trap swap them out between two validation steps.
+const getPrototypeOf = Reflect.getPrototypeOf;
+const ownKeys = Reflect.ownKeys;
+const getOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+const hasOwn = Object.hasOwn;
+const create = Object.create;
+const objectPrototype = Object.prototype;
+
+// The runtime half of that union. These objects never leave the module: callers get a fresh copy
+// or a precomputed string, so nobody holds a mutable alias of the allowlist. Freezing is defense
+// in depth on top of that, not the protection itself.
+const EVENT_DEFINITIONS: readonly SafeRuntimeDiagnostic[] = Object.freeze([
+  Object.freeze<SafeRuntimeDiagnostic>({
     schema_version: 1,
     kind: 'signal',
     stage: 'trace_source',
     category: 'media_candidate_discovery',
     code: 'profile_discovery_exception',
-  },
-  {
+  }),
+  Object.freeze<SafeRuntimeDiagnostic>({
     schema_version: 1,
     kind: 'signal',
     stage: 'trace_source',
     category: 'media_candidate_discovery',
     code: 'profile_discovery_empty',
-  },
-  {
+  }),
+  Object.freeze<SafeRuntimeDiagnostic>({
     schema_version: 1,
     kind: 'terminal',
     stage: 'trace_source',
     category: 'unknown',
     code: 'required_stage_failed',
-  },
-];
+  }),
+]);
+
+// Serialized once at startup, before any caller can install an inherited `toJSON`, replace
+// `JSON.stringify`, or otherwise reach the serializer. A successful format returns one of these
+// strings unchanged, so a hostile trap has nothing left to influence: the bytes already exist.
+const CANONICAL_FRAMES: readonly string[] = Object.freeze(
+  EVENT_DEFINITIONS.map((event) => `${SAFE_DIAGNOSTIC_PREFIX}${JSON.stringify(event)}`),
+);
 
 const EXPECTED_KEYS = ['category', 'code', 'kind', 'schema_version', 'stage'];
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_FRAMES = 32;
+const REJECTED = -1;
 
-// Reduce any value to the table entry it claims to be, or to null. A caller-owned object is only
-// ever read from here; what comes back is the canonical entry, so an extra property, a hidden
-// `toJSON`, a getter, or an inherited member has nothing left to influence.
-function canonicalize(value: unknown): SafeRuntimeDiagnostic | null {
-  if (typeof value !== 'object' || value === null) return null;
+function isExpectedKey(key: PropertyKey): key is string {
+  // An indexed loop rather than `includes`: caller code may have run moments earlier, and
+  // `Array.prototype` is as writable as any other shared object.
+  for (let i = 0; i < EXPECTED_KEYS.length; i += 1) {
+    if (EXPECTED_KEYS[i] === key) return true;
+  }
+  return false;
+}
+
+// Decide which table entry a value claims to be, as an INDEX rather than as an object. Handing
+// back an index is what keeps caller-controlled reflection out of the result: what the caller
+// finally receives is built from module state after this returns, never from the value inspected
+// here and never from anything a trap arranged while it ran.
+function classify(value: unknown): number {
+  if (typeof value !== 'object' || value === null) return REJECTED;
 
   // Everything below is caller-controlled: a Proxy runs caller code for each reflection step and
   // an accessor runs caller code for each read. Both can throw, and the error they throw carries
@@ -76,48 +104,76 @@ function canonicalize(value: unknown): SafeRuntimeDiagnostic | null {
   try {
     // A prototype other than the plain-object one can carry a `toJSON` or accessors the formatter
     // would otherwise inherit; JSON.parse never produces one, so nothing legitimate is lost.
-    const prototype = Reflect.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return null;
+    const prototype = getPrototypeOf(value);
+    if (prototype !== objectPrototype && prototype !== null) return REJECTED;
 
     // Own KEYS, not names: `getOwnPropertyNames` skips symbols, so a symbol-keyed extra property
-    // rode along invisibly. Non-enumerable keys are still included, which is what keeps a hidden
-    // `toJSON` from passing the count.
-    const keys = Reflect.ownKeys(value);
-    if (keys.length !== EXPECTED_KEYS.length) return null;
+    // would ride along invisibly. Non-enumerable keys are still included, which is what keeps a
+    // hidden `toJSON` from passing the count. Duplicate entries make `ownKeys` itself throw.
+    const keys = ownKeys(value);
+    if (keys.length !== EXPECTED_KEYS.length) return REJECTED;
+    for (let i = 0; i < keys.length; i += 1) {
+      if (!isExpectedKey(keys[i])) return REJECTED;
+    }
 
-    const fields: Record<string, unknown> = {};
-    for (const key of keys) {
-      if (typeof key !== 'string' || !EXPECTED_KEYS.includes(key)) return null;
-      const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+    // Null prototype: `fields[key] = …` on an ordinary object would run an inherited setter that a
+    // trap had just installed, executing caller code and discarding the value it was handed.
+    const fields: Record<string, unknown> = create(null);
+    for (let i = 0; i < EXPECTED_KEYS.length; i += 1) {
+      const key = EXPECTED_KEYS[i];
+      const descriptor = getOwnPropertyDescriptor(value, key);
       // Only a plain data property is readable without running caller code. An accessor is
       // rejected on its descriptor alone, so the getter is never invoked, and the value used
       // below comes from the descriptor rather than from a second read that could differ.
-      if (!descriptor || 'get' in descriptor || 'set' in descriptor || !('value' in descriptor))
-        return null;
+      // `hasOwn` rather than `in`, because a descriptor object inherits from `Object.prototype`
+      // as well and a trap may have put `get` there.
+      if (!descriptor) return REJECTED;
+      if (hasOwn(descriptor, 'get') || hasOwn(descriptor, 'set')) return REJECTED;
+      if (!hasOwn(descriptor, 'value')) return REJECTED;
       fields[key] = descriptor.value;
     }
 
-    if (fields.schema_version !== 1) return null;
-    return (
-      VALID_EVENTS.find(
-        (event) =>
-          event.kind === fields.kind &&
-          event.stage === fields.stage &&
-          event.category === fields.category &&
-          event.code === fields.code,
-      ) ?? null
-    );
+    if (fields.schema_version !== 1) return REJECTED;
+    for (let i = 0; i < EVENT_DEFINITIONS.length; i += 1) {
+      const event = EVENT_DEFINITIONS[i];
+      if (
+        event.kind === fields.kind &&
+        event.stage === fields.stage &&
+        event.category === fields.category &&
+        event.code === fields.code
+      ) {
+        return i;
+      }
+    }
+    return REJECTED;
   } catch {
-    return null;
+    return REJECTED;
   }
 }
 
+// A fresh event per call. Returning `EVENT_DEFINITIONS[index]` would give every caller a mutable
+// alias of the allowlist, and one `parsed.events[0].code = …` would then redefine what this
+// module accepts and emits for the rest of the process. An object literal defines own properties
+// instead of assigning them, so an inherited setter cannot intercept these either.
+function cloneEvent(index: number): SafeRuntimeDiagnostic {
+  const event = EVENT_DEFINITIONS[index];
+  return {
+    schema_version: 1,
+    kind: event.kind,
+    stage: event.stage,
+    category: event.category,
+    code: event.code,
+  } as SafeRuntimeDiagnostic;
+}
+
 export function formatSafeRuntimeDiagnostic(event: SafeRuntimeDiagnostic): string {
-  const canonical = canonicalize(event);
+  const index = classify(event);
   // Fail before a prefixed frame exists: a half-written frame on the supervisor's stream is
   // worse than no frame. The message is fixed so the rejected value cannot leak through it.
-  if (!canonical) throw new TypeError('safe runtime diagnostic rejected by the closed contract');
-  return `${SAFE_DIAGNOSTIC_PREFIX}${JSON.stringify({ ...canonical })}`;
+  if (index === REJECTED) {
+    throw new TypeError('safe runtime diagnostic rejected by the closed contract');
+  }
+  return CANONICAL_FRAMES[index];
 }
 
 export type DiagnosticSink = (event: SafeRuntimeDiagnostic) => void;
@@ -145,16 +201,16 @@ export function emitSafeRuntimeDiagnostic(
   }
 }
 
-function parseOneFrame(raw: string): SafeRuntimeDiagnostic | null {
+function parseOneFrame(raw: string): number {
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
-    return null;
+    return REJECTED;
   }
   // Same closed check the formatter applies: parsed input gets no weaker validation than a
   // caller in this process does.
-  return canonicalize(value);
+  return classify(value);
 }
 
 export function parseSafeRuntimeDiagnostics(text: string): {
@@ -168,14 +224,14 @@ export function parseSafeRuntimeDiagnostics(text: string): {
   if (frames.length > MAX_FRAMES) return invalid;
 
   const events: SafeRuntimeDiagnostic[] = [];
-  const seen = new Set<string>();
+  const seen = new Set<number>();
   for (const frame of frames) {
-    const event = parseOneFrame(frame.slice(SAFE_DIAGNOSTIC_PREFIX.length));
-    if (!event) return invalid;
-    const identity = `${event.kind}/${event.stage}/${event.category}/${event.code}`;
-    if (seen.has(identity)) return invalid;
-    seen.add(identity);
-    events.push(event);
+    const index = parseOneFrame(frame.slice(SAFE_DIAGNOSTIC_PREFIX.length));
+    if (index === REJECTED) return invalid;
+    // The index IS the semantic identity: one table entry per approved combination.
+    if (seen.has(index)) return invalid;
+    seen.add(index);
+    events.push(cloneEvent(index));
   }
   return { events, valid: true };
 }

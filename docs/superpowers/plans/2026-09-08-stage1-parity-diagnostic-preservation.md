@@ -96,7 +96,10 @@ ordinary lines, parse only exact-prefix frames, and validate own keys with
 — `schema_version`, `kind`, `stage`, `category`, and `code`. Read each value from its
 own data-property descriptor, reject accessor descriptors without invoking them, treat
 any reflection failure as a rejection, reject duplicates, cap input at 1 MiB and frames
-at 32, and return no rejected value.
+at 32, and return no rejected value. Serialize the three canonical frames at module
+initialization and answer a successful format with one of those strings, so a caller side
+effect arranged during reflection cannot influence the emitted bytes. Return fresh event
+values from the parser and never hand a caller one of the internal allowlist objects.
 
 - [ ] **Step 4: Add boundary tests**
 

@@ -333,4 +333,148 @@ for (const event of [empty, exception, terminal]) {
   assert.deepEqual(parseSafeRuntimeDiagnostics(frame), { events: [event], valid: true });
 }
 
+// --- Caller side effects cannot reach the emitted bytes. ---
+// Catching a hostile trap's exception is not enough. A trap can answer honestly and still mutate
+// shared state on its way out, and everything the formatter would touch afterwards is reachable
+// from that state: an inherited `toJSON`, the global `JSON.stringify`, a setter on
+// `Object.prototype` for one of the allowed keys. Once caller code has run, the frame has to be
+// chosen from what this module serialized at startup, not built.
+
+const CANONICAL = [empty, exception, terminal].map(
+  (event) => `${SAFE_DIAGNOSTIC_PREFIX}${JSON.stringify(event)}`,
+);
+
+// A trap that installs `Object.prototype.toJSON` and then returns the five real keys.
+{
+  const keys = Reflect.ownKeys({ ...empty });
+  const hostile = new Proxy(
+    { ...empty },
+    {
+      ownKeys() {
+        Object.defineProperty(Object.prototype, 'toJSON', {
+          value: () => ({ canary: 'PROXY_SIDE_EFFECT' }),
+          configurable: true,
+          writable: true,
+        });
+        return keys;
+      },
+    },
+  );
+  try {
+    const frame = formatSafeRuntimeDiagnostic(hostile as SafeRuntimeDiagnostic);
+    assert.equal(frame, CANONICAL[0]);
+    assert.doesNotMatch(frame, /canary|side_effect/i);
+  } finally {
+    delete (Object.prototype as Record<string, unknown>).toJSON;
+  }
+}
+
+// A trap that replaces the global serializer.
+{
+  const original = JSON.stringify;
+  const keys = Reflect.ownKeys({ ...exception });
+  const hostile = new Proxy(
+    { ...exception },
+    {
+      ownKeys() {
+        JSON.stringify = (() => '{"canary":"JSON_STRINGIFY_SIDE_EFFECT"}') as typeof JSON.stringify;
+        return keys;
+      },
+    },
+  );
+  try {
+    const frame = formatSafeRuntimeDiagnostic(hostile as SafeRuntimeDiagnostic);
+    assert.equal(frame, CANONICAL[1]);
+    assert.doesNotMatch(frame, /canary|side_effect/i);
+  } finally {
+    JSON.stringify = original;
+  }
+}
+
+// A trap that installs an allowed-key accessor on `Object.prototype`: a plain `{}` accumulator
+// would run that setter instead of storing the value, which both executes caller code and lets
+// the inherited getter answer in its place.
+{
+  let invoked = 0;
+  const keys = Reflect.ownKeys({ ...terminal });
+  const hostile = new Proxy(
+    { ...terminal },
+    {
+      ownKeys() {
+        Object.defineProperty(Object.prototype, 'code', {
+          set(_value: unknown) {
+            invoked += 1;
+          },
+          get() {
+            return 'SETTER_SIDE_EFFECT_CANARY';
+          },
+          configurable: true,
+        });
+        return keys;
+      },
+    },
+  );
+  try {
+    const frame = formatSafeRuntimeDiagnostic(hostile as SafeRuntimeDiagnostic);
+    assert.equal(frame, CANONICAL[2]);
+    assert.doesNotMatch(frame, /canary|side_effect/i);
+    assert.equal(invoked, 0);
+  } finally {
+    delete (Object.prototype as Record<string, unknown>).code;
+  }
+}
+
+// A trap that swaps out reflection the validator has not performed yet, so that the remaining
+// steps would describe a different event. The validator captured its reflection at import, so the
+// swap changes nothing; reading `Reflect` mid-walk would let a caller choose which frame is sent.
+{
+  const original = Reflect.getOwnPropertyDescriptor;
+  const keys = Reflect.ownKeys({ ...empty });
+  const hostile = new Proxy(
+    { ...empty },
+    {
+      ownKeys() {
+        Reflect.getOwnPropertyDescriptor = ((_target: object, key: string) => ({
+          value: (terminal as unknown as Record<string, unknown>)[key],
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        })) as typeof Reflect.getOwnPropertyDescriptor;
+        return keys;
+      },
+    },
+  );
+  try {
+    assert.equal(formatSafeRuntimeDiagnostic(hostile as SafeRuntimeDiagnostic), CANONICAL[0]);
+  } finally {
+    Reflect.getOwnPropertyDescriptor = original;
+  }
+}
+
+// --- A parsed event is a copy, not a handle on the allowlist. ---
+// The parser hands its result to callers who may keep, store, or edit it. If that object were the
+// module's own table entry, a single assignment would redefine what this contract accepts and
+// emits for the rest of the process.
+for (const event of [empty, exception, terminal]) {
+  const frame = formatSafeRuntimeDiagnostic(event);
+
+  const first = parseSafeRuntimeDiagnostics(frame);
+  assert.equal(first.valid, true);
+  (first.events[0] as unknown as Record<string, unknown>).code = 'CALLER_MUTATION_CANARY';
+
+  // The table is untouched: the same frame still parses to the same canonical event,
+  const second = parseSafeRuntimeDiagnostics(frame);
+  assert.deepEqual(second, { events: [event], valid: true });
+  // the mutated object is not an approved event any more,
+  rejected(first.events[0]);
+  // and the formatter still answers with the canonical frame.
+  assert.equal(formatSafeRuntimeDiagnostic(event), frame);
+
+  // Every parse yields its own object, so no two callers share one mutable event.
+  const third = parseSafeRuntimeDiagnostics(frame);
+  assert.notStrictEqual(second.events[0], third.events[0]);
+  assert.notStrictEqual(second.events[0], event);
+  assert.deepEqual(third.events[0], event);
+}
+
 console.log('ok safe_runtime_diagnostic');

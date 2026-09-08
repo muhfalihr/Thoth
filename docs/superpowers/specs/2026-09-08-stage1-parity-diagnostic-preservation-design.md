@@ -106,7 +106,10 @@ rather than the caller's. An own key means any string or symbol key, so an extra
 key is an extra key; each value is read from its own data-property descriptor, which
 rejects an accessor without invoking it, and any reflection failure — including from a
 hostile Proxy trap — is a rejection rather than an escaping error.
-Valid input returns one single-line frame.
+Valid input returns one single-line frame, selected from the three frames this module
+serialized at initialization rather than serialized on demand, so a side effect a caller
+arranges while its value is being inspected — an inherited `toJSON`, a replaced
+`JSON.stringify`, a setter on `Object.prototype` — cannot reach the emitted bytes.
 The parser considers only lines beginning with the exact prefix. Every prefixed
 line must be valid JSON with exactly five keys — `schema_version`, `kind`,
 `stage`, `category`, and `code` — and a valid combination of the last four:
@@ -120,7 +123,9 @@ line must be valid JSON with exactly five keys — `schema_version`, `kind`,
 Unknown keys, missing keys, duplicate semantic events, invalid combinations, more
 than 32 frames, or a diagnostic input larger than 1 MiB produce `valid: false` and
 an empty event list. Ordinary non-prefixed stderr is ignored. The parser never
-returns rejected text.
+returns rejected text. Every accepted event is returned as a fresh value; the parser never
+hands back one of its own allowlist objects, so mutating a parsed event cannot change later
+parsing, validation, or formatting.
 
 ## Scout emission points
 
