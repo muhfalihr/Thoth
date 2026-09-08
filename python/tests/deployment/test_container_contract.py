@@ -9,6 +9,18 @@ def _repo_text(relative_path: str) -> str:
     return (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _fenced_commands(markdown: str) -> list[str]:
+    """Return only the lines inside fenced blocks, so prose cannot trip a command check."""
+    commands: list[str] = []
+    inside = False
+    for line in markdown.splitlines():
+        if line.startswith("```"):
+            inside = not inside
+        elif inside:
+            commands.append(line.strip())
+    return commands
+
+
 def test_dockerignore_excludes_sensitive_and_generated_inputs() -> None:
     patterns = {
         line.strip()
@@ -307,6 +319,47 @@ def test_blueprint_does_not_pin_a_release_digest_it_cannot_keep_current() -> Non
     prose = " ".join(blueprint.split())
     assert not re.search(r"ghcr\.io/muhfalihr/thoth@sha256:[0-9a-f]{64}", blueprint)
     assert "read from the Actions summary of the exact commit being deployed" in prose
+
+
+def test_parity_runbook_routes_routine_attempt_inspection_through_the_summary() -> None:
+    """The sample is evidence, so reading one attempt must not mean opening the rest.
+
+    An attempt record answers "did it finish, and where did it stop". Reaching that
+    answer by listing the sample or printing a log puts the fixture URL, post
+    identifiers, and raw browser output on a terminal for a question that needs none
+    of them, so the runbook names one command and forbids the alternatives.
+    """
+    runbook = _repo_text("docs/operations/stage1-parity-sampling.md")
+    prose = " ".join(runbook.split())
+    assert "python -m thoth_control_plane.operations.stage1_parity_attempt_summary" in runbook
+    assert "--reference-id" in runbook
+    for field in (
+        "diagnostics_valid",
+        "diagnostic_contract",
+        "diagnostic_event_count",
+        "terminal_stage",
+        "terminal_category",
+        "media_candidate_discovery_signal",
+    ):
+        assert field in runbook
+    assert "Routine inspection is that command and nothing else" in prose
+    assert "diagnostic_contract=legacy" in runbook
+    assert "never migrated or amended" in prose
+    # The terminal event is an observation. Promoting it to a cause is the inference
+    # the p3/p4 review found, and the runbook is where that boundary is stated.
+    assert "says where a reference stopped, never why" in prose
+    enumerating = ("ls ", "find ", "tree ", "cat ", "head ", "tail ", "grep ")
+    assert [line for line in _fenced_commands(runbook) if line.startswith(enumerating)] == []
+
+
+def test_blueprint_records_the_safe_parity_diagnostic_contract() -> None:
+    blueprint = _repo_text("BLUEPRINT.md")
+    prose = " ".join(blueprint.split())
+    assert "stage1_parity_attempt_summary" in blueprint
+    assert "safe_runtime_diagnostic" in blueprint
+    assert "diagnostic_contract" in blueprint
+    assert "p1-p4 are never migrated or amended" in prose
+    assert "p5 remains a separate operator authorization" in prose
 
 
 def test_scout_runtime_downloader_versions_are_exact() -> None:

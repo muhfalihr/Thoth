@@ -298,6 +298,47 @@ signal, and `browser_isolation: fresh_ephemeral`. All four are restricted eviden
 diagnose a failed reference from them privately and record only the exit status and a short
 non-quoting summary in the pairing record.
 
+#### Read the attempt record with the summary command
+
+Read the attempt record through this command. It validates the reference identifier, opens that one
+record, and prints booleans, counts, and fixed enum values. It never lists the sample and never
+opens a report, log, fixture, or media file, so its output is safe in a shared terminal:
+
+```bash
+uv run --project python python -m thoth_control_plane.operations.stage1_parity_attempt_summary \
+  --sample "$SAMPLE_DIR" --reference-id <reference-id>
+```
+
+It prints one JSON line: `attempt_present` and `attempt_complete` for the lifecycle, then
+`reference_exit_nonzero` and `cleanup_passed` for the supervisor's own verdict, then
+`diagnostics_valid`, `diagnostic_contract`, `diagnostic_event_count`, `terminal_stage`,
+`terminal_category`, and `media_candidate_discovery_signal`. It exits 0 on a complete record, 1 when
+no complete record exists, and 2 when the identifier is malformed. Missing or unusable evidence
+fails closed — a reference exit reads as nonzero and cleanup as failed, because "no record" is not
+"clean run".
+
+Routine inspection is that command and nothing else. Do not list the sample directory and do not
+display a raw log, report, fixture, or media file to answer a routine question. Investigation beyond
+the summary is exceptional: read a known path privately, parse it in memory, and report counts.
+
+**The diagnostic fields.** A reference records structured failure signals from a closed allowlist:
+`profile_discovery_exception` and `profile_discovery_empty` at `trace_source` under category
+`media_candidate_discovery`, and one terminal `required_stage_failed` under category `unknown`. Each
+frame is an enum combination with no free-form value, so no URL, handle, path, provider, model,
+credential, or exception text can appear in the record or in this summary. `diagnostics_valid` is
+false whenever the recorded stream was malformed, oversized, duplicated, or unreadable; the events
+are then dropped rather than partially trusted.
+
+**Legacy records.** Attempts captured before this contract carry no diagnostic fields at all and the
+summary reports `diagnostic_contract=legacy` with zero events. That is the expected reading for
+p1-p4, whose records are never migrated or amended; a legacy record is complete evidence of its own
+lifecycle and silent about diagnostics.
+
+**Observation, not cause.** `terminal_stage` says where a reference stopped, never why. An earlier
+`media_candidate_discovery_signal` is a separate fact observed before that point, not proof that
+discovery caused the terminal failure. Record both as observations; a root cause needs its own
+evidence.
+
 **A reference exit of zero is not a parity pass.** It says the reference ran to completion in its
 own container; the comparison in step 4 is the only thing that speaks to parity. Stop on an
 authentication wall, a captcha, or a challenge; record the reference failure rather than retrying
