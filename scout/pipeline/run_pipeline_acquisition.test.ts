@@ -184,6 +184,35 @@ assert.throws(
 // one means the reference spends its budget on work the comparison never reads.
 {
   const referenceStages: string[] = [];
+  // Typed directly, not cast: the compiler is what proves this fixture still implements the whole
+  // dependency contract, so a stage added to the pipeline cannot slip past the forbidden-stage
+  // assertions below by simply not existing here.
+  const referenceDeps: RunPipelineDeps = {
+    createContext: async () => {
+      referenceStages.push('create_context');
+      return context;
+    },
+    inspectSeed: async () => {
+      referenceStages.push('inspect_seed');
+      return { title: 'caption', description: 'caption', platform: 'tiktok', is_video: true };
+    },
+    writeSeed: async () => {
+      referenceStages.push('write_seed');
+    },
+    traceSource: async () => {
+      referenceStages.push('trace_source');
+    },
+    collectComments: async () => assert.fail('source reference must not collect comments'),
+    topicDossier: async () => assert.fail('source reference must not enrich the topic dossier'),
+    buildFootage: async () => assert.fail('source reference must not build footage'),
+    packageExternalFootage: async () =>
+      assert.fail('source reference must not package external footage'),
+    extractFigures: async () => assert.fail('source reference must not extract figures'),
+    validate: async () => assert.fail('source reference must not run full-pipeline validation'),
+    summarize: async () => {
+      referenceStages.push('summarize');
+    },
+  };
   await runPipelineWithDeps(
     {
       url: 'https://example.invalid/post',
@@ -193,32 +222,7 @@ assert.throws(
       sourceReferenceOnly: true,
       mainCoverageTarget: 0.60,
     },
-    {
-      createContext: async () => {
-        referenceStages.push('create_context');
-        return context;
-      },
-      inspectSeed: async () => {
-        referenceStages.push('inspect_seed');
-        return { title: 'caption', description: 'caption', platform: 'tiktok', is_video: true };
-      },
-      writeSeed: async () => {
-        referenceStages.push('write_seed');
-      },
-      traceSource: async () => {
-        referenceStages.push('trace_source');
-      },
-      collectComments: async () => assert.fail('source reference must not collect comments'),
-      topicDossier: async () => assert.fail('source reference must not enrich the topic dossier'),
-      buildFootage: async () => assert.fail('source reference must not build footage'),
-      packageExternalFootage: async () =>
-        assert.fail('source reference must not package external footage'),
-      extractFigures: async () => assert.fail('source reference must not extract figures'),
-      validate: async () => assert.fail('source reference must not run full-pipeline validation'),
-      summarize: async () => {
-        referenceStages.push('summarize');
-      },
-    } as unknown as RunPipelineDeps,
+    referenceDeps,
   );
   assert.deepEqual(referenceStages, [
     'create_context',
