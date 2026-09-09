@@ -4,9 +4,9 @@
 //
 // p5 is what drift costs: the supervisor's outer deadline was shorter than the
 // source stage it supervised, so a source resolution that used its own budget was
-// killed from the outside and recorded as an incomparable sample. The outer
-// deadline is therefore derived from the retained stage plus a named reserve,
-// never written as an independent literal.
+// killed from the outside and recorded as an incomparable sample. The supervised
+// acquisition deadline is therefore derived from the retained stage plus a named
+// reserve, never written as an independent literal.
 //
 // Dependency-free on purpose: no environment lookup, no I/O, no timer, no mutable
 // export. Both sides import the same numbers or neither compiles.

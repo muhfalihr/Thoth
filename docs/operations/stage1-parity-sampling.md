@@ -238,8 +238,9 @@ completion outside the deadline under the existing SIGTERM/SIGKILL grace behavio
 
 The supervised deadline is therefore never shorter than the stage it supervises, which is exactly how
 p5 was killed from the outside at 15 minutes while its source stage still held budget. A reference
-still alive at 35 minutes is terminated, recorded as timed out, reaped, finalized, and reported as
-exit 124.
+still alive at 35 minutes triggers timeout and termination. The supervisor reports exit 124 only when
+owned-child cleanup and attempt finalization succeed; a cleanup or finalization failure reports exit
+70 and outranks the timeout.
 
 A timeout is a recorded stop, not a prompt to run the sample again. No retry follows it without
 separate operator authorization.
