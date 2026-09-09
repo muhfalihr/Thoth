@@ -57,6 +57,9 @@ export interface RunPipelineOptions {
   cap?: number;
   noComments: boolean;
   useInputAsMain: boolean;
+  // Parity references only need the resolved main source, so they stop after it. Everything past
+  // that boundary costs budget the comparison never reads.
+  sourceReferenceOnly: boolean;
   mainCoverageTarget: number;
 }
 
@@ -148,6 +151,12 @@ export function parseRunPipelineOptions(args: string[]): RunPipelineOptions {
   const url = args.find((arg, index) => !arg.startsWith('--') && !valueFlags.includes(args[index - 1]));
   if (!url) throw codedError('url_required');
 
+  const sourceReferenceOnly = args.includes('--source-reference-only');
+  // A forced main is never discovered, and discovery is exactly what the parity contract grades.
+  if (sourceReferenceOnly && args.includes('--use-input-as-main')) {
+    throw codedError('source_reference_only_conflicts_with_forced_main');
+  }
+
   const coverage = Number(getFlag('--main-coverage-target', '0.60'));
   assertMainCoverageTarget(coverage);
   return {
@@ -160,6 +169,7 @@ export function parseRunPipelineOptions(args: string[]): RunPipelineOptions {
     cap: parseInt(getFlag('--cap', '12') as string, 10),
     noComments: args.includes('--no-comments'),
     useInputAsMain: args.includes('--use-input-as-main'),
+    sourceReferenceOnly,
     mainCoverageTarget: coverage,
   };
 }
@@ -253,6 +263,13 @@ export async function runPipelineWithDeps(
     await runStage('main_ocr (subtitle/trim main terkunci)', true, () =>
       (deps.analyzeMainOcr ?? ((stageOptions) => runMainOcr(stageOptions)))({ file }, context),
     );
+  }
+
+  // The parity boundary: the main source is resolved and materialized, which is all the comparison
+  // reads. Summarize as usual, then stop before comments, dossier, footage, figures, and validate.
+  if (options.sourceReferenceOnly) {
+    await deps.summarize(file);
+    return;
   }
 
   if (!noComments) {

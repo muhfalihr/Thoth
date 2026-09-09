@@ -13,6 +13,7 @@ await runPipelineWithDeps(
     out: 'set.json',
     noComments: false,
     useInputAsMain: false,
+    sourceReferenceOnly: false,
     mainCoverageTarget: 0.60,
   },
   {
@@ -79,6 +80,7 @@ try {
       out: 'set.json',
       noComments: true,
       useInputAsMain: true,
+      sourceReferenceOnly: false,
       mainCoverageTarget: 0.75,
     },
     {
@@ -154,6 +156,79 @@ const parsedForced = parseRunPipelineOptions([
 assert.equal(parsedForced.useInputAsMain, true);
 assert.equal(parsedForced.mainCoverageTarget, 0.75);
 
+// The isolated parity reference proves Scout source discovery only. The flag that stops the run at
+// that boundary must be explicit: an ordinary `run` keeps the full pipeline.
+assert.equal(parsedDefault.sourceReferenceOnly, false);
+assert.equal(parsedForced.sourceReferenceOnly, false);
+
+const parsedSourceReference = parseRunPipelineOptions([
+  'https://example.invalid/post',
+  '--source-reference-only',
+]);
+assert.equal(parsedSourceReference.sourceReferenceOnly, true);
+assert.equal(parsedSourceReference.useInputAsMain, false);
+
+// A preselected main would bypass the very discovery the parity contract measures, so the pair is
+// rejected while parsing — before any acquisition work starts.
+assert.throws(
+  () =>
+    parseRunPipelineOptions([
+      'https://example.invalid/post',
+      '--source-reference-only',
+      '--use-input-as-main',
+    ]),
+  /source_reference_only_conflicts_with_forced_main/,
+);
+
+// Source-reference mode stops after the summary. Every later stage is a hard failure here: reaching
+// one means the reference spends its budget on work the comparison never reads.
+{
+  const referenceStages: string[] = [];
+  await runPipelineWithDeps(
+    {
+      url: 'https://example.invalid/post',
+      out: 'set.json',
+      noComments: false,
+      useInputAsMain: false,
+      sourceReferenceOnly: true,
+      mainCoverageTarget: 0.60,
+    },
+    {
+      createContext: async () => {
+        referenceStages.push('create_context');
+        return context;
+      },
+      inspectSeed: async () => {
+        referenceStages.push('inspect_seed');
+        return { title: 'caption', description: 'caption', platform: 'tiktok', is_video: true };
+      },
+      writeSeed: async () => {
+        referenceStages.push('write_seed');
+      },
+      traceSource: async () => {
+        referenceStages.push('trace_source');
+      },
+      collectComments: async () => assert.fail('source reference must not collect comments'),
+      topicDossier: async () => assert.fail('source reference must not enrich the topic dossier'),
+      buildFootage: async () => assert.fail('source reference must not build footage'),
+      packageExternalFootage: async () =>
+        assert.fail('source reference must not package external footage'),
+      extractFigures: async () => assert.fail('source reference must not extract figures'),
+      validate: async () => assert.fail('source reference must not run full-pipeline validation'),
+      summarize: async () => {
+        referenceStages.push('summarize');
+      },
+    } as unknown as RunPipelineDeps,
+  );
+  assert.deepEqual(referenceStages, [
+    'create_context',
+    'inspect_seed',
+    'write_seed',
+    'trace_source',
+    'summarize',
+  ]);
+}
+
 for (const mainCoverageTarget of [0.59, 1.01, Number.NaN, undefined]) {
   let createContextCalls = 0;
   await assert.rejects(
@@ -164,6 +239,7 @@ for (const mainCoverageTarget of [0.59, 1.01, Number.NaN, undefined]) {
           out: 'set.json',
           noComments: true,
           useInputAsMain: false,
+          sourceReferenceOnly: false,
           mainCoverageTarget: mainCoverageTarget as number,
         },
         {
@@ -205,6 +281,7 @@ const traceFailureOptions = {
   out: 'set.json',
   noComments: false,
   useInputAsMain: false,
+  sourceReferenceOnly: false,
   mainCoverageTarget: 0.6,
 };
 
