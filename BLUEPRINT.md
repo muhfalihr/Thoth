@@ -98,6 +98,21 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
   nine-field comparison remain the deciding authority. All evidence is offline — no live request,
   no p5 retry, no evidence mutation, no acceptance window, and p5 stands as
   `evidence_incomparable`.
+- **Stage 1 legacy fallback target isolation (2026-09-10): implemented and verified offline,
+  unpublished.** The worker fallback previously selected the sidecar's existing TikTok health
+  page by discovery order and started the full Scout pipeline. It now acquires one temporary CDP
+  page through the private relay browser session, passes its exact validated target ID only to a
+  supervised Scout child, runs `--source-reference-only`, and closes the target before returning;
+  cleanup failure status `70` outranks the child result. Exact-selection, lease, lifecycle,
+  adapter, and container-contract tests pass. A local Linux/amd64 image
+  (`thoth-stage1:legacy-target-corrective`, image ID `sha256:bee00b95674005dac80b25ef380168e8262699302941a80ee88d993a3c4d3c0f`)
+  passed both Docker-only offline harnesses: the health target was preserved, a distinct temporary
+  target was observed and removed after synthetic child success and failure, HTTP/WebSocket relay
+  transport stayed private, Chromium and relay remained one failure domain, parity isolation
+  remained intact, and teardown left no owned resources. The local tag is not a published digest.
+  p6 remains failed and unmodified; its still-unknown live source-resolution failure is not claimed
+  fixed. No live request, deployment, evidence mutation, controlled fallback, or acceptance window
+  occurred. A future published digest and separately authorized live fallback gate remain required.
 
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|

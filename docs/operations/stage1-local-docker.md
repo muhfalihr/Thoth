@@ -223,6 +223,22 @@ behind. CI runs the same script on the pull-request candidate and on the publish
 targets `about:blank` and reaches no external site, so it is an offline transport proof and says
 nothing about live acquisition, parity, or provider acceptance.
 
+The page opened by `legacy-cdp` is owned exclusively by the sidecar health contract. A worker
+fallback must never select, navigate, restore, or close that page. Instead,
+`scout/runtime/legacy_fallback.ts` opens one temporary `about:blank` page through the private
+relay's browser-level WebSocket, passes its exact validated target ID only to the Scout child, and
+runs Scout with `--source-reference-only`. The supervisor reaps Scout and closes that leased target
+before returning. A target that cannot be proven closed produces status `70`, which outranks the
+child status; success cannot conceal failed cleanup.
+
+The CDP smoke also runs this production supervisor through both its synthetic success and injected
+child-failure paths. It passes only when the original health target retains the same ID and local
+URL, a distinct temporary target is observed, and no temporary target remains after either path.
+Its output contains fixed booleans only, never target IDs or URLs. This construction prevents a
+fallback from leaving the sidecar unhealthy while its container remains running. It does not rely
+on Docker to restart an unhealthy container: `restart: unless-stopped` responds to process exit,
+not health status. This proof remains offline and does not demonstrate a successful live fallback.
+
 A second offline harness proves the other half: that a parity reference owns its browser instead of
 borrowing the deployment's.
 
