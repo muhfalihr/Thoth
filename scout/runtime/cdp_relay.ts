@@ -17,13 +17,13 @@
 // `/json/list` enumerate pages, `/json/version` describes the browser. Keeping the
 // scopes apart is what lets a poll REPLACE what it reported without a browser-level
 // poll silently retiring live pages, or a page poll retiring the browser endpoint.
+import { parseDevtoolsTargetPath } from '../lib/cdp_target.ts';
+
 const DISCOVERY_SCOPES = new Map<string, TargetKind>([
   ['/json', 'page'],
   ['/json/list', 'page'],
   ['/json/version', 'browser'],
 ]);
-const DEVTOOLS_PATH = /^\/devtools\/(page|browser)\/[A-Za-z0-9._-]{1,128}$/;
-
 const DISCOVERY_TIMEOUT_MS = 5_000;
 const DISCOVERY_MAX_BYTES = 1024 * 1024;
 const UPGRADE_TIMEOUT_MS = 5_000;
@@ -81,8 +81,7 @@ export function isAllowedDiscoveryPath(path: string): boolean {
 }
 
 function devtoolsKind(pathname: string): TargetKind | null {
-  const match = DEVTOOLS_PATH.exec(pathname);
-  return match ? (match[1] as TargetKind) : null;
+  return parseDevtoolsTargetPath(pathname)?.kind ?? null;
 }
 
 /**

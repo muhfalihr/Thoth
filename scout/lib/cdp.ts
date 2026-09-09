@@ -13,6 +13,7 @@
 // Requires Node 18+ (global fetch) / Node 21+ (global WebSocket). This box runs v24.
 
 import http from 'node:http';
+import { isCdpTargetId } from './cdp_target.ts';
 import { ui } from './ui.ts';
 
 const CDP_BASE: string = process.env.THOTH_CDP || 'http://127.0.0.1:18800';
@@ -21,6 +22,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 // A /json target entry (only the fields we use).
 export interface CdpTarget {
+  id?: string;
   type: string;
   url: string;
   title?: string;
@@ -56,6 +58,51 @@ export interface ConnectOpts {
   navigate?: string;
   waitMs?: number;
   requireMatch?: boolean;
+}
+
+export function selectCdpTarget(
+  targets: readonly CdpTarget[],
+  { match, requireMatch = false }: ConnectOpts = {},
+  ownedTargetId?: string,
+): CdpTarget {
+  if (ownedTargetId !== undefined) {
+    if (!isCdpTargetId(ownedTargetId)) throw relayError('owned_cdp_target_invalid');
+    const owned = targets.find(
+      (target) =>
+        target.id === ownedTargetId &&
+        target.type === 'page' &&
+        typeof target.webSocketDebuggerUrl === 'string',
+    );
+    if (!owned) throw relayError('owned_cdp_target_unavailable');
+    return owned;
+  }
+
+  const matches = Array.isArray(match) ? match : match ? [match] : [];
+  let tab = matches.length
+    ? targets.find(
+        (target) =>
+          target.type === 'page' &&
+          matches.some((candidate) => String(target.url).includes(candidate)) &&
+          !String(target.url).includes('sw.js'),
+      )
+    : null;
+  if (!tab && requireMatch) {
+    throw relayError(
+      `Tidak ada tab '${matches.join("' / '")}' yang terbuka. Buka & login tab itu di managed browser (bun lib/browser.ts start).`,
+    );
+  }
+  if (!tab) {
+    tab = targets.find(
+      (target) =>
+        target.type === 'page' &&
+        target.webSocketDebuggerUrl &&
+        !String(target.url).startsWith('devtools://'),
+    );
+  }
+  if (!tab || !tab.webSocketDebuggerUrl) {
+    throw relayError('Tidak ada page tab CDP yang bisa dipakai.');
+  }
+  return tab;
 }
 
 function httpGetJSON(url: string): Promise<any> {
@@ -115,30 +162,11 @@ async function connect({
   requireMatch = false,
 }: ConnectOpts = {}): Promise<CdpClient> {
   const targets = await listTargets();
-
-  const matches = Array.isArray(match) ? match : match ? [match] : [];
-  let tab = matches.length
-    ? targets.find(
-        (t) =>
-          t.type === 'page' &&
-          matches.some((m) => String(t.url).includes(m)) &&
-          !String(t.url).includes('sw.js'),
-      )
-    : null;
-  if (!tab && requireMatch) {
-    throw relayError(
-      `Tidak ada tab '${matches.join("' / '")}' yang terbuka. Buka & login tab itu di managed browser (bun lib/browser.ts start).`,
-    );
-  }
-  if (!tab) {
-    tab = targets.find(
-      (t) =>
-        t.type === 'page' && t.webSocketDebuggerUrl && !String(t.url).startsWith('devtools://'),
-    );
-  }
-  if (!tab || !tab.webSocketDebuggerUrl) {
-    throw relayError('Tidak ada page tab CDP yang bisa dipakai.');
-  }
+  const tab = selectCdpTarget(
+    targets,
+    { match, navigate, waitMs, requireMatch },
+    process.env.THOTH_CDP_TARGET_ID,
+  );
 
   const ws = new WebSocket(tab.webSocketDebuggerUrl);
   await new Promise((r, j) => {
