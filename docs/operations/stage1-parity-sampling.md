@@ -226,11 +226,20 @@ contract exists to grade.
 
 Two budgets bound that boundary and are derived from one another in
 `scout/lib/parity_reference_contract.ts`: the required `trace_source` stage keeps 30 minutes, and the
-supervisor's overall deadline is 35 minutes — that stage plus a 5-minute reserve for browser
-readiness, seed inspection, summary, attempt finalization, and two-child teardown. The outer deadline
-is therefore never shorter than the stage it supervises, which is exactly how p5 was killed from the
-outside at 15 minutes while its source stage still held budget. A reference still alive at 35 minutes
-is terminated, recorded as timed out, and reported as exit 124.
+supervised acquisition deadline is 35 minutes — that stage plus a 5-minute reserve. The 35-minute
+supervised acquisition deadline starts before browser readiness and ends when the browser/reference
+race selects an outcome; cleanup and attempt finalization continue after that outcome and remain
+mandatory before the supervisor returns.
+
+The 5-minute reserve is pre-outcome headroom only: isolated-browser startup and readiness, seed
+inspection and write, the normal summary, and scheduling variance around the retained 30-minute
+source stage. It does not bound or include owned-child teardown or attempt finalization, which run to
+completion outside the deadline under the existing SIGTERM/SIGKILL grace behaviour.
+
+The supervised deadline is therefore never shorter than the stage it supervises, which is exactly how
+p5 was killed from the outside at 15 minutes while its source stage still held budget. A reference
+still alive at 35 minutes is terminated, recorded as timed out, reaped, finalized, and reported as
+exit 124.
 
 A timeout is a recorded stop, not a prompt to run the sample again. No retry follows it without
 separate operator authorization.

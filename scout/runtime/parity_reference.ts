@@ -193,9 +193,16 @@ type Outcome =
  * Supervise the owned browser and the Scout reference until one of them stops.
  *
  * Returns the Scout exit code when the lifecycle is clean, and otherwise the code
- * for what actually went wrong: an operator signal, the overall deadline, or an
- * unexpected browser death or failed cleanup. A nominal Scout success never
- * outranks an observed browser death.
+ * for what actually went wrong: an operator signal, the supervised acquisition
+ * deadline, or an unexpected browser death or failed cleanup. A nominal Scout
+ * success never outranks an observed browser death.
+ *
+ * The deadline bounds acquisition only — browser startup and readiness through
+ * the browser/reference outcome. Once an outcome is selected the timer is
+ * cleared, and owned-child teardown plus attempt finalization run to completion
+ * outside it. That post-outcome work is mandatory, not something a deadline may
+ * skip: a timed-out reference is still reaped and still finalized before 124 is
+ * returned.
  */
 export async function runReference(
   options: ReferenceOptions,

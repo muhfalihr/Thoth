@@ -603,6 +603,12 @@ def test_the_parity_runbook_states_the_completion_boundary_and_its_budgets() -> 
 
     Exit zero is the cheapest thing to mistake for parity, so the runbook has to keep
     saying that artifact validation and the field comparison are what decide it.
+
+    The 35 minutes bound the supervised acquisition phase and nothing after it. An
+    operator who reads that number as a cap on the whole supervisor would expect a
+    reference to abandon teardown and attempt finalization once it expires, which is
+    the opposite of what the lifecycle does and would make a missing attempt record
+    look normal.
     """
     prose = " ".join(_repo_text("docs/operations/stage1-parity-sampling.md").split())
 
@@ -611,3 +617,5 @@ def test_the_parity_runbook_states_the_completion_boundary_and_its_budgets() -> 
     for outside in ("collect_comments", "topic_dossier", "build_footage"):
         assert outside in prose, f"the runbook does not place {outside} outside the reference"
     assert "necessary but not sufficient" in prose
+    assert "supervised acquisition deadline" in prose
+    assert "cleanup and attempt finalization continue after that outcome" in prose

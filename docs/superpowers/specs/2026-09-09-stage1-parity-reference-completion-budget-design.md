@@ -86,13 +86,20 @@ export const SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS =
 `run_pipeline.ts` uses `SOURCE_REFERENCE_TRACE_TIMEOUT_MS` for the required
 `trace_source` stage. This preserves its current 30-minute stage budget.
 `parity_reference.ts` uses
-`SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS` as its default overall deadline.
+`SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS` as its default supervised acquisition
+deadline.
 
-The five-minute reserve covers isolated-browser readiness, seed inspection,
-summary, attempt finalization, and normal two-child teardown. The supervisor
-still owns the hard outer boundary and still returns 124 if the child does not
-finish. Tests lock the arithmetic relationship so the outer deadline cannot
-silently become shorter than the retained source-stage budget.
+The 35-minute supervised acquisition deadline starts before browser readiness and
+ends when the browser/reference race selects an outcome; cleanup and attempt
+finalization continue after that outcome and remain mandatory before the
+supervisor returns.
+
+The five-minute reserve is pre-outcome headroom: isolated-browser readiness, seed
+inspection, the summary, and scheduling variance around the retained source
+stage. It does not bound or include owned-child teardown or attempt finalization.
+The supervisor still owns the hard acquisition boundary and still returns 124 if
+the child does not finish. Tests lock the arithmetic relationship so that
+deadline cannot silently become shorter than the retained source-stage budget.
 
 This design does not extend the supervisor to the old 90-minute footage budget:
 footage generation is outside the corrected reference boundary.
@@ -121,8 +128,9 @@ is still the finalized attempt record and child exit status, not that marker.
   and safe diagnostic emission.
 - A `trace_source` timeout occurs before the supervisor deadline and remains a
   Scout failure rather than being misreported as successful completion.
-- If the source-reference child remains alive past 35 minutes, the supervisor
-  still terminates it, records the timeout, and returns 124.
+- If the source-reference child remains alive past the 35-minute supervised
+  acquisition deadline, the supervisor still terminates it, records the timeout,
+  reaps both children, finalizes the attempt record, and returns 124.
 - A report or media file written before a failure remains non-creditable until
   lifecycle and external artifact gates both pass.
 - No automatic retry is introduced.

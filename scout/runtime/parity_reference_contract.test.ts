@@ -18,11 +18,13 @@ test('the retained source stage keeps its measured budget', () => {
   expect(SOURCE_REFERENCE_TRACE_TIMEOUT_MS).toBe(30 * 60_000);
 });
 
-test('the reserve covers browser readiness, summary, and teardown', () => {
+// Pre-outcome only: teardown and attempt finalization run after the timer is cleared, so a
+// description that folds them into this reserve would legitimize skipping them on a timeout.
+test('the reserve provides pre-outcome acquisition headroom', () => {
   expect(SOURCE_REFERENCE_OVERHEAD_RESERVE_MS).toBe(5 * 60_000);
 });
 
-test('the supervisor deadline is the sum, never shorter than the stage it supervises', () => {
+test('the acquisition deadline is the sum, never shorter than the stage it supervises', () => {
   expect(SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS).toBe(35 * 60_000);
   expect(SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS).toBe(
     SOURCE_REFERENCE_TRACE_TIMEOUT_MS + SOURCE_REFERENCE_OVERHEAD_RESERVE_MS,
