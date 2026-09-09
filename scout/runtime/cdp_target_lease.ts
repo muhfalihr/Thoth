@@ -37,6 +37,38 @@ function fixed(code: string): Error {
   return new Error(code);
 }
 
+export function relayBrowserWebSocketUrl(
+  discoveredUrl: string,
+  relayBase: string = CDP_BASE,
+): string {
+  let discovered: URL;
+  let relay: URL;
+  try {
+    discovered = new URL(discoveredUrl);
+    relay = new URL(relayBase);
+  } catch {
+    throw fixed('cdp_browser_discovery_failed');
+  }
+  if (
+    !['ws:', 'wss:'].includes(discovered.protocol) ||
+    discovered.username ||
+    discovered.password ||
+    discovered.search ||
+    discovered.hash ||
+    parseDevtoolsTargetPath(discovered.pathname)?.kind !== 'browser' ||
+    !['http:', 'https:'].includes(relay.protocol) ||
+    relay.username ||
+    relay.password ||
+    relay.search ||
+    relay.hash
+  ) {
+    throw fixed('cdp_browser_discovery_failed');
+  }
+  discovered.protocol = relay.protocol === 'https:' ? 'wss:' : 'ws:';
+  discovered.host = relay.host;
+  return discovered.href;
+}
+
 async function openBrowserSession(url: string): Promise<BrowserTargetSession> {
   const ws = new WebSocket(url);
   await new Promise<void>((resolve, reject) => {
@@ -92,16 +124,7 @@ const productionDeps: CdpTargetLeaseDeps = {
     }
     const webSocketDebuggerUrl = Reflect.get(value, 'webSocketDebuggerUrl');
     if (typeof webSocketDebuggerUrl !== 'string') throw fixed('cdp_browser_discovery_failed');
-    let parsed: URL;
-    try {
-      parsed = new URL(webSocketDebuggerUrl);
-    } catch {
-      throw fixed('cdp_browser_discovery_failed');
-    }
-    if (parseDevtoolsTargetPath(parsed.pathname)?.kind !== 'browser') {
-      throw fixed('cdp_browser_discovery_failed');
-    }
-    return { webSocketDebuggerUrl };
+    return { webSocketDebuggerUrl: relayBrowserWebSocketUrl(webSocketDebuggerUrl) };
   },
   discoverPages: listTargets,
   openBrowserSession,

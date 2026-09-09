@@ -2,9 +2,25 @@ import { expect, test } from 'bun:test';
 
 import {
   acquireCdpTargetLease,
+  relayBrowserWebSocketUrl,
   type BrowserTargetSession,
   type CdpTargetLeaseDeps,
 } from './cdp_target_lease.ts';
+
+test('browser discovery keeps only the path and uses the configured relay authority', () => {
+  expect(
+    relayBrowserWebSocketUrl(
+      'ws://private-browser-canary:9222/devtools/browser/browser-1',
+      'http://legacy-cdp:18800',
+    ),
+  ).toBe('ws://legacy-cdp:18800/devtools/browser/browser-1');
+  expect(() =>
+    relayBrowserWebSocketUrl(
+      'ws://private-browser-canary:9222/devtools/page/page-1',
+      'http://legacy-cdp:18800',
+    ),
+  ).toThrow('cdp_browser_discovery_failed');
+});
 
 function fixture(overrides: Partial<CdpTargetLeaseDeps> = {}) {
   const calls: Array<[string, Record<string, unknown> | undefined]> = [];
