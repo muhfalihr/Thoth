@@ -61,6 +61,17 @@ echo "browser_host_binding_absent=true"
 
 compose run --rm --no-deps -T probe || fail probe_transport
 
+# Exercise the production legacy-fallback supervisor from the sibling probe.  The
+# executable keeps target IDs and URLs in memory and emits only this fixed verdict.
+isolation_output=$(compose run --rm --no-deps -T probe \
+    bun scout/runtime/legacy_fallback_harness.ts) || fail fallback_target_isolation
+expected_isolation='{"initial_target_preserved":true,"temporary_target_observed":true,"success_target_removed":true,"failure_target_removed":true}'
+[ "$isolation_output" = "$expected_isolation" ] || fail fallback_target_isolation
+echo "initial_target_preserved=true"
+echo "temporary_target_observed=true"
+echo "success_target_removed=true"
+echo "failure_target_removed=true"
+
 # Second lifecycle phase: the browser and its relay are one failure domain, so killing
 # Chromium inside the test container must take the container down rather than leave a
 # reachable relay with no browser behind it.

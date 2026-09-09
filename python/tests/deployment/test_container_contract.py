@@ -471,6 +471,29 @@ def test_cdp_harness_owns_everything_it_creates() -> None:
     assert smoke_compose.count("seccomp:unconfined") == 1
 
 
+def test_cdp_harness_proves_legacy_fallback_target_isolation() -> None:
+    """The image smoke must exercise the production fallback supervisor itself.
+
+    Transport reachability alone cannot prove that a fallback avoids the sidecar's
+    health page or releases its temporary page on both child outcomes.  The harness
+    emits only fixed booleans so target identifiers and URLs never reach CI logs.
+    """
+    harness = _repo_text("docker/test-cdp-offline.sh")
+    runtime_harness = _repo_text("scout/runtime/legacy_fallback_harness.ts")
+
+    assert "bun scout/runtime/legacy_fallback_harness.ts" in harness
+    for field in (
+        "initial_target_preserved",
+        "temporary_target_observed",
+        "success_target_removed",
+        "failure_target_removed",
+    ):
+        assert f'"{field}":true' in harness
+        assert field in runtime_harness
+    assert "THOTH_LEGACY_FALLBACK_SMOKE_HOLD_MS" in runtime_harness
+    assert "console.log" not in runtime_harness.split("async function main", 1)[0]
+
+
 def test_both_image_jobs_prove_the_reference_owns_its_browser() -> None:
     """Isolation is a property of the image, so both gates must exercise it.
 
