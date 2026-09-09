@@ -163,8 +163,8 @@ class LegacyScoutActivity:
         """Keep command construction fixed and typed; it is never passed to a shell."""
         return (
             "bun",
-            "scout/cli.ts",
-            "run",
+            "scout/runtime/legacy_fallback.ts",
+            "--url",
             str(input_.canonical_source_url),
             "--out",
             str(self._artifact_path(input_)),

@@ -106,8 +106,8 @@ async def test_adapter_runs_the_registered_scout_command_from_repository_and_mat
     assert result.diagnostics == ["legacy process completed"]
     assert process.args == (
         "bun",
-        "scout/cli.ts",
-        "run",
+        "scout/runtime/legacy_fallback.ts",
+        "--url",
         "https://example.test/source/123",
         "--out",
         str(tmp_path / "legacy-scout/wf_legacy_scout_001/source-report.json"),
