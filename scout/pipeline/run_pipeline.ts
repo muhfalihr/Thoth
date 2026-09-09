@@ -15,6 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { SOURCE_REFERENCE_TRACE_TIMEOUT_MS } from '../lib/parity_reference_contract.ts';
 import { OUTPUT_DIR, outPath } from '../lib/paths.ts';
 import {
   defaultDiagnosticSink,
@@ -97,7 +98,8 @@ const FOOTAGE_TIMEOUT_MS = 5_400_000;
 // where it used to classify the carousel's cover JPEG (fast, and always wrong — a title card
 // reads as 'commentary', which rejected every candidate). Measured ~1 min per candidate against
 // a live search, so the 10 min default SIGTERM'd it mid-evaluation right after its first accept.
-const TRACE_SOURCE_TIMEOUT_MS = 1_800_000;
+// Its budget now lives in the shared parity contract: the isolated reference supervisor bounds
+// exactly this stage, so the two numbers must move together.
 
 type CodedError = Error & { code: string };
 
@@ -246,7 +248,7 @@ export async function runPipelineWithDeps(
       true,
       () =>
         deps.traceSource({ file, keywords: [], username: null, model: DEFAULT_MODEL, noDl: false }, context),
-      TRACE_SOURCE_TIMEOUT_MS,
+      SOURCE_REFERENCE_TRACE_TIMEOUT_MS,
     ).catch((failure) => {
       emitSafeRuntimeDiagnostic(deps.emitDiagnostic ?? defaultDiagnosticSink, {
         schema_version: 1,

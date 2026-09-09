@@ -12,6 +12,7 @@
 import { expect, test } from 'bun:test';
 import {
   parseParityArgs,
+  referenceCommand,
   referenceOutputPath,
   resolveReferenceEnvironment,
   validateFixtureUrl,
@@ -25,6 +26,22 @@ test('reference output is contained and independently named', () => {
   for (const id of ['../p3', '/p3', 'a/b', 'A', '']) {
     expect(() => validateReferenceId(id)).toThrow();
   }
+});
+
+// A real reference exists to prove source discovery, so it must stop at that
+// boundary. The offline smoke child proves the supervisor itself and has no
+// pipeline to bound, so the flag would be meaningless there.
+test('every real reference is bounded to the source stage', () => {
+  const command = referenceCommand(false, 'https://example.invalid/post', '/out/source-report.json');
+  expect(command.filter((arg) => arg === '--source-reference-only')).toHaveLength(1);
+  expect(command.slice(0, 3)).toEqual(['bun', 'scout/cli.ts', 'run']);
+  expect(command).toContain('/out/source-report.json');
+});
+
+test('the offline smoke child keeps its synthetic command', () => {
+  const command = referenceCommand(true, 'https://example.invalid/post', '/out/source-report.json');
+  expect(command).toEqual(['bun', 'scout/runtime/parity_reference_smoke.ts']);
+  expect(command).not.toContain('--source-reference-only');
 });
 
 // --- lifecycle -------------------------------------------------------------

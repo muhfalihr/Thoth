@@ -18,6 +18,8 @@
 // A lifecycle that ends cleanly still says nothing about artifact validity or
 // parity; those verdicts belong to the operator comparison, not to this process.
 
+import { SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS } from '../lib/parity_reference_contract.ts';
+
 const OUTPUT_ROOT = '/opt/thoth/scout/output/legacy-scout';
 const REFERENCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
@@ -33,7 +35,6 @@ const DEADLINE_EXIT = 124;
 const SIGINT_EXIT = 130;
 const SIGTERM_EXIT = 143;
 
-const DEFAULT_DEADLINE_MS = 15 * 60_000;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 
 export interface ReferenceOptions {
@@ -202,7 +203,10 @@ export async function runReference(
 ): Promise<number> {
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(), options.deadlineMs ?? DEFAULT_DEADLINE_MS);
+  const timer = setTimeout(
+    () => deadline.abort(),
+    options.deadlineMs ?? SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS,
+  );
 
   let browser: OwnedChild | null = null;
   let browserExit: Tracked | null = null;
@@ -520,6 +524,21 @@ function owned(child: SpawnedChild): OwnedChild {
   };
 }
 
+/**
+ * The reference argv, kept pure so the source boundary is assertable without
+ * spawning anything. A real reference is bounded to source discovery; the offline
+ * smoke child is a synthetic supervisor probe with no pipeline to bound.
+ */
+export function referenceCommand(
+  offlineSmoke: boolean,
+  fixtureUrl: string,
+  reportPath: string,
+): string[] {
+  return offlineSmoke
+    ? ['bun', 'scout/runtime/parity_reference_smoke.ts']
+    : ['bun', 'scout/cli.ts', 'run', fixtureUrl, '--out', reportPath, '--source-reference-only'];
+}
+
 function productionDeps(workspace: ReferenceWorkspace, fixtureUrl: string): ReferenceDeps {
   return {
     // about:blank always: this browser exists to serve the reference, and the
@@ -539,9 +558,7 @@ function productionDeps(workspace: ReferenceWorkspace, fixtureUrl: string): Refe
     startReference: (options) =>
       owned(
         Bun.spawn(
-          options.offlineSmoke
-            ? ['bun', 'scout/runtime/parity_reference_smoke.ts']
-            : ['bun', 'scout/cli.ts', 'run', fixtureUrl, '--out', workspace.reportPath],
+          referenceCommand(options.offlineSmoke, fixtureUrl, workspace.reportPath),
           {
             cwd: '/opt/thoth',
             env: { ...process.env, THOTH_CDP: REFERENCE_CDP_BASE.origin },
