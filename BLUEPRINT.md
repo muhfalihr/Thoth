@@ -78,6 +78,23 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
   inspection. Diagnostics change no exit code, cleanup verdict, artifact check, or parity verdict,
   and a terminal event says where a run ended, never why. All evidence is offline; p5 remains a
   separate operator authorization.
+- **Stage 1 parity reference completion and budget (2026-09-09): implemented offline,
+  unpublished.** The isolated reference used to start the general Scout `run`, so after resolving
+  the main source it continued into comments, dossier, `build_footage`, figures, and validation —
+  work the nine-field comparison never reads — while the supervisor's outer deadline was 15 minutes
+  against a 30-minute source stage. p5 resolved and materialized its main source, entered
+  `build_footage`, and was killed from the outside at 124. Both halves are corrected together:
+  Scout's `run` gained the internal `--source-reference-only` flag, which stops the pipeline after
+  the seed, the required `trace_source`, and the existing summary, and is rejected together with
+  `--use-input-as-main` because a preselected main would bypass the discovery parity grades; and
+  `scout/lib/parity_reference_contract.ts` now owns one budget both sides import, with the
+  supervisor deadline derived as the 30-minute source stage plus a 5-minute reserve rather than
+  written as its own literal. Normal Scout `run` behaviour, supervisor lifecycle, cleanup
+  precedence, attempt-record reservation and atomic finalization, and diagnostic semantics are
+  unchanged. Exit zero still grants no parity credit: external artifact validation and the
+  nine-field comparison remain the deciding authority. All evidence is offline — no live request,
+  no p5 retry, no evidence mutation, no acceptance window, and p5 stands as
+  `evidence_incomparable`.
 
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|

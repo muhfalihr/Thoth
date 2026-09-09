@@ -213,6 +213,28 @@ Three properties of this invocation are deliberate:
   supervisor refuses to start if it is anything else. The reference cannot attach to the deployment
   sidecar even if the operator's shell says otherwise.
 
+#### What a reference actually runs
+
+The supervisor starts Scout's `run` command with the internal `--source-reference-only` flag, so a
+reference is bounded to the evidence the comparison reads. It performs input inspection, writes the
+seed report, executes the required `trace_source` stage, materializes the main source, prints the
+normal summary, and exits. `collect_comments`, `topic_dossier`, `build_footage`, external-footage
+materialization, `extract_figures`, and full-pipeline validation are outside the parity reference and
+are never started; an ordinary Scout `run` still performs all of them. The flag is rejected together
+with `--use-input-as-main`, because a preselected main would bypass the source discovery the parity
+contract exists to grade.
+
+Two budgets bound that boundary and are derived from one another in
+`scout/lib/parity_reference_contract.ts`: the required `trace_source` stage keeps 30 minutes, and the
+supervisor's overall deadline is 35 minutes — that stage plus a 5-minute reserve for browser
+readiness, seed inspection, summary, attempt finalization, and two-child teardown. The outer deadline
+is therefore never shorter than the stage it supervises, which is exactly how p5 was killed from the
+outside at 15 minutes while its source stage still held budget. A reference still alive at 35 minutes
+is terminated, recorded as timed out, and reported as exit 124.
+
+A timeout is a recorded stop, not a prompt to run the sample again. No retry follows it without
+separate operator authorization.
+
 Record the deployment's identity and health before the run, so the after-check has something to
 compare against:
 
@@ -340,7 +362,9 @@ discovery caused the terminal failure. Record both as observations; a root cause
 evidence.
 
 **A reference exit of zero is not a parity pass.** It says the reference ran to completion in its
-own container; the comparison in step 4 is the only thing that speaks to parity. Stop on an
+own container; the comparison in step 4 is the only thing that speaks to parity. Exit zero and a
+clean teardown are necessary but not sufficient: the external artifact validation below and the
+nine-field comparison in step 4 remain the deciding authority. Stop on an
 authentication wall, a captcha, or a challenge; record the reference failure rather than retrying
 until it succeeds. A failed reference is evidence, not a discard.
 

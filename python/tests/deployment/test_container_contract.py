@@ -566,3 +566,48 @@ def test_the_diagnostic_contract_documents_describe_all_five_frame_keys() -> Non
             assert f"`{key}`" in prose, f"{relative} does not name `{key}`"
         for wrong in ("four-key", "four defined keys", "four keys"):
             assert wrong not in prose, f"{relative} still describes a {wrong} contract"
+
+
+def test_the_parity_reference_stops_at_the_source_boundary_within_one_budget() -> None:
+    """p5 died between two numbers that were never written down together.
+
+    The supervisor bounded the whole general Scout run at 15 minutes while the
+    source stage it was really waiting on owned 30, so a source resolution that
+    used its budget was killed from the outside and recorded as incomparable.
+    The image contract therefore pins both halves of the correction: the shipped
+    reference command is bounded to source discovery, and the outer deadline is
+    derived from the retained stage rather than written as its own literal.
+    """
+    supervisor = _repo_text("scout/runtime/parity_reference.ts")
+    pipeline = _repo_text("scout/pipeline/run_pipeline.ts")
+    contract = _repo_text("scout/lib/parity_reference_contract.ts")
+
+    assert "'--source-reference-only'" in supervisor
+    assert "'--source-reference-only'" in pipeline
+    assert "SOURCE_REFERENCE_TRACE_TIMEOUT_MS = 30 * 60_000" in contract
+    assert "SOURCE_REFERENCE_OVERHEAD_RESERVE_MS = 5 * 60_000" in contract
+    # Derived, not restated: a second literal is exactly how the two drifted apart.
+    assert "35 * 60_000" not in contract
+    assert (
+        "SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS ="
+        " SOURCE_REFERENCE_TRACE_TIMEOUT_MS + SOURCE_REFERENCE_OVERHEAD_RESERVE_MS;"
+    ) in " ".join(contract.split())
+    assert "SOURCE_REFERENCE_SUPERVISOR_DEADLINE_MS" in supervisor
+    assert "SOURCE_REFERENCE_TRACE_TIMEOUT_MS" in pipeline
+    # The deadline p5 hit must no longer be reachable as a production default.
+    assert "15 * 60_000" not in supervisor
+
+
+def test_the_parity_runbook_states_the_completion_boundary_and_its_budgets() -> None:
+    """An operator reading the runbook must not expect the stages the reference no longer runs.
+
+    Exit zero is the cheapest thing to mistake for parity, so the runbook has to keep
+    saying that artifact validation and the field comparison are what decide it.
+    """
+    prose = " ".join(_repo_text("docs/operations/stage1-parity-sampling.md").split())
+
+    assert "--source-reference-only" in prose
+    assert "30 minutes" in prose and "35 minutes" in prose
+    for outside in ("collect_comments", "topic_dossier", "build_footage"):
+        assert outside in prose, f"the runbook does not place {outside} outside the reference"
+    assert "necessary but not sufficient" in prose
