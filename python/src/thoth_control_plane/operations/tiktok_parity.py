@@ -63,6 +63,10 @@ MINIMUM_MEDIA_BYTES = 10_000
 # directory onto this prefix and the helper rebases onto it.
 DEFAULT_SCOUT_RECORDED_ROOT = "/opt/thoth/scout/output"
 
+# The fixed sentinel a missing or escaping media location measures as: absence
+# is then a boolean a later validation can compare against, never a raise.
+_EMPTY_MEDIA_CHECKSUM = f"sha256:{hashlib.sha256(b'').hexdigest()}"
+
 _CHECKSUM = re.compile(SHA256_PATTERN)
 
 
@@ -209,6 +213,19 @@ def normalize_legacy_tiktok(
 
 
 @dataclass(frozen=True)
+class ScoutArtifactMeasurement:
+    """A recorded, trusted state for one Scout reference artifact.
+
+    Taken once against a known-good report/media pair, then handed back to
+    `validate_scout_reference_artifact()` later to prove nothing changed.
+    """
+
+    report_checksum: str
+    media_checksum: str
+    media_bytes: int
+
+
+@dataclass(frozen=True)
 class ArtifactIntegrity:
     """One side's independent integrity result. Every check must hold to pass."""
 
@@ -306,6 +323,81 @@ def _validate_integrity(
         raise TikTokParityEvidenceError("parity evidence artifact is unreadable") from error
 
 
+def _validate_scout_schema(text: str) -> _ScoutReferenceReport:
+    """The one Scout schema parser: validates the stable slice, nothing else."""
+    try:
+        return _ScoutReferenceReport.model_validate_json(text)
+    except ValidationError as error:
+        raise TikTokParityEvidenceError("scout parity report failed schema validation") from error
+
+
+def _resolve_scout_media_path(
+    report: _ScoutReferenceReport,
+    artifact_root: Path,
+    *,
+    recorded_root: str,
+) -> Path | None:
+    """Resolve one parsed Scout report's contained media path, or None."""
+    location = report.main.source_local
+    if not isinstance(location, str):
+        return None
+    return resolve_artifact_path(artifact_root, location, recorded_root=recorded_root)
+
+
+def measure_scout_reference_artifact(
+    report_path: Path,
+    artifact_root: Path,
+    *,
+    recorded_root: str = DEFAULT_SCOUT_RECORDED_ROOT,
+) -> ScoutArtifactMeasurement:
+    """Measure one Scout reference artifact's current report/media state.
+
+    Raises `TikTokParityEvidenceError` when the report itself cannot be read
+    or fails schema validation. A missing or escaping media location measures
+    as the fixed empty sentinel rather than raising.
+    """
+    _, text = _read_report(report_path)
+    report = _validate_scout_schema(text)
+    media_path = _resolve_scout_media_path(report, artifact_root, recorded_root=recorded_root)
+    report_checksum = file_checksum(report_path)
+    if media_path is not None and media_path.is_file():
+        return ScoutArtifactMeasurement(
+            report_checksum=report_checksum,
+            media_checksum=file_checksum(media_path),
+            media_bytes=media_path.stat().st_size,
+        )
+    return ScoutArtifactMeasurement(
+        report_checksum=report_checksum,
+        media_checksum=_EMPTY_MEDIA_CHECKSUM,
+        media_bytes=0,
+    )
+
+
+def validate_scout_reference_artifact(
+    report_path: Path,
+    artifact_root: Path,
+    expected: ScoutArtifactMeasurement,
+    *,
+    recorded_root: str = DEFAULT_SCOUT_RECORDED_ROOT,
+) -> ArtifactIntegrity:
+    """Validate one Scout reference artifact against a prior measurement.
+
+    Raises `TikTokParityEvidenceError` when the report itself cannot be read
+    or fails schema validation; a changed or missing media artifact is a
+    false boolean, not a raise.
+    """
+    _, text = _read_report(report_path)
+    report = _validate_scout_schema(text)
+    media_path = _resolve_scout_media_path(report, artifact_root, recorded_root=recorded_root)
+    return _validate_integrity(
+        report_path=report_path,
+        expected_report_checksum=expected.report_checksum,
+        media_path=media_path,
+        expected_media_bytes=expected.media_bytes,
+        expected_media_checksum=expected.media_checksum,
+    )
+
+
 def compare_parity_sample(
     *,
     python_report: Path,
@@ -335,10 +427,7 @@ def compare_parity_sample(
         validated_python = TikTokSourceReport.model_validate_json(python_text)
     except ValidationError as error:
         raise TikTokParityEvidenceError("python parity report failed schema validation") from error
-    try:
-        _ScoutReferenceReport.model_validate_json(scout_text)
-    except ValidationError as error:
-        raise TikTokParityEvidenceError("scout parity report failed schema validation") from error
+    validated_scout = _validate_scout_schema(scout_text)
 
     try:
         python_fields = normalize_python_tiktok(python_payload, python_artifact_root)
@@ -364,10 +453,8 @@ def compare_parity_sample(
     scout_integrity = _validate_integrity(
         report_path=scout_report,
         expected_report_checksum=scout_report_checksum,
-        media_path=resolve_artifact_path(
-            scout_artifact_root,
-            scout_payload["main"].get("source_local") or "",
-            recorded_root=scout_recorded_root,
+        media_path=_resolve_scout_media_path(
+            validated_scout, scout_artifact_root, recorded_root=scout_recorded_root
         ),
         expected_media_bytes=scout_media_bytes,
         expected_media_checksum=scout_media_checksum,

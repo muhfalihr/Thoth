@@ -18,10 +18,13 @@ from typer.testing import CliRunner
 from thoth_control_plane.cli import app
 from thoth_control_plane.operations.tiktok_parity import (
     PARITY_FIELDS,
+    ScoutArtifactMeasurement,
     TikTokParityEvidenceError,
     compare_parity_sample,
+    measure_scout_reference_artifact,
     render_parity_comparison,
     resolve_artifact_path,
+    validate_scout_reference_artifact,
 )
 
 runner = CliRunner()
@@ -104,6 +107,129 @@ def _pair(
         "scout_media_checksum": _sha(scout_media if scout_media is not None else b""),
         "scout_media_bytes": len(scout_media) if scout_media is not None else 0,
     }
+
+
+def _scout_side(
+    tmp_path: Path,
+    *,
+    scout_media: bytes | None = _mp4(15_000, b"\x37"),
+    scout_main: dict[str, Any] | None = None,
+    scout_recorded_media: str = _RECORDED_MEDIA,
+) -> tuple[Path, Path]:
+    """Write one Scout report/media pair and return `(report_path, artifact_root)`."""
+    scout_root = tmp_path / "scout-root"
+    scout_root.mkdir(parents=True, exist_ok=True)
+    if scout_media is not None:
+        scout_media_path = scout_root / "acquisition-media" / "main.mp4"
+        scout_media_path.parent.mkdir(parents=True, exist_ok=True)
+        scout_media_path.write_bytes(scout_media)
+    main: dict[str, Any] = {
+        "source_url": _CANONICAL_URL,
+        "platform": "tiktok",
+        "description": "",
+        "is_video": True,
+        "source_local": scout_recorded_media,
+        "profile": {"username": "creator", "followers": 12},
+    }
+    main.update(scout_main or {})
+    scout_report = tmp_path / "scout-source-report.json"
+    _write_json(scout_report, {"main": main, "footage": [], "comments": []})
+    return scout_report, scout_root
+
+
+def test_measure_and_validate_scout_artifact_round_trips(tmp_path: Path) -> None:
+    report, root = _scout_side(tmp_path)
+    measurement = measure_scout_reference_artifact(report, root)
+    assert isinstance(measurement, ScoutArtifactMeasurement)
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.passed is True
+
+
+def test_validate_scout_artifact_detects_missing_media(tmp_path: Path) -> None:
+    """A resolvable but absent file is `media_contained` yet fails checksum."""
+    report, root = _scout_side(tmp_path)
+    measurement = measure_scout_reference_artifact(report, root)
+    (root / "acquisition-media" / "main.mp4").unlink()
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.media_contained is True
+    assert integrity.media_checksum_verified is False
+    assert integrity.passed is False
+
+
+def test_validate_scout_artifact_detects_changed_media_bytes(tmp_path: Path) -> None:
+    report, root = _scout_side(tmp_path)
+    measurement = measure_scout_reference_artifact(report, root)
+    (root / "acquisition-media" / "main.mp4").write_bytes(_mp4(15_000, b"\x99"))
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.media_checksum_verified is False
+    assert integrity.passed is False
+
+
+def test_validate_scout_artifact_detects_changed_report(tmp_path: Path) -> None:
+    report, root = _scout_side(tmp_path)
+    measurement = measure_scout_reference_artifact(report, root)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    payload["main"]["description"] = "changed after measurement"
+    _write_json(report, payload)
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.report_checksum_verified is False
+    assert integrity.passed is False
+
+
+def test_measure_and_validate_scout_artifact_reject_report_escape(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(_mp4(15_000, b"\x37"))
+    report, root = _scout_side(tmp_path, scout_recorded_media=str(outside.as_posix()))
+    measurement = measure_scout_reference_artifact(report, root)
+    assert measurement.media_bytes == 0
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.media_contained is False
+    assert integrity.passed is False
+
+
+def test_validate_scout_artifact_detects_symlinked_media_escape(tmp_path: Path) -> None:
+    report, root = _scout_side(tmp_path, scout_media=None)
+    outside = tmp_path / "linked.mp4"
+    outside.write_bytes(_mp4(12_000))
+    link = root / "acquisition-media" / "main.mp4"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is not permitted in this environment")
+    measurement = measure_scout_reference_artifact(report, root)
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.media_contained is False
+    assert integrity.passed is False
+
+
+def test_validate_scout_artifact_rejects_invalid_signature(tmp_path: Path) -> None:
+    report, root = _scout_side(tmp_path, scout_media=b"\x00" * 15_000)
+    measurement = measure_scout_reference_artifact(report, root)
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.media_signature_valid is False
+    assert integrity.passed is False
+
+
+def test_validate_scout_artifact_rejects_below_minimum_size(tmp_path: Path) -> None:
+    report, root = _scout_side(tmp_path, scout_media=_mp4(5_000, b"\x37"))
+    measurement = measure_scout_reference_artifact(report, root)
+    integrity = validate_scout_reference_artifact(report, root, measurement)
+    assert integrity.media_minimum_size_met is False
+    assert integrity.passed is False
+
+
+def test_measure_scout_artifact_rejects_malformed_report(tmp_path: Path) -> None:
+    report, root = _scout_side(tmp_path)
+    report.write_text("{ not json", encoding="utf-8")
+    with pytest.raises(TikTokParityEvidenceError):
+        measure_scout_reference_artifact(report, root)
+
+
+def test_compare_parity_sample_still_matches_after_extraction(tmp_path: Path) -> None:
+    """The refactor must not change `compare_parity_sample()`'s own behavior."""
+    comparison = compare_parity_sample(**_pair(tmp_path))
+    assert comparison.passed is True
 
 
 def test_matching_pair_with_different_valid_encodings_passes(tmp_path: Path) -> None:
