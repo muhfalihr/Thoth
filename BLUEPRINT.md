@@ -105,7 +105,7 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
   supervised Scout child, runs `--source-reference-only`, and closes the target before returning;
   cleanup failure status `70` outranks the child result. Exact-selection, lease, lifecycle,
   adapter, and container-contract tests pass. A local Linux/amd64 image
-  (`thoth-stage1:legacy-target-corrective`, image ID `sha256:bee00b95674005dac80b25ef380168e8262699302941a80ee88d993a3c4d3c0f`)
+  (`thoth-stage1:legacy-target-corrective`, image ID `sha256:f07a23de0afd96f5b65e9fb96204959c1022873e49fc24c5bc4805e98ba00211`)
   passed both Docker-only offline harnesses: the health target was preserved, a distinct temporary
   target was observed and removed after synthetic child success and failure, HTTP/WebSocket relay
   transport stayed private, Chromium and relay remained one failure domain, parity isolation
