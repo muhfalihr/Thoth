@@ -59,6 +59,16 @@ export function legacyFallbackCommand(args: LegacyFallbackArgs): string[] {
   ];
 }
 
+export function legacyFallbackChildOptions(env: Record<string, string | undefined>) {
+  return {
+    cwd: '/opt/thoth',
+    env,
+    stdin: 'ignore' as const,
+    stdout: 'ignore' as const,
+    stderr: 'ignore' as const,
+  };
+}
+
 function aborted(signal: AbortSignal): Promise<string> {
   if (signal.aborted) return Promise.resolve(String(signal.reason));
   return new Promise((resolve) =>
@@ -114,13 +124,7 @@ function productionDeps(): LegacyFallbackDeps {
   return {
     acquireLease: acquireCdpTargetLease,
     spawn(command, env) {
-      const child = Bun.spawn(command, {
-        cwd: '/opt/thoth',
-        env,
-        stdin: 'ignore',
-        stdout: 'inherit',
-        stderr: 'inherit',
-      });
+      const child = Bun.spawn(command, legacyFallbackChildOptions(env));
       return { exited: child.exited, kill: (signal) => child.kill(signal) };
     },
     sleep: Bun.sleep,

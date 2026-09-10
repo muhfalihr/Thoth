@@ -33,8 +33,24 @@ export interface CdpTargetLeaseOptions {
   discoveryIntervalMs?: number;
 }
 
+export interface OpeningWebSocket {
+  addEventListener(type: 'open' | 'error', listener: EventListener): void;
+  removeEventListener(type: 'open' | 'error', listener: EventListener): void;
+  close(): void;
+}
+
 function fixed(code: string): Error {
   return new Error(code);
+}
+
+async function closeAllocatedTarget(
+  session: BrowserTargetSession,
+  targetId: string,
+): Promise<void> {
+  const result = await session.command('Target.closeTarget', { targetId });
+  if (!result || typeof result !== 'object' || Reflect.get(result, 'success') !== true) {
+    throw fixed('cdp_target_cleanup_failed');
+  }
 }
 
 export function relayBrowserWebSocketUrl(
@@ -69,19 +85,41 @@ export function relayBrowserWebSocketUrl(
   return discovered.href;
 }
 
+export function waitForWebSocketOpen(
+  ws: OpeningWebSocket,
+  timeoutMs: number = COMMAND_TIMEOUT_MS,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      ws.removeEventListener('open', opened);
+      ws.removeEventListener('error', failed);
+    };
+    const opened: EventListener = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const failed: EventListener = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        ws.close();
+      } catch {}
+      reject(fixed('cdp_browser_session_failed'));
+    };
+    const timer = setTimeout(failed, timeoutMs);
+    ws.addEventListener('open', opened);
+    ws.addEventListener('error', failed);
+  });
+}
+
 async function openBrowserSession(url: string): Promise<BrowserTargetSession> {
   const ws = new WebSocket(url);
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(fixed('cdp_browser_session_failed')), COMMAND_TIMEOUT_MS);
-    ws.addEventListener('open', () => {
-      clearTimeout(timer);
-      resolve();
-    }, { once: true });
-    ws.addEventListener('error', () => {
-      clearTimeout(timer);
-      reject(fixed('cdp_browser_session_failed'));
-    }, { once: true });
-  });
+  await waitForWebSocketOpen(ws);
   let nextId = 1;
   return {
     command(method, params = {}) {
@@ -165,10 +203,7 @@ export async function acquireCdpTargetLease(
           close() {
             closePromise ??= (async () => {
               try {
-                const result = await session?.command('Target.closeTarget', { targetId });
-                if (!result || typeof result !== 'object' || Reflect.get(result, 'success') !== true) {
-                  throw fixed('cdp_target_cleanup_failed');
-                }
+                await closeAllocatedTarget(session, targetId);
               } catch {
                 throw fixed('cdp_target_cleanup_failed');
               } finally {
@@ -181,12 +216,18 @@ export async function acquireCdpTargetLease(
       }
       await deps.sleep(options.discoveryIntervalMs ?? DISCOVERY_INTERVAL_MS);
     }
-    try {
-      await session.command('Target.closeTarget', { targetId });
-    } catch {}
     throw fixed('cdp_target_unavailable');
   } catch (error) {
+    let cleanupFailed = false;
+    if (session && targetId) {
+      try {
+        await closeAllocatedTarget(session, targetId);
+      } catch {
+        cleanupFailed = true;
+      }
+    }
     session?.close();
+    if (cleanupFailed) throw fixed('cdp_target_cleanup_failed');
     if (error instanceof Error && /^cdp_[a-z_]+$/.test(error.message)) throw error;
     throw fixed('cdp_target_create_failed');
   }
