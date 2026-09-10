@@ -73,6 +73,13 @@ The parent directory must be mode `0700`; the fixture must be a regular, non-sym
 the operator and mode `0600`. It contains exactly one canonical HTTPS TikTok post URL with no
 credentials or fragment. The preflight validates the value without printing it.
 
+The deployed image runs as UID/GID `10001`, so it cannot read the operator-owned mode-`0600` file
+directly. After preflight and attempt reservation, a no-network staging helper from the same pinned
+image creates `f1/reference-input/url` as UID/GID `10001:10001`, mode `0400`, beneath a mode-`0500`
+directory. The live one-shot container mounts only that staged file read-only. The helper receives
+no provider environment, joins no Compose network, and is not privileged. Teardown removes the
+staged copy on every terminal path while retaining the operator's original `url.txt`.
+
 `f1` is independent of parity samples p1-p6. Its URL must be byte-distinct from every retained
 parity fixture, checked without printing the value or any hash. Absence, reuse, unsafe permissions,
 or an existing final `f1` attempt record stops before a live request.
@@ -96,7 +103,7 @@ The implementation adds a host-side Docker harness and an offline contract test.
    ready through the offline provider check, and CDP has zero host bindings;
 6. captures a value-free baseline describing the health-page target and page-target count;
 7. starts one disposable Compose container from the authorized digest with:
-   - the fixture mounted read-only;
+   - the staged fixture copy mounted read-only;
    - a restricted `f1` output directory mounted writable;
    - the provider environment file attached only through the existing Compose override;
    - the existing private network;
@@ -124,20 +131,29 @@ All gate evidence stays outside the repository and outside `THOTH_STAGE1_DATA_RO
   controlled-fallback-record.jsonl
   f1/
     url.txt
+    reference-input/
+      url                 # temporary UID/GID 10001:10001 copy, removed by teardown
     output/
       source-report.json
     supervisor.stdout.log
     supervisor.stderr.log
+    artifact-integrity.private.json
     controlled-fallback-attempt.json
 ```
 
 The root and `f1` directory are mode `0700`; every regular evidence file is mode `0600`. The
-fixture is never copied into the index record. Raw logs remain restricted and are never attached
+operator fixture is never copied into the index record. The temporary container-readable copy is
+mode `0400` and its parent is mode `0500`; both are removed after the attempt. Raw logs remain restricted and are never attached
 to GitHub, chat, an aggregate report, or the soak dataset.
 
 The final attempt file is reserved atomically as `status: pending` before the one-shot container
 starts and finalized by write-to-temporary-file plus rename. A stale pending record blocks another
 run until independently diagnosed; it is not overwritten.
+
+`artifact-integrity.private.json` contains the independently measured report checksum, media
+checksum, and media byte count needed to reproduce integrity validation. It is restricted evidence,
+not safe result output, and must never be printed, attached to Issue #5, or copied into the attempt
+or index row.
 
 The append-only index receives exactly one sample row for `f1`. Corrections use a separate
 amendment row targeting that sample; existing bytes are never rewritten.
