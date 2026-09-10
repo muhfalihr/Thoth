@@ -31,6 +31,12 @@ from thoth_control_plane.operations.stage1_controlled_fallback import (
     finalize_attempt,
     reserve_attempt,
 )
+from thoth_control_plane.operations.stage1_controlled_fallback_runner import (
+    ALL_SERVICES,
+    CommandResult,
+    ControlledFallbackRunConfig,
+    ControlledFallbackRunner,
+)
 from thoth_control_plane.operations.stage1_local_preflight import Stage1PreflightError
 
 posix_only = pytest.mark.skipif(
@@ -517,3 +523,461 @@ def test_private_integrity_model_rejects_extra_fields() -> None:
 )
 def test_classify_attempt_precedence_matrix(overrides: dict[str, object], expected: str) -> None:
     assert classify_attempt(_facts(**overrides)) == expected
+
+
+# -- Runner: deterministic, shell-free Docker orchestration --------------------
+
+VALID_REVISION = "d4" * 20
+GATE_CONTAINER_ID = "fedcba9876543210"
+FORBIDDEN_STRINGS = (
+    "example.test",
+    FIXTURE_URL.strip(),
+    CANARY_KEY,
+    "ws://",
+    "18800",
+)
+
+
+def _service_row(service: str, *, state: str = "running", health: str = "healthy") -> dict:
+    return {"Service": service, "Name": f"svc-{service}", "State": state, "Health": health}
+
+
+def _default_ps_rows() -> list[dict]:
+    rows = [_service_row(name) for name in ALL_SERVICES]
+    for row in rows:
+        if row["Service"] == "worker":
+            row["Health"] = ""
+    return rows
+
+
+def _ndjson(rows: list[dict]) -> bytes:
+    return "\n".join(json.dumps(row) for row in rows).encode("utf-8")
+
+
+def _role_inspect(*, image: str = VALID_DIGEST, revision: str = VALID_REVISION) -> bytes:
+    return json.dumps(
+        [
+            {
+                "Config": {
+                    "Image": image,
+                    "User": "10001:10001",
+                    "Env": [
+                        "THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE=python_tiktok_with_legacy_fallback"
+                    ],
+                    "Labels": {"org.opencontainers.image.revision": revision},
+                },
+                "State": {"Health": {"Status": "healthy"}},
+                "RestartCount": 0,
+                "NetworkSettings": {"Ports": {"18800/tcp": None}},
+            }
+        ]
+    ).encode("utf-8")
+
+
+def _plain_inspect(*, restart_count: int = 0) -> bytes:
+    return json.dumps([{"RestartCount": restart_count}]).encode("utf-8")
+
+
+def _probe_payload(*, present: bool = True, count: int = 1) -> bytes:
+    return json.dumps({"target_present": present, "target_count": count}).encode("utf-8")
+
+
+def _classify(argv: list[str]) -> str:
+    if argv[:2] == ["docker", "inspect"]:
+        return f"inspect:{argv[-1]}"
+    if argv[:2] == ["docker", "logs"]:
+        return "logs"
+    if argv[:2] == ["docker", "rm"]:
+        return "rm"
+    if argv[:2] == ["docker", "run"]:
+        return "stage"
+    if argv[0] == "git":
+        return "git-status"
+    if argv[:2] == ["docker", "compose"]:
+        if "--quiet" in argv:
+            return "config-quiet"
+        if "--images" in argv:
+            return "config-images"
+        if "exec" in argv:
+            return "probe"
+        if "up" in argv:
+            return "up"
+        if "-q" in argv:
+            return "ps-q"
+        if "ps" in argv:
+            return "ps"
+    return f"unknown:{argv}"
+
+
+class FakeExecutor:
+    """Records every call and replays canned, synthetic Docker JSON only."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str]] = []
+        self._queues: dict[str, list[CommandResult | Exception]] = {}
+        self.wait_queue: list[CommandResult | Exception] = [CommandResult(0, b"", b"")]
+
+    def queue(self, kind: str, *results: CommandResult | Exception) -> None:
+        self._queues[kind] = list(results)
+
+    def run(
+        self, argv: list[str], *, env: dict[str, str], timeout: float | None = None
+    ) -> CommandResult:
+        argv = list(argv)
+        self.calls.append(argv)
+        self.envs.append(dict(env))
+        kind = _classify(argv)
+        queue = self._queues.get(kind)
+        if queue:
+            result = queue.pop(0) if len(queue) > 1 else queue[0]
+            if isinstance(result, BaseException):
+                raise result
+            return result
+        return CommandResult(0, b"", b"")
+
+    def wait_container(self, container_id: str, *, timeout: float) -> CommandResult:
+        result = self.wait_queue.pop(0) if len(self.wait_queue) > 1 else self.wait_queue[0]
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+def _happy_executor() -> FakeExecutor:
+    executor = FakeExecutor()
+    executor.queue("config-quiet", CommandResult(0, b"", b""))
+    executor.queue("config-images", CommandResult(0, VALID_DIGEST_REF.encode() + b"\n", b""))
+    executor.queue("ps", CommandResult(0, _ndjson(_default_ps_rows()), b""))
+    for service in ALL_SERVICES:
+        name = f"svc-{service}"
+        payload = (
+            _role_inspect() if service in ("api", "worker", "legacy-cdp") else _plain_inspect()
+        )
+        executor.queue(f"inspect:{name}", CommandResult(0, payload, b""))
+    executor.queue("probe", CommandResult(0, _probe_payload(), b""))
+    executor.queue("git-status", CommandResult(0, b"", b""))
+    executor.queue("stage", CommandResult(0, b"", b""))
+    executor.queue("up", CommandResult(0, b"", b""))
+    executor.queue(
+        "ps-q",
+        CommandResult(0, GATE_CONTAINER_ID.encode() + b"\n", b""),
+        CommandResult(0, b"", b""),
+    )
+    executor.queue(
+        "logs", CommandResult(0, b"synthetic supervisor stdout", b"synthetic supervisor stderr")
+    )
+    executor.queue("rm", CommandResult(0, b"", b""))
+    executor.wait_queue = [CommandResult(0, b"", b"")]
+    return executor
+
+
+def _run_config(tmp_path: Path) -> ControlledFallbackRunConfig:
+    kwargs = _valid_inputs(tmp_path)
+    return ControlledFallbackRunConfig(
+        repository_root=kwargs["repository_root"],
+        sample=kwargs["sample"],
+        provider=kwargs["provider"],
+        data_root=kwargs["data_root"],
+        parity_root=kwargs["parity_root"],
+        digest=VALID_DIGEST,
+        acquisition_revision=VALID_REVISION,
+        harness_revision=VALID_HARNESS_REVISION,
+        base_compose_file=tmp_path / "compose.stage1.local.yml",
+        gate_compose_file=tmp_path / "compose.stage1.controlled-fallback.yml",
+    )
+
+
+def _no_leaked_values(executor: FakeExecutor) -> None:
+    for argv in executor.calls:
+        rendered = " ".join(argv)
+        for forbidden in FORBIDDEN_STRINGS:
+            assert forbidden not in rendered
+    for env in executor.envs:
+        for value in env.values():
+            for forbidden in FORBIDDEN_STRINGS:
+                assert forbidden not in value
+
+
+def test_preflight_passes_with_a_healthy_matching_deployment(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    runner.preflight()
+    _no_leaked_values(executor)
+
+
+def test_preflight_uses_only_allowlisted_docker_commands(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    runner.preflight()
+    kinds = {_classify(argv) for argv in executor.calls if argv[0] == "docker"}
+    assert kinds <= {
+        "config-quiet",
+        "config-images",
+        "ps",
+        "probe",
+    } | {f"inspect:svc-{service}" for service in ALL_SERVICES}
+
+
+def test_preflight_rejects_a_role_running_the_wrong_digest(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    executor.queue(
+        "inspect:svc-api",
+        CommandResult(0, _role_inspect(image="sha256:" + "9" * 64), b""),
+    )
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_a_role_with_the_wrong_oci_revision(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    executor.queue(
+        "inspect:svc-worker",
+        CommandResult(0, _role_inspect(revision="0" * 40), b""),
+    )
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_a_service_that_is_not_running(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    rows = _default_ps_rows()
+    rows[0]["State"] = "exited"
+    executor.queue("ps", CommandResult(0, _ndjson(rows), b""))
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_an_unhealthy_required_service(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    rows = _default_ps_rows()
+    for row in rows:
+        if row["Service"] == "legacy-cdp":
+            row["Health"] = "unhealthy"
+    executor.queue("ps", CommandResult(0, _ndjson(rows), b""))
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_a_published_cdp_host_port(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    payload = json.loads(_role_inspect())
+    payload[0]["NetworkSettings"]["Ports"]["18800/tcp"] = [{"HostPort": "18800"}]
+    executor.queue("inspect:svc-legacy-cdp", CommandResult(0, json.dumps(payload).encode(), b""))
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_a_worker_missing_the_fallback_activity_mode(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    payload = json.loads(_role_inspect())
+    payload[0]["Config"]["Env"] = []
+    executor.queue("inspect:svc-worker", CommandResult(0, json.dumps(payload).encode(), b""))
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_a_non_steady_state_shared_cdp_target_count(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    executor.queue("probe", CommandResult(0, _probe_payload(count=2), b""))
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_an_invalid_compose_configuration(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    executor.queue("config-quiet", CommandResult(1, b"", b""))
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_rejects_a_dirty_deployment_baseline(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    executor.queue("git-status", CommandResult(0, b" M some/file.py\n", b""))
+    runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def test_preflight_still_rejects_invalid_gate_inputs(tmp_path: Path) -> None:
+    executor = _happy_executor()
+    config = _run_config(tmp_path)
+    (config.sample / "url.txt").unlink()
+    runner = ControlledFallbackRunner(config, executor)
+    with pytest.raises(Stage1PreflightError):
+        runner.preflight()
+
+
+def _mp4(size: int) -> bytes:
+    """One structurally valid MP4 header padded to `size`."""
+    header = b"\x00\x00\x00\x18ftypmp42"
+    return header + b"\x2a" * (size - len(header))
+
+
+def _write_source_report(sample: Path) -> None:
+    output = sample / "output"
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "main.mp4").write_bytes(_mp4(12_000))
+    report = {"main": {"source_local": "main.mp4"}}
+    (output / "source-report.json").write_text(json.dumps(report), encoding="utf-8")
+
+
+def _run_success(tmp_path: Path) -> tuple[FakeExecutor, ControlledFallbackRunner]:
+    executor = _happy_executor()
+    config = _run_config(tmp_path)
+    _write_source_report(config.sample)
+    runner = ControlledFallbackRunner(config, executor)
+    return executor, runner
+
+
+def test_run_once_reserves_before_touching_docker(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    attempt = runner.run_once()
+    assert attempt.gate_id == GATE_ID
+    first_docker_call = next(argv for argv in executor.calls if argv[0] == "docker")
+    assert first_docker_call[:2] in (["docker", "compose"], ["docker", "inspect"])
+
+
+def test_run_once_follows_the_mandated_step_order(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    kinds = [_classify(argv) for argv in executor.calls if argv[0] in ("docker", "git")]
+    assert kinds.index("stage") < kinds.index("up")
+    assert kinds.index("up") < kinds.index("logs")
+    assert kinds.index("logs") < kinds.index("rm")
+
+
+def test_run_once_never_leaks_a_secret_or_url(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    _no_leaked_values(executor)
+
+
+def test_run_once_success_yields_passed(tmp_path: Path) -> None:
+    _executor, runner = _run_success(tmp_path)
+    attempt = runner.run_once()
+    assert attempt.supervisor_exit_code == 0
+    assert attempt.verdict == "passed"
+
+
+def test_run_once_child_nonzero_yields_failed(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.wait_queue = [CommandResult(1, b"", b"")]
+    attempt = runner.run_once()
+    assert attempt.supervisor_exit_code == 1
+    assert attempt.verdict == "failed"
+
+
+def test_run_once_signal_exit_yields_failed(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.wait_queue = [CommandResult(-15, b"", b"")]
+    attempt = runner.run_once()
+    assert attempt.supervisor_exit_code == -15
+    assert attempt.verdict == "failed"
+
+
+def test_run_once_wait_timeout_yields_inconclusive(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.wait_queue = [TimeoutError("bounded wait exceeded")]
+    attempt = runner.run_once()
+    assert attempt.supervisor_exit_code is None
+    assert attempt.verdict == "inconclusive"
+
+
+def test_run_once_executor_exception_during_start_yields_a_terminal_attempt(
+    tmp_path: Path,
+) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.queue("up", RuntimeError("synthetic docker failure"))
+    attempt = runner.run_once()
+    assert attempt.supervisor_exit_code is None
+    assert attempt.verdict in ("failed", "inconclusive")
+
+
+def test_run_once_target_count_mismatch_yields_failed(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.queue(
+        "probe",
+        CommandResult(0, _probe_payload(count=1), b""),
+        CommandResult(0, _probe_payload(count=1), b""),
+        CommandResult(0, _probe_payload(count=2), b""),
+    )
+    attempt = runner.run_once()
+    assert attempt.target_count_restored is False
+    assert attempt.verdict == "failed"
+
+
+def test_run_once_health_loss_after_yields_failed(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    rows = _default_ps_rows()
+    healthy_rows = _ndjson(rows)
+    unhealthy_rows = _default_ps_rows()
+    for row in unhealthy_rows:
+        if row["Service"] == "legacy-cdp":
+            row["Health"] = "unhealthy"
+    executor.queue(
+        "ps", CommandResult(0, healthy_rows, b""), CommandResult(0, _ndjson(unhealthy_rows), b"")
+    )
+    attempt = runner.run_once()
+    assert attempt.cdp_healthy_after is False
+    assert attempt.verdict == "failed"
+
+
+def test_run_once_restart_drift_yields_failed(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.queue(
+        "inspect:svc-temporal",
+        CommandResult(0, _plain_inspect(restart_count=0), b""),
+        CommandResult(0, _plain_inspect(restart_count=1), b""),
+    )
+    attempt = runner.run_once()
+    assert attempt.restart_counts_unchanged is False
+    assert attempt.verdict == "failed"
+
+
+def test_run_once_log_copy_failure_yields_failed(tmp_path: Path) -> None:
+    _executor, runner = _run_success(tmp_path)
+    (runner._config.sample / "supervisor.stdout.log").mkdir()
+    attempt = runner.run_once()
+    assert attempt.cleanup_passed is False
+    assert attempt.verdict == "failed"
+
+
+def test_run_once_container_removal_failure_yields_failed(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.queue("rm", CommandResult(1, b"", b""))
+    attempt = runner.run_once()
+    assert attempt.cleanup_passed is False
+    assert attempt.verdict == "failed"
+
+
+def test_run_once_finalizes_and_appends_exactly_once(tmp_path: Path) -> None:
+    _executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    index_lines = (
+        (runner._config.sample.parent / INDEX_NAME).read_text(encoding="utf-8").splitlines()
+    )
+    assert len(index_lines) == 1
+    assert json.loads(index_lines[0])["gate_id"] == GATE_ID
+
+
+def test_run_once_writes_a_private_integrity_record_never_the_attempt(tmp_path: Path) -> None:
+    _executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    safe_payload = json.loads((runner._config.sample / ATTEMPT_NAME).read_text(encoding="utf-8"))
+    assert "media_bytes" not in safe_payload
+    assert (runner._config.sample / PRIVATE_INTEGRITY_NAME).exists()
+
+
+def test_run_once_refuses_a_second_attempt_on_the_same_sample(tmp_path: Path) -> None:
+    _executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    with pytest.raises(ControlledFallbackEvidenceError):
+        runner.run_once()

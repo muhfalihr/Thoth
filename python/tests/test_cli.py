@@ -119,3 +119,49 @@ def test_cli_mutations_use_the_v1_http_api(
         if expected_json is not None
         else not request.content
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["stage1-controlled-fallback-preflight", "stage1-controlled-fallback-run"],
+)
+def test_controlled_fallback_help_exits_zero_without_touching_docker(command: str) -> None:
+    """`--help` must never require Docker, real digests, or a live gate directory."""
+    result = runner.invoke(app, ["operations", command, "--help"])
+
+    assert result.exit_code == 0
+    assert "f1" in result.stdout
+
+
+def test_controlled_fallback_run_rejects_a_non_literal_gate_id(tmp_path) -> None:
+    """`--gate-id` must be the literal `f1`; the guard must fire before any Docker call."""
+    sample = tmp_path / "not-f1"
+    sample.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "operations",
+            "stage1-controlled-fallback-run",
+            "--gate-id",
+            "not-f1",
+            "--sample",
+            str(sample),
+            "--provider",
+            str(tmp_path / "provider.env"),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--parity-root",
+            str(tmp_path / "parity"),
+            "--digest",
+            "sha256:" + "a1" * 32,
+            "--acquisition-revision",
+            "b2" * 20,
+            "--harness-revision",
+            "c3" * 20,
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "controlled_fallback_completed" not in result.stdout
+    assert "verdict=" not in result.stdout
