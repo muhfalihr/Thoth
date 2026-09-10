@@ -105,7 +105,7 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
   supervised Scout child, runs `--source-reference-only`, and closes the target before returning;
   cleanup failure status `70` outranks the child result. Exact-selection, lease, lifecycle,
   adapter, and container-contract tests pass. A local Linux/amd64 image
-  (`thoth-stage1:legacy-target-corrective`, image ID `sha256:f07a23de0afd96f5b65e9fb96204959c1022873e49fc24c5bc4805e98ba00211`)
+  (`thoth-stage1:legacy-target-corrective`, image ID `sha256:1a0590b07cb11fe3171dcfac05ed18b47e42f9f894eac026e0d67fd710845d51`)
   passed both Docker-only offline harnesses: the health target was preserved, a distinct temporary
   target was observed and removed after synthetic child success and failure, HTTP/WebSocket relay
   transport stayed private, Chromium and relay remained one failure domain, parity isolation
@@ -113,6 +113,14 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
   p6 remains failed and unmodified; its still-unknown live source-resolution failure is not claimed
   fixed. No live request, deployment, evidence mutation, controlled fallback, or acceptance window
   occurred. A future published digest and separately authorized live fallback gate remain required.
+  Independent review then found two remaining failure-path gaps: discovery or readiness exceptions
+  after target allocation did not close the page, and a browser WebSocket open error or timeout did
+  not close the socket or remove both listeners. Both are now covered by RED/GREEN tests; failed
+  post-allocation cleanup outranks the discovery error, child launch/SIGINT/SIGKILL ordering is
+  explicit, and raw Scout child streams are suppressed at the supervisor boundary. The rebuilt
+  image above passed the CDP harness and five consecutive parity harness repetitions after one
+  non-reproduced parity timing failure; that flake remains an offline harness limitation, not live
+  fallback evidence.
 
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|
