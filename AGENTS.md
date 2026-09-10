@@ -4,6 +4,23 @@
 
 Determine the active role from the current task before acting.
 
+## Plugin routing
+
+At the start of every task, evaluate both routes below before acting:
+
+- **Ponytail:** For coding, debugging, refactoring, code review, or software design, activate the
+  installed Ponytail skill at `full` intensity unless the operator selects another intensity or
+  says `stop ponytail`. Trace the real flow first, then prefer existing project code, the standard
+  library, native platform behavior, and already-installed dependencies in that order. Make the
+  smallest root-cause change that satisfies the approved scope, with one runnable check for
+  non-trivial logic. Ponytail does not apply to purely non-coding requests.
+- **Context7:** For library, framework, SDK, API-reference, setup, configuration, or third-party
+  code-example work, use the installed `context7-mcp` skill before relying on model memory. Resolve
+  the official/version-matched library ID once, query one documentation topic at a time, and base
+  implementation or advice on the retrieved current documentation. If the Context7 capability is
+  unavailable in the active session, state that limitation and use the library's primary
+  documentation instead.
+
 ### Codex: operator bridge
 
 Codex is the operator's review and planning assistant. Its default responsibilities are:
