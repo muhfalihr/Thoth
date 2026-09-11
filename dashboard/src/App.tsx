@@ -6,9 +6,10 @@ import { ProfileStudio } from "@/components/ProfileStudio";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { Discovery } from "@/components/Discovery";
 import { ContentSet } from "@/components/ContentSet";
+import { StudioPreview } from "@/features/studio/StudioPreview";
 import { WorkflowMonitor } from "@/components/WorkflowMonitor";
 import { WorkflowWizard } from "@/components/WorkflowWizard";
-import { controlPlaneClient } from "@/api/control-plane";
+import { controlPlaneClient, type ContentSetImportRequest } from "@/api/control-plane";
 import { Button } from "@/components/ui/button";
 
 /** Cockpit shell with a Runs/Profiles/Discovery/Content Set view toggle,
@@ -16,7 +17,7 @@ import { Button } from "@/components/ui/button";
 export default function App() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [view, setView] = useState<"workflows" | "runs" | "profiles" | "discovery" | "contentset">("workflows");
+  const [view, setView] = useState<"workflows" | "runs" | "profiles" | "discovery" | "contentset" | "studio">("workflows");
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   // Sub-project D: one-shot content-set path handed from the Content-Set view to
   // RunForm (cleared by RunForm.onConsumed once consumed on mount).
@@ -24,9 +25,16 @@ export default function App() {
     path: string;
     forced: boolean;
   } | null>(null);
+  const [studioDocument, setStudioDocument] = useState<{ projectId: string; documentId: string } | null>(null);
   const handleSendToRender = (path: string, forced: boolean) => {
     setPendingContentSet({ path, forced });
     setView("runs");
+  };
+  const handleOpenInStudio = async (request: ContentSetImportRequest) => {
+    if (!projectId) return;
+    const document = await controlPlaneClient.importContentSet(projectId, request);
+    setStudioDocument({ projectId, documentId: document.document_id });
+    setView("studio");
   };
 
   const needsProject = (
@@ -75,7 +83,18 @@ export default function App() {
       ) : view === "discovery" ? (
         <Discovery />
       ) : view === "contentset" ? (
-        <ContentSet onSendToRender={handleSendToRender} />
+        <ContentSet
+          onSendToRender={handleSendToRender}
+          projectId={projectId}
+          onOpenInStudio={handleOpenInStudio}
+        />
+      ) : view === "studio" && studioDocument ? (
+        <StudioPreview
+          client={controlPlaneClient}
+          projectId={studioDocument.projectId}
+          documentId={studioDocument.documentId}
+          onBack={() => setView("contentset")}
+        />
       ) : projectId ? (
         <>
           <RunForm

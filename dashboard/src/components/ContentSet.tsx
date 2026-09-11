@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { LogPane, type LogLine } from "@/components/LogPane";
 import { CleanupButton } from "@/components/CleanupButton";
+import { buildContentSetImportRequest } from "@/features/studio/domain";
+import type { ContentSetImportRequest } from "@/api/control-plane";
 import {
   cleanupPackage,
   describeCode,
@@ -32,14 +34,19 @@ type Reference = { term?: string; kind?: string; summary?: string };
 
 export function ContentSet({
   onSendToRender,
+  projectId = null,
+  onOpenInStudio = async () => {},
 }: {
   onSendToRender: (path: string, forced: boolean) => void;
+  projectId?: string | null;
+  onOpenInStudio?: (request: ContentSetImportRequest) => Promise<void>;
 }) {
   const [data, setData] = useState<ContentSetData | null>(null);
   const [content, setContent] = useState<any | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [openingStudio, setOpeningStudio] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [lines, setLines] = useState<ScoutLogLine[]>([]);
@@ -178,6 +185,19 @@ export function ContentSet({
     // (save() re-fetches the same file), so reading it from the pre-save
     // closure is safe. Revisit if a future path-picker lets save() relocate it.
     onSendToRender(data.path, content.main_footage?.mode === "forced_url_pool");
+  };
+
+  const openInStudio = async () => {
+    if (!content || !projectId || running || openingStudio) return;
+    setOpeningStudio(true);
+    setNotice(null);
+    try {
+      await onOpenInStudio(buildContentSetImportRequest(content));
+    } catch {
+      setNotice("Could not open Studio. Try again.");
+    } finally {
+      setOpeningStudio(false);
+    }
   };
 
   const logLines: LogLine[] = lines.map((l) => ({
@@ -436,6 +456,13 @@ export function ContentSet({
           disabled={saving || running || !data?.path || !content}
         >
           Send to render →
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={openInStudio}
+          disabled={openingStudio || running || !projectId || !content}
+        >
+          {openingStudio ? "Opening Studio…" : "Open in Studio"}
         </Button>
         {dirty && <span className="text-xs text-muted-foreground">unsaved changes</span>}
         {running && <span className="text-xs text-muted-foreground">scout busy — save disabled</span>}
