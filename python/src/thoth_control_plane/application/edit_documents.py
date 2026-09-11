@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import Field, field_validator
 
+from thoth_control_plane.application.ports import EditDocumentRevisionConflict
+from thoth_control_plane.domain.edit_document_operations import EditDocumentPatch
 from thoth_control_plane.domain.edit_documents import (
     Canvas,
     EditDocument,
@@ -167,3 +169,17 @@ class EditDocumentService:
         if document is None:
             raise EditDocumentNotFound()
         return document
+
+    async def apply_patch(
+        self, project_id: OpaqueId, document_id: OpaqueId, patch: EditDocumentPatch
+    ) -> EditDocument:
+        await self.get_latest(project_id, document_id)
+        assert self._repository is not None
+        try:
+            return await self._repository.apply_operations(
+                project_id, document_id, patch.base_revision, patch.operations
+            )
+        except EditDocumentRevisionConflict:
+            raise
+        except Exception as error:
+            raise EditorUnavailable() from error

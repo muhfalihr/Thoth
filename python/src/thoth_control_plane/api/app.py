@@ -77,7 +77,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=settings.THOTH_CONTROL_PLANE_CORS_ORIGINS,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "PATCH", "POST", "OPTIONS"],
         allow_headers=[
             "Authorization",
             "Content-Type",

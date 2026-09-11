@@ -9,8 +9,15 @@ from pydantic import ValidationError
 
 from thoth_control_plane.application.edit_documents import (
     ContentSetImportRequest,
+    EditDocumentService,
     build_edit_document,
 )
+from thoth_control_plane.domain.edit_document_operations import (
+    EditDocumentOperation,
+    EditDocumentPatch,
+    apply_edit_operations,
+)
+from thoth_control_plane.domain.edit_documents import EditDocument
 
 
 def request_payload() -> dict[str, object]:
@@ -98,3 +105,60 @@ def test_import_request_rejects_unknown_nested_content_values() -> None:
 
     with pytest.raises(ValidationError):
         ContentSetImportRequest.model_validate(payload)
+
+
+class MemoryEditDocumentRepository:
+    def __init__(self, document_id: str) -> None:
+        self.document = build_edit_document(
+            "project_001", ContentSetImportRequest.model_validate(request_payload()), document_id
+        )
+
+    async def insert_revision(self, document: EditDocument) -> None:
+        self.document = document
+
+    async def get_latest(self, *, project_id: str, document_id: str) -> EditDocument | None:
+        if (project_id, document_id) == ("project_001", self.document.document_id):
+            return self.document
+        return None
+
+    async def apply_operations(
+        self,
+        project_id: str,
+        document_id: str,
+        base_revision: int,
+        operations: list[EditDocumentOperation],
+    ) -> EditDocument:
+        assert (project_id, document_id, base_revision) == (
+            "project_001",
+            self.document.document_id,
+            1,
+        )
+        self.document = apply_edit_operations(self.document, operations).model_copy(
+            update={"revision": 2}
+        )
+        return self.document
+
+
+@pytest.mark.asyncio
+async def test_service_delegates_validated_patch_and_returns_next_revision() -> None:
+    repository = MemoryEditDocumentRepository("edoc_abc123")
+    service = EditDocumentService(repository)
+    patch = EditDocumentPatch.model_validate(
+        {
+            "base_revision": 1,
+            "operations": [
+                {
+                    "kind": "replace_text",
+                    "operation_id": "op_001",
+                    "clip_id": "clip_001",
+                    "field": "heading",
+                    "value": "Revised title",
+                }
+            ],
+        }
+    )
+
+    result = await service.apply_patch("project_001", "edoc_abc123", patch)
+
+    assert result.revision == 2
+    assert result.clips[0].heading == "Revised title"
