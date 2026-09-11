@@ -6,7 +6,7 @@ import { ProfileStudio } from "@/components/ProfileStudio";
 import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { Discovery } from "@/components/Discovery";
 import { ContentSet } from "@/components/ContentSet";
-import { StudioPreview } from "@/features/studio/StudioPreview";
+import { GuidedStudio } from "@/features/studio/GuidedStudio";
 import { WorkflowMonitor } from "@/components/WorkflowMonitor";
 import { WorkflowWizard } from "@/components/WorkflowWizard";
 import { controlPlaneClient, type ContentSetImportRequest } from "@/api/control-plane";
@@ -89,7 +89,7 @@ export default function App() {
           onOpenInStudio={handleOpenInStudio}
         />
       ) : view === "studio" && studioDocument ? (
-        <StudioPreview
+        <GuidedStudio
           client={controlPlaneClient}
           projectId={studioDocument.projectId}
           documentId={studioDocument.documentId}
