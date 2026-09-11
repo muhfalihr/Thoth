@@ -11,7 +11,7 @@ from thoth_control_plane.domain.models import OpaqueId, StrictModel
 Frame = Annotated[int, Field(gt=0)]
 FrameStart = Annotated[int, Field(ge=0)]
 ShortText = Annotated[str, Field(min_length=1, max_length=300)]
-BodyText = Annotated[str, Field(min_length=1, max_length=2_000)]
+BodyText = Annotated[str, Field(max_length=2_000)]
 StyleSlot = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
 Ownership: TypeAlias = Literal["ai_managed", "user_edited", "locked"]
 

@@ -1,5 +1,11 @@
 """Application services and outbound ports for workflow lifecycle operations."""
 
+from thoth_control_plane.application.edit_documents import (
+    ContentSetImportRequest,
+    FootageImport,
+    MainImport,
+    build_edit_document,
+)
 from thoth_control_plane.application.ports import (
     ApprovalSubmission,
     RetryRequest,
@@ -27,7 +33,10 @@ __all__ = [
     "ApprovalNotAllowed",
     "ApprovalSubmission",
     "ArtifactNotFound",
+    "ContentSetImportRequest",
+    "FootageImport",
     "IdempotencyConflict",
+    "MainImport",
     "RetryRequest",
     "StylePreset",
     "UnavailableWorkflowGateway",
@@ -38,4 +47,5 @@ __all__ = [
     "WorkflowRequest",
     "WorkflowService",
     "WorkflowSummary",
+    "build_edit_document",
 ]
