@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
+from uuid import uuid4
 
 from pydantic import Field, field_validator
 
@@ -16,9 +17,21 @@ from thoth_control_plane.domain.edit_documents import (
 )
 from thoth_control_plane.domain.models import OpaqueId, StrictModel
 
+if TYPE_CHECKING:
+    from thoth_control_plane.application.ports import EditDocumentRepository
+
 TEMPLATE_ID = "vertical_text_story"
 TEMPLATE_VERSION = 1
 SCENE_DURATION_FRAMES = 150
+
+
+class EditDocumentNotFound(Exception):
+    """The requested immutable document does not exist for this project."""
+
+
+class EditorUnavailable(Exception):
+    """The optional editor persistence is not configured or reachable."""
+
 
 OptionalTitle = Annotated[str | None, Field(max_length=300)]
 OptionalDescription = Annotated[str | None, Field(max_length=2_000)]
@@ -122,3 +135,35 @@ def _text_clip(
         style_slot=role,
         ownership="ai_managed",
     )
+
+
+class EditDocumentService:
+    """Application service for importing and retrieving immutable v1 documents."""
+
+    def __init__(self, repository: EditDocumentRepository | None) -> None:
+        self._repository = repository
+
+    async def import_content_set(
+        self, project_id: OpaqueId, request: ContentSetImportRequest
+    ) -> EditDocument:
+        if self._repository is None:
+            raise EditorUnavailable()
+        document = build_edit_document(project_id, request, f"edoc_{uuid4().hex}")
+        try:
+            await self._repository.insert_revision(document)
+        except Exception as error:
+            raise EditorUnavailable() from error
+        return document
+
+    async def get_latest(self, project_id: OpaqueId, document_id: OpaqueId) -> EditDocument:
+        if self._repository is None:
+            raise EditorUnavailable()
+        try:
+            document = await self._repository.get_latest(
+                project_id=project_id, document_id=document_id
+            )
+        except Exception as error:
+            raise EditorUnavailable() from error
+        if document is None:
+            raise EditDocumentNotFound()
+        return document

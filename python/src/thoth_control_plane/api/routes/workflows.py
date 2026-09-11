@@ -2,13 +2,13 @@
 
 import re
 from collections.abc import AsyncIterator
-from hmac import compare_digest
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 
+from thoth_control_plane.api.dependencies import current_actor
 from thoth_control_plane.application import (
     Actor,
     ApprovalSubmission,
@@ -51,17 +51,6 @@ def get_legacy_job_reader(request: Request) -> LegacyJobReader:
     )
     request.app.state.legacy_job_reader = reader
     return reader
-
-
-def current_actor(
-    request: Request,
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-) -> Actor:
-    expected = request.app.state.settings.THOTH_CONTROL_PLANE_API_KEY.get_secret_value()
-    scheme, _, credential = authorization.partition(" ") if authorization else ("", "", "")
-    if scheme.lower() != "bearer" or not credential or not compare_digest(credential, expected):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
-    return Actor(actor_id="owner", actor_type="user")
 
 
 @router.get("/style-presets", response_model=list[StylePreset])

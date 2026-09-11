@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from temporalio.service import RPCError
 
+from thoth_control_plane.api.routes.edit_documents import router as edit_document_router
 from thoth_control_plane.api.routes.health import router as health_router
 from thoth_control_plane.api.routes.workflows import router as workflow_router
 from thoth_control_plane.application import (
@@ -21,15 +22,26 @@ from thoth_control_plane.application import (
     WorkflowNotReady,
     WorkflowService,
 )
+from thoth_control_plane.application.edit_documents import EditDocumentService
+from thoth_control_plane.application.ports import EditDocumentRepository
 from thoth_control_plane.config import Settings
+from thoth_control_plane.infrastructure.editor_repository import PostgresEditDocumentRepository
 from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflowGateway
 
 CONTRACT_VERSION = "1"
 
 
-def create_app(settings: Settings | None = None, gateway: WorkflowGateway | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    gateway: WorkflowGateway | None = None,
+    editor_repository: EditDocumentRepository | None = None,
+) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
     settings = settings or Settings()  # type: ignore[call-arg]
+    if editor_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
+        editor_repository = PostgresEditDocumentRepository(
+            settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -59,6 +71,7 @@ def create_app(settings: Settings | None = None, gateway: WorkflowGateway | None
     app.state.workflow_ready = gateway is not None
     app.state.workflow_gateway = gateway or UnavailableWorkflowGateway()
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
+    app.state.edit_document_service = EditDocumentService(editor_repository)
 
     app.add_middleware(
         CORSMiddleware,
@@ -100,4 +113,5 @@ def create_app(settings: Settings | None = None, gateway: WorkflowGateway | None
 
     app.include_router(health_router)
     app.include_router(workflow_router, prefix="/api/v1")
+    app.include_router(edit_document_router, prefix="/api/v1")
     return app

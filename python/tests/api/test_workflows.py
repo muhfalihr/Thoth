@@ -436,6 +436,8 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
     }
 
     assert actual == {
+        ("/api/v1/projects/{project_id}/edit-documents/import-content-set", "post"),
+        ("/api/v1/projects/{project_id}/edit-documents/{document_id}", "get"),
         ("/api/v1/style-presets", "get"),
         ("/api/v1/workflows", "post"),
         ("/api/v1/workflows/{workflow_id}", "get"),
