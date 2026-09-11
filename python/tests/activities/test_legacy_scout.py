@@ -379,7 +379,12 @@ def test_no_fastapi_request_model_exposes_activity_mode() -> None:
         for request_body in [operation["requestBody"]]
     }
 
-    assert request_schema_names == {"ApprovalSubmission", "RetryRequest", "WorkflowRequest"}
+    assert request_schema_names == {
+        "ApprovalSubmission",
+        "ContentSetImportRequest",
+        "RetryRequest",
+        "WorkflowRequest",
+    }
     assert all(
         "activity_mode"
         not in openapi_schema["components"]["schemas"][schema_name].get("properties", {})
