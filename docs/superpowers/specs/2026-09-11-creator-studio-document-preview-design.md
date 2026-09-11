@@ -79,8 +79,9 @@ canonical editor data.
 
 ## 5. EditDocument version 1
 
-Revision 1 uses a deliberately narrow discriminated model that can be extended
-with additional clip variants later without changing existing text clips.
+Revision 1 uses a deliberately narrow typed clip model. Its literal kind field
+can become the discriminator when later sub-projects add clip variants without
+changing existing text clips.
 
 ### 5.1 Identity
 
