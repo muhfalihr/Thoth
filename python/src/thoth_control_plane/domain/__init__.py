@@ -1,5 +1,15 @@
 """Versioned domain contracts for the Thoth control plane."""
 
+from thoth_control_plane.domain.edit_documents import (
+    Canvas,
+    Clip,
+    EditDocument,
+    Ownership,
+    Scene,
+    TemplateRef,
+    TextClip,
+    Track,
+)
 from thoth_control_plane.domain.models import (
     Actor,
     ActorSnapshot,
@@ -35,10 +45,15 @@ __all__ = [
     "ApprovalRequest",
     "ApprovalSignal",
     "ArtifactRef",
+    "Canvas",
+    "Clip",
+    "EditDocument",
     "EventKind",
     "LegacyScoutProgressEvent",
     "OutputRequest",
+    "Ownership",
     "ReviewRequest",
+    "Scene",
     "SourceActivityMode",
     "SourceInvestigationActivityResult",
     "SourceInvestigationInput",
@@ -47,6 +62,9 @@ __all__ = [
     "SourceProgressEvent",
     "StyleChoice",
     "StylePreset",
+    "TemplateRef",
+    "TextClip",
+    "Track",
     "WorkflowEvent",
     "WorkflowFailure",
     "WorkflowRequest",
