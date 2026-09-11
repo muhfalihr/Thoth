@@ -6,29 +6,51 @@ import { VerticalTextStory } from "./VerticalTextStory";
 import { getPlayerConfig } from "./preview";
 
 type Props = {
-  client: Pick<ControlPlaneClient, "getEditDocument">;
-  projectId: string;
-  documentId: string;
-  onBack: () => void;
+  document?: EditDocument;
+  embedded?: boolean;
+  client?: Pick<ControlPlaneClient, "getEditDocument">;
+  projectId?: string;
+  documentId?: string;
+  onBack?: () => void;
 };
 
-export function StudioPreview({ client, projectId, documentId, onBack }: Props) {
-  const [document, setDocument] = useState<EditDocument | null>(null);
+export function StudioPreview({ document, embedded = false, client, projectId, documentId, onBack }: Props) {
+  const [loadedDocument, setLoadedDocument] = useState<EditDocument | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    if (document || !client || !projectId || !documentId) return;
     let active = true;
-    setDocument(null);
+    setLoadedDocument(null);
     setFailed(false);
     void client
       .getEditDocument(projectId, documentId)
-      .then((value) => active && setDocument(value))
+      .then((value) => active && setLoadedDocument(value))
       .catch(() => active && setFailed(true));
     return () => {
       active = false;
     };
-  }, [attempt, client, documentId, projectId]);
+  }, [attempt, client, document, documentId, projectId]);
+
+  const currentDocument = document ?? loadedDocument;
+
+  const preview = currentDocument ? (
+    <div className="min-h-0 flex-1 overflow-auto rounded border border-border bg-black p-4">
+      <Player
+        component={VerticalTextStory}
+        inputProps={{ document: currentDocument }}
+        controls
+        spaceKeyToPlayOrPause
+        className="mx-auto max-h-full max-w-full"
+        {...getPlayerConfig(currentDocument)}
+      />
+    </div>
+  ) : (
+    <p className="text-sm text-muted-foreground">Loading Studio preview…</p>
+  );
+
+  if (embedded) return <section className="flex h-full min-h-0 flex-col" aria-label="Studio preview">{preview}</section>;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-4 p-4" aria-label="Studio preview">
@@ -45,19 +67,8 @@ export function StudioPreview({ client, projectId, documentId, onBack }: Props) 
             Retry
           </button>
         </div>
-      ) : document ? (
-        <div className="min-h-0 flex-1 overflow-auto rounded border border-border bg-black p-4">
-          <Player
-            component={VerticalTextStory}
-            inputProps={{ document }}
-            controls
-            spaceKeyToPlayOrPause
-            className="mx-auto max-h-full max-w-full"
-            {...getPlayerConfig(document)}
-          />
-        </div>
       ) : (
-        <p className="text-sm text-muted-foreground">Loading Studio preview…</p>
+        preview
       )}
     </section>
   );
