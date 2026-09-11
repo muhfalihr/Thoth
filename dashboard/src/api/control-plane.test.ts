@@ -41,6 +41,50 @@ test("patches edit documents with encoded IDs and returns conflict latest docume
   );
 });
 
+test("returns saved documents from successful edit patches", async () => {
+  const document = { revision: 4, title: "Saved" } as unknown as EditDocument;
+  globalThis.fetch = mock(async () => new Response(JSON.stringify(document), { status: 200 })) as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret" });
+  const patch = {
+    base_revision: 3,
+    operations: [
+      {
+        kind: "replace_text",
+        operation_id: "op_001",
+        clip_id: "clip_001",
+        field: "heading",
+        value: "Updated",
+      },
+    ],
+  } satisfies EditDocumentPatch;
+
+  await expect(client.patchEditDocument("project_001", "document_001", patch)).resolves.toEqual({
+    kind: "saved",
+    document,
+  });
+});
+
+test("keeps generic errors for non-conflict edit patch failures", async () => {
+  globalThis.fetch = mock(async () => new Response("invalid", { status: 422 })) as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret" });
+  const patch = {
+    base_revision: 3,
+    operations: [
+      {
+        kind: "replace_text",
+        operation_id: "op_001",
+        clip_id: "clip_001",
+        field: "heading",
+        value: "Updated",
+      },
+    ],
+  } satisfies EditDocumentPatch;
+
+  await expect(client.patchEditDocument("project_001", "document_001", patch)).rejects.toThrow(
+    "Control plane request failed (422)",
+  );
+});
+
 const RUNNING_SUMMARY = {
   workflow_id: "wf_001",
   status: "running" as const,
