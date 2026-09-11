@@ -44,6 +44,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/edit-documents/import-content-set": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Content Set */
+        post: operations["import_content_set_api_v1_projects__project_id__edit_documents_import_content_set_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Edit Document */
+        get: operations["get_edit_document_api_v1_projects__project_id__edit_documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/style-presets": {
         parameters: {
             query?: never;
@@ -267,15 +301,83 @@ export interface components {
             /** Size Bytes */
             size_bytes?: number | null;
         };
+        /** Canvas */
+        Canvas: {
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /**
+             * Fps
+             * @constant
+             */
+            fps: 30;
+            /**
+             * Height
+             * @constant
+             */
+            height: 1920;
+            /**
+             * Width
+             * @constant
+             */
+            width: 1080;
+        };
+        /** ContentSetImportRequest */
+        ContentSetImportRequest: {
+            /** Footage */
+            footage: components["schemas"]["FootageImport"][];
+            main: components["schemas"]["MainImport"];
+        };
+        /**
+         * EditDocument
+         * @description A complete, validated, immutable revision-one vertical text story.
+         */
+        EditDocument: {
+            canvas: components["schemas"]["Canvas"];
+            /** Clips */
+            clips: components["schemas"]["TextClip"][];
+            /** Document Id */
+            document_id: string;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Revision
+             * @constant
+             */
+            revision: 1;
+            /** Scenes */
+            scenes: components["schemas"]["Scene"][];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            template: components["schemas"]["TemplateRef"];
+            /** Tracks */
+            tracks: components["schemas"]["Track"][];
+        };
         /**
          * EventKind
          * @enum {string}
          */
         EventKind: "workflow.queued" | "workflow.started" | "workflow.completed" | "workflow.failed" | "workflow.cancelled" | "stage.started" | "stage.progress" | "stage.completed" | "approval.required" | "approval.recorded" | "artifact.created" | "diagnostic.recorded";
+        /** FootageImport */
+        FootageImport: {
+            /** Platform */
+            platform?: string | null;
+            /** Title */
+            title?: string | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** MainImport */
+        MainImport: {
+            /** Description */
+            description?: string | null;
+            /** Title */
+            title?: string | null;
         };
         /** OutputRequest */
         OutputRequest: {
@@ -296,6 +398,22 @@ export interface components {
         ReviewRequest: {
             /** Require Publish Approval */
             require_publish_approval: boolean;
+        };
+        /** Scene */
+        Scene: {
+            /** Clip Ids */
+            clip_ids: string[];
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "title" | "source";
+            /** Scene Id */
+            scene_id: string;
+            /** Start Frame */
+            start_frame: number;
         };
         /** SourceInput */
         SourceInput: {
@@ -344,6 +462,66 @@ export interface components {
             label: string;
             /** Preset Id */
             preset_id: string;
+        };
+        /** TemplateRef */
+        TemplateRef: {
+            /**
+             * Template Id
+             * @constant
+             */
+            template_id: "vertical_text_story";
+            /**
+             * Version
+             * @constant
+             */
+            version: 1;
+        };
+        /** TextClip */
+        TextClip: {
+            /** Body */
+            body: string;
+            /** Clip Id */
+            clip_id: string;
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /** Heading */
+            heading: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "text";
+            /**
+             * Ownership
+             * @enum {string}
+             */
+            ownership: "ai_managed" | "user_edited" | "locked";
+            /** Scene Id */
+            scene_id: string;
+            /** Start Frame */
+            start_frame: number;
+            /** Style Slot */
+            style_slot: string;
+            /**
+             * Track Id
+             * @constant
+             */
+            track_id: "track_visual";
+        };
+        /** Track */
+        Track: {
+            /** Clip Ids */
+            clip_ids: string[];
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "visual";
+            /**
+             * Track Id
+             * @constant
+             */
+            track_id: "track_visual";
         };
         /** ValidationError */
         ValidationError: {
@@ -499,6 +677,77 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_content_set_api_v1_projects__project_id__edit_documents_import_content_set_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ContentSetImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditDocument"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_edit_document_api_v1_projects__project_id__edit_documents__document_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditDocument"];
                 };
             };
             /** @description Validation Error */

@@ -143,6 +143,133 @@
         "title": "ArtifactRef",
         "type": "object"
       },
+      "Canvas": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "fps": {
+            "const": 30,
+            "title": "Fps",
+            "type": "integer"
+          },
+          "height": {
+            "const": 1920,
+            "title": "Height",
+            "type": "integer"
+          },
+          "width": {
+            "const": 1080,
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height",
+          "fps",
+          "duration_in_frames"
+        ],
+        "title": "Canvas",
+        "type": "object"
+      },
+      "ContentSetImportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "footage": {
+            "items": {
+              "$ref": "#/components/schemas/FootageImport"
+            },
+            "maxItems": 100,
+            "title": "Footage",
+            "type": "array"
+          },
+          "main": {
+            "$ref": "#/components/schemas/MainImport"
+          }
+        },
+        "required": [
+          "main",
+          "footage"
+        ],
+        "title": "ContentSetImportRequest",
+        "type": "object"
+      },
+      "EditDocument": {
+        "additionalProperties": false,
+        "description": "A complete, validated, immutable revision-one vertical text story.",
+        "properties": {
+          "canvas": {
+            "$ref": "#/components/schemas/Canvas"
+          },
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/TextClip"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Clips",
+            "type": "array"
+          },
+          "document_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "const": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/Scene"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Scenes",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "template": {
+            "$ref": "#/components/schemas/TemplateRef"
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/Track"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Tracks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "schema_version",
+          "document_id",
+          "project_id",
+          "revision",
+          "template",
+          "canvas",
+          "scenes",
+          "tracks",
+          "clips"
+        ],
+        "title": "EditDocument",
+        "type": "object"
+      },
       "EventKind": {
         "enum": [
           "workflow.queued",
@@ -161,6 +288,38 @@
         "title": "EventKind",
         "type": "string"
       },
+      "FootageImport": {
+        "additionalProperties": false,
+        "properties": {
+          "platform": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "FootageImport",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -172,6 +331,37 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "MainImport": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "MainImport",
         "type": "object"
       },
       "OutputRequest": {
@@ -235,6 +425,53 @@
           "require_publish_approval"
         ],
         "title": "ReviewRequest",
+        "type": "object"
+      },
+      "Scene": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_ids": {
+            "items": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "type": "string"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Clip Ids",
+            "type": "array"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "role": {
+            "enum": [
+              "title",
+              "source"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "scene_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "start_frame": {
+            "minimum": 0.0,
+            "title": "Start Frame",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "scene_id",
+          "role",
+          "start_frame",
+          "duration_in_frames",
+          "clip_ids"
+        ],
+        "title": "Scene",
         "type": "object"
       },
       "SourceInput": {
@@ -377,6 +614,133 @@
           "description"
         ],
         "title": "StylePreset",
+        "type": "object"
+      },
+      "TemplateRef": {
+        "additionalProperties": false,
+        "properties": {
+          "template_id": {
+            "const": "vertical_text_story",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template_id",
+          "version"
+        ],
+        "title": "TemplateRef",
+        "type": "object"
+      },
+      "TextClip": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 2000,
+            "title": "Body",
+            "type": "string"
+          },
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "heading": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Heading",
+            "type": "string"
+          },
+          "kind": {
+            "const": "text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "ownership": {
+            "enum": [
+              "ai_managed",
+              "user_edited",
+              "locked"
+            ],
+            "title": "Ownership",
+            "type": "string"
+          },
+          "scene_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "start_frame": {
+            "minimum": 0.0,
+            "title": "Start Frame",
+            "type": "integer"
+          },
+          "style_slot": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Style Slot",
+            "type": "string"
+          },
+          "track_id": {
+            "const": "track_visual",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "clip_id",
+          "scene_id",
+          "track_id",
+          "start_frame",
+          "duration_in_frames",
+          "heading",
+          "body",
+          "style_slot",
+          "ownership"
+        ],
+        "title": "TextClip",
+        "type": "object"
+      },
+      "Track": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_ids": {
+            "items": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Clip Ids",
+            "type": "array"
+          },
+          "kind": {
+            "const": "visual",
+            "title": "Kind",
+            "type": "string"
+          },
+          "track_id": {
+            "const": "track_visual",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track_id",
+          "kind",
+          "clip_ids"
+        ],
+        "title": "Track",
         "type": "object"
       },
       "ValidationError": {
@@ -796,6 +1160,135 @@
         "tags": [
           "migration"
         ]
+      }
+    },
+    "/api/v1/projects/{project_id}/edit-documents/import-content-set": {
+      "post": {
+        "operationId": "import_content_set_api_v1_projects__project_id__edit_documents_import_content_set_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContentSetImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditDocument"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Content Set"
+      }
+    },
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}": {
+      "get": {
+        "operationId": "get_edit_document_api_v1_projects__project_id__edit_documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditDocument"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Edit Document"
       }
     },
     "/api/v1/style-presets": {

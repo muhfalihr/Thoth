@@ -5,6 +5,8 @@ export type WorkflowSummary = components["schemas"]["WorkflowSummary"];
 export type StylePreset = components["schemas"]["StylePreset"];
 export type ApprovalSubmission = components["schemas"]["ApprovalSubmission"];
 export type RetryRequest = components["schemas"]["RetryRequest"];
+export type ContentSetImportRequest = components["schemas"]["ContentSetImportRequest"];
+export type EditDocument = components["schemas"]["EditDocument"];
 
 export type ControlPlaneClient = {
   listStylePresets: () => Promise<StylePreset[]>;
@@ -18,6 +20,8 @@ export type ControlPlaneClient = {
   approveWorkflow: (workflowId: string, approval: ApprovalSubmission) => Promise<WorkflowSummary>;
   cancelWorkflow: (workflowId: string) => Promise<WorkflowSummary>;
   retryWorkflow: (workflowId: string, retry?: RetryRequest) => Promise<WorkflowSummary>;
+  importContentSet: (projectId: string, request: ContentSetImportRequest) => Promise<EditDocument>;
+  getEditDocument: (projectId: string, documentId: string) => Promise<EditDocument>;
 };
 
 type ClientOptions = { baseUrl?: string; apiKey?: string };
@@ -74,6 +78,19 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(retry),
       }),
+    importContentSet: (projectId, document) =>
+      request<EditDocument>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/import-content-set`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(document),
+        },
+      ),
+    getEditDocument: (projectId, documentId) =>
+      request<EditDocument>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}`,
+      ),
     streamWorkflow(workflowId, onSnapshot, lastEventId) {
       let active = true;
       let cursor = lastEventId;
