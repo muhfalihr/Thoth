@@ -141,3 +141,28 @@ test("keeps the local draft on conflict and offers both explicit recovery action
   await user.click(screen.getByRole("button", { name: "Reload Latest" }));
   expect((screen.getByLabelText("Heading") as HTMLInputElement).value).toBe("Remote heading");
 });
+
+test("associates a safe inline validation message with a blank heading", async () => {
+  const patchEditDocument = mock(async () => ({ kind: "saved" as const, document }));
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{ getEditDocument: mock(async () => document), patchEditDocument }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  jest.useFakeTimers();
+  try {
+    fireEvent.change(heading, { target: { value: "   " } });
+    const message = screen.getByText("Heading is required before saving.");
+    expect(heading.getAttribute("aria-invalid")).toBe("true");
+    expect(heading.getAttribute("aria-describedby")).toBe(message.id);
+    act(() => jest.advanceTimersByTime(500));
+    expect(patchEditDocument).toHaveBeenCalledTimes(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});

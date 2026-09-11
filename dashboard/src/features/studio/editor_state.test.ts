@@ -145,3 +145,90 @@ test("save outcomes reset saved history or preserve a conflicted local draft", (
     saveStatus: "saved",
   });
 });
+
+test("Keep Editing Locally rebases the intact draft and resets stale history before saving", () => {
+  let local = editorReducer(createEditorState(document), {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "heading",
+    value: "Local heading",
+    operationId: "op_local",
+  });
+  local = editorReducer(local, {
+    type: "edit_ownership",
+    clipId: "clip_001",
+    ownership: "locked",
+    operationId: "op_local_owner",
+  });
+  local = editorReducer(local, {
+    type: "edit_duration",
+    sceneId: "scene_001",
+    durationInFrames: 150,
+    operationId: "op_local_duration",
+  });
+  const remoteDuration = editorReducer(createEditorState(document), {
+    type: "edit_duration",
+    sceneId: "scene_001",
+    durationInFrames: 100,
+    operationId: "op_remote_duration",
+  }).draft;
+  const latest = {
+    ...remoteDuration,
+    revision: 4,
+    clips: remoteDuration.clips.map((clip) =>
+      clip.clip_id === "clip_001"
+        ? { ...clip, heading: "Remote heading", body: "Remote body", ownership: "ai_managed" as const }
+        : clip,
+    ),
+  };
+  const conflicted = editorReducer(local, { type: "save_conflicted", latest });
+  const kept = editorReducer(conflicted, {
+    type: "keep_editing_locally",
+    operationIdPrefix: "op_rebase",
+  });
+
+  expect(kept.draft).toEqual(local.draft);
+  expect(kept.base).toEqual(latest);
+  expect(kept.history).toEqual([]);
+  expect(kept.future).toEqual([]);
+  expect(kept.saveStatus).toBe("dirty");
+  expect(toEditDocumentPatch(kept)).toEqual({
+    base_revision: 4,
+    operations: [
+      {
+        kind: "replace_text",
+        operation_id: "op_rebase_0",
+        clip_id: "clip_001",
+        field: "heading",
+        value: "Local heading",
+      },
+      {
+        kind: "replace_text",
+        operation_id: "op_rebase_1",
+        clip_id: "clip_001",
+        field: "body",
+        value: "Original body",
+      },
+      {
+        kind: "set_ownership",
+        operation_id: "op_rebase_2",
+        clip_id: "clip_001",
+        ownership: "locked",
+      },
+      {
+        kind: "set_scene_duration",
+        operation_id: "op_rebase_3",
+        scene_id: "scene_001",
+        duration_in_frames: 150,
+      },
+    ],
+  });
+
+  const afterUndo = editorReducer(kept, { type: "undo" });
+  expect(afterUndo.draft).toEqual(local.draft);
+  expect(afterUndo.saveStatus).toBe("dirty");
+
+  const persisted = { ...local.draft, revision: 5 };
+  const saved = editorReducer(kept, { type: "save_succeeded", document: persisted });
+  expect(saved).toMatchObject({ base: persisted, draft: persisted, saveStatus: "saved" });
+});

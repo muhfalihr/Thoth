@@ -40,7 +40,7 @@ export type EditorAction =
   | { type: "retry_save" }
   | { type: "save_conflicted"; latest: EditDocument }
   | { type: "reload_latest" }
-  | { type: "keep_editing_locally" };
+  | { type: "keep_editing_locally"; operationIdPrefix: string };
 
 export function createEditorState(document: EditDocument): EditorState {
   return {
@@ -90,6 +90,53 @@ function resizeScene(document: EditDocument, sceneId: string, durationInFrames: 
       return clipSceneIndex > sceneIndex ? { ...clip, start_frame: clip.start_frame + delta } : clip;
     }),
   };
+}
+
+function operationsToRetainDraft(
+  base: EditDocument,
+  draft: EditDocument,
+  operationIdPrefix: string,
+): EditDocumentOperation[] {
+  const operations: EditDocumentOperation[] = [];
+  const operationId = () => `${operationIdPrefix}_${operations.length}`;
+
+  for (const baseClip of base.clips) {
+    const draftClip = draft.clips.find((clip) => clip.clip_id === baseClip.clip_id);
+    if (!draftClip) continue;
+    let replacesText = false;
+    for (const field of ["heading", "body"] as const) {
+      if (draftClip[field] === baseClip[field]) continue;
+      replacesText = true;
+      operations.push({
+        kind: "replace_text",
+        operation_id: operationId(),
+        clip_id: draftClip.clip_id,
+        field,
+        value: draftClip[field],
+      });
+    }
+    const ownershipAfterText = replacesText ? "user_edited" : baseClip.ownership;
+    if (draftClip.ownership !== ownershipAfterText) {
+      operations.push({
+        kind: "set_ownership",
+        operation_id: operationId(),
+        clip_id: draftClip.clip_id,
+        ownership: draftClip.ownership,
+      });
+    }
+  }
+  for (const baseScene of base.scenes) {
+    const draftScene = draft.scenes.find((scene) => scene.scene_id === baseScene.scene_id);
+    if (draftScene && draftScene.duration_in_frames !== baseScene.duration_in_frames) {
+      operations.push({
+        kind: "set_scene_duration",
+        operation_id: operationId(),
+        scene_id: draftScene.scene_id,
+        duration_in_frames: draftScene.duration_in_frames,
+      });
+    }
+  }
+  return operations;
 }
 
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
@@ -215,10 +262,23 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           : reloaded.selectedSceneId,
       };
     }
-    case "keep_editing_locally":
-      return state.latestConflict
-        ? { ...state, base: state.latestConflict, saveStatus: "dirty", latestConflict: undefined }
-        : state;
+    case "keep_editing_locally": {
+      if (!state.latestConflict) return state;
+      const pendingOperations = operationsToRetainDraft(
+        state.latestConflict,
+        state.draft,
+        action.operationIdPrefix,
+      );
+      return {
+        ...state,
+        base: state.latestConflict,
+        history: [],
+        future: [],
+        pendingOperations,
+        saveStatus: pendingOperations.length ? "dirty" : "saved",
+        latestConflict: undefined,
+      };
+    }
   }
 }
 

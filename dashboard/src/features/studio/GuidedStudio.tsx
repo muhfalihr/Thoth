@@ -97,7 +97,14 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           <button type="button" className={toolbarButton} onClick={() => dispatch({ type: "reload_latest" })}>
             Reload Latest
           </button>
-          <button type="button" className={toolbarButton} onClick={() => dispatch({ type: "keep_editing_locally" })}>
+          <button
+            type="button"
+            className={toolbarButton}
+            onClick={() => dispatch({
+              type: "keep_editing_locally",
+              operationIdPrefix: `op_rebase_${makeOperationId()}`,
+            })}
+          >
             Keep Editing Locally
           </button>
         </div>

@@ -19,9 +19,11 @@ const fieldClass =
 
 export function Inspector({ scene, clip, onTextChange, onOwnershipChange, onDurationChange }: Props) {
   const headingId = useId();
+  const headingErrorId = useId();
   const bodyId = useId();
   const ownershipId = useId();
   const durationId = useId();
+  const headingInvalid = Boolean(clip && !clip.heading.trim());
 
   return (
     <aside className="min-h-0 overflow-auto border-l border-border bg-card/60 p-4" aria-label="Inspector">
@@ -38,8 +40,15 @@ export function Inspector({ scene, clip, onTextChange, onOwnershipChange, onDura
               value={clip.heading}
               maxLength={300}
               required
+              aria-invalid={headingInvalid}
+              aria-describedby={headingInvalid ? headingErrorId : undefined}
               onChange={(event) => onTextChange(clip.clip_id, "heading", event.target.value)}
             />
+            {headingInvalid && (
+              <p id={headingErrorId} role="alert" className="mt-1 text-xs text-destructive">
+                Heading is required before saving.
+              </p>
+            )}
           </div>
           <div>
             <label htmlFor={bodyId} className="text-sm font-medium">Body</label>
