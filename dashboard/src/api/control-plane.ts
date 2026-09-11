@@ -7,6 +7,11 @@ export type ApprovalSubmission = components["schemas"]["ApprovalSubmission"];
 export type RetryRequest = components["schemas"]["RetryRequest"];
 export type ContentSetImportRequest = components["schemas"]["ContentSetImportRequest"];
 export type EditDocument = components["schemas"]["EditDocument"];
+export type EditDocumentPatch = components["schemas"]["EditDocumentPatch"];
+export type EditDocumentOperation = EditDocumentPatch["operations"][number];
+export type EditDocumentPatchResult =
+  | { kind: "saved"; document: EditDocument }
+  | { kind: "conflict"; latest: EditDocument };
 
 export type ControlPlaneClient = {
   listStylePresets: () => Promise<StylePreset[]>;
@@ -22,6 +27,11 @@ export type ControlPlaneClient = {
   retryWorkflow: (workflowId: string, retry?: RetryRequest) => Promise<WorkflowSummary>;
   importContentSet: (projectId: string, request: ContentSetImportRequest) => Promise<EditDocument>;
   getEditDocument: (projectId: string, documentId: string) => Promise<EditDocument>;
+  patchEditDocument: (
+    projectId: string,
+    documentId: string,
+    patch: EditDocumentPatch,
+  ) => Promise<EditDocumentPatchResult>;
 };
 
 type ClientOptions = { baseUrl?: string; apiKey?: string };
@@ -91,6 +101,19 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
       request<EditDocument>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}`,
       ),
+    async patchEditDocument(projectId, documentId, patch) {
+      const response = await fetch(
+        `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}`,
+        {
+          method: "PATCH",
+          headers: headers({ "Content-Type": "application/json" }),
+          body: JSON.stringify(patch),
+        },
+      );
+      if (response.status === 409) return { kind: "conflict", latest: await response.json() as EditDocument };
+      if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
+      return { kind: "saved", document: await response.json() as EditDocument };
+    },
     streamWorkflow(workflowId, onSnapshot, lastEventId) {
       let active = true;
       let cursor = lastEventId;

@@ -2,7 +2,44 @@
 
 import { afterEach, expect, mock, test } from "bun:test";
 
-import { createControlPlaneClient, type WorkflowSummary } from "./control-plane";
+import {
+  createControlPlaneClient,
+  type EditDocument,
+  type EditDocumentPatch,
+  type WorkflowSummary,
+} from "./control-plane";
+
+test("patches edit documents with encoded IDs and returns conflict latest document", async () => {
+  const latest = { revision: 4, title: "Latest" } as unknown as EditDocument;
+  const fetchMock = mock(async () => new Response(JSON.stringify(latest), { status: 409 }));
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret" });
+  const patch = {
+    base_revision: 3,
+    operations: [
+      {
+        kind: "replace_text",
+        operation_id: "op_001",
+        clip_id: "clip_001",
+        field: "heading",
+        value: "Updated",
+      },
+    ],
+  } satisfies EditDocumentPatch;
+
+  await expect(client.patchEditDocument("project / one", "document / one", patch)).resolves.toEqual({
+    kind: "conflict",
+    latest,
+  });
+  expect(fetchMock).toHaveBeenCalledWith(
+    "http://control-plane.test/api/v1/projects/project%20%2F%20one/edit-documents/document%20%2F%20one",
+    expect.objectContaining({
+      method: "PATCH",
+      headers: { Authorization: "Bearer secret", "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  );
+});
 
 const RUNNING_SUMMARY = {
   workflow_id: "wf_001",

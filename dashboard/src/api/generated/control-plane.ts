@@ -75,7 +75,8 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /** Apply Edit Document Patch */
+        patch: operations["apply_edit_document_patch_api_v1_projects__project_id__edit_documents__document_id__patch"];
         trace?: never;
     };
     "/api/v1/style-presets": {
@@ -339,11 +340,8 @@ export interface components {
             document_id: string;
             /** Project Id */
             project_id: string;
-            /**
-             * Revision
-             * @constant
-             */
-            revision: 1;
+            /** Revision */
+            revision: number;
             /** Scenes */
             scenes: components["schemas"]["Scene"][];
             /**
@@ -354,6 +352,13 @@ export interface components {
             template: components["schemas"]["TemplateRef"];
             /** Tracks */
             tracks: components["schemas"]["Track"][];
+        };
+        /** EditDocumentPatch */
+        EditDocumentPatch: {
+            /** Base Revision */
+            base_revision: number;
+            /** Operations */
+            operations: (components["schemas"]["ReplaceText"] | components["schemas"]["SetOwnership"] | components["schemas"]["SetSceneDuration"])[];
         };
         /**
          * EventKind
@@ -386,6 +391,25 @@ export interface components {
             /** Language */
             language: string;
         };
+        /** ReplaceText */
+        ReplaceText: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "heading" | "body";
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "replace_text";
+            /** Operation Id */
+            operation_id: string;
+            /** Value */
+            value: string;
+        };
         /**
          * RetryRequest
          * @description Optional validated checkpoint for an explicit workflow retry.
@@ -414,6 +438,37 @@ export interface components {
             scene_id: string;
             /** Start Frame */
             start_frame: number;
+        };
+        /** SetOwnership */
+        SetOwnership: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_ownership";
+            /** Operation Id */
+            operation_id: string;
+            /**
+             * Ownership
+             * @enum {string}
+             */
+            ownership: "ai_managed" | "user_edited" | "locked";
+        };
+        /** SetSceneDuration */
+        SetSceneDuration: {
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_scene_duration";
+            /** Operation Id */
+            operation_id: string;
+            /** Scene Id */
+            scene_id: string;
         };
         /** SourceInput */
         SourceInput: {
@@ -743,6 +798,53 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditDocument"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_edit_document_patch_api_v1_projects__project_id__edit_documents__document_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditDocumentPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditDocument"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

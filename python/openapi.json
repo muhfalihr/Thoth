@@ -225,7 +225,7 @@
             "type": "string"
           },
           "revision": {
-            "const": 1,
+            "exclusiveMinimum": 0.0,
             "title": "Revision",
             "type": "integer"
           },
@@ -268,6 +268,48 @@
           "clips"
         ],
         "title": "EditDocument",
+        "type": "object"
+      },
+      "EditDocumentPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "operations": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "replace_text": "#/components/schemas/ReplaceText",
+                  "set_ownership": "#/components/schemas/SetOwnership",
+                  "set_scene_duration": "#/components/schemas/SetSceneDuration"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ReplaceText"
+                },
+                {
+                  "$ref": "#/components/schemas/SetOwnership"
+                },
+                {
+                  "$ref": "#/components/schemas/SetSceneDuration"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "base_revision",
+          "operations"
+        ],
+        "title": "EditDocumentPatch",
         "type": "object"
       },
       "EventKind": {
@@ -385,6 +427,48 @@
         "title": "OutputRequest",
         "type": "object"
       },
+      "ReplaceText": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "field": {
+            "enum": [
+              "heading",
+              "body"
+            ],
+            "title": "Field",
+            "type": "string"
+          },
+          "kind": {
+            "const": "replace_text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 2000,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "field",
+          "value"
+        ],
+        "title": "ReplaceText",
+        "type": "object"
+      },
       "RetryRequest": {
         "additionalProperties": false,
         "description": "Optional validated checkpoint for an explicit workflow retry.",
@@ -472,6 +556,76 @@
           "clip_ids"
         ],
         "title": "Scene",
+        "type": "object"
+      },
+      "SetOwnership": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "set_ownership",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "ownership": {
+            "enum": [
+              "ai_managed",
+              "user_edited",
+              "locked"
+            ],
+            "title": "Ownership",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "ownership"
+        ],
+        "title": "SetOwnership",
+        "type": "object"
+      },
+      "SetSceneDuration": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "set_scene_duration",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "scene_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Scene Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "scene_id",
+          "duration_in_frames"
+        ],
+        "title": "SetSceneDuration",
         "type": "object"
       },
       "SourceInput": {
@@ -1289,6 +1443,88 @@
           }
         },
         "summary": "Get Edit Document"
+      },
+      "patch": {
+        "operationId": "apply_edit_document_patch_api_v1_projects__project_id__edit_documents__document_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditDocumentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditDocument"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditDocument"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Edit Document Patch"
       }
     },
     "/api/v1/style-presets": {
