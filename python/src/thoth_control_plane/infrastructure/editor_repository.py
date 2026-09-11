@@ -89,6 +89,12 @@ class PostgresEditDocumentRepository:
                 cursor = connection.cursor()
                 await cursor.execute(
                     """
+                    SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))
+                    """,
+                    (project_id, document_id),
+                )
+                await cursor.execute(
+                    """
                     SELECT document_json
                     FROM edit_document_revisions
                     WHERE project_id = %s AND document_id = %s
