@@ -12,7 +12,16 @@ from thoth_control_plane.domain import (
     WorkflowRequest,
     WorkflowSummary,
 )
+from thoth_control_plane.domain.edit_document_operations import EditDocumentOperation
 from thoth_control_plane.domain.edit_documents import EditDocument
+
+
+class EditDocumentRevisionConflict(Exception):
+    """The document changed after the caller's base revision."""
+
+    def __init__(self, latest: EditDocument) -> None:
+        self.latest = latest
+        super().__init__("edit document revision conflict")
 
 
 class ApprovalSubmission(BaseModel):
@@ -87,3 +96,11 @@ class EditDocumentRepository(Protocol):
     async def insert_revision(self, document: EditDocument) -> None: ...
 
     async def get_latest(self, *, project_id: str, document_id: str) -> EditDocument | None: ...
+
+    async def apply_operations(
+        self,
+        project_id: str,
+        document_id: str,
+        base_revision: int,
+        operations: list[EditDocumentOperation],
+    ) -> EditDocument: ...

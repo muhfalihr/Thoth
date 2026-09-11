@@ -6,6 +6,11 @@ from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
+from thoth_control_plane.application.ports import EditDocumentRevisionConflict
+from thoth_control_plane.domain.edit_document_operations import (
+    EditDocumentOperation,
+    apply_edit_operations,
+)
 from thoth_control_plane.domain.edit_documents import EditDocument
 
 
@@ -68,5 +73,57 @@ class PostgresEditDocumentRepository:
                 )
                 row = await cursor.fetchone()
                 return EditDocument.model_validate(row[0]) if row else None
+        except Exception as error:
+            raise EditDocumentPersistenceError() from error
+
+    async def apply_operations(
+        self,
+        project_id: str,
+        document_id: str,
+        base_revision: int,
+        operations: list[EditDocumentOperation],
+    ) -> EditDocument:
+        try:
+            connection = await AsyncConnection.connect(self._database_url)
+            async with connection:
+                cursor = connection.cursor()
+                await cursor.execute(
+                    """
+                    SELECT document_json
+                    FROM edit_document_revisions
+                    WHERE project_id = %s AND document_id = %s
+                    ORDER BY revision DESC LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (project_id, document_id),
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    raise EditDocumentPersistenceError()
+                latest = EditDocument.model_validate(row[0])
+                if latest.revision != base_revision:
+                    raise EditDocumentRevisionConflict(latest)
+                updated = apply_edit_operations(latest, operations)
+                result = EditDocument.model_validate(
+                    {**updated.model_dump(mode="json"), "revision": latest.revision + 1}
+                )
+                await cursor.execute(
+                    """
+                    INSERT INTO edit_document_revisions
+                        (project_id, document_id, revision, document_json)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        result.project_id,
+                        result.document_id,
+                        result.revision,
+                        Jsonb(result.model_dump(mode="json")),
+                    ),
+                )
+                return result
+        except EditDocumentRevisionConflict:
+            raise
+        except EditDocumentPersistenceError:
+            raise
         except Exception as error:
             raise EditDocumentPersistenceError() from error
