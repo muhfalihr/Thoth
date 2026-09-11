@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     THOTH_TEMPORAL_NAMESPACE: str = "default"
     THOTH_LEGACY_API_BASE_URL: str | None = None
     THOTH_LEGACY_API_KEY: SecretStr | None = None
+    THOTH_EDITOR_DATABASE_URL: SecretStr | None = None
     THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: SourceActivityMode = (
         "python_tiktok_with_legacy_fallback"
     )

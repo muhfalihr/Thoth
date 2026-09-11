@@ -12,6 +12,7 @@ from thoth_control_plane.domain import (
     WorkflowRequest,
     WorkflowSummary,
 )
+from thoth_control_plane.domain.edit_documents import EditDocument
 
 
 class ApprovalSubmission(BaseModel):
@@ -78,3 +79,11 @@ class WorkflowGateway(Protocol):
         *,
         actor: Actor,
     ) -> WorkflowSummary: ...
+
+
+class EditDocumentRepository(Protocol):
+    """Durable immutable storage boundary for Creator Studio revisions."""
+
+    async def insert_revision(self, document: EditDocument) -> None: ...
+
+    async def get_latest(self, *, project_id: str, document_id: str) -> EditDocument | None: ...

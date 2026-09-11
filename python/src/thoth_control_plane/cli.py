@@ -14,7 +14,9 @@ import httpx
 import typer
 
 from thoth_control_plane.application import ApprovalSubmission, RetryRequest
+from thoth_control_plane.config import Settings
 from thoth_control_plane.domain import WorkflowEvent, WorkflowRequest
+from thoth_control_plane.operations.editor_migrations import apply_editor_migrations
 from thoth_control_plane.operations.stage1_controlled_fallback import (
     GATE_ID,
     ControlledFallbackEvidenceError,
@@ -50,6 +52,18 @@ workflow_app = typer.Typer(no_args_is_help=True)
 app.add_typer(workflow_app, name="workflow")
 operations_app = typer.Typer(no_args_is_help=True)
 app.add_typer(operations_app, name="operations")
+editor_app = typer.Typer(no_args_is_help=True)
+app.add_typer(editor_app, name="editor")
+
+
+@editor_app.command("migrate")
+def editor_migrate() -> None:
+    """Apply explicit Creator Studio editor schema migrations."""
+    database_url = Settings().THOTH_EDITOR_DATABASE_URL
+    if database_url is None:
+        raise typer.BadParameter("THOTH_EDITOR_DATABASE_URL must be configured")
+    root = Path(__file__).resolve().parents[3] / "migrations" / "editor"
+    typer.echo(apply_editor_migrations(database_url.get_secret_value(), root))
 
 
 def _settings() -> tuple[str, str]:

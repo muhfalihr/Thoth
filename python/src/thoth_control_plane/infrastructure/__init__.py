@@ -3,3 +3,4 @@
 from thoth_control_plane.infrastructure.legacy_reader import LegacyJobReader
 
 __all__ = ["LegacyJobReader"]
+"""Infrastructure adapters for the Thoth control plane."""
