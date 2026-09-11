@@ -1,5 +1,13 @@
 """Versioned domain contracts for the Thoth control plane."""
 
+from thoth_control_plane.domain.edit_document_operations import (
+    EditDocumentOperation,
+    EditDocumentPatch,
+    ReplaceText,
+    SetOwnership,
+    SetSceneDuration,
+    apply_edit_operations,
+)
 from thoth_control_plane.domain.edit_documents import (
     Canvas,
     Clip,
@@ -48,12 +56,17 @@ __all__ = [
     "Canvas",
     "Clip",
     "EditDocument",
+    "EditDocumentOperation",
+    "EditDocumentPatch",
     "EventKind",
     "LegacyScoutProgressEvent",
     "OutputRequest",
     "Ownership",
+    "ReplaceText",
     "ReviewRequest",
     "Scene",
+    "SetOwnership",
+    "SetSceneDuration",
     "SourceActivityMode",
     "SourceInvestigationActivityResult",
     "SourceInvestigationInput",
@@ -70,6 +83,7 @@ __all__ = [
     "WorkflowRequest",
     "WorkflowStatus",
     "WorkflowSummary",
+    "apply_edit_operations",
     "request_snapshot_id",
     "safe_workflow_source",
 ]

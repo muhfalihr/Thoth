@@ -64,7 +64,7 @@ class EditDocument(StrictModel):
     schema_version: Literal[1]
     document_id: OpaqueId
     project_id: OpaqueId
-    revision: Literal[1]
+    revision: Annotated[int, Field(gt=0)]
     template: TemplateRef
     canvas: Canvas
     scenes: Annotated[list[Scene], Field(min_length=1, max_length=100)]

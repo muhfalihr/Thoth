@@ -79,7 +79,7 @@ def test_valid_document_round_trips_without_coercion() -> None:
     ("path", "value"),
     [
         (("schema_version",), 2),
-        (("revision",), 2),
+        (("revision",), 0),
         (("template", "template_id"), "other_template"),
         (("canvas", "width"), 1920),
         (("canvas", "fps"), 24),
