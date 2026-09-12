@@ -14,31 +14,22 @@
   blank-line continuation, or trailer.
 - Never add `Co-Authored-By` or any Claude/Anthropic attribution to a commit message.
 
-## Context Memory
+## Task entrypoint
 
-**WAJIB DIBACA di setiap sesi:** `BLUEPRINT.md` di root project ini.
+Every task starts with Superpowers, not with `BLUEPRINT.md`:
 
-File tersebut berisi:
-- Blueprint arsitektur lengkap sistem Context Editing
-- Status implementasi tiap komponen (✅ / ⚠️ / ❌)
-- Gap prioritas yang perlu dikerjakan (lihat bagian "Gap Prioritas")
-- Arsitektur Trend-Aware Editing system (Priority 3–6)
-- Catatan teknis semua provider dan struktur file
+1. Invoke `superpowers:using-superpowers`, then invoke the applicable Superpowers skill
+   before inspecting or changing task files.
+2. Identify the active SDD task and read its
+   `.superpowers/sdd/<task>/progress.md` checkpoint. Read the linked design and plan in
+   `docs/superpowers/specs/` and `docs/superpowers/plans/` before implementation.
+3. Use `BLUEPRINT.md` only when the task needs architecture, a technical decision, or
+   current subsystem status. It is a reference, not a task entrypoint.
+4. Use `CHANGELOG.md` only when historical implementation or audit context is needed.
 
-**Prioritas yang BELUM diimplementasi (penting untuk masa depan):**
-1. 🔴 **Style Profiles** — Named presets gaya editing trending (config.toml)
-2. 🔴 **CapCut-style subtitle** — Animasi kata bold/berwarna dinamis
-3. 🔴 **Reference Video Analyzer** — `thoth trend-analyze` command
-4. 🔵 **Beat-sync SFX** — Sinkronisasi SFX ke beat musik
-5. 🔵 **Full Adaptive Trend Learning** — Auto-update style dari TikTok/YT trending
-
-## Aturan Update Blueprint
-
-Setiap kali ada implementasi baru atau perubahan status, **langsung update `BLUEPRINT.md`**:
-1. Ubah status dari ❌ → ✅ atau ⚠️
-2. Isi kolom "Implementasi" dan "File"
-3. Update persentase di tabel "Status Keseluruhan"
-4. Perbarui tanggal di baris terakhir file
+Keep the SDD `progress.md` checkpoint current for the active task. Append completed
+implementation and verification history to `CHANGELOG.md`; do not add chronological
+`Last updated` entries to `BLUEPRINT.md`.
 
 ## Stack Teknis
 
@@ -64,7 +55,8 @@ Setelah mengimplementasi atau mengubah kode, **URUTAN INI WAJIB**:
    ```
    Jika ada test yang fail, perbaiki dulu sebelum melaporkan selesai.
 
-3. **Laporkan hasil** — baru setelah build ✅ dan test ✅ selesai, tandai task completed dan update BLUEPRINT.md.
+3. **Laporkan hasil** — baru setelah build ✅ dan test ✅ selesai, update the active
+   SDD `progress.md` checkpoint and append the completed-work record to `CHANGELOG.md`.
 
 **Jangan** melaporkan fitur sebagai selesai hanya dari `cargo check` — harus full `build_cuda.bat`.
 

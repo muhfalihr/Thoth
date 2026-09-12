@@ -4,6 +4,21 @@
 
 Determine the active role from the current task before acting.
 
+## Task entrypoints and documentation roles
+
+For every task, invoke the applicable Superpowers skill first, then read the active SDD
+checkpoint at `.superpowers/sdd/<task>/progress.md` and its linked design and plan under
+`docs/superpowers/`. These are the task entrypoints.
+
+- `BLUEPRINT.md` is an on-demand architecture and current-subsystem-status reference;
+  it is not an entrypoint.
+- `CHANGELOG.md` is an on-demand chronological implementation and audit-history
+  reference, including records formerly maintained as `Last updated` entries in
+  `BLUEPRINT.md`.
+- Keep the active SDD `progress.md` checkpoint current. Append completed-work history,
+  verification evidence, and audit records to `CHANGELOG.md`; do not recreate a
+  chronological history section in `BLUEPRINT.md`.
+
 ## Plugin routing
 
 At the start of every task, evaluate both routes below before acting:
