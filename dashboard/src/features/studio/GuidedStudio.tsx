@@ -3,15 +3,28 @@ import { useEffect, useId, useReducer, useState, type CSSProperties } from "reac
 import type { ControlPlaneClient, EditDocument } from "@/api/control-plane";
 import { editorReducer, createEditorState, toEditDocumentPatch, type EditorState } from "./editor_state";
 import { Inspector } from "./Inspector";
+import { PromptLab, type PromptLabClient } from "./PromptLab";
 import { SceneBoard } from "./SceneBoard";
 import { StudioPreview } from "./StudioPreview";
 
 type Props = {
-  client: Pick<ControlPlaneClient, "getEditDocument" | "patchEditDocument">;
+  client: Pick<
+    ControlPlaneClient,
+    | "getEditDocument"
+    | "patchEditDocument"
+    | "listPromptStages"
+    | "listPromptTemplates"
+    | "savePromptTemplate"
+    | "getPromptBinding"
+    | "savePromptBinding"
+    | "getResolvedPrompt"
+  >;
   projectId: string;
   documentId: string;
   onBack: () => void;
 };
+
+type StudioWorkspace = "scenes" | "prompts";
 
 const toolbarButton =
   "rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40";
@@ -24,6 +37,8 @@ function validDraft(document: EditDocument) {
 
 function Editor({ client, projectId, documentId, onBack, document }: Props & { document: EditDocument }) {
   const [state, dispatch] = useReducer(editorReducer, document, createEditorState);
+  const [workspace, setWorkspace] = useState<StudioWorkspace>("scenes");
+  const [promptLabVisited, setPromptLabVisited] = useState(false);
   const backDescriptionId = useId();
   const sceneWidthId = useId();
   const inspectorWidthId = useId();
@@ -175,31 +190,81 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
       )}
 
       <div
-        aria-label="Guided editing workstation"
-        style={workstationStyle}
-        className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[var(--scene-board-width)_minmax(0,1fr)_var(--inspector-width)] lg:overflow-hidden"
+        role="tablist"
+        aria-label="Studio workspace"
+        className="flex gap-2 border-b border-border bg-card px-4 py-1"
       >
-        <SceneBoard
-          document={state.draft}
-          selectedSceneId={state.selectedSceneId}
-          onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
-        />
-        <main className="min-h-[28rem] min-w-0 bg-black/40 p-4 lg:min-h-0">
-          <StudioPreview document={state.draft} embedded />
-        </main>
-        <Inspector
-          scene={selectedScene}
-          clip={selectedClip}
-          onTextChange={(clipId, field, value) =>
-            dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
-          }
-          onOwnershipChange={(clipId, ownership) =>
-            dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
-          }
-          onDurationChange={(sceneId, durationInFrames) =>
-            dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
-          }
-        />
+        <button
+          type="button"
+          role="tab"
+          id="studio-tab-scenes"
+          aria-selected={workspace === "scenes"}
+          aria-controls="studio-panel-scenes"
+          className={`${toolbarButton} ${workspace === "scenes" ? "bg-accent" : ""}`}
+          onClick={() => setWorkspace("scenes")}
+        >
+          Scenes
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="studio-tab-prompts"
+          aria-selected={workspace === "prompts"}
+          aria-controls="studio-panel-prompts"
+          className={`${toolbarButton} ${workspace === "prompts" ? "bg-accent" : ""}`}
+          onClick={() => {
+            setPromptLabVisited(true);
+            setWorkspace("prompts");
+          }}
+        >
+          Prompt Lab
+        </button>
+      </div>
+
+      <div
+        role="tabpanel"
+        id="studio-panel-scenes"
+        aria-label="Scenes"
+        hidden={workspace !== "scenes"}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <div
+          aria-label="Guided editing workstation"
+          style={workstationStyle}
+          className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[var(--scene-board-width)_minmax(0,1fr)_var(--inspector-width)] lg:overflow-hidden"
+        >
+          <SceneBoard
+            document={state.draft}
+            selectedSceneId={state.selectedSceneId}
+            onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
+          />
+          <main className="min-h-[28rem] min-w-0 bg-black/40 p-4 lg:min-h-0">
+            <StudioPreview document={state.draft} embedded />
+          </main>
+          <Inspector
+            scene={selectedScene}
+            clip={selectedClip}
+            onTextChange={(clipId, field, value) =>
+              dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
+            }
+            onOwnershipChange={(clipId, ownership) =>
+              dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
+            }
+            onDurationChange={(sceneId, durationInFrames) =>
+              dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
+            }
+          />
+        </div>
+      </div>
+
+      <div
+        role="tabpanel"
+        id="studio-panel-prompts"
+        aria-label="Prompt Lab"
+        hidden={workspace !== "prompts"}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        {promptLabVisited ? <PromptLab client={client as PromptLabClient} projectId={projectId} /> : null}
       </div>
     </section>
   );

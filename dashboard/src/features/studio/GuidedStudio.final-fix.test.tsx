@@ -2,7 +2,14 @@
 
 import { afterEach, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
+import type {
+  EditDocument,
+  EditDocumentPatch,
+  ProjectPromptBinding,
+  PromptStageDefinition,
+  PromptTemplateRevision,
+  ResolvedPromptDraft,
+} from "@/api/control-plane";
 
 mock.module("./StudioPreview", () => ({
   StudioPreview: ({ document }: { document: EditDocument }) => (
@@ -43,6 +50,45 @@ const editDocument = {
   ],
 } satisfies EditDocument;
 
+const promptStage = {
+  stage_id: "narrative_plan",
+  label: "Narrative plan",
+  status: "draft_only",
+} satisfies PromptStageDefinition;
+
+const promptTemplate = {
+  project_id: "project_001",
+  template_id: "ptpl_001",
+  revision: 1,
+  stage_id: "narrative_plan",
+  language: "id-ID",
+  body: "Write a hook",
+} satisfies PromptTemplateRevision;
+
+const promptBinding = {
+  project_id: "project_001",
+  stage_id: "narrative_plan",
+  template_id: "ptpl_001",
+  template_revision: 1,
+  project_override: "Use Indonesian",
+  revision: 1,
+} satisfies ProjectPromptBinding;
+
+const promptResolved = {
+  stage_id: "narrative_plan",
+  sections: [{ kind: "template", label: "Template", text: "Write a hook" }],
+  visible_text: "Template\nWrite a hook",
+} satisfies ResolvedPromptDraft;
+
+const promptClientBase = {
+  listPromptStages: mock(async () => [promptStage]),
+  listPromptTemplates: mock(async () => [promptTemplate]),
+  savePromptTemplate: mock(async () => ({ kind: "saved" as const, value: promptTemplate })),
+  getPromptBinding: mock(async () => promptBinding),
+  savePromptBinding: mock(async () => ({ kind: "saved" as const, value: promptBinding })),
+  getResolvedPrompt: mock(async () => promptResolved),
+};
+
 function setOnline(value: boolean) {
   Object.defineProperty(navigator, "onLine", { configurable: true, value });
 }
@@ -61,7 +107,7 @@ test("prefixes generated operation IDs for the backend OpaqueId contract", async
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -96,7 +142,7 @@ test("keeps Back disabled for an unsaved draft and enables it only after save", 
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={onBack}
@@ -138,7 +184,7 @@ test("keeps Back disabled until an in-flight offline save reconnects", async () 
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -179,7 +225,7 @@ test("keeps Undo disabled when an offline edit follows an in-flight save", async
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -209,7 +255,7 @@ test("keeps conflict recovery active through local edit and undo without stale-b
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -241,7 +287,7 @@ test("retains pending edits offline and resumes dirty autosave on reconnect", as
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -271,6 +317,7 @@ test("exposes native labelled controls for the resizable three-region workstatio
   render(
     <GuidedStudio
       client={{
+        ...promptClientBase,
         getEditDocument: mock(async () => editDocument),
         patchEditDocument: mock(async () => ({ kind: "saved" as const, document: editDocument })),
       }}

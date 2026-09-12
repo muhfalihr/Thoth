@@ -3,13 +3,58 @@
 import { afterEach, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { EditDocument } from "@/api/control-plane";
+import type {
+  EditDocument,
+  ProjectPromptBinding,
+  PromptStageDefinition,
+  PromptTemplateRevision,
+  ResolvedPromptDraft,
+} from "@/api/control-plane";
 
 mock.module("./StudioPreview", () => ({
   StudioPreview: ({ document }: { document: EditDocument }) => (
     <div aria-label="Draft preview">{document.clips[0]?.heading}</div>
   ),
 }));
+
+const promptStage = {
+  stage_id: "narrative_plan",
+  label: "Narrative plan",
+  status: "draft_only",
+} satisfies PromptStageDefinition;
+
+const promptTemplate = {
+  project_id: "project_001",
+  template_id: "ptpl_001",
+  revision: 1,
+  stage_id: "narrative_plan",
+  language: "id-ID",
+  body: "Write a hook",
+} satisfies PromptTemplateRevision;
+
+const promptBinding = {
+  project_id: "project_001",
+  stage_id: "narrative_plan",
+  template_id: "ptpl_001",
+  template_revision: 1,
+  project_override: "Use Indonesian",
+  revision: 1,
+} satisfies ProjectPromptBinding;
+
+const promptResolved = {
+  stage_id: "narrative_plan",
+  sections: [{ kind: "template", label: "Template", text: "Write a hook" }],
+  visible_text: "Template\nWrite a hook",
+} satisfies ResolvedPromptDraft;
+
+const promptClientBase = {
+  listPromptStages: mock(async () => [promptStage]),
+  listPromptTemplates: mock(async () => [promptTemplate]),
+  savePromptTemplate: mock(async () => ({ kind: "saved" as const, value: promptTemplate })),
+  getPromptBinding: mock(async () => promptBinding),
+  savePromptBinding: mock(async () => ({ kind: "saved" as const, value: promptBinding })),
+  getResolvedPrompt: mock(async () => promptResolved),
+};
 
 const document = {
   schema_version: 1,
@@ -39,6 +84,7 @@ afterEach(() => cleanup());
 test("renders labelled Inspector fields and keyboard-visible editing controls", async () => {
   const { GuidedStudio } = await import("./GuidedStudio");
   const client = {
+    ...promptClientBase,
     getEditDocument: mock(async () => document),
     patchEditDocument: mock(async () => ({ kind: "saved" as const, document })),
   };
@@ -62,7 +108,7 @@ test("autosaves after 500ms and reports Saving then Saved", async () => {
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => document), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => document), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -96,7 +142,7 @@ test("shows safe Retry guidance after a failed save without rendering the raw er
   const user = userEvent.setup();
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => document), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => document), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -121,6 +167,7 @@ test("keeps the local draft on conflict and offers both explicit recovery action
   render(
     <GuidedStudio
       client={{
+        ...promptClientBase,
         getEditDocument: mock(async () => document),
         patchEditDocument: mock(async () => ({ kind: "conflict" as const, latest })),
       }}
@@ -147,7 +194,7 @@ test("associates a safe inline validation message with a blank heading", async (
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ getEditDocument: mock(async () => document), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => document), patchEditDocument }}
       projectId="project_001"
       documentId="document_001"
       onBack={() => {}}
@@ -165,4 +212,80 @@ test("associates a safe inline validation message with a blank heading", async (
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("switches between Scenes and Prompt Lab tabs and preserves both drafts", async () => {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const user = userEvent.setup();
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        getEditDocument: mock(async () => document),
+        patchEditDocument: mock(async () => ({ kind: "saved" as const, document })),
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  const scenesTab = screen.getByRole("tab", { name: "Scenes" });
+  const promptTab = screen.getByRole("tab", { name: "Prompt Lab" });
+
+  expect(scenesTab.getAttribute("aria-selected")).toBe("true");
+  expect(promptTab.getAttribute("aria-selected")).toBe("false");
+  expect(scenesTab.tagName).toBe("BUTTON");
+  expect(promptTab.tagName).toBe("BUTTON");
+
+  await user.type(heading, "Kept heading");
+  await user.click(promptTab);
+
+  expect(promptTab.getAttribute("aria-selected")).toBe("true");
+  expect(scenesTab.getAttribute("aria-selected")).toBe("false");
+  const override = (await screen.findByLabelText(
+    "Project override",
+  )) as HTMLTextAreaElement;
+  await user.clear(override);
+  await user.type(override, "Keep it concise");
+
+  await user.click(scenesTab);
+  expect((screen.getByLabelText("Heading") as HTMLInputElement).value).toBe("Original headingKept heading");
+
+  await user.click(promptTab);
+  expect((screen.getByLabelText("Project override") as HTMLTextAreaElement).value).toBe("Keep it concise");
+});
+
+test("keeps both tab panels mounted and toggles only the native hidden attribute", async () => {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const user = userEvent.setup();
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        getEditDocument: mock(async () => document),
+        patchEditDocument: mock(async () => ({ kind: "saved" as const, document })),
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  await screen.findByLabelText("Heading");
+  const scenesPanel = screen.getByRole("tabpanel", { name: "Scenes", hidden: true });
+  const promptPanel = globalThis.document.getElementById(
+    "studio-panel-prompts",
+  ) as HTMLElement;
+
+  expect(scenesPanel.hidden).toBe(false);
+  expect(promptPanel.hidden).toBe(true);
+  expect(globalThis.document.getElementById("studio-panel-scenes")).toBe(scenesPanel);
+  expect(globalThis.document.getElementById("studio-panel-prompts")).toBe(promptPanel);
+
+  await user.click(screen.getByRole("tab", { name: "Prompt Lab" }));
+
+  expect(scenesPanel.hidden).toBe(true);
+  expect(promptPanel.hidden).toBe(false);
+  expect(globalThis.document.getElementById("studio-panel-scenes")).toBe(scenesPanel);
+  expect(globalThis.document.getElementById("studio-panel-prompts")).toBe(promptPanel);
 });
