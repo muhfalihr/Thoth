@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-13 — Creator Studio Prompt Lab C1
+
+Implemented the approved local-only Prompt Lab foundation for Creator Studio.
+
+- Added strict prompt-stage contracts, immutable project-scoped template revisions,
+  optimistic project bindings, deterministic visible resolved drafts, and the editor
+  migration `0002_prompt_lab_foundation.sql`.
+- Added authenticated Prompt Lab API routes, generated TypeScript contracts, and an
+  accessible Studio workspace with durable local drafts, conflict recovery, and
+  intentionally disabled Improve and Translate controls.
+- Completed the implementation commits `1d49623` through `009443d` on
+  `codex/stage1-container-ci`. Executor verification reported 826 Python tests,
+  111 dashboard tests, Ruff, dashboard build, and the CUDA release build passing.
+- No provider or live request, deployment, migration against a live database, push,
+  publication, Stage 1 evidence mutation, or acceptance-window operation occurred.
+
 ## Historical implementation record
 
 *Last updated: 2026-09-06 (stage1 scout runtime correction) — SCOUT RUNTIME CORRECTED IN THE IMAGE, OFFLINE ONLY. The Stage 1 image now installs `gallery-dl` 1.32.11 and `yt-dlp` 2026.8.19 as executables its non-root user can resolve, and `docker/start-legacy-cdp` runs a private in-container relay so a sibling container reaches DevTools while Chromium stays on loopback — a `healthy` sidecar was never evidence of sibling reachability, because its own probe hits `127.0.0.1`. `compose.stage1.providers.yml` gives the fallback worker and every `run`-created reference the same restricted provider file, validated fail-closed by `thoth-control operations stage1-local-preflight --provider-env-file`. `docker/test-cdp-offline.sh` + `compose.stage1.cdp-smoke.yml` prove HTTP discovery, a browser WebSocket session, and a page session opened by Scout's own client from a second container on an internal network against `about:blank`; both CI paths run it. Evidence is entirely offline: no live acquisition, no parity, no provider acceptance, and the image is unpublished. The soak window opened on 2026-09-04 stays frozen on its own digest and this correction needs a separate evaluation window. Files: `Dockerfile`, `docker/{start-legacy-cdp,test-cdp-offline.sh}`, `compose.stage1.{providers,cdp-smoke}.yml`, `scout/runtime/{cdp_relay,legacy_cdp,provider_check,cdp_smoke}.ts` + tests, `python/src/thoth_control_plane/operations/stage1_provider_preflight.py`, `.github/workflows/container-image.yml`.*
