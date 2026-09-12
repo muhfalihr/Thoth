@@ -172,6 +172,32 @@ test("keeps Back disabled until an in-flight offline save reconnects", async () 
   expect(back.disabled).toBe(false);
 });
 
+test("keeps Undo disabled when an offline edit follows an in-flight save", async () => {
+  const patchEditDocument = mock(
+    () => new Promise<{ kind: "saved"; document: EditDocument }>(() => {}),
+  );
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  const body = screen.getByLabelText("Body");
+
+  jest.useFakeTimers();
+  fireEvent.change(heading, { target: { value: "Sent heading" } });
+  act(() => jest.advanceTimersByTime(500));
+  setOnline(false);
+  act(() => window.dispatchEvent(new Event("offline")));
+  fireEvent.change(body, { target: { value: "Later local body" } });
+
+  expect((screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
 test("keeps conflict recovery active through local edit and undo without stale-base autosave", async () => {
   const latest = {
     ...editDocument,

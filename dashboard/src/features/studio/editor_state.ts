@@ -14,6 +14,7 @@ export type EditorState = EditorSnapshot & {
   future: EditorSnapshot[];
   saveStatus: EditorSaveStatus;
   isOffline: boolean;
+  inFlightOperationIds: string[];
   latestConflict?: EditDocument;
 };
 
@@ -35,7 +36,7 @@ export type EditorAction =
   | { type: "edit_duration"; sceneId: string; durationInFrames: number; operationId: string }
   | { type: "undo" }
   | { type: "redo" }
-  | { type: "save_started" }
+  | { type: "save_started"; operationIds?: string[] }
   | { type: "save_succeeded"; document: EditDocument; operationIds?: string[] }
   | { type: "save_failed" }
   | { type: "retry_save" }
@@ -54,6 +55,7 @@ export function createEditorState(document: EditDocument): EditorState {
     future: [],
     saveStatus: "saved",
     isOffline: false,
+    inFlightOperationIds: [],
     pendingOperations: [],
   };
 }
@@ -214,7 +216,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       });
     }
     case "undo": {
-      if (state.saveStatus === "saving") return state;
+      if (state.inFlightOperationIds.length) return state;
       const previous = state.history.at(-1);
       if (!previous) return state;
       return {
@@ -226,7 +228,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "redo": {
-      if (state.saveStatus === "saving") return state;
+      if (state.inFlightOperationIds.length) return state;
       const next = state.future[0];
       if (!next) return state;
       return {
@@ -238,8 +240,12 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "save_started":
-      return state.pendingOperations.length && !state.isOffline && !state.latestConflict
-        ? { ...state, saveStatus: "saving" }
+      return state.pendingOperations.length && !state.isOffline && !state.latestConflict && !state.inFlightOperationIds.length
+        ? {
+            ...state,
+            saveStatus: "saving",
+            inFlightOperationIds: action.operationIds ?? state.pendingOperations.map((operation) => operation.operation_id),
+          }
         : state;
     case "save_succeeded": {
       const sent = new Set(action.operationIds ?? state.pendingOperations.map((operation) => operation.operation_id));
@@ -251,6 +257,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           history: [],
           future: [],
           pendingOperations: remaining,
+          inFlightOperationIds: [],
           saveStatus: state.isOffline ? "offline" : "dirty",
           latestConflict: undefined,
         };
@@ -259,6 +266,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return {
         ...saved,
         isOffline: state.isOffline,
+        inFlightOperationIds: [],
         saveStatus: state.isOffline ? "offline" : saved.saveStatus,
         selectedSceneId: action.document.scenes.some((scene) => scene.scene_id === state.selectedSceneId)
           ? state.selectedSceneId
@@ -266,7 +274,9 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "save_failed":
-      return state.isOffline ? { ...state, saveStatus: "offline" } : { ...state, saveStatus: "failed" };
+      return state.isOffline
+        ? { ...state, inFlightOperationIds: [], saveStatus: "offline" }
+        : { ...state, inFlightOperationIds: [], saveStatus: "failed" };
     case "retry_save":
       return state.pendingOperations.length && !state.isOffline ? { ...state, saveStatus: "dirty" } : state;
     case "went_offline":
@@ -280,12 +290,14 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ? { ...state, isOffline: false, saveStatus: state.pendingOperations.length ? "dirty" : "saved" }
         : { ...state, isOffline: false };
     case "save_conflicted":
-      return { ...state, saveStatus: "conflict", latestConflict: action.latest };
+      return { ...state, inFlightOperationIds: [], saveStatus: "conflict", latestConflict: action.latest };
     case "reload_latest": {
       if (!state.latestConflict) return state;
       const reloaded = createEditorState(state.latestConflict);
       return {
         ...reloaded,
+        isOffline: state.isOffline,
+        saveStatus: state.isOffline ? "offline" : reloaded.saveStatus,
         selectedSceneId: state.latestConflict.scenes.some((scene) => scene.scene_id === state.selectedSceneId)
           ? state.selectedSceneId
           : reloaded.selectedSceneId,

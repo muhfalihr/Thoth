@@ -56,7 +56,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
     const patch = toEditDocumentPatch({ base, pendingOperations });
     const operationIds = patch.operations.map((operation) => operation.operation_id);
     const timeoutId = setTimeout(() => {
-      dispatch({ type: "save_started" });
+      dispatch({ type: "save_started", operationIds });
       void client
         .patchEditDocument(projectId, documentId, patch)
         .then((result) => {
@@ -100,7 +100,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         <button
           type="button"
           className={toolbarButton}
-          disabled={!state.history.length || state.saveStatus === "saving"}
+          disabled={!state.history.length || state.inFlightOperationIds.length > 0}
           onClick={() => dispatch({ type: "undo" })}
         >
           Undo
@@ -108,7 +108,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         <button
           type="button"
           className={toolbarButton}
-          disabled={!state.future.length || state.saveStatus === "saving"}
+          disabled={!state.future.length || state.inFlightOperationIds.length > 0}
           onClick={() => dispatch({ type: "redo" })}
         >
           Redo

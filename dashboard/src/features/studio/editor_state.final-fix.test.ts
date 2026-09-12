@@ -93,7 +93,7 @@ test("offline retains pending draft and reconnect resumes dirty save eligibility
   expect(state.pendingOperations[0].operation_id).toBe("op_offline");
 });
 
-test("offline does not let undo overtake an in-flight save", () => {
+test("offline does not let undo overtake an in-flight save after another edit", () => {
   let state = editorReducer(createEditorState(editDocument), {
     type: "edit_text",
     clipId: "clip_001",
@@ -101,10 +101,18 @@ test("offline does not let undo overtake an in-flight save", () => {
     value: "Sent heading",
     operationId: "op_sent",
   });
-  state = editorReducer(state, { type: "save_started" });
+  state = editorReducer(state, { type: "save_started", operationIds: ["op_sent"] });
   state = editorReducer(state, { type: "went_offline" });
 
   expect(state.saveStatus).toBe("saving");
+  state = editorReducer(state, {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "body",
+    value: "Later local body",
+    operationId: "op_later",
+  });
+  expect(state.saveStatus).toBe("offline");
   expect(editorReducer(state, { type: "undo" })).toEqual(state);
 
   state = editorReducer(state, {
@@ -118,6 +126,31 @@ test("offline does not let undo overtake an in-flight save", () => {
   });
   expect(state.saveStatus).toBe("offline");
   expect(state.draft.clips[0].heading).toBe("Sent heading");
+  expect(state.draft.clips[0].body).toBe("Later local body");
+  expect(state.pendingOperations.map((operation) => operation.operation_id)).toEqual(["op_later"]);
 
-  expect(editorReducer(state, { type: "went_online" }).saveStatus).toBe("saved");
+  expect(editorReducer(state, { type: "went_online" }).saveStatus).toBe("dirty");
+});
+
+test("reload latest preserves offline state after an in-flight conflict", () => {
+  let state = editorReducer(createEditorState(editDocument), {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "heading",
+    value: "Sent heading",
+    operationId: "op_sent",
+  });
+  state = editorReducer(state, { type: "save_started", operationIds: ["op_sent"] });
+  state = editorReducer(state, { type: "went_offline" });
+  const latest = {
+    ...editDocument,
+    revision: 4,
+    clips: [{ ...editDocument.clips[0], heading: "Remote heading" }],
+  };
+  state = editorReducer(state, { type: "save_conflicted", latest });
+  state = editorReducer(state, { type: "reload_latest" });
+
+  expect(state.isOffline).toBe(true);
+  expect(state.saveStatus).toBe("offline");
+  expect(state.draft.clips[0].heading).toBe("Remote heading");
 });
