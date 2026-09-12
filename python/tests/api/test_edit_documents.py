@@ -76,6 +76,24 @@ async def test_import_then_retrieve_an_authenticated_document(gateway) -> None:
 
 
 @pytest.mark.asyncio
+async def test_import_content_set_accepts_legacy_uuid_project_id(gateway) -> None:
+    app = create_app(
+        Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway, MemoryEditDocumentRepository()
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/api/v1/projects/645bc68c-d549-4a46-a295-201d836d9180/edit-documents/import-content-set",
+            headers=AUTH_HEADERS,
+            json=PAYLOAD,
+        )
+
+    assert created.status_code == 201
+    assert created.json()["project_id"] == "645bc68c-d549-4a46-a295-201d836d9180"
+
+
+@pytest.mark.asyncio
 async def test_editor_routes_fail_closed_for_auth_unknown_input_and_missing_document(
     gateway,
 ) -> None:

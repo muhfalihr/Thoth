@@ -17,7 +17,7 @@ from thoth_control_plane.domain.edit_documents import (
     TextClip,
     Track,
 )
-from thoth_control_plane.domain.models import OpaqueId, StrictModel
+from thoth_control_plane.domain.models import OpaqueId, ProjectId, StrictModel
 
 if TYPE_CHECKING:
     from thoth_control_plane.application.ports import EditDocumentRepository
@@ -69,7 +69,7 @@ class ContentSetImportRequest(StrictModel):
 
 
 def build_edit_document(
-    project_id: OpaqueId, request: ContentSetImportRequest, document_id: OpaqueId
+    project_id: ProjectId, request: ContentSetImportRequest, document_id: OpaqueId
 ) -> EditDocument:
     """Build the deterministic, text-only schema-v1 document without side effects."""
 
@@ -146,7 +146,7 @@ class EditDocumentService:
         self._repository = repository
 
     async def import_content_set(
-        self, project_id: OpaqueId, request: ContentSetImportRequest
+        self, project_id: ProjectId, request: ContentSetImportRequest
     ) -> EditDocument:
         if self._repository is None:
             raise EditorUnavailable()
@@ -157,7 +157,7 @@ class EditDocumentService:
             raise EditorUnavailable() from error
         return document
 
-    async def get_latest(self, project_id: OpaqueId, document_id: OpaqueId) -> EditDocument:
+    async def get_latest(self, project_id: ProjectId, document_id: OpaqueId) -> EditDocument:
         if self._repository is None:
             raise EditorUnavailable()
         try:
@@ -171,7 +171,7 @@ class EditDocumentService:
         return document
 
     async def apply_patch(
-        self, project_id: OpaqueId, document_id: OpaqueId, patch: EditDocumentPatch
+        self, project_id: ProjectId, document_id: OpaqueId, patch: EditDocumentPatch
     ) -> EditDocument:
         await self.get_latest(project_id, document_id)
         assert self._repository is not None

@@ -13,6 +13,10 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 OPAQUE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+PROJECT_ID_PATTERN = (
+    r"^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+)
 SHA256_PATTERN = r"^sha256:[0-9a-fA-F]{64}$"
 SENSITIVE_KEY_PARTS = frozenset(
     {"token", "secret", "cookie", "authorization", "signedurl", "providerpayload"}
@@ -22,6 +26,7 @@ RFC3339_TIMESTAMP_PATTERN = re.compile(
 )
 
 OpaqueId = Annotated[str, Field(pattern=OPAQUE_ID_PATTERN)]
+ProjectId = Annotated[str, Field(pattern=PROJECT_ID_PATTERN)]
 Checksum = Annotated[str, Field(pattern=SHA256_PATTERN)]
 
 

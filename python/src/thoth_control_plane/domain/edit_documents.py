@@ -6,7 +6,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from thoth_control_plane.domain.models import OpaqueId, StrictModel
+from thoth_control_plane.domain.models import OpaqueId, ProjectId, StrictModel
 
 Frame = Annotated[int, Field(gt=0)]
 FrameStart = Annotated[int, Field(ge=0)]
@@ -63,7 +63,7 @@ class EditDocument(StrictModel):
 
     schema_version: Literal[1]
     document_id: OpaqueId
-    project_id: OpaqueId
+    project_id: ProjectId
     revision: Annotated[int, Field(gt=0)]
     template: TemplateRef
     canvas: Canvas

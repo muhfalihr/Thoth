@@ -220,7 +220,7 @@
             "type": "string"
           },
           "project_id": {
-            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
             "title": "Project Id",
             "type": "string"
           },
