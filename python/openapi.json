@@ -427,6 +427,143 @@
         "title": "OutputRequest",
         "type": "object"
       },
+      "ProjectPromptBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_override": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Override"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "template_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "template_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Template Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "stage_id",
+          "template_id",
+          "template_revision",
+          "revision"
+        ],
+        "title": "ProjectPromptBinding",
+        "type": "object"
+      },
+      "PromptStageDefinition": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "draft_only",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage_id",
+          "label",
+          "status"
+        ],
+        "title": "PromptStageDefinition",
+        "type": "object"
+      },
+      "PromptTemplateRevision": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 12000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "language": {
+            "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$",
+            "title": "Language",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "template_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Template Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "template_id",
+          "revision",
+          "stage_id",
+          "language",
+          "body"
+        ],
+        "title": "PromptTemplateRevision",
+        "type": "object"
+      },
       "ReplaceText": {
         "additionalProperties": false,
         "properties": {
@@ -469,6 +606,70 @@
         "title": "ReplaceText",
         "type": "object"
       },
+      "ResolvedPromptDraft": {
+        "additionalProperties": false,
+        "properties": {
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ResolvedPromptSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "visible_text": {
+            "minLength": 1,
+            "title": "Visible Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage_id",
+          "sections",
+          "visible_text"
+        ],
+        "title": "ResolvedPromptDraft",
+        "type": "object"
+      },
+      "ResolvedPromptSection": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "template",
+              "project_override"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 12000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "text"
+        ],
+        "title": "ResolvedPromptSection",
+        "type": "object"
+      },
       "RetryRequest": {
         "additionalProperties": false,
         "description": "Optional validated checkpoint for an explicit workflow retry.",
@@ -509,6 +710,107 @@
           "require_publish_approval"
         ],
         "title": "ReviewRequest",
+        "type": "object"
+      },
+      "SaveProjectPromptBindingRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision"
+          },
+          "project_override": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Override"
+          },
+          "template_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "template_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Template Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template_id",
+          "template_revision"
+        ],
+        "title": "SaveProjectPromptBindingRequest",
+        "type": "object"
+      },
+      "SavePromptTemplateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision"
+          },
+          "body": {
+            "maxLength": 12000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "language": {
+            "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$",
+            "title": "Language",
+            "type": "string"
+          },
+          "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          }
+        },
+        "required": [
+          "stage_id",
+          "language",
+          "body"
+        ],
+        "title": "SavePromptTemplateRequest",
         "type": "object"
       },
       "Scene": {
@@ -1525,6 +1827,427 @@
           }
         },
         "summary": "Apply Edit Document Patch"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/bindings/{stage_id}": {
+      "get": {
+        "operationId": "get_prompt_binding_api_v1_projects__project_id__prompt_lab_bindings__stage_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "enum": [
+                "narrative_plan",
+                "visual_plan",
+                "caption_copy"
+              ],
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPromptBinding"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Prompt Binding"
+      },
+      "put": {
+        "operationId": "save_prompt_binding_api_v1_projects__project_id__prompt_lab_bindings__stage_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "enum": [
+                "narrative_plan",
+                "visual_plan",
+                "caption_copy"
+              ],
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveProjectPromptBindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPromptBinding"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPromptBinding"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Prompt Binding"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/resolved/{stage_id}": {
+      "get": {
+        "operationId": "get_resolved_prompt_api_v1_projects__project_id__prompt_lab_resolved__stage_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "enum": [
+                "narrative_plan",
+                "visual_plan",
+                "caption_copy"
+              ],
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedPromptDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Resolved Prompt"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/templates": {
+      "get": {
+        "operationId": "list_prompt_templates_api_v1_projects__project_id__prompt_lab_templates_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "enum": [
+                "narrative_plan",
+                "visual_plan",
+                "caption_copy"
+              ],
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PromptTemplateRevision"
+                  },
+                  "title": "Response List Prompt Templates Api V1 Projects  Project Id  Prompt Lab Templates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Prompt Templates"
+      },
+      "post": {
+        "operationId": "create_prompt_template_api_v1_projects__project_id__prompt_lab_templates_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavePromptTemplateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptTemplateRevision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptTemplateRevision"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Prompt Template"
+      }
+    },
+    "/api/v1/prompt-stages": {
+      "get": {
+        "operationId": "list_prompt_stages_api_v1_prompt_stages_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PromptStageDefinition"
+                  },
+                  "title": "Response List Prompt Stages Api V1 Prompt Stages Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Prompt Stages"
       }
     },
     "/api/v1/style-presets": {

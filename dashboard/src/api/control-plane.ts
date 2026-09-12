@@ -12,6 +12,18 @@ export type EditDocumentOperation = EditDocumentPatch["operations"][number];
 export type EditDocumentPatchResult =
   | { kind: "saved"; document: EditDocument }
   | { kind: "conflict"; latest: EditDocument };
+export type PromptStageDefinition = components["schemas"]["PromptStageDefinition"];
+export type PromptTemplateRevision = components["schemas"]["PromptTemplateRevision"];
+export type SavePromptTemplateRequest = components["schemas"]["SavePromptTemplateRequest"];
+export type ProjectPromptBinding = components["schemas"]["ProjectPromptBinding"];
+export type SaveProjectPromptBindingRequest = components["schemas"]["SaveProjectPromptBindingRequest"];
+export type ResolvedPromptDraft = components["schemas"]["ResolvedPromptDraft"];
+export type PromptTemplateSaveResult =
+  | { kind: "saved"; value: PromptTemplateRevision }
+  | { kind: "conflict"; latest: PromptTemplateRevision };
+export type PromptBindingSaveResult =
+  | { kind: "saved"; value: ProjectPromptBinding }
+  | { kind: "conflict"; latest: ProjectPromptBinding };
 
 export type ControlPlaneClient = {
   listStylePresets: () => Promise<StylePreset[]>;
@@ -32,6 +44,19 @@ export type ControlPlaneClient = {
     documentId: string,
     patch: EditDocumentPatch,
   ) => Promise<EditDocumentPatchResult>;
+  listPromptStages: () => Promise<PromptStageDefinition[]>;
+  listPromptTemplates: (projectId: string, stageId: string) => Promise<PromptTemplateRevision[]>;
+  savePromptTemplate: (
+    projectId: string,
+    request: SavePromptTemplateRequest,
+  ) => Promise<PromptTemplateSaveResult>;
+  getPromptBinding: (projectId: string, stageId: string) => Promise<ProjectPromptBinding | null>;
+  savePromptBinding: (
+    projectId: string,
+    stageId: string,
+    request: SaveProjectPromptBindingRequest,
+  ) => Promise<PromptBindingSaveResult>;
+  getResolvedPrompt: (projectId: string, stageId: string) => Promise<ResolvedPromptDraft>;
 };
 
 type ClientOptions = { baseUrl?: string; apiKey?: string };
@@ -63,6 +88,17 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
     });
     if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
     return response.json() as Promise<T>;
+  }
+
+  async function saveWithConflict<T>(path: string, method: "POST" | "PUT", body: unknown) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+    if (response.status === 409) return { kind: "conflict" as const, latest: (await response.json()) as T };
+    if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
+    return { kind: "saved" as const, value: (await response.json()) as T };
   }
 
   const client: ControlPlaneClient = {
@@ -114,6 +150,34 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
       if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
       return { kind: "saved", document: await response.json() as EditDocument };
     },
+    listPromptStages: () => request<PromptStageDefinition[]>("/api/v1/prompt-stages"),
+    listPromptTemplates: (projectId, stageId) =>
+      request<PromptTemplateRevision[]>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/templates?stage_id=${encodeURIComponent(stageId)}`,
+      ),
+    savePromptTemplate: (projectId, request) =>
+      saveWithConflict<PromptTemplateRevision>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/templates`,
+        "POST",
+        request,
+      ),
+    getPromptBinding: (projectId, stageId) =>
+      request<ProjectPromptBinding | null>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/bindings/${encodeURIComponent(stageId)}`,
+      ).catch((error: unknown) => {
+        if (error instanceof Error && error.message.endsWith("(404)")) return null;
+        throw error;
+      }),
+    savePromptBinding: (projectId, stageId, request) =>
+      saveWithConflict<ProjectPromptBinding>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/bindings/${encodeURIComponent(stageId)}`,
+        "PUT",
+        request,
+      ),
+    getResolvedPrompt: (projectId, stageId) =>
+      request<ResolvedPromptDraft>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/resolved/${encodeURIComponent(stageId)}`,
+      ),
     streamWorkflow(workflowId, onSnapshot, lastEventId) {
       let active = true;
       let cursor = lastEventId;

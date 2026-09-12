@@ -79,6 +79,76 @@ export interface paths {
         patch: operations["apply_edit_document_patch_api_v1_projects__project_id__edit_documents__document_id__patch"];
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/prompt-lab/bindings/{stage_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Prompt Binding */
+        get: operations["get_prompt_binding_api_v1_projects__project_id__prompt_lab_bindings__stage_id__get"];
+        /** Save Prompt Binding */
+        put: operations["save_prompt_binding_api_v1_projects__project_id__prompt_lab_bindings__stage_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/resolved/{stage_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Resolved Prompt */
+        get: operations["get_resolved_prompt_api_v1_projects__project_id__prompt_lab_resolved__stage_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Prompt Templates */
+        get: operations["list_prompt_templates_api_v1_projects__project_id__prompt_lab_templates_get"];
+        put?: never;
+        /** Create Prompt Template */
+        post: operations["create_prompt_template_api_v1_projects__project_id__prompt_lab_templates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/prompt-stages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Prompt Stages */
+        get: operations["list_prompt_stages_api_v1_prompt_stages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/style-presets": {
         parameters: {
             query?: never;
@@ -391,6 +461,57 @@ export interface components {
             /** Language */
             language: string;
         };
+        /** ProjectPromptBinding */
+        ProjectPromptBinding: {
+            /** Project Id */
+            project_id: string;
+            /** Project Override */
+            project_override?: string | null;
+            /** Revision */
+            revision: number;
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            /** Template Id */
+            template_id: string;
+            /** Template Revision */
+            template_revision: number;
+        };
+        /** PromptStageDefinition */
+        PromptStageDefinition: {
+            /** Label */
+            label: string;
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            /**
+             * Status
+             * @constant
+             */
+            status: "draft_only";
+        };
+        /** PromptTemplateRevision */
+        PromptTemplateRevision: {
+            /** Body */
+            body: string;
+            /** Language */
+            language: string;
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            /** Template Id */
+            template_id: string;
+        };
         /** ReplaceText */
         ReplaceText: {
             /** Clip Id */
@@ -410,6 +531,30 @@ export interface components {
             /** Value */
             value: string;
         };
+        /** ResolvedPromptDraft */
+        ResolvedPromptDraft: {
+            /** Sections */
+            sections: components["schemas"]["ResolvedPromptSection"][];
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            /** Visible Text */
+            visible_text: string;
+        };
+        /** ResolvedPromptSection */
+        ResolvedPromptSection: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "template" | "project_override";
+            /** Label */
+            label: string;
+            /** Text */
+            text: string;
+        };
         /**
          * RetryRequest
          * @description Optional validated checkpoint for an explicit workflow retry.
@@ -422,6 +567,33 @@ export interface components {
         ReviewRequest: {
             /** Require Publish Approval */
             require_publish_approval: boolean;
+        };
+        /** SaveProjectPromptBindingRequest */
+        SaveProjectPromptBindingRequest: {
+            /** Base Revision */
+            base_revision?: number | null;
+            /** Project Override */
+            project_override?: string | null;
+            /** Template Id */
+            template_id: string;
+            /** Template Revision */
+            template_revision: number;
+        };
+        /** SavePromptTemplateRequest */
+        SavePromptTemplateRequest: {
+            /** Base Revision */
+            base_revision?: number | null;
+            /** Body */
+            body: string;
+            /** Language */
+            language: string;
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            /** Template Id */
+            template_id?: string | null;
         };
         /** Scene */
         Scene: {
@@ -850,6 +1022,233 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EditDocument"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_prompt_binding_api_v1_projects__project_id__prompt_lab_bindings__stage_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPromptBinding"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_prompt_binding_api_v1_projects__project_id__prompt_lab_bindings__stage_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveProjectPromptBindingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPromptBinding"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPromptBinding"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_resolved_prompt_api_v1_projects__project_id__prompt_lab_resolved__stage_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedPromptDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_prompt_templates_api_v1_projects__project_id__prompt_lab_templates_get: {
+        parameters: {
+            query: {
+                stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptTemplateRevision"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_prompt_template_api_v1_projects__project_id__prompt_lab_templates_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavePromptTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptTemplateRevision"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptTemplateRevision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_prompt_stages_api_v1_prompt_stages_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptStageDefinition"][];
                 };
             };
             /** @description Validation Error */
