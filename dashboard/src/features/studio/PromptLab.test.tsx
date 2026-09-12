@@ -123,7 +123,7 @@ test("saves a template revision and reports Saving then Saved", async () => {
   await user.type(body, "Sharper hook");
   await user.click(screen.getByRole("button", { name: "Save template" }));
 
-  expect(screen.getByText("Saved")).toBeDefined();
+  expect(await screen.findByText("Saved")).toBeDefined();
   expect(screen.queryByText("Failed")).toBeNull();
   expect(captured).toEqual({
     stage_id: "narrative_plan",
@@ -177,7 +177,7 @@ test("preserves the local draft on a template conflict and reloads latest on dem
 
   await user.click(screen.getByRole("button", { name: "Reload Latest" }));
   expect((screen.getByLabelText("Template body") as HTMLTextAreaElement).value).toBe("Remote body");
-  expect(screen.getByText("Saved")).toBeDefined();
+  expect(await screen.findByText("Saved")).toBeDefined();
 });
 
 test("saves the project override through the binding endpoint", async () => {

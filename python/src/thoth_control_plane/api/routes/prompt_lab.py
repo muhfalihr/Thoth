@@ -16,7 +16,7 @@ from thoth_control_plane.application.ports import (
 )
 from thoth_control_plane.application.prompt_lab import (
     PromptLabService,
-    PromptLabUnavailable,
+    PromptLabStoreUnavailable,
     PromptStageMismatch,
     PromptStageNotRegistered,
 )
@@ -41,7 +41,7 @@ def get_prompt_lab_service(request: Request) -> PromptLabService:
     return request.app.state.prompt_lab_service
 
 
-def _unavailable(error: PromptLabUnavailable) -> HTTPException:
+def _unavailable(error: PromptLabStoreUnavailable) -> HTTPException:
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
@@ -82,7 +82,7 @@ async def list_prompt_templates(
         return await service.list_templates(project_id, stage_id)
     except PromptStageNotRegistered as error:
         raise _not_found(error) from error
-    except PromptLabUnavailable as error:
+    except PromptLabStoreUnavailable as error:
         raise _unavailable(error) from error
 
 
@@ -106,7 +106,7 @@ async def create_prompt_template(
         )
     except PromptTemplateNotFound as error:
         raise _not_found(error) from error
-    except PromptLabUnavailable as error:
+    except PromptLabStoreUnavailable as error:
         raise _unavailable(error) from error
 
 
@@ -124,7 +124,7 @@ async def get_prompt_binding(
         binding = await service.get_binding(project_id, stage_id)
     except PromptStageNotRegistered as error:
         raise _not_found(error) from error
-    except PromptLabUnavailable as error:
+    except PromptLabStoreUnavailable as error:
         raise _unavailable(error) from error
     if binding is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -153,7 +153,7 @@ async def save_prompt_binding(
         raise _not_found(error) from error
     except _STAGE_ERRORS as error:
         raise _stage_mismatch(error) from error
-    except PromptLabUnavailable as error:
+    except PromptLabStoreUnavailable as error:
         raise _unavailable(error) from error
 
 
@@ -173,5 +173,5 @@ async def get_resolved_prompt(
         raise _not_found(error) from error
     except _STAGE_ERRORS as error:
         raise _stage_mismatch(error) from error
-    except PromptLabUnavailable as error:
+    except PromptLabStoreUnavailable as error:
         raise _unavailable(error) from error

@@ -25,7 +25,7 @@ from thoth_control_plane.domain.prompts import (
 )
 
 
-class PromptLabUnavailable(Exception):
+class PromptLabStoreUnavailable(Exception):
     """The optional prompt lab persistence is not configured or reachable."""
 
 
@@ -61,7 +61,7 @@ class PromptLabService:
 
     def _require_repository(self) -> PromptLabRepository:
         if self._repository is None:
-            raise PromptLabUnavailable()
+            raise PromptLabStoreUnavailable()
         return self._repository
 
     async def list_templates(
@@ -75,7 +75,7 @@ class PromptLabService:
         except _PASSTHROUGH_ERRORS:
             raise
         except Exception as error:
-            raise PromptLabUnavailable() from error
+            raise PromptLabStoreUnavailable() from error
 
     async def save_template(
         self, project_id: ProjectId, request: SavePromptTemplateRequest
@@ -93,7 +93,7 @@ class PromptLabService:
         except _PASSTHROUGH_ERRORS:
             raise
         except Exception as error:
-            raise PromptLabUnavailable() from error
+            raise PromptLabStoreUnavailable() from error
 
     async def get_binding(
         self, project_id: ProjectId, stage_id: PromptStageId
@@ -106,7 +106,7 @@ class PromptLabService:
         except _PASSTHROUGH_ERRORS:
             raise
         except Exception as error:
-            raise PromptLabUnavailable() from error
+            raise PromptLabStoreUnavailable() from error
 
     async def save_binding(
         self,
@@ -127,7 +127,7 @@ class PromptLabService:
         except _PASSTHROUGH_ERRORS:
             raise
         except Exception as error:
-            raise PromptLabUnavailable() from error
+            raise PromptLabStoreUnavailable() from error
 
     async def get_template_revision(
         self, project_id: ProjectId, template_id: str, revision: int
@@ -139,7 +139,7 @@ class PromptLabService:
         except _PASSTHROUGH_ERRORS:
             raise
         except Exception as error:
-            raise PromptLabUnavailable() from error
+            raise PromptLabStoreUnavailable() from error
         if template is None:
             raise PromptTemplateNotFound()
         return template

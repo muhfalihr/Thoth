@@ -13,7 +13,7 @@ from thoth_control_plane.application.ports import (
 )
 from thoth_control_plane.application.prompt_lab import (
     PromptLabService,
-    PromptLabUnavailable,
+    PromptLabStoreUnavailable,
     PromptStageMismatch,
     PromptStageNotRegistered,
 )
@@ -335,10 +335,10 @@ async def test_unavailable_repository_maps_to_a_safe_error() -> None:
         async def list_template_heads(self, **_: object) -> list[PromptTemplateRevision]:
             raise PromptLabPersistenceError()
 
-    with pytest.raises(PromptLabUnavailable):
+    with pytest.raises(PromptLabStoreUnavailable):
         await PromptLabService(BrokenRepository()).list_templates("project_a", "narrative_plan")
 
-    with pytest.raises(PromptLabUnavailable):
+    with pytest.raises(PromptLabStoreUnavailable):
         await PromptLabService(None).list_templates("project_a", "narrative_plan")
 
 
