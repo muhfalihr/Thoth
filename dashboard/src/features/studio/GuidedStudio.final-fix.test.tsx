@@ -127,6 +127,51 @@ test("keeps Back disabled for an unsaved draft and enables it only after save", 
   expect(onBack).toHaveBeenCalledTimes(1);
 });
 
+test("keeps Back disabled until an in-flight offline save reconnects", async () => {
+  let resolveSave: (value: { kind: "saved"; document: EditDocument }) => void = () => {};
+  const patchEditDocument = mock(
+    () =>
+      new Promise<{ kind: "saved"; document: EditDocument }>((resolve) => {
+        resolveSave = resolve;
+      }),
+  );
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{ getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  const back = screen.getByRole("button", { name: "Back" }) as HTMLButtonElement;
+
+  jest.useFakeTimers();
+  fireEvent.change(heading, { target: { value: "Edited heading" } });
+  act(() => jest.advanceTimersByTime(500));
+  setOnline(false);
+  act(() => window.dispatchEvent(new Event("offline")));
+  await act(async () => {
+    resolveSave({
+      kind: "saved",
+      document: {
+        ...editDocument,
+        revision: 2,
+        clips: [{ ...editDocument.clips[0], heading: "Edited heading", ownership: "user_edited" }],
+      },
+    });
+    await Promise.resolve();
+  });
+
+  expect(screen.getByText("Offline")).toBeDefined();
+  expect(back.disabled).toBe(true);
+
+  setOnline(true);
+  act(() => window.dispatchEvent(new Event("online")));
+  expect(back.disabled).toBe(false);
+});
+
 test("keeps conflict recovery active through local edit and undo without stale-base autosave", async () => {
   const latest = {
     ...editDocument,

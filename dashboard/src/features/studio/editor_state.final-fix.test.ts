@@ -92,3 +92,32 @@ test("offline retains pending draft and reconnect resumes dirty save eligibility
   expect(state.saveStatus).toBe("dirty");
   expect(state.pendingOperations[0].operation_id).toBe("op_offline");
 });
+
+test("offline does not let undo overtake an in-flight save", () => {
+  let state = editorReducer(createEditorState(editDocument), {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "heading",
+    value: "Sent heading",
+    operationId: "op_sent",
+  });
+  state = editorReducer(state, { type: "save_started" });
+  state = editorReducer(state, { type: "went_offline" });
+
+  expect(state.saveStatus).toBe("saving");
+  expect(editorReducer(state, { type: "undo" })).toEqual(state);
+
+  state = editorReducer(state, {
+    type: "save_succeeded",
+    document: {
+      ...editDocument,
+      revision: 4,
+      clips: [{ ...editDocument.clips[0], heading: "Sent heading", ownership: "user_edited" }],
+    },
+    operationIds: ["op_sent"],
+  });
+  expect(state.saveStatus).toBe("offline");
+  expect(state.draft.clips[0].heading).toBe("Sent heading");
+
+  expect(editorReducer(state, { type: "went_online" }).saveStatus).toBe("saved");
+});

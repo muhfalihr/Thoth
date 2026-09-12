@@ -13,6 +13,7 @@ export type EditorState = EditorSnapshot & {
   history: EditorSnapshot[];
   future: EditorSnapshot[];
   saveStatus: EditorSaveStatus;
+  isOffline: boolean;
   latestConflict?: EditDocument;
 };
 
@@ -52,19 +53,20 @@ export function createEditorState(document: EditDocument): EditorState {
     history: [],
     future: [],
     saveStatus: "saved",
+    isOffline: false,
     pendingOperations: [],
   };
 }
 
 function saveStatusAfterLocalChange(state: EditorState): EditorSaveStatus {
   if (state.latestConflict) return "conflict";
-  if (state.saveStatus === "offline") return "offline";
+  if (state.isOffline) return "offline";
   return state.saveStatus === "saving" ? "saving" : "dirty";
 }
 
 function saveStatusAfterSnapshot(state: EditorState, snapshot: EditorSnapshot): EditorSaveStatus {
   if (state.latestConflict) return "conflict";
-  if (state.saveStatus === "offline") return "offline";
+  if (state.isOffline) return "offline";
   return snapshot.pendingOperations.length ? "dirty" : "saved";
 }
 
@@ -212,6 +214,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       });
     }
     case "undo": {
+      if (state.saveStatus === "saving") return state;
       const previous = state.history.at(-1);
       if (!previous) return state;
       return {
@@ -223,6 +226,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "redo": {
+      if (state.saveStatus === "saving") return state;
       const next = state.future[0];
       if (!next) return state;
       return {
@@ -234,7 +238,9 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "save_started":
-      return state.pendingOperations.length ? { ...state, saveStatus: "saving" } : state;
+      return state.pendingOperations.length && !state.isOffline && !state.latestConflict
+        ? { ...state, saveStatus: "saving" }
+        : state;
     case "save_succeeded": {
       const sent = new Set(action.operationIds ?? state.pendingOperations.map((operation) => operation.operation_id));
       const remaining = state.pendingOperations.filter((operation) => !sent.has(operation.operation_id));
@@ -245,29 +251,34 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           history: [],
           future: [],
           pendingOperations: remaining,
-          saveStatus: state.saveStatus === "offline" ? "offline" : "dirty",
+          saveStatus: state.isOffline ? "offline" : "dirty",
           latestConflict: undefined,
         };
       }
       const saved = createEditorState(action.document);
       return {
         ...saved,
-        saveStatus: state.saveStatus === "offline" ? "offline" : saved.saveStatus,
+        isOffline: state.isOffline,
+        saveStatus: state.isOffline ? "offline" : saved.saveStatus,
         selectedSceneId: action.document.scenes.some((scene) => scene.scene_id === state.selectedSceneId)
           ? state.selectedSceneId
           : saved.selectedSceneId,
       };
     }
     case "save_failed":
-      return state.saveStatus === "offline" ? state : { ...state, saveStatus: "failed" };
+      return state.isOffline ? { ...state, saveStatus: "offline" } : { ...state, saveStatus: "failed" };
     case "retry_save":
-      return state.pendingOperations.length ? { ...state, saveStatus: "dirty" } : state;
+      return state.pendingOperations.length && !state.isOffline ? { ...state, saveStatus: "dirty" } : state;
     case "went_offline":
-      return state.latestConflict ? state : { ...state, saveStatus: "offline" };
+      return {
+        ...state,
+        isOffline: true,
+        saveStatus: state.saveStatus === "saving" ? "saving" : state.latestConflict ? "conflict" : "offline",
+      };
     case "went_online":
       return state.saveStatus === "offline"
-        ? { ...state, saveStatus: state.pendingOperations.length ? "dirty" : "saved" }
-        : state;
+        ? { ...state, isOffline: false, saveStatus: state.pendingOperations.length ? "dirty" : "saved" }
+        : { ...state, isOffline: false };
     case "save_conflicted":
       return { ...state, saveStatus: "conflict", latestConflict: action.latest };
     case "reload_latest": {
@@ -293,7 +304,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         history: [],
         future: [],
         pendingOperations,
-        saveStatus: pendingOperations.length ? "dirty" : "saved",
+        saveStatus: state.isOffline ? "offline" : pendingOperations.length ? "dirty" : "saved",
         latestConflict: undefined,
       };
     }
