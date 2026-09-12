@@ -242,6 +242,7 @@ jobs:
             echo "THOTH_STAGE1_ACTIVITY_MODE=python_tiktok_with_legacy_fallback"
             echo "THOTH_CONTROL_PLANE_API_KEY=$(openssl rand -hex 24)"
             echo "THOTH_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "THOTH_EDITOR_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
           } > stage1.ci.env
 
       - name: Validate the operator inputs
@@ -249,7 +250,10 @@ jobs:
           uv run --project python thoth-control operations stage1-local-preflight             --env-file stage1.ci.env
 
       - name: Start the non-live services
-        run: docker compose ${COMPOSE_FILE_ARGS} up -d --wait postgresql temporal temporal-ui api
+        run: docker compose ${COMPOSE_FILE_ARGS} up -d --wait postgresql editor-postgresql temporal temporal-ui api
+
+      - name: Apply Creator Studio editor migration
+        run: docker compose ${COMPOSE_FILE_ARGS} run --rm --no-deps api thoth-control editor migrate
 
       - name: Verify identity, storage, and loopback isolation
         run: |

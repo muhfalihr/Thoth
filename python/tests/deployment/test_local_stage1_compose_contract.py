@@ -108,6 +108,30 @@ def test_local_stage1_compose_requires_digest_qualified_thoth_image() -> None:
     assert compose.count("${THOTH_IMAGE:?set digest-qualified THOTH_IMAGE}") == 3
 
 
+def test_local_stage1_creator_studio_uses_a_separate_editor_database() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    env_example = _repo_text(".env.stage1.local.example")
+    dockerfile = _repo_text("Dockerfile")
+    api = _service_block(compose, "api")
+    editor_postgres = _service_block(compose, "editor-postgresql")
+
+    assert "THOTH_EDITOR_POSTGRES_PASSWORD=replace-with-local-secret" in env_example
+    assert "postgres:16.4-bookworm@sha256:" in editor_postgres
+    assert (
+        "${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/editor-postgres" in editor_postgres
+    )
+    assert "POSTGRES_USER: thoth_editor" in editor_postgres
+    assert "POSTGRES_DB: thoth_editor" in editor_postgres
+    assert "THOTH_EDITOR_DATABASE_URL:" in api
+    assert "editor-postgresql:5432/thoth_editor" in api
+    assert "editor-postgresql:" in api
+    assert "COPY --chown=thoth:thoth python/migrations/ /opt/thoth/python/migrations/" in dockerfile
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    assert 'echo "THOTH_EDITOR_POSTGRES_PASSWORD=$(openssl rand -hex 24)"' in workflow
+    assert "up -d --wait postgresql editor-postgresql temporal temporal-ui api" in workflow
+    assert "thoth-control editor migrate" in workflow
+
+
 def test_local_stage1_compose_is_validated_by_offline_ci() -> None:
     workflow = _repo_text(".github/workflows/container-image.yml")
     command = (

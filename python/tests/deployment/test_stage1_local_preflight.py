@@ -21,6 +21,7 @@ VALID_ENVIRONMENT = {
     "THOTH_STAGE1_ACTIVITY_MODE": "python_tiktok_with_legacy_fallback",
     "THOTH_CONTROL_PLANE_API_KEY": "local-api-key",
     "THOTH_POSTGRES_PASSWORD": "local-database-password",
+    "THOTH_EDITOR_POSTGRES_PASSWORD": "local-editor-database-password",
 }
 
 
@@ -94,7 +95,14 @@ def test_rollback_activity_mode_is_accepted() -> None:
     )
 
 
-@pytest.mark.parametrize("secret", ["THOTH_CONTROL_PLANE_API_KEY", "THOTH_POSTGRES_PASSWORD"])
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "THOTH_CONTROL_PLANE_API_KEY",
+        "THOTH_POSTGRES_PASSWORD",
+        "THOTH_EDITOR_POSTGRES_PASSWORD",
+    ],
+)
 @pytest.mark.parametrize("value", ["", "   ", "replace-with-local-secret"])
 def test_missing_or_placeholder_secret_is_rejected(secret: str, value: str) -> None:
     with pytest.raises(Stage1PreflightError):

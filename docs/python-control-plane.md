@@ -36,6 +36,7 @@ the value.
 | `THOTH_CONTROL_PLANE_API_KEY` | FastAPI, CLI | Owner bearer credential. Required. |
 | `THOTH_CONTROL_PLANE_CORS_ORIGINS` | FastAPI | JSON list of allowed dashboard origins, for example the local Vite origin. Empty by default. |
 | `THOTH_CONTROL_PLANE_ARTIFACT_ROOT` | FastAPI, Python worker working directory | Root for safe relative artifact locations. Defaults to `.thoth-artifacts`; API and worker must resolve the same root. |
+| `THOTH_EDITOR_DATABASE_URL` | FastAPI, `thoth-control editor migrate` | Secret PostgreSQL URL for immutable Creator Studio revisions. Stage 1 Compose derives it from the isolated editor database password. |
 | `THOTH_TEMPORAL_TARGET` | FastAPI, Python worker | Temporal gRPC target; default `localhost:7233`. |
 | `THOTH_TEMPORAL_NAMESPACE` | FastAPI, Python worker | Temporal namespace; default `default`. |
 | `THOTH_LEGACY_API_BASE_URL` | FastAPI | Optional read-only Rust observation bridge base URL. |
@@ -46,6 +47,11 @@ the value.
 
 The existing Scout UI continues to use its legacy Rust route and `VITE_THOTH_API_KEY`. Setting
 `VITE_CONTROL_PLANE_URL` does not redirect legacy Scout traffic into the v1 workflow API.
+
+For Vite development, leave `VITE_CONTROL_PLANE_URL` unset: the dev server proxies `/api/v1` to
+the local control plane and `/api` to the Rust server, avoiding a browser CORS preflight. Set a
+direct control-plane URL only when the API allows the exact dashboard origin through
+`THOTH_CONTROL_PLANE_CORS_ORIGINS`.
 
 ## TikTok acquisition worker
 

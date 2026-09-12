@@ -45,6 +45,7 @@ RUN cd /opt/thoth/python \
     && uv sync --frozen --no-dev --extra acquisition --extra scout-runtime --no-install-project
 
 COPY --chown=thoth:thoth python/src/ /opt/thoth/python/src/
+COPY --chown=thoth:thoth python/migrations/ /opt/thoth/python/migrations/
 RUN cd /opt/thoth/python \
     && uv sync --frozen --no-dev --extra acquisition --extra scout-runtime
 

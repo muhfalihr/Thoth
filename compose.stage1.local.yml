@@ -19,6 +19,25 @@ services:
     restart: unless-stopped
     networks: [stage1-private]
 
+  editor-postgresql:
+    image: postgres:16.4-bookworm@sha256:e62fbf9d3e2b49816a32c400ed2dba83e3b361e6833e624024309c35d334b412
+    environment:
+      POSTGRES_DB: thoth_editor
+      POSTGRES_USER: thoth_editor
+      POSTGRES_PASSWORD: ${THOTH_EDITOR_POSTGRES_PASSWORD:?set THOTH_EDITOR_POSTGRES_PASSWORD}
+    volumes:
+      - type: bind
+        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/editor-postgres
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thoth_editor -d thoth_editor"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    networks: [stage1-private]
+
   temporal:
     image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
     depends_on:
@@ -99,8 +118,11 @@ services:
     depends_on:
       temporal:
         condition: service_healthy
+      editor-postgresql:
+        condition: service_healthy
     environment:
       THOTH_CONTROL_PLANE_API_KEY: ${THOTH_CONTROL_PLANE_API_KEY:?set THOTH_CONTROL_PLANE_API_KEY}
+      THOTH_EDITOR_DATABASE_URL: "postgresql://thoth_editor:${THOTH_EDITOR_POSTGRES_PASSWORD:?set THOTH_EDITOR_POSTGRES_PASSWORD}@editor-postgresql:5432/thoth_editor"
       THOTH_TEMPORAL_TARGET: temporal:7233
       THOTH_TEMPORAL_NAMESPACE: thoth-stage1
       THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts

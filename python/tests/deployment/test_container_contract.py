@@ -116,7 +116,7 @@ def test_container_workflow_boots_the_stack_it_publishes() -> None:
     assert "  stack-smoke:" in workflow
     smoke = workflow.split("  stack-smoke:", 1)[1]
     assert "needs: publish-image" in smoke
-    assert "up -d --wait postgresql temporal temporal-ui api" in smoke
+    assert "up -d --wait postgresql editor-postgresql temporal temporal-ui api" in smoke
     assert "exec -T api id -u" in smoke
     assert "test -w /var/lib/thoth/artifacts" in smoke
     assert "operator namespace describe" in smoke
@@ -433,7 +433,7 @@ def test_published_digest_is_proved_by_the_same_harness() -> None:
         in smoke
     )
     assert 'bash docker/test-cdp-offline.sh "${THOTH_IMAGE_REF}"' in smoke
-    assert "up -d --wait postgresql temporal temporal-ui api" in smoke
+    assert "up -d --wait postgresql editor-postgresql temporal temporal-ui api" in smoke
     assert "curl -fsS http://127.0.0.1:8000/readyz" in smoke
 
 

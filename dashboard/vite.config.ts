@@ -13,8 +13,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8787",
-      "/health": "http://127.0.0.1:8787",
+      "/api/v1": "http://127.0.0.1:8000",
+      "/api": "http://127.0.0.1:9090",
+      "/health": "http://127.0.0.1:9090",
     },
   },
 });

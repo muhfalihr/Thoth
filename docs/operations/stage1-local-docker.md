@@ -30,7 +30,7 @@ operator change record.
 
 ## Prepare persistent storage
 
-Create `postgres`, `artifacts`, `browser-profile`, `observations`, and `reports` below the absolute
+Create `postgres`, `editor-postgres`, `artifacts`, `browser-profile`, `observations`, and `reports` below the absolute
 `THOTH_STAGE1_DATA_ROOT` outside this repository. Initialize `artifacts` and `browser-profile` as
 UID/GID `10001:10001`; keep the browser profile out of evidence and support output.
 
@@ -38,7 +38,7 @@ Place the data root inside the WSL filesystem rather than under `/mnt/c`, becaus
 ownership is not reliable on the Windows drive mount.
 
 ```bash
-mkdir -p "$THOTH_STAGE1_DATA_ROOT"/{postgres,artifacts,browser-profile,observations,reports}
+mkdir -p "$THOTH_STAGE1_DATA_ROOT"/{postgres,editor-postgres,artifacts,browser-profile,observations,reports}
 sudo chown -R 10001:10001 "$THOTH_STAGE1_DATA_ROOT"/artifacts "$THOTH_STAGE1_DATA_ROOT"/browser-profile
 sudo chmod 750 "$THOTH_STAGE1_DATA_ROOT"/artifacts "$THOTH_STAGE1_DATA_ROOT"/browser-profile
 ```
@@ -52,7 +52,7 @@ expected by the pinned image; do not change its ownership manually.
 Copy `.env.stage1.local.example` to `.env.stage1.local` and fill the values locally. The file is
 ignored by Git and must never be committed, pasted into a shared terminal, or attached to a change
 record. The variables Compose requires are `THOTH_IMAGE`, `THOTH_STAGE1_DATA_ROOT`,
-`THOTH_CONTROL_PLANE_API_KEY`, and `THOTH_POSTGRES_PASSWORD`. Missing required variables make
+`THOTH_CONTROL_PLANE_API_KEY`, `THOTH_POSTGRES_PASSWORD`, and `THOTH_EDITOR_POSTGRES_PASSWORD`. Missing required variables make
 `docker compose config` fail before any pull or startup.
 
 `THOTH_STAGE1_ACTIVITY_MODE` selects the worker activity mode. It defaults to
@@ -113,7 +113,7 @@ environment only. Fallback-ready activation always supplies it.
 
 Then render with `--quiet` and inspect the topology through views that never resolve secrets. A bare
 `docker compose config` prints every resolved `environment:` block, including the database password
-and API key, into the terminal and the shell history. `--no-interpolate` shows the full six-service
+and API key, into the terminal and the shell history. `--no-interpolate` shows the full seven-service
 topology with every `${VAR:?...}` left unresolved, which is the safe way to check `ports:`, `user:`,
 and mount targets.
 
@@ -149,11 +149,15 @@ to a user other than `10001:10001`.
 
 ## Non-live infrastructure preflight
 
-Start only PostgreSQL, Temporal, Temporal UI, and API.
+Start only PostgreSQL, the isolated Creator Studio PostgreSQL, Temporal, and Temporal UI. Apply the
+editor migration explicitly before starting API. The migration prints only its applied-file count and
+must not be replaced with startup-time schema creation.
 Do not run `docker compose up` for `legacy-cdp` or `worker` without explicit live approval.
 
 ```bash
-docker compose --env-file .env.stage1.local -f compose.stage1.local.yml up -d postgresql temporal temporal-ui api
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml up -d --wait postgresql editor-postgresql temporal temporal-ui
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml run --rm --no-deps api thoth-control editor migrate
+docker compose --env-file .env.stage1.local -f compose.stage1.local.yml up -d --wait api
 ```
 
 Verify `http://127.0.0.1:8000/healthz`, `http://127.0.0.1:8000/readyz`, and namespace state with:

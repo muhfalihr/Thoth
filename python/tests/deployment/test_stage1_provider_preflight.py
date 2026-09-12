@@ -37,6 +37,7 @@ VALID_LOCAL_ENVIRONMENT = {
     "THOTH_STAGE1_ACTIVITY_MODE": "python_tiktok_with_legacy_fallback",
     "THOTH_CONTROL_PLANE_API_KEY": "local-api-key",
     "THOTH_POSTGRES_PASSWORD": "local-database-password",
+    "THOTH_EDITOR_POSTGRES_PASSWORD": "local-editor-database-password",
 }
 
 posix_only = pytest.mark.skipif(
