@@ -196,6 +196,7 @@ test("keeps Undo disabled when an offline edit follows an in-flight save", async
   fireEvent.change(body, { target: { value: "Later local body" } });
 
   expect((screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Redo" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 test("keeps conflict recovery active through local edit and undo without stale-base autosave", async () => {

@@ -154,3 +154,22 @@ test("reload latest preserves offline state after an in-flight conflict", () => 
   expect(state.saveStatus).toBe("offline");
   expect(state.draft.clips[0].heading).toBe("Remote heading");
 });
+
+test("in-flight save rejects redo even when a future snapshot exists", () => {
+  const edited = editorReducer(createEditorState(editDocument), {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "heading",
+    value: "Future heading",
+    operationId: "op_future",
+  });
+  const state = {
+    ...createEditorState(editDocument),
+    future: [{ draft: edited.draft, pendingOperations: edited.pendingOperations }],
+    isOffline: true,
+    inFlightOperationIds: ["op_sent"],
+    saveStatus: "offline" as const,
+  };
+
+  expect(editorReducer(state, { type: "redo" })).toEqual(state);
+});
