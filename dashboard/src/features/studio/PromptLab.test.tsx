@@ -1,0 +1,251 @@
+/// <reference types="bun-types" />
+
+import { afterEach, expect, mock, test } from "bun:test";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type {
+  ProjectPromptBinding,
+  PromptStageDefinition,
+  PromptTemplateRevision,
+  ResolvedPromptDraft,
+} from "@/api/control-plane";
+import type { PromptLabClient } from "./PromptLab";
+
+const stages = [
+  { stage_id: "narrative_plan", label: "Narrative plan", status: "draft_only" },
+  { stage_id: "visual_plan", label: "Visual plan", status: "draft_only" },
+  { stage_id: "caption_copy", label: "Caption and copy", status: "draft_only" },
+] satisfies PromptStageDefinition[];
+
+const template = {
+  project_id: "project_a",
+  template_id: "ptpl_001",
+  revision: 1,
+  stage_id: "narrative_plan",
+  language: "id-ID",
+  body: "Write a hook",
+} satisfies PromptTemplateRevision;
+
+const binding = {
+  project_id: "project_a",
+  stage_id: "narrative_plan",
+  template_id: "ptpl_001",
+  template_revision: 1,
+  project_override: "Use Indonesian",
+  revision: 1,
+} satisfies ProjectPromptBinding;
+
+const resolved = {
+  stage_id: "narrative_plan",
+  sections: [{ kind: "template", label: "Template", text: "Write a hook" }],
+  visible_text: "Template\nWrite a hook",
+} satisfies ResolvedPromptDraft;
+
+function client(overrides: Partial<PromptLabClient> = {}): PromptLabClient {
+  return {
+    listPromptStages: mock(async () => stages),
+    listPromptTemplates: mock(async () => [template]),
+    savePromptTemplate: mock(async () => ({ kind: "saved" as const, value: template })),
+    getPromptBinding: mock(async () => binding),
+    savePromptBinding: mock(async () => ({ kind: "saved" as const, value: binding })),
+    getResolvedPrompt: mock(async () => resolved),
+    ...overrides,
+  };
+}
+
+afterEach(() => cleanup());
+
+test("renders stage buttons, template list, and labelled editor controls", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  render(<PromptLab client={client()} projectId="project_a" />);
+
+  for (const stage of stages) {
+    expect(await screen.findByRole("button", { name: stage.label })).toBeDefined();
+  }
+  expect(await screen.findByLabelText("Prompt templates")).toBeDefined();
+  expect(screen.getByLabelText("Language")).toBeDefined();
+  expect(screen.getByLabelText("Template body")).toBeDefined();
+  expect(screen.getByLabelText("Project override")).toBeDefined();
+  expect((screen.getByLabelText("Template body") as HTMLTextAreaElement).value).toBe("Write a hook");
+  expect((screen.getByLabelText("Project override") as HTMLTextAreaElement).value).toBe("Use Indonesian");
+  expect(screen.getByLabelText("Resolved prompt preview").textContent).toContain("Write a hook");
+});
+
+test("renders the resolved preview as escaped plain text", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const hostile = {
+    ...resolved,
+    visible_text: "Template\n<b>plain text</b>",
+  } satisfies ResolvedPromptDraft;
+  render(<PromptLab client={client({ getResolvedPrompt: mock(async () => hostile) })} projectId="project_a" />);
+
+  const preview = await screen.findByLabelText("Resolved prompt preview");
+  expect(preview.textContent).toContain("<b>plain text</b>");
+  expect(document.querySelector("b")).toBeNull();
+});
+
+test("keeps Improve and Translate disabled with an explicit unavailable explanation", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const promptClient = client();
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  await screen.findByLabelText("Resolved prompt preview");
+  const improve = screen.getByRole("button", { name: "Improve" }) as HTMLButtonElement;
+  const translate = screen.getByRole("button", { name: "Translate" }) as HTMLButtonElement;
+  expect(improve.disabled).toBe(true);
+  expect(translate.disabled).toBe(true);
+  expect(screen.getByText("Provider-backed proposals are not available yet.")).not.toBeNull();
+
+  fireEvent.click(improve);
+  fireEvent.click(translate);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  expect((promptClient.savePromptTemplate as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((promptClient.savePromptBinding as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((promptClient.getResolvedPrompt as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("saves a template revision and reports Saving then Saved", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  const savedTemplate = { ...template, revision: 2, body: "Sharper hook" };
+  let captured: unknown = null;
+  const promptClient = client({
+    savePromptTemplate: mock(async (_projectId, request) => {
+      captured = request;
+      return { kind: "saved" as const, value: savedTemplate };
+    }),
+  });
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  const body = await screen.findByLabelText("Template body");
+  await user.clear(body);
+  await user.type(body, "Sharper hook");
+  await user.click(screen.getByRole("button", { name: "Save template" }));
+
+  expect(screen.getByText("Saved")).toBeDefined();
+  expect(screen.queryByText("Failed")).toBeNull();
+  expect(captured).toEqual({
+    stage_id: "narrative_plan",
+    language: "id-ID",
+    body: "Sharper hook",
+    template_id: "ptpl_001",
+    base_revision: 1,
+  });
+});
+
+test("keeps draft text on failure and retries the same save", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  let calls = 0;
+  const promptClient = client({
+    savePromptTemplate: mock(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("database unavailable");
+      return { kind: "saved" as const, value: { ...template, revision: 2 } };
+    }),
+  });
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  const body = await screen.findByLabelText("Template body");
+  await user.type(body, "Sharper hook");
+  await user.click(screen.getByRole("button", { name: "Save template" }));
+
+  expect(await screen.findByText("Failed")).toBeDefined();
+  expect((screen.getByLabelText("Template body") as HTMLTextAreaElement).value).toContain("Sharper hook");
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("Saved")).toBeDefined();
+  expect(calls).toBe(2);
+});
+
+test("preserves the local draft on a template conflict and reloads latest on demand", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  const latest = { ...template, revision: 4, body: "Remote body" };
+  const promptClient = client({
+    savePromptTemplate: mock(async () => ({ kind: "conflict" as const, latest })),
+  });
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  const body = await screen.findByLabelText("Template body");
+  await user.type(body, "Local body");
+  await user.click(screen.getByRole("button", { name: "Save template" }));
+
+  expect(await screen.findByText("Conflict")).toBeDefined();
+  expect((screen.getByLabelText("Template body") as HTMLTextAreaElement).value).toContain("Local body");
+
+  await user.click(screen.getByRole("button", { name: "Reload Latest" }));
+  expect((screen.getByLabelText("Template body") as HTMLTextAreaElement).value).toBe("Remote body");
+  expect(screen.getByText("Saved")).toBeDefined();
+});
+
+test("saves the project override through the binding endpoint", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  const promptClient = client({
+    savePromptBinding: mock(async (_projectId, stageId, request) => {
+      expect(stageId).toBe("narrative_plan");
+      expect(request).toEqual({
+        template_id: "ptpl_001",
+        template_revision: 1,
+        project_override: "Use conversational Indonesian",
+        base_revision: 1,
+      });
+      return {
+        kind: "saved" as const,
+        value: { ...binding, revision: 2, project_override: "Use conversational Indonesian" },
+      };
+    }),
+  });
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  const override = await screen.findByLabelText("Project override");
+  await user.clear(override);
+  await user.type(override, "Use conversational Indonesian");
+  await user.click(screen.getByRole("button", { name: "Save binding" }));
+
+  expect(await screen.findByText("Saved")).toBeDefined();
+});
+
+test("shows an explicit empty state with Create binding when no binding exists", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  const promptClient = client({
+    getPromptBinding: mock(async () => null),
+    getResolvedPrompt: mock(async () => {
+      throw new Error("Control plane request failed (404)");
+    }),
+    savePromptBinding: mock(async () => ({ kind: "saved" as const, value: binding })),
+  });
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  expect(await screen.findByText("No binding for this stage yet.")).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Create binding" }));
+
+  expect((promptClient.savePromptBinding as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect(await screen.findByText("Saved")).toBeDefined();
+});
+
+test("switching stages loads that stage's templates and binding", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  const promptClient = client({
+    listPromptTemplates: mock(
+      async (_projectId, stageId): Promise<PromptTemplateRevision[]> =>
+        stageId === "caption_copy"
+          ? [{ ...template, stage_id: "caption_copy", body: "Caption rules" }]
+          : [template],
+    ),
+  });
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  await user.click(await screen.findByRole("button", { name: "Caption and copy" }));
+
+  expect(await screen.findByLabelText("Template body")).toBeDefined();
+  expect(
+    (promptClient.listPromptTemplates as ReturnType<typeof mock>).mock.calls.some(
+      (call) => call[1] === "caption_copy",
+    ),
+  ).toBe(true);
+});
