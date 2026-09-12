@@ -77,6 +77,7 @@ Template text is plain bounded Unicode text, never executable content:
 
 ```python
 class PromptTemplateRevision(StrictModel):
+    project_id: ProjectId
     template_id: OpaqueId
     revision: Annotated[int, Field(gt=0)]
     stage_id: PromptStageId
@@ -118,17 +119,19 @@ must never add them to browser-readable preview output.
 
 C1 adds two editor-database tables through an explicit new SQL migration:
 
-- `prompt_template_revisions` stores append-only template revisions, keyed by
-  `(template_id, revision)`.
+- `prompt_template_revisions` stores project-scoped append-only template
+  revisions, keyed by `(project_id, template_id, revision)`.
 - `project_prompt_bindings` stores the current project-stage binding with a
   unique `(project_id, stage_id)` key and its optimistic revision.
 
 The binding table stores only a template identity/revision and an optional
 plain-text override. It does not duplicate prompt bodies or store an EditDocument
-reference. The repository opens short-lived connections, parameterizes every
-query, validates database JSON/text through domain models, and maps database
-failures to one safe unavailable error. The editor migration command remains
-the only supported migration entry point.
+reference. Every template lookup includes `project_id`; a template from another
+project is indistinguishable from a missing template. The repository opens
+short-lived connections, parameterizes every query, validates database
+JSON/text through domain models, and maps database failures to one safe
+unavailable error. The editor migration command remains the only supported
+migration entry point.
 
 ## 6. API contract
 
