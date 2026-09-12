@@ -62,7 +62,7 @@ def editor_migrate() -> None:
     database_url = Settings().THOTH_EDITOR_DATABASE_URL
     if database_url is None:
         raise typer.BadParameter("THOTH_EDITOR_DATABASE_URL must be configured")
-    root = Path(__file__).resolve().parents[3] / "migrations" / "editor"
+    root = Path(__file__).resolve().parents[2] / "migrations" / "editor"
     typer.echo(apply_editor_migrations(database_url.get_secret_value(), root))
 
 

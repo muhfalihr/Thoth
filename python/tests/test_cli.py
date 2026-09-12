@@ -2,8 +2,10 @@ import json
 
 import pytest
 import respx
+from pydantic import SecretStr
 from typer.testing import CliRunner
 
+from thoth_control_plane import cli
 from thoth_control_plane.cli import app
 
 runner = CliRunner()
@@ -165,3 +167,34 @@ def test_controlled_fallback_run_rejects_a_non_literal_gate_id(tmp_path) -> None
     assert result.exit_code != 0
     assert "controlled_fallback_completed" not in result.stdout
     assert "verdict=" not in result.stdout
+
+
+def test_editor_migrate_uses_the_runtime_python_migrations_directory(monkeypatch, tmp_path) -> None:
+    runtime_root = tmp_path / "python"
+    expected_root = runtime_root / "migrations" / "editor"
+    expected_root.mkdir(parents=True)
+    (expected_root / "0001_edit_document_revisions.sql").write_text("SELECT 1;", encoding="utf-8")
+    monkeypatch.setattr(
+        cli,
+        "__file__",
+        str(runtime_root / "src" / "thoth_control_plane" / "cli.py"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: type(
+            "SettingsStub", (), {"THOTH_EDITOR_DATABASE_URL": SecretStr("postgresql://test")}
+        )(),
+    )
+    called_with: list[object] = []
+
+    def migrate(database_url: str, migrations_root) -> int:
+        called_with.extend((database_url, migrations_root))
+        return 1
+
+    monkeypatch.setattr(cli, "apply_editor_migrations", migrate)
+
+    result = runner.invoke(app, ["editor", "migrate"])
+
+    assert result.exit_code == 0
+    assert called_with == ["postgresql://test", expected_root]
