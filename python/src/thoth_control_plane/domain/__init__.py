@@ -45,8 +45,20 @@ from thoth_control_plane.domain.models import (
     request_snapshot_id,
     safe_workflow_source,
 )
+from thoth_control_plane.domain.prompts import (
+    PROMPT_STAGES,
+    ProjectPromptBinding,
+    PromptStageDefinition,
+    PromptTemplateRevision,
+    ResolvedPromptDraft,
+    ResolvedPromptSection,
+    SaveProjectPromptBindingRequest,
+    SavePromptTemplateRequest,
+    resolve_prompt_draft,
+)
 
 __all__ = [
+    "PROMPT_STAGES",
     "Actor",
     "ActorSnapshot",
     "ApprovalDecision",
@@ -62,8 +74,15 @@ __all__ = [
     "LegacyScoutProgressEvent",
     "OutputRequest",
     "Ownership",
+    "ProjectPromptBinding",
+    "PromptStageDefinition",
+    "PromptTemplateRevision",
     "ReplaceText",
+    "ResolvedPromptDraft",
+    "ResolvedPromptSection",
     "ReviewRequest",
+    "SaveProjectPromptBindingRequest",
+    "SavePromptTemplateRequest",
     "Scene",
     "SetOwnership",
     "SetSceneDuration",
@@ -85,5 +104,6 @@ __all__ = [
     "WorkflowSummary",
     "apply_edit_operations",
     "request_snapshot_id",
+    "resolve_prompt_draft",
     "safe_workflow_source",
 ]
