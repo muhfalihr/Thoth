@@ -14,6 +14,12 @@ from thoth_control_plane.domain import (
 )
 from thoth_control_plane.domain.edit_document_operations import EditDocumentOperation
 from thoth_control_plane.domain.edit_documents import EditDocument
+from thoth_control_plane.domain.prompts import (
+    ProjectPromptBinding,
+    PromptStageId,
+    PromptTemplateRevision,
+    SaveProjectPromptBindingRequest,
+)
 
 
 class EditDocumentRevisionConflict(Exception):
@@ -104,3 +110,62 @@ class EditDocumentRepository(Protocol):
         base_revision: int,
         operations: list[EditDocumentOperation],
     ) -> EditDocument: ...
+
+
+class PromptTemplateNotFound(Exception):
+    """The referenced template revision does not exist for this project."""
+
+
+class PromptBindingNotFound(Exception):
+    """The referenced project-stage binding does not exist for this project."""
+
+
+class PromptTemplateRevisionConflict(Exception):
+    """The template gained a newer revision after the caller's base revision."""
+
+    def __init__(self, latest: PromptTemplateRevision) -> None:
+        self.latest = latest
+        super().__init__("prompt template revision conflict")
+
+
+class PromptBindingRevisionConflict(Exception):
+    """The binding changed after the caller's base revision."""
+
+    def __init__(self, latest: ProjectPromptBinding) -> None:
+        self.latest = latest
+        super().__init__("prompt binding revision conflict")
+
+
+class PromptLabRepository(Protocol):
+    """Project-scoped durable storage boundary for Prompt Lab revisions."""
+
+    async def list_template_heads(
+        self, *, project_id: str, stage_id: PromptStageId
+    ) -> list[PromptTemplateRevision]: ...
+
+    async def get_template_revision(
+        self, *, project_id: str, template_id: str, revision: int
+    ) -> PromptTemplateRevision | None: ...
+
+    async def save_template(
+        self,
+        *,
+        project_id: str,
+        template_id: str,
+        base_revision: int | None,
+        stage_id: PromptStageId,
+        language: str,
+        body: str,
+    ) -> PromptTemplateRevision: ...
+
+    async def get_binding(
+        self, *, project_id: str, stage_id: PromptStageId
+    ) -> ProjectPromptBinding | None: ...
+
+    async def save_binding(
+        self,
+        *,
+        project_id: str,
+        stage_id: PromptStageId,
+        request: SaveProjectPromptBindingRequest,
+    ) -> ProjectPromptBinding: ...
