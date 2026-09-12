@@ -1,6 +1,6 @@
 import type { EditDocument, EditDocumentOperation, EditDocumentPatch } from "@/api/control-plane";
 
-export type EditorSaveStatus = "saved" | "dirty" | "saving" | "failed" | "conflict";
+export type EditorSaveStatus = "saved" | "dirty" | "saving" | "failed" | "conflict" | "offline";
 
 type EditorSnapshot = {
   draft: EditDocument;
@@ -38,6 +38,8 @@ export type EditorAction =
   | { type: "save_succeeded"; document: EditDocument; operationIds?: string[] }
   | { type: "save_failed" }
   | { type: "retry_save" }
+  | { type: "went_offline" }
+  | { type: "went_online" }
   | { type: "save_conflicted"; latest: EditDocument }
   | { type: "reload_latest" }
   | { type: "keep_editing_locally"; operationIdPrefix: string };
@@ -54,6 +56,18 @@ export function createEditorState(document: EditDocument): EditorState {
   };
 }
 
+function saveStatusAfterLocalChange(state: EditorState): EditorSaveStatus {
+  if (state.latestConflict) return "conflict";
+  if (state.saveStatus === "offline") return "offline";
+  return state.saveStatus === "saving" ? "saving" : "dirty";
+}
+
+function saveStatusAfterSnapshot(state: EditorState, snapshot: EditorSnapshot): EditorSaveStatus {
+  if (state.latestConflict) return "conflict";
+  if (state.saveStatus === "offline") return "offline";
+  return snapshot.pendingOperations.length ? "dirty" : "saved";
+}
+
 function edited(
   state: EditorState,
   draft: EditDocument,
@@ -65,8 +79,7 @@ function edited(
     history: [...state.history, { draft: state.draft, pendingOperations: state.pendingOperations }],
     future: [],
     pendingOperations: [...state.pendingOperations, operation],
-    saveStatus: state.saveStatus === "saving" ? "saving" : "dirty",
-    latestConflict: undefined,
+    saveStatus: saveStatusAfterLocalChange(state),
   };
 }
 
@@ -206,8 +219,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ...previous,
         history: state.history.slice(0, -1),
         future: [{ draft: state.draft, pendingOperations: state.pendingOperations }, ...state.future],
-        saveStatus: previous.pendingOperations.length ? "dirty" : "saved",
-        latestConflict: undefined,
+        saveStatus: saveStatusAfterSnapshot(state, previous),
       };
     }
     case "redo": {
@@ -218,8 +230,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ...next,
         history: [...state.history, { draft: state.draft, pendingOperations: state.pendingOperations }],
         future: state.future.slice(1),
-        saveStatus: next.pendingOperations.length ? "dirty" : "saved",
-        latestConflict: undefined,
+        saveStatus: saveStatusAfterSnapshot(state, next),
       };
     }
     case "save_started":
@@ -234,22 +245,29 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           history: [],
           future: [],
           pendingOperations: remaining,
-          saveStatus: "dirty",
+          saveStatus: state.saveStatus === "offline" ? "offline" : "dirty",
           latestConflict: undefined,
         };
       }
       const saved = createEditorState(action.document);
       return {
         ...saved,
+        saveStatus: state.saveStatus === "offline" ? "offline" : saved.saveStatus,
         selectedSceneId: action.document.scenes.some((scene) => scene.scene_id === state.selectedSceneId)
           ? state.selectedSceneId
           : saved.selectedSceneId,
       };
     }
     case "save_failed":
-      return { ...state, saveStatus: "failed" };
+      return state.saveStatus === "offline" ? state : { ...state, saveStatus: "failed" };
     case "retry_save":
       return state.pendingOperations.length ? { ...state, saveStatus: "dirty" } : state;
+    case "went_offline":
+      return state.latestConflict ? state : { ...state, saveStatus: "offline" };
+    case "went_online":
+      return state.saveStatus === "offline"
+        ? { ...state, saveStatus: state.pendingOperations.length ? "dirty" : "saved" }
+        : state;
     case "save_conflicted":
       return { ...state, saveStatus: "conflict", latestConflict: action.latest };
     case "reload_latest": {

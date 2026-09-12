@@ -59,7 +59,7 @@ Clip: TypeAlias = TextClip
 
 
 class EditDocument(StrictModel):
-    """A complete, validated, immutable revision-one vertical text story."""
+    """A complete, validated, immutable schema-v1 vertical text story revision."""
 
     schema_version: Literal[1]
     document_id: OpaqueId

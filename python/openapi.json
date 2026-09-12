@@ -200,7 +200,7 @@
       },
       "EditDocument": {
         "additionalProperties": false,
-        "description": "A complete, validated, immutable revision-one vertical text story.",
+        "description": "A complete, validated, immutable schema-v1 vertical text story revision.",
         "properties": {
           "canvas": {
             "$ref": "#/components/schemas/Canvas"

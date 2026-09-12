@@ -330,7 +330,7 @@ export interface components {
         };
         /**
          * EditDocument
-         * @description A complete, validated, immutable revision-one vertical text story.
+         * @description A complete, validated, immutable schema-v1 vertical text story revision.
          */
         EditDocument: {
             canvas: components["schemas"]["Canvas"];

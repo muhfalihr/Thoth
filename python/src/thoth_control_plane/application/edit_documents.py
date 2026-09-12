@@ -71,7 +71,7 @@ class ContentSetImportRequest(StrictModel):
 def build_edit_document(
     project_id: OpaqueId, request: ContentSetImportRequest, document_id: OpaqueId
 ) -> EditDocument:
-    """Build the deterministic, text-only revision-one document without side effects."""
+    """Build the deterministic, text-only schema-v1 document without side effects."""
 
     clips: list[TextClip] = [
         _text_clip(

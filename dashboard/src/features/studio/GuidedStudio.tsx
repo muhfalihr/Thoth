@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useId, useReducer, useState, type CSSProperties } from "react";
 
 import type { ControlPlaneClient, EditDocument } from "@/api/control-plane";
 import { editorReducer, createEditorState, toEditDocumentPatch, type EditorState } from "./editor_state";
@@ -24,9 +24,32 @@ function validDraft(document: EditDocument) {
 
 function Editor({ client, projectId, documentId, onBack, document }: Props & { document: EditDocument }) {
   const [state, dispatch] = useReducer(editorReducer, document, createEditorState);
+  const backDescriptionId = useId();
+  const sceneWidthId = useId();
+  const inspectorWidthId = useId();
+  const [sceneBoardWidth, setSceneBoardWidth] = useState(14);
+  const [inspectorWidth, setInspectorWidth] = useState(19);
   const selectedScene = state.draft.scenes.find((scene) => scene.scene_id === state.selectedSceneId);
   const selectedClip = state.draft.clips.find((clip) => clip.clip_id === selectedScene?.clip_ids[0]);
   const { base, draft, pendingOperations, saveStatus } = state;
+  const backDisabled = saveStatus !== "saved";
+  const workstationStyle = {
+    "--scene-board-width": `${sceneBoardWidth}rem`,
+    "--inspector-width": `${inspectorWidth}rem`,
+  } as CSSProperties;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOffline = () => dispatch({ type: "went_offline" });
+    const handleOnline = () => dispatch({ type: "went_online" });
+    if (window.navigator.onLine === false) dispatch({ type: "went_offline" });
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
 
   useEffect(() => {
     if (saveStatus !== "dirty" || !pendingOperations.length || !validDraft(draft)) return;
@@ -48,19 +71,31 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
     return () => clearTimeout(timeoutId);
   }, [base, client, documentId, draft, pendingOperations, projectId, saveStatus]);
 
-  const makeOperationId = () => crypto.randomUUID();
+  const makeOperationId = () => `op_${crypto.randomUUID()}`;
   const statusLabel: Record<EditorState["saveStatus"], string> = {
     saved: "Saved",
     dirty: "Unsaved changes",
     saving: "Saving",
     failed: "Failed",
     conflict: "Conflict",
+    offline: "Offline",
   };
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Guided Studio">
       <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-4 py-2">
-        <button type="button" className={toolbarButton} onClick={onBack}>Back</button>
+        <button
+          type="button"
+          className={toolbarButton}
+          onClick={onBack}
+          disabled={backDisabled}
+          aria-describedby={backDisabled ? backDescriptionId : undefined}
+        >
+          Back
+        </button>
+        <span id={backDescriptionId} className="sr-only">
+          Back is available after changes are saved and Studio is online.
+        </span>
         <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
         <button
           type="button"
@@ -78,6 +113,30 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         >
           Redo
         </button>
+        <div className="flex flex-wrap items-center gap-3 px-2 text-xs text-muted-foreground" aria-label="Workspace layout">
+          <label htmlFor={sceneWidthId}>Scene board width</label>
+          <input
+            id={sceneWidthId}
+            type="range"
+            min={12}
+            max={22}
+            step={1}
+            value={sceneBoardWidth}
+            onChange={(event) => setSceneBoardWidth(event.target.valueAsNumber)}
+            className="h-2 w-24 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <label htmlFor={inspectorWidthId}>Inspector width</label>
+          <input
+            id={inspectorWidthId}
+            type="range"
+            min={16}
+            max={28}
+            step={1}
+            value={inspectorWidth}
+            onChange={(event) => setInspectorWidth(event.target.valueAsNumber)}
+            className="h-2 w-24 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        </div>
         <div className="ml-auto font-mono text-xs text-muted-foreground" aria-live="polite">
           {statusLabel[state.saveStatus]}
         </div>
@@ -109,8 +168,17 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           </button>
         </div>
       )}
+      {state.saveStatus === "offline" && (
+        <div role="status" className="flex flex-wrap items-center gap-3 border-b border-border bg-muted px-4 py-2 text-sm">
+          <p>Offline. Your edits are still here and will save when connection returns.</p>
+        </div>
+      )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[14rem_minmax(0,1fr)_19rem] lg:overflow-hidden">
+      <div
+        aria-label="Guided editing workstation"
+        style={workstationStyle}
+        className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[var(--scene-board-width)_minmax(0,1fr)_var(--inspector-width)] lg:overflow-hidden"
+      >
         <SceneBoard
           document={state.draft}
           selectedSceneId={state.selectedSceneId}
