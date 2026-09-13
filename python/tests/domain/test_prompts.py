@@ -42,13 +42,13 @@ def binding(**overrides: object) -> ProjectPromptBinding:
     return ProjectPromptBinding.model_validate(values)
 
 
-def test_stage_registry_is_ordered_and_draft_only() -> None:
+def test_stage_registry_is_ordered_and_proposal_ready() -> None:
     assert [stage.stage_id for stage in PROMPT_STAGES] == [
         "narrative_plan",
         "visual_plan",
         "caption_copy",
     ]
-    assert all(stage.status == "draft_only" for stage in PROMPT_STAGES)
+    assert all(stage.status == "proposal_ready" for stage in PROMPT_STAGES)
     assert [stage.label for stage in PROMPT_STAGES] == [
         "Narrative plan",
         "Visual plan",

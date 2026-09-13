@@ -27,7 +27,16 @@ def _validate_plain_text(value: str) -> str:
 class PromptStageDefinition(StrictModel):
     stage_id: PromptStageId
     label: Annotated[str, Field(min_length=1, max_length=200)]
-    status: Literal["draft_only"]
+    status: Literal["draft_only", "proposal_ready"]
+
+
+class PromptStarterDefinition(StrictModel):
+    starter_id: OpaqueId
+    label: Annotated[str, Field(min_length=1, max_length=200)]
+    language: Annotated[str, Field(pattern=PROMPT_LANGUAGE_PATTERN)]
+    body: Annotated[str, Field(min_length=1, max_length=12_000)]
+
+    _validate_body = field_validator("body")(_validate_plain_text)
 
 
 class PromptTemplateRevision(StrictModel):
@@ -86,10 +95,53 @@ class ResolvedPromptDraft(StrictModel):
 
 
 PROMPT_STAGES = (
-    PromptStageDefinition(stage_id="narrative_plan", label="Narrative plan", status="draft_only"),
-    PromptStageDefinition(stage_id="visual_plan", label="Visual plan", status="draft_only"),
-    PromptStageDefinition(stage_id="caption_copy", label="Caption and copy", status="draft_only"),
+    PromptStageDefinition(
+        stage_id="narrative_plan", label="Narrative plan", status="proposal_ready"
+    ),
+    PromptStageDefinition(stage_id="visual_plan", label="Visual plan", status="proposal_ready"),
+    PromptStageDefinition(
+        stage_id="caption_copy", label="Caption and copy", status="proposal_ready"
+    ),
 )
+
+PROMPT_STARTERS: dict[PromptStageId, PromptStarterDefinition] = {
+    "narrative_plan": PromptStarterDefinition(
+        starter_id="starter_narrative_plan_v1",
+        label="Narrative plan starter",
+        language="id-ID",
+        body=(
+            "Buat rencana narasi untuk video vertikal.\n"
+            "1. Hook 3 detik pertama: sebutkan masalah penonton.\n"
+            "2. Konteks singkat: satu fakta pendukung.\n"
+            "3. Alur cerita: tiga beat menuju kesimpulan.\n"
+            "4. Ajakan akhir: satu ajakan yang jelas."
+        ),
+    ),
+    "visual_plan": PromptStarterDefinition(
+        starter_id="starter_visual_plan_v1",
+        label="Visual plan starter",
+        language="id-ID",
+        body=(
+            "Rencanakan visual pendukung untuk setiap beat narasi.\n"
+            "1. Hook: rekaman close-up yang relevan.\n"
+            "2. Konteks: b-roll lokasi atau aktivitas.\n"
+            "3. Beat cerita: satu visual per beat, durasi singkat.\n"
+            "4. Penutup: visual yang menguatkan ajakan."
+        ),
+    ),
+    "caption_copy": PromptStarterDefinition(
+        starter_id="starter_caption_copy_v1",
+        label="Caption and copy starter",
+        language="id-ID",
+        body=(
+            "Tulis teks publikasi yang ringkas.\n"
+            "1. Hook satu kalimat yang membuat berhenti scroll.\n"
+            "2. Dua kalimat konteks tanpa jargon.\n"
+            "3. Tagar relevan maksimal tiga.\n"
+            "4. Ajakan interaksi satu kalimat."
+        ),
+    ),
+}
 
 
 def resolve_prompt_draft(

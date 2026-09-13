@@ -150,15 +150,15 @@ def binding_request(**overrides: object) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_list_stages_returns_the_ordered_draft_only_registry() -> None:
+async def test_list_stages_returns_the_ordered_proposal_ready_registry() -> None:
     service = PromptLabService(MemoryPromptLabRepository())
 
     stages = service.list_stages()
 
     assert [(stage.stage_id, stage.status) for stage in stages] == [
-        ("narrative_plan", "draft_only"),
-        ("visual_plan", "draft_only"),
-        ("caption_copy", "draft_only"),
+        ("narrative_plan", "proposal_ready"),
+        ("visual_plan", "proposal_ready"),
+        ("caption_copy", "proposal_ready"),
     ]
 
 

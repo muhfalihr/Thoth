@@ -143,7 +143,7 @@ async def test_prompt_stages_require_auth_and_return_the_ordered_registry() -> N
         "visual_plan",
         "caption_copy",
     ]
-    assert all(stage["status"] == "draft_only" for stage in allowed.json())
+    assert all(stage["status"] == "proposal_ready" for stage in allowed.json())
 
 
 @pytest.mark.asyncio
