@@ -48,6 +48,55 @@ const promptResolved = {
 } satisfies ResolvedPromptDraft;
 
 const promptClientBase = {
+  listPromptProviders: mock(async () => [
+    {
+      provider_id: "novita",
+      label: "Novita",
+      enabled: true,
+      models: [
+        {
+          model_id: "deepseek/deepseek-v3.1",
+          label: "DeepSeek V3.1",
+          capabilities: ["improve", "translate"] as Array<"improve" | "translate">,
+          max_input_chars: 12000,
+        },
+      ],
+    },
+  ]),
+  getPromptStarter: mock(async () => ({
+    starter_id: "starter_v1",
+    label: "Narrative plan starter",
+    language: "id-ID",
+    body: "Rencana narasi bawaan",
+  })),
+  getPromptPreference: mock(async () => null),
+  savePromptPreference: mock(async () => ({
+    project_id: "project_001",
+    stage_id: "narrative_plan",
+    provider_id: "novita",
+    model_id: "deepseek/deepseek-v3.1",
+    revision: 1,
+    updated_at: "2026-09-13T08:00:00Z",
+  })),
+  getPromptLocks: mock(async () => []),
+  savePromptLock: mock(async () => ({
+    project_id: "project_001",
+    stage_id: "narrative_plan",
+    layer: "template" as const,
+    locked: true,
+    revision: 1,
+    updated_at: "2026-09-13T08:00:00Z",
+  })),
+  createPromptProposal: mock(async () => ({ proposal_id: "proposal_1" })),
+  listPromptProposals: mock(async () => ({ proposals: [], next_cursor: null })),
+  getPromptProposal: mock(async () => ({ proposal_id: "proposal_1" })),
+  applyPromptProposal: mock(async () => ({
+    proposal: {},
+    resulting_template_id: "ptpl_001",
+    resulting_template_revision: 2,
+    resulting_binding_revision: 2,
+  })),
+  rejectPromptProposal: mock(async () => ({ proposal_id: "proposal_1" })),
   listPromptStages: mock(async () => [promptStage]),
   listPromptTemplates: mock(async () => [promptTemplate]),
   savePromptTemplate: mock(async () => ({ kind: "saved" as const, value: promptTemplate })),

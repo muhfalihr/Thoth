@@ -48,9 +48,97 @@ function client(overrides: Partial<PromptLabClient> = {}): PromptLabClient {
     getPromptBinding: mock(async () => binding),
     savePromptBinding: mock(async () => ({ kind: "saved" as const, value: binding })),
     getResolvedPrompt: mock(async () => resolved),
+    listPromptProviders: mock(async () => [C2_PROVIDER]),
+    getPromptStarter: mock(async () => C2_STARTER),
+    getPromptPreference: mock(async () => null),
+    savePromptPreference: mock(async () => C2_PREFERENCE),
+    getPromptLocks: mock(async () => []),
+    savePromptLock: mock(async () => C2_LOCK),
+    createPromptProposal: mock(async () => C2_PROPOSAL),
+    listPromptProposals: mock(async () => ({ proposals: [C2_PROPOSAL], next_cursor: null })),
+    getPromptProposal: mock(async () => C2_PROPOSAL),
+    applyPromptProposal: mock(async () => ({
+      proposal: C2_PROPOSAL,
+      resulting_template_id: "ptpl_001",
+      resulting_template_revision: 2,
+      resulting_binding_revision: 2,
+    })),
+    rejectPromptProposal: mock(async () => ({ ...C2_PROPOSAL, status: "rejected" })),
     ...overrides,
   };
 }
+
+const C2_PROVIDER = {
+  provider_id: "novita",
+  label: "Novita",
+  enabled: true,
+  models: [
+    {
+      model_id: "deepseek/deepseek-v3.1",
+      label: "DeepSeek V3.1",
+      capabilities: ["improve", "translate"] as Array<"improve" | "translate">,
+      max_input_chars: 12000,
+    },
+  ],
+};
+
+const C2_STARTER = {
+  starter_id: "starter_v1",
+  label: "Narrative plan starter",
+  language: "id-ID",
+  body: "Rencana narasi bawaan",
+};
+
+const C2_PREFERENCE = {
+  project_id: "project_a",
+  stage_id: "narrative_plan",
+  provider_id: "novita",
+  model_id: "deepseek/deepseek-v3.1",
+  revision: 1,
+  updated_at: "2026-09-13T08:00:00Z",
+};
+
+const C2_LOCK = {
+  project_id: "project_a",
+  stage_id: "narrative_plan",
+  layer: "template" as const,
+  locked: true,
+  revision: 1,
+  updated_at: "2026-09-13T08:00:00Z",
+};
+
+const C2_PROPOSAL = {
+  proposal_id: "proposal_1",
+  project_id: "project_a",
+  stage_id: "narrative_plan",
+  kind: "improve",
+  status: "succeeded",
+  target_layers: ["template"] as Array<"template" | "project_override">,
+  source: {
+    template_id: "ptpl_001",
+    template_revision: 1,
+    binding_revision: 1,
+    template_language: "id-ID",
+    template_body: "Write a hook",
+    project_override: null,
+  },
+  provider_id: "novita",
+  model_id: "deepseek/deepseek-v3.1",
+  changes: [] as Array<{
+    change_id: string;
+    layer: "template" | "project_override";
+    before_text: string;
+    after_text: string;
+    start_line: number;
+    end_line: number;
+  }>,
+  translated_template_body: null,
+  translated_project_override: null,
+  failure_code: null,
+  created_at: "2026-09-13T08:00:00Z",
+  started_at: "2026-09-13T08:00:01Z",
+  finished_at: "2026-09-13T08:00:05Z",
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -91,25 +179,20 @@ test("renders the resolved preview as escaped plain text", async () => {
   expect(document.querySelector("b")).toBeNull();
 });
 
-test("keeps Improve and Translate disabled with an explicit unavailable explanation", async () => {
+test("blocks generation while the authoring form is dirty", async () => {
   const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
   const promptClient = client();
   render(<PromptLab client={promptClient} projectId="project_a" />);
 
-  await screen.findByLabelText("Resolved prompt preview");
-  const improve = screen.getByRole("button", { name: "Improve" }) as HTMLButtonElement;
-  const translate = screen.getByRole("button", { name: "Translate" }) as HTMLButtonElement;
-  expect(improve.disabled).toBe(true);
-  expect(translate.disabled).toBe(true);
-  expect(screen.getByText("Provider-backed proposals are not available yet.")).not.toBeNull();
-
-  fireEvent.click(improve);
-  fireEvent.click(translate);
+  const body = await screen.findByLabelText("Template body");
+  await user.type(body, "x");
+  expect(screen.getAllByText("Save changes first").length).toBeGreaterThan(0);
+  fireEvent.click(screen.getByRole("button", { name: "Improve with AI" }));
+  fireEvent.click(screen.getByRole("button", { name: "Translate with AI" }));
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  expect((promptClient.savePromptTemplate as ReturnType<typeof mock>).mock.calls.length).toBe(0);
-  expect((promptClient.savePromptBinding as ReturnType<typeof mock>).mock.calls.length).toBe(0);
-  expect((promptClient.getResolvedPrompt as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect((promptClient.createPromptProposal as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });
 
 test("saves a template revision and reports Saving then Saved", async () => {

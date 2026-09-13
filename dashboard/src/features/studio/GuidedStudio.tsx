@@ -8,17 +8,7 @@ import { SceneBoard } from "./SceneBoard";
 import { StudioPreview } from "./StudioPreview";
 
 type Props = {
-  client: Pick<
-    ControlPlaneClient,
-    | "getEditDocument"
-    | "patchEditDocument"
-    | "listPromptStages"
-    | "listPromptTemplates"
-    | "savePromptTemplate"
-    | "getPromptBinding"
-    | "savePromptBinding"
-    | "getResolvedPrompt"
-  >;
+  client: PromptLabClient & Pick<ControlPlaneClient, "getEditDocument" | "patchEditDocument">;
   projectId: string;
   documentId: string;
   onBack: () => void;
@@ -264,7 +254,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         hidden={workspace !== "prompts"}
         className="flex min-h-0 flex-1 flex-col"
       >
-        {promptLabVisited ? <PromptLab client={client as PromptLabClient} projectId={projectId} /> : null}
+        {promptLabVisited ? <PromptLab client={client} projectId={projectId} /> : null}
       </div>
     </section>
   );

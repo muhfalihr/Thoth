@@ -1,12 +1,17 @@
 import { useEffect, useId, useReducer, useRef, useState } from "react";
 
-import type { ControlPlaneClient, SavePromptTemplateRequest } from "@/api/control-plane";
+import type {
+  ControlPlaneClient,
+  ProjectPromptBinding,
+  SavePromptTemplateRequest,
+} from "@/api/control-plane";
 import {
   createPromptLabState,
   promptLabReducer,
   type PromptLabSaveKind,
   type PromptLabState,
 } from "./prompt_lab_state";
+import { PromptProposalPanel } from "./PromptProposalPanel";
 
 export type PromptLabClient = Pick<
   ControlPlaneClient,
@@ -16,6 +21,17 @@ export type PromptLabClient = Pick<
   | "getPromptBinding"
   | "savePromptBinding"
   | "getResolvedPrompt"
+  | "listPromptProviders"
+  | "getPromptStarter"
+  | "getPromptPreference"
+  | "savePromptPreference"
+  | "getPromptLocks"
+  | "savePromptLock"
+  | "createPromptProposal"
+  | "listPromptProposals"
+  | "getPromptProposal"
+  | "applyPromptProposal"
+  | "rejectPromptProposal"
 >;
 
 type Props = {
@@ -48,9 +64,12 @@ export function PromptLab({ client, projectId }: Props) {
     () => createPromptLabState({ selectedStageId: "" }),
   );
   const [attempt, setAttempt] = useState(0);
+  const hasDirtyDraft = (candidate: PromptLabState) =>
+    candidate.templateDirty || candidate.bindingDirty;
   const languageId = useId();
   const bodyId = useId();
   const overrideId = useId();
+  const [serverBinding, setServerBinding] = useState<ProjectPromptBinding | null>(null);
   const selectedStageIdRef = useRef(state.selectedStageId);
   const isOfflineRef = useRef(state.isOffline);
   const recoveryStageIdRef = useRef<string | null>(null);
@@ -88,6 +107,7 @@ export function PromptLab({ client, projectId }: Props) {
     ])
       .then(([templates, binding]) => {
         if (!active) return;
+        setServerBinding(binding);
         dispatch({ type: "stage_data_loaded", templates, binding });
       })
       .then(async () => {
@@ -144,6 +164,7 @@ export function PromptLab({ client, projectId }: Props) {
         }
         if (!active) return;
 
+        setServerBinding(binding);
         dispatch({ type: "stage_data_loaded", templates, binding });
         dispatch({ type: "resolved_loaded", resolved });
         dispatch({ type: "went_online" });
@@ -391,17 +412,24 @@ export function PromptLab({ client, projectId }: Props) {
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            <button type="button" className={toolbarButton} disabled>
-              Improve
-            </button>
-            <button type="button" className={toolbarButton} disabled>
-              Translate
-            </button>
-            <p className="text-xs text-muted-foreground">
-              Provider-backed proposals are not available yet.
-            </p>
-          </div>
+          <PromptProposalPanel
+            client={client}
+            projectId={projectId}
+            stageId={state.selectedStageId}
+            savedTemplateRevision={serverBinding?.template_revision ?? null}
+            savedBindingRevision={serverBinding?.revision ?? null}
+            savedOverrideText={serverBinding?.project_override ?? ""}
+            formDirty={hasDirtyDraft(state)}
+            online={!state.isOffline}
+            hasBinding={state.binding !== null}
+            onApplied={() => setAttempt((value) => value + 1)}
+            onUseStarter={(body, language) => {
+              dispatch({ type: "new_template" });
+              dispatch({ type: "edit_language", value: language });
+              dispatch({ type: "edit_template_body", value: body });
+            }}
+            onCreateScratch={() => dispatch({ type: "new_template" })}
+          />
         </div>
 
         <aside className="flex min-h-0 min-w-0 flex-col gap-2">
