@@ -1,11 +1,34 @@
 """Configuration for the Thoth control plane."""
 
 from pathlib import Path
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from thoth_control_plane.domain.models import SourceActivityMode
+from thoth_control_plane.domain.prompt_proposals import PromptModelDefinition, SafeIdentifier
+
+
+class PromptProviderRuntimeDefinition(BaseModel):
+    """Worker/API shared runtime definition; base_url and credential stay server-side."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    provider_id: SafeIdentifier
+    label: Annotated[str, Field(min_length=1, max_length=200)]
+    protocol: Literal["openai_compatible"]
+    base_url: AnyHttpUrl
+    credential_id: SafeIdentifier
+    models: tuple[PromptModelDefinition, ...]
+    enabled: bool = True
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _coerce_models(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
 
 
 class SettingsValidationError(ValueError):
@@ -33,6 +56,8 @@ class Settings(BaseSettings):
     THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: SourceActivityMode = (
         "python_tiktok_with_legacy_fallback"
     )
+    THOTH_PROMPT_PROVIDER_CATALOG: tuple[PromptProviderRuntimeDefinition, ...] = ()
+    THOTH_PROMPT_PROVIDER_SECRETS: dict[SafeIdentifier, SecretStr] = Field(default_factory=dict)
 
     def __init__(self, **values: object) -> None:
         """Load settings, then reject an incomplete gateway pair without retaining inputs."""
@@ -53,6 +78,23 @@ class Settings(BaseSettings):
             raise SettingsValidationError(
                 "legacy gateway base URL and API key must be configured together"
             )
+        provider_ids: set[str] = set()
+        for provider in self.THOTH_PROMPT_PROVIDER_CATALOG:
+            if provider.provider_id in provider_ids:
+                raise SettingsValidationError("prompt provider catalog contains a duplicate id")
+            provider_ids.add(provider.provider_id)
+            model_ids: set[str] = set()
+            for model in provider.models:
+                if model.model_id in model_ids:
+                    raise SettingsValidationError(
+                        "prompt provider catalog contains a duplicate model id"
+                    )
+                model_ids.add(model.model_id)
+
+    @property
+    def prompt_provider_secrets(self) -> dict[str, SecretStr]:
+        """Worker-only credential map keyed by catalog credential_id."""
+        return dict(self.THOTH_PROMPT_PROVIDER_SECRETS)
 
     @property
     def legacy_bridge_enabled(self) -> bool:
