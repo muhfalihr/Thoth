@@ -4,19 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## 2026-09-13 — Prompt Lab offline recovery fix
 
-Fixed the Prompt Lab offline-recovery defect where a failed registry or stage-data
-load left the workspace permanently offline with no recovery path.
+Fixed Prompt Lab recovery so connectivity and draft status remain truthful across
+failed loads, retries, reconnects, stage switches, and independent saves.
 
-- `PromptLab` now listens to browser `offline`/`online` events (removed on unmount)
-  and offers an accessible `Retry` action in the offline banner; both paths dispatch
-  `went_online` and reload the stage registry plus the selected-stage data.
-- The reducer tracks `formDirty` so reconnecting honestly reports `dirty` for
-  unsaved drafts, `went_online` is a no-op while online, and reloaded stage data
-  refreshes templates/bindings without clobbering unsaved local drafts.
-- Saves re-enable automatically after recovery; API contracts, provider boundaries,
-  disabled Improve/Translate controls, and migrations are unchanged.
-- Verified: focused Python Prompt Lab suites 71 passed; focused dashboard suites
-  51 passed; `tsc` production build and oxlint clean; `git diff --check` clean.
+- Browser `online` and the accessible `Retry` action now enter a disabled
+  `Reconnecting` state and report online only after the required registry,
+  template, and binding reloads succeed. Event listeners are removed on unmount.
+- Template and binding dirtiness are tracked independently in each stage snapshot.
+  Saving one domain cannot clear an unsaved draft in the other; dirty drafts survive
+  reloads and stage switches, while clean drafts refresh from server data.
+- The formerly timing-sensitive template-save test now waits for its loaded baseline,
+  and recovery coverage includes deferred reloads and listener cleanup.
+- API contracts, provider boundaries, disabled Improve/Translate controls, and
+  migrations are unchanged.
 
 ## 2026-09-13 — Creator Studio Prompt Lab C1
 

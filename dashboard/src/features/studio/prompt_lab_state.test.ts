@@ -189,7 +189,7 @@ test("stage switches preserve per-stage form state", () => {
 
   expect(switched.selectedStageId).toBe("visual_plan");
   expect(switched.projectOverrideDraft).toBe("");
-  expect(switched.saveStatus).toBe("ready");
+  expect(switched.saveStatus).toBe("loading");
 
   const back = promptLabReducer(switched, { type: "select_stage", stageId: "narrative_plan" });
 
@@ -204,7 +204,7 @@ test("offline state is explicit and reconnect returns to the dirty status", () =
   expect(offline.isOffline).toBe(true);
 
   const online = promptLabReducer(offline, { type: "went_online" });
-  expect(online.saveStatus).toBe("saved");
+  expect(online.saveStatus).toBe("ready");
   expect(online.isOffline).toBe(false);
 });
 
@@ -263,6 +263,113 @@ test("reloaded stage data preserves drafts restored from a previous stage visit"
   });
 
   expect(reloaded.projectOverrideDraft).toBe("Keep it concise");
+});
+
+test("reloaded stage data refreshes a clean draft restored from a previous stage visit", () => {
+  const away = promptLabReducer(readyState(), { type: "select_stage", stageId: "visual_plan" });
+  const back = promptLabReducer(away, { type: "select_stage", stageId: "narrative_plan" });
+
+  const reloaded = promptLabReducer(back, {
+    type: "stage_data_loaded",
+    templates: [{ ...template, revision: 2, body: "Remote body" }],
+    binding: { ...binding, revision: 2, project_override: "Remote override" },
+  });
+
+  expect(reloaded.templateBodyDraft).toBe("Remote body");
+  expect(reloaded.projectOverrideDraft).toBe("Remote override");
+  expect(reloaded.saveStatus).toBe("ready");
+});
+
+test("an unvisited stage loads its server draft after leaving a dirty stage", () => {
+  const dirty = promptLabReducer(readyState(), {
+    type: "edit_project_override",
+    value: "Keep narrative concise",
+  });
+  const switched = promptLabReducer(dirty, {
+    type: "select_stage",
+    stageId: "visual_plan",
+  });
+  const visualTemplate = {
+    ...template,
+    template_id: "ptpl_visual",
+    stage_id: "visual_plan" as const,
+    body: "Plan the visuals",
+  };
+  const loaded = promptLabReducer(switched, {
+    type: "stage_data_loaded",
+    templates: [visualTemplate],
+    binding: null,
+  });
+
+  expect(loaded.templateBodyDraft).toBe("Plan the visuals");
+  expect(loaded.saveStatus).toBe("ready");
+
+  const restored = promptLabReducer(loaded, {
+    type: "select_stage",
+    stageId: "narrative_plan",
+  });
+  expect(restored.projectOverrideDraft).toBe("Keep narrative concise");
+  expect(restored.saveStatus).toBe("dirty");
+});
+
+test("saving a template does not make an unsaved binding draft reseedable", () => {
+  const templateEdited = promptLabReducer(readyState(), {
+    type: "edit_template_body",
+    value: "Sharper hook",
+  });
+  const bothEdited = promptLabReducer(templateEdited, {
+    type: "edit_project_override",
+    value: "Keep local override",
+  });
+  const saved = promptLabReducer(bothEdited, {
+    type: "template_save_succeeded",
+    saved: { ...template, revision: 2, body: "Sharper hook" },
+  });
+  const reloaded = promptLabReducer(saved, {
+    type: "stage_data_loaded",
+    templates: [{ ...template, revision: 2, body: "Sharper hook" }],
+    binding: { ...binding, revision: 2, project_override: "Remote override" },
+  });
+
+  expect(saved.saveStatus).toBe("dirty");
+  expect(reloaded.projectOverrideDraft).toBe("Keep local override");
+  expect(reloaded.saveStatus).toBe("dirty");
+});
+
+test("saving a binding does not make an unsaved template draft reseedable", () => {
+  const templateEdited = promptLabReducer(readyState(), {
+    type: "edit_template_body",
+    value: "Keep local template",
+  });
+  const bothEdited = promptLabReducer(templateEdited, {
+    type: "edit_project_override",
+    value: "Saved override",
+  });
+  const saved = promptLabReducer(bothEdited, {
+    type: "binding_save_succeeded",
+    saved: { ...binding, revision: 2, project_override: "Saved override" },
+  });
+  const reloaded = promptLabReducer(saved, {
+    type: "stage_data_loaded",
+    templates: [{ ...template, revision: 2, body: "Remote template" }],
+    binding: { ...binding, revision: 2, project_override: "Saved override" },
+  });
+
+  expect(saved.saveStatus).toBe("dirty");
+  expect(reloaded.templateBodyDraft).toBe("Keep local template");
+  expect(reloaded.saveStatus).toBe("dirty");
+});
+
+test("recovery remains offline until the reload succeeds", () => {
+  const offline = promptLabReducer(readyState(), { type: "went_offline" });
+  const recovering = promptLabReducer(offline, { type: "recovery_started" });
+
+  expect(recovering.isOffline).toBe(true);
+  expect(recovering.saveStatus).toBe("recovering");
+
+  const online = promptLabReducer(recovering, { type: "went_online" });
+  expect(online.isOffline).toBe(false);
+  expect(online.saveStatus).toBe("ready");
 });
 
 test("a successful save lets a later reload reseed drafts cleanly", () => {

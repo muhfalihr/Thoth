@@ -52,6 +52,14 @@ function client(overrides: Partial<PromptLabClient> = {}): PromptLabClient {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 afterEach(() => cleanup());
 
 test("renders stage buttons, template list, and labelled editor controls", async () => {
@@ -117,7 +125,7 @@ test("saves a template revision and reports Saving then Saved", async () => {
   });
   render(<PromptLab client={promptClient} projectId="project_a" />);
 
-  const body = await screen.findByLabelText("Template body");
+  const body = await screen.findByDisplayValue("Write a hook");
   fireEvent.change(body, { target: { value: "Sharper hook" } });
   await user.click(screen.getByRole("button", { name: "Save template" }));
 
@@ -337,6 +345,40 @@ test("reloads the registry and stage data when the browser reports online", asyn
   );
   expect((promptClient.listPromptTemplates as ReturnType<typeof mock>).mock.calls.length).toBe(
     templatesBefore + 1,
+  );
+});
+
+test("keeps recovery offline and saves disabled until reload succeeds", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const registryReload = deferred<PromptStageDefinition[]>();
+  const promptClient = client();
+
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  await screen.findByDisplayValue("Write a hook");
+  promptClient.listPromptStages = mock(() => registryReload.promise);
+
+  act(() => {
+    window.dispatchEvent(new Event("offline"));
+  });
+  act(() => {
+    window.dispatchEvent(new Event("online"));
+  });
+
+  expect(screen.getByText("Reconnecting")).toBeDefined();
+  expect(screen.queryByText("Saved")).toBeNull();
+  expect((screen.getByRole("button", { name: "Save template" }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+
+  await act(async () => {
+    registryReload.resolve(stages);
+    await registryReload.promise;
+  });
+
+  expect(await screen.findByText("Ready")).toBeDefined();
+  expect((screen.getByRole("button", { name: "Save template" }) as HTMLButtonElement).disabled).toBe(
+    false,
   );
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useId, useReducer, useState } from "react";
+import { useEffect, useId, useReducer, useRef, useState } from "react";
 
 import type { ControlPlaneClient, SavePromptTemplateRequest } from "@/api/control-plane";
 import {
@@ -37,6 +37,7 @@ const statusLabel: Record<PromptLabState["saveStatus"], string> = {
   saved: "Saved",
   failed: "Failed",
   conflict: "Conflict",
+  recovering: "Reconnecting",
   offline: "Offline",
 };
 
@@ -50,6 +51,8 @@ export function PromptLab({ client, projectId }: Props) {
   const languageId = useId();
   const bodyId = useId();
   const overrideId = useId();
+  const selectedStageIdRef = useRef(state.selectedStageId);
+  selectedStageIdRef.current = state.selectedStageId;
 
   useEffect(() => {
     let active = true;
@@ -58,9 +61,6 @@ export function PromptLab({ client, projectId }: Props) {
       .then((stages) => {
         if (!active) return;
         dispatch({ type: "stages_loaded", stages });
-        if (stages.length > 0 && !state.selectedStageId) {
-          dispatch({ type: "select_stage", stageId: stages[0].stage_id });
-        }
       })
       .catch(() => {
         if (active) dispatch({ type: "went_offline" });
@@ -68,8 +68,7 @@ export function PromptLab({ client, projectId }: Props) {
     return () => {
       active = false;
     };
-    // selectedStageId is read only to keep an existing stage selection stable across retries.
-  }, [client, projectId, attempt, state.selectedStageId]);
+  }, [client, projectId]);
 
   useEffect(() => {
     if (!state.selectedStageId) return;
@@ -97,13 +96,60 @@ export function PromptLab({ client, projectId }: Props) {
     return () => {
       active = false;
     };
-  }, [client, projectId, state.selectedStageId, attempt]);
+  }, [client, projectId, state.selectedStageId]);
+
+  useEffect(() => {
+    if (attempt === 0) return;
+    let active = true;
+    dispatch({ type: "recovery_started" });
+
+    void (async () => {
+      try {
+        const stages = await client.listPromptStages();
+        if (!active) return;
+        const selectedStageId = stages.some(
+          (stage) => stage.stage_id === selectedStageIdRef.current,
+        )
+          ? selectedStageIdRef.current
+          : (stages[0]?.stage_id ?? "");
+        dispatch({ type: "stages_loaded", stages });
+
+        if (!selectedStageId) {
+          dispatch({ type: "went_online" });
+          return;
+        }
+
+        const [templates, binding] = await Promise.all([
+          client.listPromptTemplates(projectId, selectedStageId),
+          client.getPromptBinding(projectId, selectedStageId),
+        ]);
+        if (!active) return;
+
+        let resolved = null;
+        try {
+          resolved = await client.getResolvedPrompt(projectId, selectedStageId);
+        } catch {
+          // A missing resolved preview is an expected empty state, not a connectivity failure.
+        }
+        if (!active) return;
+
+        dispatch({ type: "stage_data_loaded", templates, binding });
+        dispatch({ type: "resolved_loaded", resolved });
+        dispatch({ type: "went_online" });
+      } catch {
+        if (active) dispatch({ type: "went_offline" });
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [attempt, client, projectId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const handleOffline = () => dispatch({ type: "went_offline" });
     const handleOnline = () => {
-      dispatch({ type: "went_online" });
       setAttempt((value) => value + 1);
     };
     window.addEventListener("offline", handleOffline);
@@ -115,7 +161,6 @@ export function PromptLab({ client, projectId }: Props) {
   }, []);
 
   const recover = () => {
-    dispatch({ type: "went_online" });
     setAttempt((value) => value + 1);
   };
 
@@ -222,14 +267,23 @@ export function PromptLab({ client, projectId }: Props) {
           </button>
         </div>
       )}
-      {state.saveStatus === "offline" && (
+      {state.isOffline && (
         <div
           role="status"
           className="flex flex-wrap items-center gap-3 border-b border-border bg-muted px-4 py-2 text-sm"
         >
-          <p>Offline. Your prompt drafts are still here and will save when the connection returns.</p>
-          <button type="button" className={toolbarButton} onClick={recover}>
-            Retry
+          <p>
+            {state.saveStatus === "recovering"
+              ? "Reconnecting to Prompt Lab."
+              : "Offline. Your prompt drafts are still here and will save when the connection returns."}
+          </p>
+          <button
+            type="button"
+            className={toolbarButton}
+            disabled={state.saveStatus === "recovering"}
+            onClick={recover}
+          >
+            {state.saveStatus === "recovering" ? "Retrying" : "Retry"}
           </button>
         </div>
       )}
@@ -241,6 +295,7 @@ export function PromptLab({ client, projectId }: Props) {
               key={stage.stage_id}
               type="button"
               className={toolbarButton}
+              disabled={state.saveStatus === "recovering"}
               aria-pressed={state.selectedStageId === stage.stage_id}
               onClick={() => dispatch({ type: "select_stage", stageId: stage.stage_id })}
             >
