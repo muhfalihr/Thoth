@@ -382,6 +382,141 @@ test("keeps recovery offline and saves disabled until reload succeeds", async ()
   );
 });
 
+test("recovery from an initial registry failure owns the selected-stage load", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  let registryCalls = 0;
+  const listPromptTemplates = mock(async () => [template]);
+  const getPromptBinding = mock(async () => binding);
+  const promptClient = client({
+    listPromptStages: mock(async () => {
+      registryCalls += 1;
+      if (registryCalls === 1) throw new Error("registry unavailable");
+      return stages;
+    }),
+    listPromptTemplates,
+    getPromptBinding,
+  });
+
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  await screen.findByText(
+    "Offline. Your prompt drafts are still here and will save when the connection returns.",
+  );
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByDisplayValue("Write a hook")).toBeDefined();
+  expect(listPromptTemplates.mock.calls.length).toBe(1);
+  expect(getPromptBinding.mock.calls.length).toBe(1);
+});
+
+test("recovery ignores an older selected-stage load that finishes later", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const staleTemplates = deferred<PromptTemplateRevision[]>();
+  const freshTemplate = { ...template, revision: 2, body: "Fresh recovery body" };
+  let templateCalls = 0;
+  const listPromptTemplates = mock(() => {
+    templateCalls += 1;
+    return templateCalls === 1 ? staleTemplates.promise : Promise.resolve([freshTemplate]);
+  });
+  const promptClient = client({ listPromptTemplates });
+
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  await screen.findByRole("button", { name: "Narrative plan" });
+  expect(listPromptTemplates.mock.calls.length).toBe(1);
+  act(() => window.dispatchEvent(new Event("offline")));
+  act(() => window.dispatchEvent(new Event("online")));
+
+  expect(await screen.findByDisplayValue("Fresh recovery body")).toBeDefined();
+
+  await act(async () => {
+    staleTemplates.resolve([template]);
+    await staleTemplates.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect((screen.getByLabelText("Template body") as HTMLTextAreaElement).value).toBe(
+    "Fresh recovery body",
+  );
+  expect(listPromptTemplates.mock.calls.length).toBe(2);
+});
+
+test("recovery keeps a dirty binding template target separate from the refreshed editor", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  const alternate = {
+    ...template,
+    template_id: "ptpl_002",
+    revision: 3,
+    body: "Alternate template",
+  };
+  let templateResponse = [template, alternate];
+  let captured: unknown = null;
+  const promptClient = client({
+    listPromptTemplates: mock(async () => templateResponse),
+    savePromptBinding: mock(async (_projectId, _stageId, request) => {
+      captured = request;
+      return {
+        kind: "saved" as const,
+        value: {
+          ...binding,
+          template_id: alternate.template_id,
+          template_revision: alternate.revision,
+          revision: 2,
+        },
+      };
+    }),
+  });
+
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  await user.click(await screen.findByRole("button", { name: "ptpl_002 (revision 3)" }));
+  templateResponse = [{ ...template, revision: 2, body: "Remote editor head" }];
+  act(() => window.dispatchEvent(new Event("offline")));
+  act(() => window.dispatchEvent(new Event("online")));
+
+  expect(await screen.findByDisplayValue("Remote editor head")).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Save binding" }));
+
+  expect(captured).toMatchObject({
+    template_id: "ptpl_002",
+    template_revision: 3,
+  });
+});
+
+test("editing during deferred recovery cannot switch the stage or lose the draft", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const registryReload = deferred<PromptStageDefinition[]>();
+  const promptClient = client();
+
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  const body = (await screen.findByDisplayValue("Write a hook")) as HTMLTextAreaElement;
+  promptClient.listPromptStages = mock(() => registryReload.promise);
+  act(() => window.dispatchEvent(new Event("offline")));
+  act(() => window.dispatchEvent(new Event("online")));
+  fireEvent.change(body, { target: { value: "Local edit during recovery" } });
+
+  expect(screen.getByText("Reconnecting")).toBeDefined();
+  const visualStage = screen.getByRole("button", { name: "Visual plan" }) as HTMLButtonElement;
+  expect(visualStage.disabled).toBe(true);
+  fireEvent.click(visualStage);
+  expect(screen.getByRole("button", { name: "Narrative plan" }).getAttribute("aria-pressed")).toBe(
+    "true",
+  );
+
+  await act(async () => {
+    registryReload.resolve(stages);
+    await registryReload.promise;
+  });
+
+  expect((await screen.findByLabelText("Template body") as HTMLTextAreaElement).value).toBe(
+    "Local edit during recovery",
+  );
+  expect(screen.getByText("Unsaved changes")).toBeDefined();
+});
+
 test("removes the offline listeners on unmount", async () => {
   const { PromptLab } = await import("./PromptLab");
   const promptClient = client();

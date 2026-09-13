@@ -244,7 +244,7 @@ test("reloaded stage data refreshes lists without clobbering unsaved drafts", ()
   expect(reloaded.templates[0].revision).toBe(5);
   expect(reloaded.binding?.revision).toBe(4);
   expect(reloaded.projectOverrideDraft).toBe("Keep it concise");
-  expect(reloaded.templateBodyDraft).toBe("Write a hook");
+  expect(reloaded.templateBodyDraft).toBe("Remote body");
   expect(reloaded.saveStatus).toBe("dirty");
 });
 
@@ -310,6 +310,108 @@ test("an unvisited stage loads its server draft after leaving a dirty stage", ()
   });
   expect(restored.projectOverrideDraft).toBe("Keep narrative concise");
   expect(restored.saveStatus).toBe("dirty");
+});
+
+test("registry fallback snapshots a removed dirty stage before selecting its replacement", () => {
+  const dirty = promptLabReducer(readyState(), {
+    type: "edit_template_body",
+    value: "Local narrative draft",
+  });
+
+  const fallback = promptLabReducer(dirty, {
+    type: "stages_loaded",
+    stages: stages.filter((stage) => stage.stage_id !== "narrative_plan"),
+  });
+
+  expect(fallback.selectedStageId).toBe("visual_plan");
+  expect(fallback.templateBodyDraft).toBe("");
+  expect(fallback.templateDirty).toBe(false);
+  expect(fallback.saveStatus).toBe("loading");
+  expect(fallback.stageForms.narrative_plan.templateBodyDraft).toBe("Local narrative draft");
+  expect(fallback.stageForms.narrative_plan.templateDirty).toBe(true);
+});
+
+test("stage reload refreshes a clean binding while preserving a dirty template", () => {
+  const dirty = promptLabReducer(readyState(), {
+    type: "edit_template_body",
+    value: "Local template draft",
+  });
+
+  const reloaded = promptLabReducer(dirty, {
+    type: "stage_data_loaded",
+    templates: [{ ...template, revision: 2, body: "Remote template" }],
+    binding: { ...binding, revision: 2, project_override: "Remote override" },
+  });
+
+  expect(reloaded.templateBodyDraft).toBe("Local template draft");
+  expect(reloaded.templateBaseRevision).toBe(1);
+  expect(reloaded.projectOverrideDraft).toBe("Remote override");
+  expect(reloaded.bindingBaseRevision).toBe(2);
+  expect(reloaded.saveStatus).toBe("dirty");
+});
+
+test("stage reload refreshes a clean template while preserving a dirty binding", () => {
+  const dirty = promptLabReducer(readyState(), {
+    type: "edit_project_override",
+    value: "Local binding draft",
+  });
+
+  const reloaded = promptLabReducer(dirty, {
+    type: "stage_data_loaded",
+    templates: [{ ...template, revision: 2, body: "Remote template" }],
+    binding: { ...binding, revision: 2, project_override: "Remote override" },
+  });
+
+  expect(reloaded.templateBodyDraft).toBe("Remote template");
+  expect(reloaded.templateBaseRevision).toBe(2);
+  expect(reloaded.projectOverrideDraft).toBe("Local binding draft");
+  expect(reloaded.bindingBaseRevision).toBe(1);
+  expect(reloaded.saveStatus).toBe("dirty");
+});
+
+test("stage reload preserves the dirty binding template target separately from the editor", () => {
+  const alternate = {
+    ...template,
+    template_id: "ptpl_002",
+    revision: 3,
+    body: "Alternate template",
+  };
+  const state = createPromptLabState({
+    stages,
+    selectedStageId: "narrative_plan",
+    templates: [template, alternate],
+    binding,
+    resolved,
+  });
+  const selected = promptLabReducer(state, {
+    type: "select_template",
+    templateId: alternate.template_id,
+  });
+
+  const reloaded = promptLabReducer(selected, {
+    type: "stage_data_loaded",
+    templates: [{ ...template, revision: 2, body: "Remote editor head" }],
+    binding,
+  });
+
+  expect(reloaded.templateIdDraft).toBe("ptpl_001");
+  expect(reloaded.templateBaseRevision).toBe(2);
+  expect(reloaded.bindingTemplateIdDraft).toBe("ptpl_002");
+  expect(reloaded.bindingTemplateRevisionDraft).toBe(3);
+  expect(reloaded.bindingDirty).toBe(true);
+});
+
+test("editing while recovery is active keeps the recovering status", () => {
+  const offline = promptLabReducer(readyState(), { type: "went_offline" });
+  const recovering = promptLabReducer(offline, { type: "recovery_started" });
+  const edited = promptLabReducer(recovering, {
+    type: "edit_template_body",
+    value: "Local edit during recovery",
+  });
+
+  expect(edited.saveStatus).toBe("recovering");
+  expect(edited.isOffline).toBe(true);
+  expect(edited.templateDirty).toBe(true);
 });
 
 test("saving a template does not make an unsaved binding draft reseedable", () => {

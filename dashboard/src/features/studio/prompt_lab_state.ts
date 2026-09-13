@@ -23,6 +23,8 @@ type StageFormSnapshot = {
   templateBaseRevision: number | null;
   templateBodyDraft: string;
   languageDraft: string;
+  bindingTemplateIdDraft: string | null;
+  bindingTemplateRevisionDraft: number | null;
   bindingBaseRevision: number | null;
   projectOverrideDraft: string;
   templateDirty: boolean;
@@ -78,6 +80,8 @@ function snapshot(state: PromptLabState): StageFormSnapshot {
     templateBaseRevision: state.templateBaseRevision,
     templateBodyDraft: state.templateBodyDraft,
     languageDraft: state.languageDraft,
+    bindingTemplateIdDraft: state.bindingTemplateIdDraft,
+    bindingTemplateRevisionDraft: state.bindingTemplateRevisionDraft,
     bindingBaseRevision: state.bindingBaseRevision,
     projectOverrideDraft: state.projectOverrideDraft,
     templateDirty: state.templateDirty,
@@ -92,6 +96,8 @@ function restore(snapshotValue: StageFormSnapshot | undefined): StageFormSnapsho
       templateBaseRevision: null,
       templateBodyDraft: "",
       languageDraft: DEFAULT_LANGUAGE,
+      bindingTemplateIdDraft: null,
+      bindingTemplateRevisionDraft: null,
       bindingBaseRevision: null,
       projectOverrideDraft: "",
       templateDirty: false,
@@ -105,6 +111,7 @@ function hasDirtyDraft(state: Pick<PromptLabState, "templateDirty" | "bindingDir
 }
 
 function statusAfterLocalChange(state: PromptLabState): PromptLabStatus {
+  if (state.saveStatus === "recovering") return "recovering";
   if (state.isOffline) return "offline";
   return state.saveStatus === "saving" ? "saving" : "dirty";
 }
@@ -138,6 +145,8 @@ export function createPromptLabState(input: {
     templateBaseRevision: head?.revision ?? null,
     templateBodyDraft: head?.body ?? "",
     languageDraft: head?.language ?? DEFAULT_LANGUAGE,
+    bindingTemplateIdDraft: input.binding?.template_id ?? head?.template_id ?? null,
+    bindingTemplateRevisionDraft: input.binding?.template_revision ?? head?.revision ?? null,
     bindingBaseRevision: input.binding?.revision ?? null,
     projectOverrideDraft: input.binding?.project_override ?? "",
     saveStatus:
@@ -153,48 +162,77 @@ export function createPromptLabState(input: {
 
 export function promptLabReducer(state: PromptLabState, action: PromptLabAction): PromptLabState {
   switch (action.type) {
-    case "stages_loaded":
-      return {
-        ...state,
-        stages: action.stages,
-        selectedStageId: action.stages.some((stage) => stage.stage_id === state.selectedStageId)
-          ? state.selectedStageId
-          : (action.stages[0]?.stage_id ?? ""),
-      };
-    case "stage_data_loaded": {
-      const mayReseed = !hasDirtyDraft(state);
-      if (mayReseed) {
-        const next = createPromptLabState({
-          stages: state.stages,
-          selectedStageId: state.selectedStageId,
-          templates: action.templates,
-          binding: action.binding,
-          resolved: state.resolved,
-        });
-        return {
-          ...next,
-          stageForms: state.stageForms,
-          isOffline: state.isOffline,
-          saveStatus: state.isOffline
-            ? state.saveStatus === "recovering"
-              ? "recovering"
-              : "offline"
-            : "ready",
-        };
+    case "stages_loaded": {
+      const withStages = { ...state, stages: action.stages };
+      if (action.stages.some((stage) => stage.stage_id === state.selectedStageId)) {
+        return withStages;
       }
+      const fallbackStageId = action.stages[0]?.stage_id ?? "";
+      if (fallbackStageId) {
+        return promptLabReducer(withStages, { type: "select_stage", stageId: fallbackStageId });
+      }
+      return {
+        ...withStages,
+        ...restore(undefined),
+        selectedStageId: "",
+        stageForms: state.selectedStageId
+          ? { ...state.stageForms, [state.selectedStageId]: snapshot(state) }
+          : state.stageForms,
+        templates: [],
+        binding: null,
+        resolved: null,
+        saveStatus: state.isOffline
+          ? state.saveStatus === "recovering"
+            ? "recovering"
+            : "offline"
+          : "loading",
+        lastFailedSave: null,
+        latestTemplate: null,
+        latestBinding: null,
+      };
+    }
+    case "stage_data_loaded": {
+      const head = action.templates[0];
+      const cleanTemplateId = state.templateDirty ? state.templateIdDraft : head?.template_id ?? null;
+      const cleanTemplateRevision = state.templateDirty
+        ? state.templateBaseRevision
+        : head?.revision ?? null;
       return {
         ...state,
         templates: action.templates,
         binding: action.binding,
+        ...(state.templateDirty
+          ? {}
+          : {
+              templateIdDraft: cleanTemplateId,
+              templateBaseRevision: cleanTemplateRevision,
+              templateBodyDraft: head?.body ?? "",
+              languageDraft: head?.language ?? DEFAULT_LANGUAGE,
+            }),
+        ...(state.bindingDirty
+          ? {
+              // A never-loaded target cannot hold a user choice; adopt the server target.
+              bindingTemplateIdDraft:
+                state.bindingTemplateIdDraft ?? action.binding?.template_id ?? cleanTemplateId,
+              bindingTemplateRevisionDraft:
+                state.bindingTemplateRevisionDraft ??
+                action.binding?.template_revision ??
+                cleanTemplateRevision,
+            }
+          : {
+              bindingTemplateIdDraft: action.binding?.template_id ?? cleanTemplateId,
+              bindingTemplateRevisionDraft:
+                action.binding?.template_revision ?? cleanTemplateRevision,
+              bindingBaseRevision: action.binding?.revision ?? null,
+              projectOverrideDraft: action.binding?.project_override ?? "",
+            }),
         saveStatus: state.isOffline
           ? state.saveStatus === "recovering"
             ? "recovering"
             : "offline"
           : hasDirtyDraft(state)
             ? "dirty"
-            : state.saveStatus === "loading"
-              ? "ready"
-              : state.saveStatus,
+            : "ready",
       };
     }
     case "resolved_loaded":
@@ -208,10 +246,9 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         ...state,
         ...restored,
         selectedStageId: action.stageId,
-        stageForms: {
-          ...state.stageForms,
-          [state.selectedStageId]: snapshot(state),
-        },
+        stageForms: state.selectedStageId
+          ? { ...state.stageForms, [state.selectedStageId]: snapshot(state) }
+          : state.stageForms,
         templates: [],
         binding: null,
         resolved: null,
@@ -240,6 +277,8 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         templateBaseRevision: selected.revision,
         templateBodyDraft: selected.body,
         languageDraft: selected.language,
+        bindingTemplateIdDraft: selected.template_id,
+        bindingTemplateRevisionDraft: selected.revision,
         templateDirty: false,
         bindingDirty,
         saveStatus: state.isOffline ? state.saveStatus : bindingDirty ? "dirty" : "ready",
@@ -304,6 +343,8 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
       return {
         ...state,
         binding: action.saved,
+        bindingTemplateIdDraft: action.saved.template_id,
+        bindingTemplateRevisionDraft: action.saved.template_revision,
         bindingBaseRevision: action.saved.revision,
         bindingDirty: false,
         latestBinding: null,
@@ -341,6 +382,8 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         return {
           ...state,
           binding: latest,
+          bindingTemplateIdDraft: latest.template_id,
+          bindingTemplateRevisionDraft: latest.template_revision,
           bindingBaseRevision: latest.revision,
           projectOverrideDraft: latest.project_override ?? "",
           bindingDirty: false,

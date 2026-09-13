@@ -52,7 +52,11 @@ export function PromptLab({ client, projectId }: Props) {
   const bodyId = useId();
   const overrideId = useId();
   const selectedStageIdRef = useRef(state.selectedStageId);
+  const isOfflineRef = useRef(state.isOffline);
+  const recoveryStageIdRef = useRef<string | null>(null);
   selectedStageIdRef.current = state.selectedStageId;
+  isOfflineRef.current = state.isOffline;
+  const isRecovering = state.saveStatus === "recovering";
 
   useEffect(() => {
     let active = true;
@@ -72,6 +76,11 @@ export function PromptLab({ client, projectId }: Props) {
 
   useEffect(() => {
     if (!state.selectedStageId) return;
+    if (isRecovering) return;
+    if (recoveryStageIdRef.current === state.selectedStageId) {
+      recoveryStageIdRef.current = null;
+      return;
+    }
     let active = true;
     void Promise.all([
       client.listPromptTemplates(projectId, state.selectedStageId),
@@ -96,12 +105,13 @@ export function PromptLab({ client, projectId }: Props) {
     return () => {
       active = false;
     };
-  }, [client, projectId, state.selectedStageId]);
+  }, [client, isRecovering, projectId, state.selectedStageId]);
 
   useEffect(() => {
     if (attempt === 0) return;
     let active = true;
     dispatch({ type: "recovery_started" });
+    recoveryStageIdRef.current = selectedStageIdRef.current || null;
 
     void (async () => {
       try {
@@ -112,6 +122,7 @@ export function PromptLab({ client, projectId }: Props) {
         )
           ? selectedStageIdRef.current
           : (stages[0]?.stage_id ?? "");
+        recoveryStageIdRef.current = selectedStageId || null;
         dispatch({ type: "stages_loaded", stages });
 
         if (!selectedStageId) {
@@ -150,7 +161,7 @@ export function PromptLab({ client, projectId }: Props) {
     if (typeof window === "undefined") return;
     const handleOffline = () => dispatch({ type: "went_offline" });
     const handleOnline = () => {
-      setAttempt((value) => value + 1);
+      if (isOfflineRef.current) setAttempt((value) => value + 1);
     };
     window.addEventListener("offline", handleOffline);
     window.addEventListener("online", handleOnline);
@@ -171,7 +182,9 @@ export function PromptLab({ client, projectId }: Props) {
   const templateSavable =
     languageValid && bodyValid && !state.isOffline && state.saveStatus !== "loading";
   const bindingSavable =
-    templateSavable && state.templateIdDraft !== null && state.templateBaseRevision !== null;
+    templateSavable &&
+    state.bindingTemplateIdDraft !== null &&
+    state.bindingTemplateRevisionDraft !== null;
 
   const refreshResolved = async () => {
     if (!state.selectedStageId) return;
@@ -204,12 +217,12 @@ export function PromptLab({ client, projectId }: Props) {
   };
 
   const saveBinding = async () => {
-    if (state.templateIdDraft === null || state.templateBaseRevision === null) return;
+    if (state.bindingTemplateIdDraft === null || state.bindingTemplateRevisionDraft === null) return;
     dispatch({ type: "save_started", kind: "binding" });
     try {
       const result = await client.savePromptBinding(projectId, state.selectedStageId, {
-        template_id: state.templateIdDraft,
-        template_revision: state.templateBaseRevision,
+        template_id: state.bindingTemplateIdDraft,
+        template_revision: state.bindingTemplateRevisionDraft,
         project_override: state.projectOverrideDraft.trim() ? state.projectOverrideDraft : null,
         base_revision: state.bindingBaseRevision,
       });

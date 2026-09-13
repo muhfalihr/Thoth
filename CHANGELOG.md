@@ -13,6 +13,14 @@ failed loads, retries, reconnects, stage switches, and independent saves.
 - Template and binding dirtiness are tracked independently in each stage snapshot.
   Saving one domain cannot clear an unsaved draft in the other; dirty drafts survive
   reloads and stage switches, while clean drafts refresh from server data.
+- Registry fallback snapshots a removed stage before selecting its replacement.
+  Recovery owns its selected-stage reload, cancels older in-flight loads, and prevents
+  the normal loader from duplicating or overwriting the recovery result.
+- Review follow-ups: a dirty binding keeps its own template target
+  (`bindingTemplateIdDraft`/`bindingTemplateRevisionDraft`) separate from the template
+  editor, so recovery reloads no longer overwrite the template a pending binding save
+  points at, and editing a draft during recovery keeps the `Reconnecting` status so
+  stage switching stays locked until the reload settles.
 - The formerly timing-sensitive template-save test now waits for its loaded baseline,
   and recovery coverage includes deferred reloads and listener cleanup.
 - API contracts, provider boundaries, disabled Improve/Translate controls, and
