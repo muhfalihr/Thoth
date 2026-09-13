@@ -63,7 +63,7 @@ function client(overrides: Partial<PromptLabClient> = {}): PromptLabClient {
       resulting_template_revision: 2,
       resulting_binding_revision: 2,
     })),
-    rejectPromptProposal: mock(async () => ({ ...C2_PROPOSAL, status: "rejected" })),
+    rejectPromptProposal: mock(async () => ({ ...C2_PROPOSAL, status: "rejected" as const })),
     ...overrides,
   };
 }
@@ -111,8 +111,8 @@ const C2_PROPOSAL = {
   proposal_id: "proposal_1",
   project_id: "project_a",
   stage_id: "narrative_plan",
-  kind: "improve",
-  status: "succeeded",
+  kind: "improve" as const,
+  status: "succeeded" as const,
   target_layers: ["template"] as Array<"template" | "project_override">,
   source: {
     template_id: "ptpl_001",

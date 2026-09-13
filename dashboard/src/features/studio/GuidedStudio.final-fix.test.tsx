@@ -80,6 +80,32 @@ const promptResolved = {
   visible_text: "Template\nWrite a hook",
 } satisfies ResolvedPromptDraft;
 
+const C2_FULL_PROPOSAL = {
+  proposal_id: "proposal_1",
+  project_id: "project_001",
+  stage_id: "narrative_plan",
+  kind: "improve" as const,
+  status: "queued" as const,
+  target_layers: ["template"] as Array<"template" | "project_override">,
+  source: {
+    template_id: "ptpl_001",
+    template_revision: 1,
+    binding_revision: 1,
+    template_language: "id-ID",
+    template_body: "Write a hook",
+    project_override: null,
+  },
+  provider_id: "novita",
+  model_id: "deepseek/deepseek-v3.1",
+  changes: [],
+  translated_template_body: null,
+  translated_project_override: null,
+  failure_code: null,
+  created_at: "2026-09-13T08:00:00Z",
+  started_at: null,
+  finished_at: null,
+};
+
 const C2_PROVIDER = {
   provider_id: "novita",
   label: "Novita",
@@ -120,11 +146,11 @@ const promptClientBase = {
     revision: 1,
     updated_at: "2026-09-13T08:00:00Z",
   })),
-  createPromptProposal: mock(async () => ({ proposal_id: "proposal_1" })),
+  createPromptProposal: mock(async () => C2_FULL_PROPOSAL),
   listPromptProposals: mock(async () => ({ proposals: [], next_cursor: null })),
-  getPromptProposal: mock(async () => ({ proposal_id: "proposal_1" })),
-  applyPromptProposal: mock(async () => ({ proposal: {}, resulting_template_id: "ptpl_001", resulting_template_revision: 2, resulting_binding_revision: 2 })),
-  rejectPromptProposal: mock(async () => ({ proposal_id: "proposal_1" })),
+  getPromptProposal: mock(async () => C2_FULL_PROPOSAL),
+  applyPromptProposal: mock(async () => ({ proposal: C2_FULL_PROPOSAL, resulting_template_id: "ptpl_001", resulting_template_revision: 2, resulting_binding_revision: 2 })),
+  rejectPromptProposal: mock(async () => ({ ...C2_FULL_PROPOSAL, status: "rejected" as const })),
   listPromptStages: mock(async () => [promptStage]),
   getEditDocument: undefined,
   patchEditDocument: undefined,
