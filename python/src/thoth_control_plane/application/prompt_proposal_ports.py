@@ -97,6 +97,20 @@ class PromptProposalLayerLocked(Exception):
         super().__init__("prompt layer is locked")
 
 
+class PromptModelNotInCatalog(Exception):
+    """The requested provider/model pair is not enabled in the server catalog."""
+
+    def __init__(self) -> None:
+        super().__init__("provider or model not allowed")
+
+
+class PromptProposalEmptyLayer(Exception):
+    """Improve requires saved, non-blank text on the target layer."""
+
+    def __init__(self) -> None:
+        super().__init__("target layer has no saved text")
+
+
 class PromptProposalInvalidSelection(Exception):
     """The accepted change IDs are not all stored on the proposal."""
 
@@ -202,10 +216,12 @@ class PromptProposalRepository(Protocol):
 __all__ = [
     "PromptIdempotencyConflict",
     "PromptLockRevisionConflict",
+    "PromptModelNotInCatalog",
     "PromptPreferenceRevisionConflict",
     "PromptProposalActiveGeneration",
     "PromptProposalApplyResult",
     "PromptProposalChange",
+    "PromptProposalEmptyLayer",
     "PromptProposalInvalidSelection",
     "PromptProposalInvalidTransition",
     "PromptProposalLayerLocked",
