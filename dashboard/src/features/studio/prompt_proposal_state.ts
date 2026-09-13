@@ -176,7 +176,7 @@ export function promptProposalReducer(
     case "preference_saved":
       return { ...state, preference: action.preference };
     case "preference_conflict":
-      return { ...state, preference: action.preference, lastError: "preference_conflict" };
+      return { ...state, preference: action.latest, lastError: "preference_conflict" };
     case "locks_loaded":
       return { ...state, locks: action.locks };
     case "lock_saved":
@@ -196,9 +196,7 @@ export function promptProposalReducer(
       return state.activeProposal
         ? {
             ...state,
-            activeProposal: state.activeProposal.model_copy
-              ? state.activeProposal
-              : { ...state.activeProposal, status: action.status },
+            activeProposal: { ...state.activeProposal, status: action.status },
           }
         : state;
     case "history_loaded":
