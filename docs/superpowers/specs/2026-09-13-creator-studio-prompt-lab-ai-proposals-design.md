@@ -1,7 +1,7 @@
 # Creator Studio Prompt Lab AI Proposals Design
 
 **Date:** 2026-09-13  
-**Status:** Draft for operator review  
+**Status:** Approved  
 **Parent:** `docs/superpowers/specs/2026-09-11-ui-first-creator-studio-design.md`  
 **Predecessor:** `docs/superpowers/specs/2026-09-12-creator-studio-prompt-lab-foundation-design.md`
 
@@ -294,9 +294,10 @@ restricted repository.
 
 ### 7.2 Timeout and retry
 
-Each provider attempt has a hard 120-second activity timeout. The workflow has
-no automatic retry policy. Retry is a new explicit proposal with a new proposal
-ID and idempotency key.
+Each provider network request has a hard 120-second timeout. The Temporal
+activity has a 135-second start-to-close timeout so it can load and persist the
+result around that request. The workflow has no automatic retry policy. Retry
+is a new explicit proposal with a new proposal ID and idempotency key.
 
 ## 8. Provider adapter boundary
 
