@@ -21,6 +21,8 @@ failed loads, retries, reconnects, stage switches, and independent saves.
   editor, so recovery reloads no longer overwrite the template a pending binding save
   points at, and editing a draft during recovery keeps the `Reconnecting` status so
   stage switching stays locked until the reload settles.
+- Drafts written while the initial stage registry is unavailable are carried into
+  the first recovered stage instead of being discarded during fallback selection.
 - The formerly timing-sensitive template-save test now waits for its loaded baseline,
   and recovery coverage includes deferred reloads and listener cleanup.
 - API contracts, provider boundaries, disabled Improve/Translate controls, and

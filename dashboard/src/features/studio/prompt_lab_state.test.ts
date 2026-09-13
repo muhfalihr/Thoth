@@ -331,6 +331,23 @@ test("registry fallback snapshots a removed dirty stage before selecting its rep
   expect(fallback.stageForms.narrative_plan.templateDirty).toBe(true);
 });
 
+test("registry fallback preserves a draft created before the first stage loaded", () => {
+  const initial = createPromptLabState({ selectedStageId: "" });
+  const offline = promptLabReducer(initial, { type: "went_offline" });
+  const dirty = promptLabReducer(offline, {
+    type: "edit_template_body",
+    value: "Draft written before registry recovery",
+  });
+  const recovering = promptLabReducer(dirty, { type: "recovery_started" });
+
+  const fallback = promptLabReducer(recovering, { type: "stages_loaded", stages });
+
+  expect(fallback.selectedStageId).toBe("narrative_plan");
+  expect(fallback.templateBodyDraft).toBe("Draft written before registry recovery");
+  expect(fallback.templateDirty).toBe(true);
+  expect(fallback.saveStatus).toBe("recovering");
+});
+
 test("stage reload refreshes a clean binding while preserving a dirty template", () => {
   const dirty = promptLabReducer(readyState(), {
     type: "edit_template_body",

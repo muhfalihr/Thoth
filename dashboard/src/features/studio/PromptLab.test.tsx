@@ -275,6 +275,32 @@ test("shows the safe offline state when the initial registry load fails", async 
   ).toBeDefined();
 });
 
+test("retry preserves a draft written before the initial registry recovered", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  let registryCalls = 0;
+  const promptClient = client({
+    listPromptStages: mock(async () => {
+      registryCalls += 1;
+      if (registryCalls === 1) throw new Error("registry unavailable");
+      return stages;
+    }),
+  });
+
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  await screen.findByText(
+    "Offline. Your prompt drafts are still here and will save when the connection returns.",
+  );
+  fireEvent.change(screen.getByLabelText("Template body"), {
+    target: { value: "Draft written before registry recovery" },
+  });
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByDisplayValue("Draft written before registry recovery")).toBeDefined();
+  expect(screen.getByText("Unsaved changes")).toBeDefined();
+});
+
 test("retries the load from the offline state and preserves unsaved drafts", async () => {
   const { PromptLab } = await import("./PromptLab");
   const user = userEvent.setup();

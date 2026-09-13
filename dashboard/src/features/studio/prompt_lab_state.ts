@@ -240,7 +240,10 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
     case "select_stage": {
       if (action.stageId === state.selectedStageId) return state;
       if (!state.stages.some((stage) => stage.stage_id === action.stageId)) return state;
-      const restored = restore(state.stageForms[action.stageId]);
+      const restored =
+        !state.selectedStageId && hasDirtyDraft(state)
+          ? snapshot(state)
+          : restore(state.stageForms[action.stageId]);
       const restoredIsDirty = restored.templateDirty || restored.bindingDirty;
       return {
         ...state,
