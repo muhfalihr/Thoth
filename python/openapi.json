@@ -1,6 +1,36 @@
 {
   "components": {
     "schemas": {
+      "ApplyPromptProposalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "change_ids": {
+            "default": [],
+            "items": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "type": "string"
+            },
+            "title": "Change Ids",
+            "type": "array"
+          },
+          "source_binding_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Binding Revision",
+            "type": "integer"
+          },
+          "source_template_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Template Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source_template_revision",
+          "source_binding_revision"
+        ],
+        "title": "ApplyPromptProposalRequest",
+        "type": "object"
+      },
       "ApprovalRequest": {
         "additionalProperties": false,
         "properties": {
@@ -196,6 +226,99 @@
           "footage"
         ],
         "title": "ContentSetImportRequest",
+        "type": "object"
+      },
+      "CreatePromptProposalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "improvement_instructions": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Improvement Instructions"
+          },
+          "kind": {
+            "enum": [
+              "improve",
+              "translate"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "model_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "provider_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "source_binding_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Binding Revision",
+            "type": "integer"
+          },
+          "source_template_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Source Template Id",
+            "type": "string"
+          },
+          "source_template_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Source Template Revision",
+            "type": "integer"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Language"
+          },
+          "target_layer": {
+            "anyOf": [
+              {
+                "enum": [
+                  "template",
+                  "project_override"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Layer"
+          }
+        },
+        "required": [
+          "kind",
+          "stage_id",
+          "provider_id",
+          "model_id",
+          "source_template_id",
+          "source_template_revision",
+          "source_binding_revision"
+        ],
+        "title": "CreatePromptProposalRequest",
         "type": "object"
       },
       "EditDocument": {
@@ -482,6 +605,514 @@
         "title": "ProjectPromptBinding",
         "type": "object"
       },
+      "ProjectPromptLayerLock": {
+        "additionalProperties": false,
+        "properties": {
+          "layer": {
+            "enum": [
+              "template",
+              "project_override"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "locked": {
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "stage_id",
+          "layer",
+          "locked",
+          "revision",
+          "updated_at"
+        ],
+        "title": "ProjectPromptLayerLock",
+        "type": "object"
+      },
+      "ProjectPromptModelPreference": {
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "stage_id",
+          "provider_id",
+          "model_id",
+          "revision",
+          "updated_at"
+        ],
+        "title": "ProjectPromptModelPreference",
+        "type": "object"
+      },
+      "PromptModelDefinition": {
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "items": {
+              "enum": [
+                "improve",
+                "translate"
+              ],
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "max_input_chars": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 200000.0,
+            "title": "Max Input Chars",
+            "type": "integer"
+          },
+          "model_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Model Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_id",
+          "label",
+          "capabilities",
+          "max_input_chars"
+        ],
+        "title": "PromptModelDefinition",
+        "type": "object"
+      },
+      "PromptProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PromptProposalChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "provider_unavailable",
+                  "provider_timeout",
+                  "provider_rate_limited",
+                  "invalid_provider_output",
+                  "source_revision_changed",
+                  "layer_locked",
+                  "proposal_already_running",
+                  "model_not_allowed",
+                  "store_unavailable",
+                  "workflow_unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "improvement_instructions": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Improvement Instructions"
+          },
+          "kind": {
+            "enum": [
+              "improve",
+              "translate"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "model_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "proposal_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "provider_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PromptProposalSource"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "applied",
+              "rejected",
+              "superseded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_language": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Language"
+          },
+          "target_layers": {
+            "items": {
+              "enum": [
+                "template",
+                "project_override"
+              ],
+              "type": "string"
+            },
+            "title": "Target Layers",
+            "type": "array"
+          },
+          "translated_project_override": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Translated Project Override"
+          },
+          "translated_template_body": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Translated Template Body"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "project_id",
+          "stage_id",
+          "kind",
+          "status",
+          "target_layers",
+          "source",
+          "provider_id",
+          "model_id",
+          "created_at"
+        ],
+        "title": "PromptProposal",
+        "type": "object"
+      },
+      "PromptProposalApplyResult": {
+        "additionalProperties": false,
+        "description": "Immutable provenance for one explicit Apply action.",
+        "properties": {
+          "proposal": {
+            "$ref": "#/components/schemas/PromptProposal"
+          },
+          "resulting_binding_revision": {
+            "title": "Resulting Binding Revision",
+            "type": "integer"
+          },
+          "resulting_template_id": {
+            "title": "Resulting Template Id",
+            "type": "string"
+          },
+          "resulting_template_revision": {
+            "title": "Resulting Template Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "proposal",
+          "resulting_template_id",
+          "resulting_template_revision",
+          "resulting_binding_revision"
+        ],
+        "title": "PromptProposalApplyResult",
+        "type": "object"
+      },
+      "PromptProposalChange": {
+        "additionalProperties": false,
+        "properties": {
+          "after_text": {
+            "maxLength": 12000,
+            "title": "After Text",
+            "type": "string"
+          },
+          "before_text": {
+            "maxLength": 12000,
+            "title": "Before Text",
+            "type": "string"
+          },
+          "change_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Change Id",
+            "type": "string"
+          },
+          "end_line": {
+            "minimum": 0.0,
+            "title": "End Line",
+            "type": "integer"
+          },
+          "layer": {
+            "enum": [
+              "template",
+              "project_override"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "start_line": {
+            "minimum": 0.0,
+            "title": "Start Line",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "change_id",
+          "layer",
+          "before_text",
+          "after_text",
+          "start_line",
+          "end_line"
+        ],
+        "title": "PromptProposalChange",
+        "type": "object"
+      },
+      "PromptProposalPage": {
+        "additionalProperties": false,
+        "description": "Bounded newest-first history page with an opaque cursor.",
+        "properties": {
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/PromptProposal"
+            },
+            "title": "Proposals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "proposals"
+        ],
+        "title": "PromptProposalPage",
+        "type": "object"
+      },
+      "PromptProposalSource": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Binding Revision",
+            "type": "integer"
+          },
+          "project_override": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Override"
+          },
+          "template_body": {
+            "maxLength": 12000,
+            "minLength": 1,
+            "title": "Template Body",
+            "type": "string"
+          },
+          "template_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "template_language": {
+            "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$",
+            "title": "Template Language",
+            "type": "string"
+          },
+          "template_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Template Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "template_id",
+          "template_revision",
+          "binding_revision",
+          "template_language",
+          "template_body"
+        ],
+        "title": "PromptProposalSource",
+        "type": "object"
+      },
+      "PromptProviderDefinition": {
+        "additionalProperties": false,
+        "description": "The browser-safe catalog projection; never carries endpoints or credentials.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/PromptModelDefinition"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "provider_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Provider Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider_id",
+          "label",
+          "enabled",
+          "models"
+        ],
+        "title": "PromptProviderDefinition",
+        "type": "object"
+      },
       "PromptStageDefinition": {
         "additionalProperties": false,
         "properties": {
@@ -501,7 +1132,10 @@
             "type": "string"
           },
           "status": {
-            "const": "draft_only",
+            "enum": [
+              "draft_only",
+              "proposal_ready"
+            ],
             "title": "Status",
             "type": "string"
           }
@@ -512,6 +1146,41 @@
           "status"
         ],
         "title": "PromptStageDefinition",
+        "type": "object"
+      },
+      "PromptStarterDefinition": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 12000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "language": {
+            "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$",
+            "title": "Language",
+            "type": "string"
+          },
+          "starter_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Starter Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "starter_id",
+          "label",
+          "language",
+          "body"
+        ],
+        "title": "PromptStarterDefinition",
         "type": "object"
       },
       "PromptTemplateRevision": {
@@ -755,6 +1424,65 @@
           "template_revision"
         ],
         "title": "SaveProjectPromptBindingRequest",
+        "type": "object"
+      },
+      "SavePromptLayerLockRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision"
+          },
+          "locked": {
+            "title": "Locked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "locked"
+        ],
+        "title": "SavePromptLayerLockRequest",
+        "type": "object"
+      },
+      "SavePromptModelPreferenceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision"
+          },
+          "model_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Model Id",
+            "type": "string"
+          },
+          "provider_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$",
+            "title": "Provider Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider_id",
+          "model_id"
+        ],
+        "title": "SavePromptModelPreferenceRequest",
         "type": "object"
       },
       "SavePromptTemplateRequest": {
@@ -1985,6 +2713,657 @@
         "summary": "Save Prompt Binding"
       }
     },
+    "/api/v1/projects/{project_id}/prompt-lab/locks/{stage_id}": {
+      "get": {
+        "operationId": "get_prompt_locks_api_v1_projects__project_id__prompt_lab_locks__stage_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectPromptLayerLock"
+                  },
+                  "title": "Response Get Prompt Locks Api V1 Projects  Project Id  Prompt Lab Locks  Stage Id  Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Prompt Locks"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/locks/{stage_id}/{layer}": {
+      "put": {
+        "operationId": "save_prompt_lock_api_v1_projects__project_id__prompt_lab_locks__stage_id___layer__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "layer",
+            "required": true,
+            "schema": {
+              "title": "Layer",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavePromptLayerLockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPromptLayerLock"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Prompt Lock"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/preferences/{stage_id}": {
+      "get": {
+        "operationId": "get_prompt_preference_api_v1_projects__project_id__prompt_lab_preferences__stage_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPromptModelPreference"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Prompt Preference"
+      },
+      "put": {
+        "operationId": "save_prompt_preference_api_v1_projects__project_id__prompt_lab_preferences__stage_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavePromptModelPreferenceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectPromptModelPreference"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Prompt Preference"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/proposals": {
+      "get": {
+        "operationId": "list_prompt_proposals_api_v1_projects__project_id__prompt_lab_proposals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptProposalPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Prompt Proposals"
+      },
+      "post": {
+        "operationId": "create_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePromptProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Prompt Proposal"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/proposals/{proposal_id}": {
+      "get": {
+        "operationId": "get_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Prompt Proposal"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/proposals/{proposal_id}/apply": {
+      "post": {
+        "operationId": "apply_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyPromptProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptProposalApplyResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Prompt Proposal"
+      }
+    },
+    "/api/v1/projects/{project_id}/prompt-lab/proposals/{proposal_id}/reject": {
+      "post": {
+        "operationId": "reject_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Prompt Proposal"
+      }
+    },
     "/api/v1/projects/{project_id}/prompt-lab/resolved/{stage_id}": {
       "get": {
         "operationId": "get_resolved_prompt_api_v1_projects__project_id__prompt_lab_resolved__stage_id__get",
@@ -2200,6 +3579,56 @@
         "summary": "Create Prompt Template"
       }
     },
+    "/api/v1/prompt-providers": {
+      "get": {
+        "operationId": "list_prompt_providers_api_v1_prompt_providers_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PromptProviderDefinition"
+                  },
+                  "title": "Response List Prompt Providers Api V1 Prompt Providers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Prompt Providers"
+      }
+    },
     "/api/v1/prompt-stages": {
       "get": {
         "operationId": "list_prompt_stages_api_v1_prompt_stages_get",
@@ -2248,6 +3677,61 @@
           }
         },
         "summary": "List Prompt Stages"
+      }
+    },
+    "/api/v1/prompt-stages/{stage_id}/starter": {
+      "get": {
+        "operationId": "get_prompt_starter_api_v1_prompt_stages__stage_id__starter_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "stage_id",
+            "required": true,
+            "schema": {
+              "title": "Stage Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptStarterDefinition"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Prompt Starter"
       }
     },
     "/api/v1/style-presets": {

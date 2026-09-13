@@ -97,6 +97,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/prompt-lab/locks/{stage_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Prompt Locks */
+        get: operations["get_prompt_locks_api_v1_projects__project_id__prompt_lab_locks__stage_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/locks/{stage_id}/{layer}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Prompt Lock */
+        put: operations["save_prompt_lock_api_v1_projects__project_id__prompt_lab_locks__stage_id___layer__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/preferences/{stage_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Prompt Preference */
+        get: operations["get_prompt_preference_api_v1_projects__project_id__prompt_lab_preferences__stage_id__get"];
+        /** Save Prompt Preference */
+        put: operations["save_prompt_preference_api_v1_projects__project_id__prompt_lab_preferences__stage_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Prompt Proposals */
+        get: operations["list_prompt_proposals_api_v1_projects__project_id__prompt_lab_proposals_get"];
+        put?: never;
+        /** Create Prompt Proposal */
+        post: operations["create_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Prompt Proposal */
+        get: operations["get_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/proposals/{proposal_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Prompt Proposal */
+        post: operations["apply_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/prompt-lab/proposals/{proposal_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Prompt Proposal */
+        post: operations["reject_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/prompt-lab/resolved/{stage_id}": {
         parameters: {
             query?: never;
@@ -132,6 +253,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/prompt-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Prompt Providers */
+        get: operations["list_prompt_providers_api_v1_prompt_providers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/prompt-stages": {
         parameters: {
             query?: never;
@@ -141,6 +279,23 @@ export interface paths {
         };
         /** List Prompt Stages */
         get: operations["list_prompt_stages_api_v1_prompt_stages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/prompt-stages/{stage_id}/starter": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Prompt Starter */
+        get: operations["get_prompt_starter_api_v1_prompt_stages__stage_id__starter_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -329,6 +484,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ApplyPromptProposalRequest */
+        ApplyPromptProposalRequest: {
+            /**
+             * Change Ids
+             * @default []
+             */
+            change_ids: string[];
+            /** Source Binding Revision */
+            source_binding_revision: number;
+            /** Source Template Revision */
+            source_template_revision: number;
+        };
         /** ApprovalRequest */
         ApprovalRequest: {
             /** Allowed Decisions */
@@ -397,6 +564,32 @@ export interface components {
             /** Footage */
             footage: components["schemas"]["FootageImport"][];
             main: components["schemas"]["MainImport"];
+        };
+        /** CreatePromptProposalRequest */
+        CreatePromptProposalRequest: {
+            /** Improvement Instructions */
+            improvement_instructions?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "improve" | "translate";
+            /** Model Id */
+            model_id: string;
+            /** Provider Id */
+            provider_id: string;
+            /** Source Binding Revision */
+            source_binding_revision: number;
+            /** Source Template Id */
+            source_template_id: string;
+            /** Source Template Revision */
+            source_template_revision: number;
+            /** Stage Id */
+            stage_id: string;
+            /** Target Language */
+            target_language?: string | null;
+            /** Target Layer */
+            target_layer?: ("template" | "project_override") | null;
         };
         /**
          * EditDocument
@@ -479,6 +672,167 @@ export interface components {
             /** Template Revision */
             template_revision: number;
         };
+        /** ProjectPromptLayerLock */
+        ProjectPromptLayerLock: {
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "template" | "project_override";
+            /** Locked */
+            locked: boolean;
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            /** Stage Id */
+            stage_id: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** ProjectPromptModelPreference */
+        ProjectPromptModelPreference: {
+            /** Model Id */
+            model_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Provider Id */
+            provider_id: string;
+            /** Revision */
+            revision: number;
+            /** Stage Id */
+            stage_id: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** PromptModelDefinition */
+        PromptModelDefinition: {
+            /** Capabilities */
+            capabilities: ("improve" | "translate")[];
+            /** Label */
+            label: string;
+            /** Max Input Chars */
+            max_input_chars: number;
+            /** Model Id */
+            model_id: string;
+        };
+        /** PromptProposal */
+        PromptProposal: {
+            /**
+             * Changes
+             * @default []
+             */
+            changes: components["schemas"]["PromptProposalChange"][];
+            /** Created At */
+            created_at: string;
+            /** Failure Code */
+            failure_code?: ("provider_unavailable" | "provider_timeout" | "provider_rate_limited" | "invalid_provider_output" | "source_revision_changed" | "layer_locked" | "proposal_already_running" | "model_not_allowed" | "store_unavailable" | "workflow_unavailable") | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Improvement Instructions */
+            improvement_instructions?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "improve" | "translate";
+            /** Model Id */
+            model_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Proposal Id */
+            proposal_id: string;
+            /** Provider Id */
+            provider_id: string;
+            source: components["schemas"]["PromptProposalSource"];
+            /** Stage Id */
+            stage_id: string;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "succeeded" | "failed" | "applied" | "rejected" | "superseded";
+            /** Target Language */
+            target_language?: string | null;
+            /** Target Layers */
+            target_layers: ("template" | "project_override")[];
+            /** Translated Project Override */
+            translated_project_override?: string | null;
+            /** Translated Template Body */
+            translated_template_body?: string | null;
+        };
+        /**
+         * PromptProposalApplyResult
+         * @description Immutable provenance for one explicit Apply action.
+         */
+        PromptProposalApplyResult: {
+            proposal: components["schemas"]["PromptProposal"];
+            /** Resulting Binding Revision */
+            resulting_binding_revision: number;
+            /** Resulting Template Id */
+            resulting_template_id: string;
+            /** Resulting Template Revision */
+            resulting_template_revision: number;
+        };
+        /** PromptProposalChange */
+        PromptProposalChange: {
+            /** After Text */
+            after_text: string;
+            /** Before Text */
+            before_text: string;
+            /** Change Id */
+            change_id: string;
+            /** End Line */
+            end_line: number;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "template" | "project_override";
+            /** Start Line */
+            start_line: number;
+        };
+        /**
+         * PromptProposalPage
+         * @description Bounded newest-first history page with an opaque cursor.
+         */
+        PromptProposalPage: {
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Proposals */
+            proposals: components["schemas"]["PromptProposal"][];
+        };
+        /** PromptProposalSource */
+        PromptProposalSource: {
+            /** Binding Revision */
+            binding_revision: number;
+            /** Project Override */
+            project_override?: string | null;
+            /** Template Body */
+            template_body: string;
+            /** Template Id */
+            template_id: string;
+            /** Template Language */
+            template_language: string;
+            /** Template Revision */
+            template_revision: number;
+        };
+        /**
+         * PromptProviderDefinition
+         * @description The browser-safe catalog projection; never carries endpoints or credentials.
+         */
+        PromptProviderDefinition: {
+            /** Enabled */
+            enabled: boolean;
+            /** Label */
+            label: string;
+            /** Models */
+            models: components["schemas"]["PromptModelDefinition"][];
+            /** Provider Id */
+            provider_id: string;
+        };
         /** PromptStageDefinition */
         PromptStageDefinition: {
             /** Label */
@@ -490,9 +844,20 @@ export interface components {
             stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
             /**
              * Status
-             * @constant
+             * @enum {string}
              */
-            status: "draft_only";
+            status: "draft_only" | "proposal_ready";
+        };
+        /** PromptStarterDefinition */
+        PromptStarterDefinition: {
+            /** Body */
+            body: string;
+            /** Label */
+            label: string;
+            /** Language */
+            language: string;
+            /** Starter Id */
+            starter_id: string;
         };
         /** PromptTemplateRevision */
         PromptTemplateRevision: {
@@ -578,6 +943,22 @@ export interface components {
             template_id: string;
             /** Template Revision */
             template_revision: number;
+        };
+        /** SavePromptLayerLockRequest */
+        SavePromptLayerLockRequest: {
+            /** Base Revision */
+            base_revision?: number | null;
+            /** Locked */
+            locked: boolean;
+        };
+        /** SavePromptModelPreferenceRequest */
+        SavePromptModelPreferenceRequest: {
+            /** Base Revision */
+            base_revision?: number | null;
+            /** Model Id */
+            model_id: string;
+            /** Provider Id */
+            provider_id: string;
         };
         /** SavePromptTemplateRequest */
         SavePromptTemplateRequest: {
@@ -1116,6 +1497,332 @@ export interface operations {
             };
         };
     };
+    get_prompt_locks_api_v1_projects__project_id__prompt_lab_locks__stage_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                stage_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPromptLayerLock"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_prompt_lock_api_v1_projects__project_id__prompt_lab_locks__stage_id___layer__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                stage_id: string;
+                layer: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavePromptLayerLockRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPromptLayerLock"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_prompt_preference_api_v1_projects__project_id__prompt_lab_preferences__stage_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                stage_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPromptModelPreference"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_prompt_preference_api_v1_projects__project_id__prompt_lab_preferences__stage_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                stage_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavePromptModelPreferenceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectPromptModelPreference"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_prompt_proposals_api_v1_projects__project_id__prompt_lab_proposals_get: {
+        parameters: {
+            query: {
+                stage_id: string;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptProposalPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePromptProposalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplyPromptProposalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptProposalApplyResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals__proposal_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_resolved_prompt_api_v1_projects__project_id__prompt_lab_resolved__stage_id__get: {
         parameters: {
             query?: never;
@@ -1231,6 +1938,37 @@ export interface operations {
             };
         };
     };
+    list_prompt_providers_api_v1_prompt_providers_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptProviderDefinition"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_prompt_stages_api_v1_prompt_stages_get: {
         parameters: {
             query?: never;
@@ -1249,6 +1987,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PromptStageDefinition"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_prompt_starter_api_v1_prompt_stages__stage_id__starter_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                stage_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptStarterDefinition"];
                 };
             };
             /** @description Validation Error */

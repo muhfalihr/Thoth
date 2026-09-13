@@ -25,6 +25,20 @@ export type PromptBindingSaveResult =
   | { kind: "saved"; value: ProjectPromptBinding }
   | { kind: "conflict"; latest: ProjectPromptBinding };
 
+export type PromptProvider = components["schemas"]["PromptProviderDefinition"];
+export type PromptStarter = components["schemas"]["PromptStarterDefinition"];
+export type PromptModelPreference = components["schemas"]["ProjectPromptModelPreference"];
+export type PromptLayerLock = components["schemas"]["ProjectPromptLayerLock"];
+export type PromptProposalResource = components["schemas"]["PromptProposal"];
+export type PromptProposalPageResource = components["schemas"]["PromptProposalPage"];
+export type SavePromptModelPreferencePayload =
+  components["schemas"]["SavePromptModelPreferenceRequest"];
+export type SavePromptLayerLockPayload = components["schemas"]["SavePromptLayerLockRequest"];
+export type CreatePromptProposalPayload = components["schemas"]["CreatePromptProposalRequest"];
+export type ApplyPromptProposalPayload = components["schemas"]["ApplyPromptProposalRequest"];
+export type PromptProposalApplyResultResource =
+  components["schemas"]["PromptProposalApplyResult"];
+
 export type ControlPlaneClient = {
   listStylePresets: () => Promise<StylePreset[]>;
   createWorkflow: (request: WorkflowRequest) => Promise<WorkflowSummary>;
@@ -57,9 +71,45 @@ export type ControlPlaneClient = {
     request: SaveProjectPromptBindingRequest,
   ) => Promise<PromptBindingSaveResult>;
   getResolvedPrompt: (projectId: string, stageId: string) => Promise<ResolvedPromptDraft>;
+  listPromptProviders: () => Promise<PromptProvider[]>;
+  getPromptStarter: (stageId: string) => Promise<PromptStarter>;
+  getPromptPreference: (
+    projectId: string,
+    stageId: string,
+  ) => Promise<PromptModelPreference | null>;
+  savePromptPreference: (
+    projectId: string,
+    stageId: string,
+    request: SavePromptModelPreferencePayload,
+  ) => Promise<PromptModelPreference>;
+  getPromptLocks: (projectId: string, stageId: string) => Promise<PromptLayerLock[]>;
+  savePromptLock: (
+    projectId: string,
+    stageId: string,
+    layer: string,
+    request: SavePromptLayerLockPayload,
+  ) => Promise<PromptLayerLock>;
+  createPromptProposal: (
+    projectId: string,
+    idempotencyKey: string,
+    request: CreatePromptProposalPayload,
+  ) => Promise<PromptProposalResource>;
+  listPromptProposals: (
+    projectId: string,
+    stageId: string,
+    cursor?: string,
+    limit?: number,
+  ) => Promise<PromptProposalPageResource>;
+  getPromptProposal: (projectId: string, proposalId: string) => Promise<PromptProposalResource>;
+  applyPromptProposal: (
+    projectId: string,
+    proposalId: string,
+    request: ApplyPromptProposalPayload,
+  ) => Promise<PromptProposalApplyResultResource>;
+  rejectPromptProposal: (projectId: string, proposalId: string) => Promise<PromptProposalResource>;
 };
 
-type ClientOptions = { baseUrl?: string; apiKey?: string };
+type ClientOptions = { baseUrl?: string; apiKey?: string; fetch?: typeof fetch };
 
 const defaultBaseUrl = (import.meta.env.VITE_CONTROL_PLANE_URL ?? "").replace(/\/$/, "");
 const defaultApiKey = import.meta.env.VITE_CONTROL_PLANE_API_KEY ?? "";
@@ -79,10 +129,11 @@ function eventBlocks(chunk: string): Array<{ id?: string; data: string }> {
 export function createControlPlaneClient(options: ClientOptions = {}): ControlPlaneClient {
   const baseUrl = (options.baseUrl ?? defaultBaseUrl).replace(/\/$/, "");
   const apiKey = options.apiKey ?? defaultApiKey;
+  const doFetch = options.fetch ?? fetch;
   const headers = (extra: HeadersInit = {}) => ({ Authorization: `Bearer ${apiKey}`, ...extra });
 
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${baseUrl}${path}`, {
+    const response = await doFetch(`${baseUrl}${path}`, {
       ...init,
       headers: headers(init.headers),
     });
@@ -91,7 +142,7 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
   }
 
   async function saveWithConflict<T>(path: string, method: "POST" | "PUT", body: unknown) {
-    const response = await fetch(`${baseUrl}${path}`, {
+    const response = await doFetch(`${baseUrl}${path}`, {
       method,
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
@@ -177,6 +228,62 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
     getResolvedPrompt: (projectId, stageId) =>
       request<ResolvedPromptDraft>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/resolved/${encodeURIComponent(stageId)}`,
+      ),
+    listPromptProviders: () => request<PromptProvider[]>("/api/v1/prompt-providers"),
+    getPromptStarter: (stageId) =>
+      request<PromptStarter>(
+        `/api/v1/prompt-stages/${encodeURIComponent(stageId)}/starter`,
+      ),
+    getPromptPreference: (projectId, stageId) =>
+      request<PromptModelPreference | null>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/preferences/${encodeURIComponent(stageId)}`,
+      ).catch((error: unknown) => {
+        if (error instanceof Error && error.message.endsWith("(404)")) return null;
+        throw error;
+      }),
+    savePromptPreference: (projectId, stageId, req) =>
+      request<PromptModelPreference>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/preferences/${encodeURIComponent(stageId)}`,
+        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) },
+      ),
+    getPromptLocks: (projectId, stageId) =>
+      request<PromptLayerLock[]>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/locks/${encodeURIComponent(stageId)}`,
+      ),
+    savePromptLock: (projectId, stageId, layer, req) =>
+      request<PromptLayerLock>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/locks/${encodeURIComponent(stageId)}/${encodeURIComponent(layer)}`,
+        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) },
+      ),
+    createPromptProposal: (projectId, idempotencyKey, req) =>
+      request<PromptProposalResource>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/proposals`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify(req),
+        },
+      ),
+    listPromptProposals: (projectId, stageId, cursor, limit = 20) => {
+      const query = new URLSearchParams({ stage_id: stageId, limit: String(limit) });
+      if (cursor) query.set("cursor", cursor);
+      return request<PromptProposalPageResource>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/proposals?${query.toString()}`,
+      );
+    },
+    getPromptProposal: (projectId, proposalId) =>
+      request<PromptProposalResource>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/proposals/${encodeURIComponent(proposalId)}`,
+      ),
+    applyPromptProposal: (projectId, proposalId, req) =>
+      request<PromptProposalApplyResultResource>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/proposals/${encodeURIComponent(proposalId)}/apply`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) },
+      ),
+    rejectPromptProposal: (projectId, proposalId) =>
+      request<PromptProposalResource>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/proposals/${encodeURIComponent(proposalId)}/reject`,
+        { method: "POST" },
       ),
     streamWorkflow(workflowId, onSnapshot, lastEventId) {
       let active = true;

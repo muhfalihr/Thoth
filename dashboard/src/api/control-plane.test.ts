@@ -12,6 +12,7 @@ import {
   type ResolvedPromptDraft,
   type SaveProjectPromptBindingRequest,
   type SavePromptTemplateRequest,
+  type CreatePromptProposalPayload,
   type WorkflowSummary,
 } from "./control-plane";
 
@@ -145,9 +146,11 @@ test("exposes no provider-backed AI action on the prompt client", async () => {
   const actions = Object.keys(client).join(" ").toLowerCase();
   expect(actions).not.toContain("improve");
   expect(actions).not.toContain("translate");
-  expect(actions).not.toContain("proposal");
   expect(typeof client.savePromptTemplate).toBe("function");
   expect(typeof client.savePromptBinding).toBe("function");
+  expect(typeof client.createPromptProposal).toBe("function");
+  expect(typeof client.applyPromptProposal).toBe("function");
+  expect(typeof client.rejectPromptProposal).toBe("function");
 });
 
 test("patches edit documents with encoded IDs and returns conflict latest document", async () => {
@@ -225,6 +228,98 @@ test("keeps generic errors for non-conflict edit patch failures", async () => {
     "Control plane request failed (422)",
   );
 });
+
+test("createPromptProposal sends one authenticated idempotent request", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchMock = mock(async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify(C2_PROPOSAL), { status: 202 });
+  }) as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret", fetch: fetchMock });
+  await client.createPromptProposal("project/a", "request-1", C2_CREATE);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].url).toBe("http://control-plane.test/api/v1/projects/project%2Fa/prompt-lab/proposals");
+  expect(calls[0].init?.method).toBe("POST");
+  const headers = calls[0].init?.headers as Record<string, string>;
+  expect(headers["Idempotency-Key"]).toBe("request-1");
+  expect(headers.Authorization).toBe("Bearer secret");
+  expect(String(calls[0].init?.body)).not.toContain("base_url");
+});
+
+test("prompt C2 read/write methods hit encoded routes", async () => {
+  const page = { proposals: [C2_PROPOSAL], next_cursor: null };
+  const calls: Array<{ url: string }> = [];
+  const fetchMock = mock(async (url: RequestInfo | URL, _init?: RequestInit) => {
+    calls.push({ url: String(url) });
+    return new Response(JSON.stringify(page), { status: 200 });
+  }) as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret", fetch: fetchMock });
+  await client.listPromptProviders();
+  await client.getPromptStarter("narrative_plan");
+  await client.savePromptPreference("project_a", "narrative_plan", {
+    provider_id: "novita",
+    model_id: "deepseek/deepseek-v3.1",
+  });
+  await client.getPromptLocks("project_a", "narrative_plan");
+  await client.savePromptLock("project_a", "narrative_plan", "template", { locked: true });
+  await client.listPromptProposals("project_a", "narrative_plan", "cursor-1", 5);
+  await client.getPromptProposal("project_a", "proposal_1");
+  await client.applyPromptProposal("project_a", "proposal_1", {
+    source_template_revision: 1,
+    source_binding_revision: 1,
+    change_ids: ["change_abc"],
+  });
+  await client.rejectPromptProposal("project_a", "proposal_1");
+  expect(calls.length).toBe(9);
+  expect(calls[1]?.url).toContain("/prompt-stages/narrative_plan/starter");
+  expect(calls[5]?.url).toContain("stage_id=narrative_plan");
+  expect(calls[5]?.url).toContain("cursor=cursor-1");
+  expect(calls[7]?.url).toContain("/apply");
+  expect(calls[8]?.url).toContain("/reject");
+});
+
+test("getPromptPreference maps 404 to null", async () => {
+  const fetchMock = mock(async () => new Response("missing", { status: 404 })) as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret", fetch: fetchMock });
+  await expect(client.getPromptPreference("project_a", "narrative_plan")).resolves.toBeNull();
+});
+
+const C2_CREATE = {
+  kind: "improve",
+  stage_id: "narrative_plan",
+  provider_id: "novita",
+  model_id: "deepseek/deepseek-v3.1",
+  target_layer: "template",
+  source_template_id: "ptpl_001",
+  source_template_revision: 1,
+  source_binding_revision: 1,
+} satisfies CreatePromptProposalPayload;
+
+const C2_PROPOSAL = {
+  proposal_id: "proposal_1",
+  project_id: "project_a",
+  stage_id: "narrative_plan",
+  kind: "improve",
+  status: "queued",
+  target_layers: ["template"],
+  source: {
+    template_id: "ptpl_001",
+    template_revision: 1,
+    binding_revision: 1,
+    template_language: "id-ID",
+    template_body: "Write a hook",
+    project_override: null,
+  },
+  provider_id: "novita",
+  model_id: "deepseek/deepseek-v3.1",
+  changes: [],
+  translated_template_body: null,
+  translated_project_override: null,
+  failure_code: null,
+  created_at: "2026-09-13T08:00:00Z",
+  started_at: null,
+  finished_at: null,
+};
 
 const RUNNING_SUMMARY = {
   workflow_id: "wf_001",
