@@ -127,6 +127,7 @@ services:
       THOTH_TEMPORAL_NAMESPACE: thoth-stage1
       THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts
       THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: python_tiktok_with_legacy_fallback
+      THOTH_PROMPT_PROVIDER_CATALOG: ${THOTH_PROMPT_PROVIDER_CATALOG:-[]}
     volumes:
       - type: bind
         source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts
@@ -164,6 +165,9 @@ services:
       THOTH_FFPROBE: /usr/bin/ffprobe
       THOTH_CDP: http://legacy-cdp:18800
       THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: ${THOTH_STAGE1_ACTIVITY_MODE:-python_tiktok_with_legacy_fallback}
+      THOTH_EDITOR_DATABASE_URL: "postgresql://thoth_editor:${THOTH_EDITOR_POSTGRES_PASSWORD:?set THOTH_EDITOR_POSTGRES_PASSWORD}@editor-postgresql:5432/thoth_editor"
+      THOTH_PROMPT_PROVIDER_CATALOG: ${THOTH_PROMPT_PROVIDER_CATALOG:-[]}
+      THOTH_PROMPT_PROVIDER_SECRETS: ${THOTH_PROMPT_PROVIDER_SECRETS:-{}}
     volumes:
       - type: bind
         source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts

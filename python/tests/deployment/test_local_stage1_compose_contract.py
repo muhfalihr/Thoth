@@ -1,3 +1,4 @@
+import pathlib
 import re
 from pathlib import Path
 
@@ -282,3 +283,27 @@ def test_provider_inputs_stay_out_of_git_and_the_build_context() -> None:
     assert "/stage1.providers.env" in gitignore
     assert "/stage1.providers.env" in dockerignore
     assert "**/.env*" in dockerignore
+
+
+def _service_env(compose: str, service: str) -> str:
+    return _service_block(compose, service)
+
+
+def _env_file() -> str:
+    return _repo_text(".env.stage1.local.example")
+
+
+def test_prompt_provider_secrets_are_worker_only() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    api_env = _service_env(compose, "api")
+    worker_env = _service_env(compose, "worker")
+    assert "THOTH_PROMPT_PROVIDER_CATALOG" in api_env
+    assert "THOTH_PROMPT_PROVIDER_SECRETS" not in api_env
+    assert "THOTH_PROMPT_PROVIDER_SECRETS" in worker_env
+    assert "THOTH_EDITOR_DATABASE_URL" in worker_env
+
+
+def test_prompt_provider_example_values_stay_empty() -> None:
+    env = _env_file()
+    assert "THOTH_PROMPT_PROVIDER_CATALOG=[]" in env
+    assert "THOTH_PROMPT_PROVIDER_SECRETS={}" in env
