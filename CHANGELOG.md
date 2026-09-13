@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-13 — Creator Studio Prompt Lab AI Proposals (C2)
+
+Implemented the approved offline C2 delivery for review-before-Apply AI prompt
+proposals across all three Prompt Lab stages.
+
+- Added strict C2 contracts, three server-owned starter templates, deterministic
+  `difflib` change hunks with stable IDs, and editor migration `0003` covering
+  preferences, layer locks, durable proposals, changes, idempotency, and Apply
+  provenance (`ai_assisted`, `user_approved`).
+- Added parameterized PostgreSQL persistence with bounded newest-first history,
+  one active generation per project-stage, legal lifecycle transitions, and
+  transactional Improve/Translate Apply with revalidation and rollback.
+- Added `PromptProposalService` orchestration, a typed empty-by-default
+  `THOTH_PROMPT_PROVIDER_CATALOG` plus worker-only
+  `THOTH_PROMPT_PROVIDER_SECRETS`, and a one-request OpenAI-compatible adapter
+  with a 120-second timeout, no retry, strict JSON layer output, and safe
+  failure codes.
+- Added the dedicated `thoth-prompt-proposals` Temporal queue in the existing
+  worker (135-second activity timeout, `maximum_attempts=1`), ID-only
+  history-facing contracts, and authenticated project-scoped routes with
+  `202/404/409/422/503` behavior plus regenerated OpenAPI/TypeScript contracts.
+- Added the isolated proposal reducer, `PromptProposalPanel` with starter/
+  scratch entry points, provider/model preference, locks, accessible durable
+  status/history, selective Improve Apply, whole Translate Apply, Reject,
+  Regenerate, bounded polling, and offline-safe recovery; disabled-by-default
+  Stage 1 Compose wiring with deployment contract tests.
+- Offline gates: Python 955 passed / 31 skipped, dashboard 158 passed, lint
+  0 errors (3 pre-existing warnings), production build passed, Scout
+  acquisition 126 tests and runtime suites passed, generation stable, and
+  `git diff --check` clean. No push, deployment, provider request, secret
+  access, or Stage 1 evidence mutation occurred.
+
 ## 2026-09-13 — Prompt Lab offline recovery fix
 
 Fixed Prompt Lab recovery so connectivity and draft status remain truthful across
