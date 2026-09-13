@@ -17,10 +17,19 @@ from thoth_control_plane.activities import (
     build_legacy_scout_activity,
     build_source_investigation_activity,
 )
-from thoth_control_plane.config import Settings
+from thoth_control_plane.activities.prompt_proposal import (
+    PROMPT_PROPOSAL_TASK_QUEUE,
+    build_prompt_proposal_activity,
+)
+from thoth_control_plane.config import Settings, SettingsValidationError
+from thoth_control_plane.infrastructure.prompt_proposal_repository import (
+    PostgresPromptProposalRepository,
+)
+from thoth_control_plane.infrastructure.prompt_provider import OpenAICompatiblePromptProvider
 from thoth_control_plane.infrastructure.temporal_gateway import TASK_QUEUE
 from thoth_control_plane.observability import configure_provider_logging
 from thoth_control_plane.workflows import SourceInvestigationWorkflow
+from thoth_control_plane.workflows.prompt_proposal import PromptProposalWorkflow
 
 
 def build_source_investigation_worker(
@@ -38,6 +47,36 @@ def build_source_investigation_worker(
         activities=[
             build_source_investigation_activity(settings, runner=runner, capability=capability)
         ],
+        max_concurrent_activities=1,
+    )
+
+
+def build_prompt_proposal_worker(client: Client, settings: Settings) -> Worker:
+    """Register the proposal activity on its dedicated queue with stored secrets."""
+    catalog = settings.THOTH_PROMPT_PROVIDER_CATALOG
+    enabled = tuple(provider for provider in catalog if provider.enabled)
+    secrets = settings.prompt_provider_secrets
+    for provider in enabled:
+        if provider.credential_id not in secrets:
+            # Safe startup failure: never name the provider, model, or credential value.
+            raise SettingsValidationError(
+                "prompt provider catalog is enabled without its worker credential"
+            )
+    repository = PostgresPromptProposalRepository(
+        settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
+        if settings.THOTH_EDITOR_DATABASE_URL is not None
+        else ""
+    )
+    provider_adapter = OpenAICompatiblePromptProvider(
+        runtime_catalog=catalog,
+        secrets=secrets,
+    )
+    activity = build_prompt_proposal_activity(repository=repository, provider=provider_adapter)
+    return Worker(
+        client,
+        task_queue=PROMPT_PROPOSAL_TASK_QUEUE,
+        workflows=[PromptProposalWorkflow],
+        activities=[activity.run],
         max_concurrent_activities=1,
     )
 
