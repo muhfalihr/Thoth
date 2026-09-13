@@ -380,4 +380,5 @@ async def test_openapi_exposes_no_provider_action_routes() -> None:
     joined = " ".join(prompt_paths).lower()
     assert "improve" not in joined
     assert "translate" not in joined
-    assert "proposal" not in joined
+    assert "apply" not in joined
+    assert "reject" not in joined

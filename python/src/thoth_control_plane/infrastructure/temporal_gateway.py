@@ -46,6 +46,11 @@ class TemporalWorkflowGateway:
         self._client = client
         self._activity_mode = activity_mode
 
+    @property
+    def client(self) -> Client:
+        """Expose the connected client for additional task-queue workers/gateways."""
+        return self._client
+
     @classmethod
     async def connect(cls, settings: Settings) -> TemporalWorkflowGateway:
         client = await Client.connect(

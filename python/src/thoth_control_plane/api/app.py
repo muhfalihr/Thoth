@@ -12,6 +12,7 @@ from temporalio.service import RPCError
 from thoth_control_plane.api.routes.edit_documents import router as edit_document_router
 from thoth_control_plane.api.routes.health import router as health_router
 from thoth_control_plane.api.routes.prompt_lab import router as prompt_lab_router
+from thoth_control_plane.api.routes.prompt_proposals import router as prompt_proposal_router
 from thoth_control_plane.api.routes.workflows import router as workflow_router
 from thoth_control_plane.application import (
     ApprovalNotAllowed,
@@ -26,8 +27,22 @@ from thoth_control_plane.application import (
 from thoth_control_plane.application.edit_documents import EditDocumentService
 from thoth_control_plane.application.ports import EditDocumentRepository, PromptLabRepository
 from thoth_control_plane.application.prompt_lab import PromptLabService
+from thoth_control_plane.application.prompt_proposal_ports import (
+    PromptProposalRepository as C2ProposalRepository,
+)
+from thoth_control_plane.application.prompt_proposal_ports import (
+    PromptProposalWorkflowGateway as C2ProposalGateway,
+)
+from thoth_control_plane.application.prompt_proposals import PromptProposalService
 from thoth_control_plane.config import Settings
+from thoth_control_plane.domain.prompt_proposals import PromptProviderDefinition
 from thoth_control_plane.infrastructure.editor_repository import PostgresEditDocumentRepository
+from thoth_control_plane.infrastructure.prompt_proposal_gateway import (
+    TemporalPromptProposalGateway,
+)
+from thoth_control_plane.infrastructure.prompt_proposal_repository import (
+    PostgresPromptProposalRepository,
+)
 from thoth_control_plane.infrastructure.prompt_repository import PostgresPromptLabRepository
 from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflowGateway
 
@@ -39,6 +54,9 @@ def create_app(
     gateway: WorkflowGateway | None = None,
     editor_repository: EditDocumentRepository | None = None,
     prompt_repository: PromptLabRepository | None = None,
+    prompt_proposal_repository: C2ProposalRepository | None = None,
+    prompt_proposal_gateway: C2ProposalGateway | None = None,
+    prompt_provider_catalog: tuple[PromptProviderDefinition, ...] = (),
 ) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
     settings = settings or Settings()  # type: ignore[call-arg]
@@ -50,6 +68,16 @@ def create_app(
         prompt_repository = PostgresPromptLabRepository(
             settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
         )
+    if prompt_proposal_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
+        prompt_proposal_repository = PostgresPromptProposalRepository(
+            settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
+        )
+    prompt_proposal_service = PromptProposalService(
+        prompt_repository=prompt_repository,
+        proposal_repository=prompt_proposal_repository,
+        catalog=prompt_provider_catalog,
+        gateway=prompt_proposal_gateway,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -68,6 +96,15 @@ def create_app(
             app.state.workflow_ready = True
             app.state.workflow_gateway = resolved_gateway
             app.state.workflow_service = WorkflowService(resolved_gateway)
+        effective_gateway = prompt_proposal_gateway
+        if effective_gateway is None and isinstance(resolved_gateway, TemporalWorkflowGateway):
+            effective_gateway = TemporalPromptProposalGateway(resolved_gateway.client, settings)
+        app.state.prompt_proposal_service = PromptProposalService(
+            prompt_repository=prompt_repository,
+            proposal_repository=prompt_proposal_repository,
+            catalog=prompt_provider_catalog,
+            gateway=effective_gateway,
+        )
         yield
 
     app = FastAPI(
@@ -81,6 +118,7 @@ def create_app(
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
     app.state.edit_document_service = EditDocumentService(editor_repository)
     app.state.prompt_lab_service = PromptLabService(prompt_repository)
+    app.state.prompt_proposal_service = prompt_proposal_service
 
     app.add_middleware(
         CORSMiddleware,
@@ -124,4 +162,5 @@ def create_app(
     app.include_router(workflow_router, prefix="/api/v1")
     app.include_router(edit_document_router, prefix="/api/v1")
     app.include_router(prompt_lab_router, prefix="/api/v1")
+    app.include_router(prompt_proposal_router, prefix="/api/v1")
     return app

@@ -1,0 +1,368 @@
+"""Contract tests for authenticated Prompt Proposal endpoints (C2)."""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from tests.application.test_prompt_lab import MemoryPromptLabRepository
+from tests.application.test_prompt_proposals import (
+    MemoryProposalRepository,
+    RecordingGateway,
+)
+from thoth_control_plane.api import create_app
+from thoth_control_plane.application.prompt_proposal_ports import (
+    PromptIdempotencyConflict,
+    PromptProposalActiveGeneration,
+    PromptProposalStale,
+)
+from thoth_control_plane.config import Settings
+from thoth_control_plane.domain.prompt_proposals import PromptProposal, PromptProviderDefinition
+from thoth_control_plane.domain.prompts import SaveProjectPromptBindingRequest
+
+AUTH_HEADERS = {"Authorization": "Bearer test-key"}
+
+PROVIDER_CATALOG = (
+    PromptProviderDefinition.model_validate(
+        {
+            "provider_id": "novita",
+            "label": "Novita",
+            "enabled": True,
+            "models": [
+                {
+                    "model_id": "deepseek/deepseek-v3.1",
+                    "label": "DeepSeek V3.1",
+                    "capabilities": ["improve", "translate"],
+                    "max_input_chars": 12000,
+                }
+            ],
+        }
+    ),
+)
+
+
+async def seeded_app(
+    proposal_repo: MemoryProposalRepository | None = None,
+    gateway: RecordingGateway | None = None,
+) -> tuple[httpx.AsyncClient, MemoryProposalRepository, str]:
+    prompt_repo = MemoryPromptLabRepository()
+    template = await prompt_repo.save_template(
+        project_id="project_a",
+        template_id="ptpl_seed",
+        base_revision=None,
+        stage_id="narrative_plan",
+        language="id-ID",
+        body="Write a hook\nContext",
+    )
+    await prompt_repo.save_binding(
+        project_id="project_a",
+        stage_id="narrative_plan",
+        request=SaveProjectPromptBindingRequest.model_validate(
+            {
+                "template_id": template.template_id,
+                "template_revision": 1,
+                "project_override": "Use Indonesian",
+            }
+        ),
+    )
+    proposal_repository = proposal_repo or MemoryProposalRepository()
+    app = create_app(
+        Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"),
+        None,
+        prompt_repository=prompt_repo,
+        prompt_proposal_repository=proposal_repository,
+        prompt_proposal_gateway=gateway or RecordingGateway(),
+        prompt_provider_catalog=PROVIDER_CATALOG,
+    )
+    transport = httpx.ASGITransport(app=app)
+    client = httpx.AsyncClient(transport=transport, base_url="http://test")
+    return client, proposal_repository, template.template_id
+
+
+def create_improvement(template_id: str) -> dict:
+    return {
+        "kind": "improve",
+        "stage_id": "narrative_plan",
+        "provider_id": "novita",
+        "model_id": "deepseek/deepseek-v3.1",
+        "target_layer": "template",
+        "source_template_id": template_id,
+        "source_template_revision": 1,
+        "source_binding_revision": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_prompt_providers_require_auth_and_return_enabled_only() -> None:
+    client, _, _ = await seeded_app()
+    async with client:
+        forbidden = await client.get("/api/v1/prompt-providers")
+        allowed = await client.get("/api/v1/prompt-providers", headers=AUTH_HEADERS)
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    assert [provider["provider_id"] for provider in allowed.json()] == ["novita"]
+    assert "base_url" not in allowed.text
+    assert "credential" not in allowed.text
+
+
+@pytest.mark.asyncio
+async def test_starter_route_returns_stage_body() -> None:
+    client, _, _ = await seeded_app()
+    async with client:
+        starter = await client.get(
+            "/api/v1/prompt-stages/narrative_plan/starter", headers=AUTH_HEADERS
+        )
+        unknown = await client.get(
+            "/api/v1/prompt-stages/unknown_stage/starter", headers=AUTH_HEADERS
+        )
+
+    assert starter.status_code == 200
+    assert starter.json()["body"].strip() != ""
+    assert unknown.status_code in {404, 422}
+
+
+@pytest.mark.asyncio
+async def test_preference_routes_roundtrip_and_conflict() -> None:
+    client, _, _ = await seeded_app()
+    async with client:
+        missing = await client.get(
+            "/api/v1/projects/project_a/prompt-lab/preferences/narrative_plan",
+            headers=AUTH_HEADERS,
+        )
+        saved = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/preferences/narrative_plan",
+            headers=AUTH_HEADERS,
+            json={"provider_id": "novita", "model_id": "deepseek/deepseek-v3.1"},
+        )
+        conflict = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/preferences/narrative_plan",
+            headers=AUTH_HEADERS,
+            json={
+                "provider_id": "novita",
+                "model_id": "deepseek/deepseek-v3.1",
+                "base_revision": 99,
+            },
+        )
+
+    assert missing.status_code == 404
+    assert saved.status_code == 200
+    assert saved.json()["revision"] == 1
+    assert conflict.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_lock_routes_roundtrip() -> None:
+    client, _, _ = await seeded_app()
+    async with client:
+        locks = await client.get(
+            "/api/v1/projects/project_a/prompt-lab/locks/narrative_plan", headers=AUTH_HEADERS
+        )
+        saved = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/locks/narrative_plan/template",
+            headers=AUTH_HEADERS,
+            json={"locked": True},
+        )
+
+    assert locks.status_code == 200
+    assert [lock["layer"] for lock in locks.json()] == ["template", "project_override"]
+    assert saved.status_code == 200
+    assert saved.json()["locked"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_returns_202_and_replays_idempotency_key() -> None:
+    client, _, template_id = await seeded_app()
+    async with client:
+        created = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+        replayed = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+
+    assert created.status_code == 202
+    assert created.json()["status"] == "queued"
+    assert created.json()["proposal_id"] == replayed.json()["proposal_id"]
+    assert "base_url" not in created.text
+    assert "credential" not in created.text
+
+
+@pytest.mark.asyncio
+async def test_create_without_saved_binding_is_not_found() -> None:
+    client, _, template_id = await seeded_app()
+    async with client:
+        response = await client.post(
+            "/api/v1/projects/project_b/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_active_generation_conflict_returns_409() -> None:
+    proposal_repo = MemoryProposalRepository()
+    proposal_repo.fail_reserve = PromptProposalActiveGeneration("proposal_1")
+    client, _, template_id = await seeded_app(proposal_repo=proposal_repo)
+    async with client:
+        response = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_idempotency_payload_conflict_returns_409() -> None:
+    proposal_repo = MemoryProposalRepository()
+    proposal_repo.fail_reserve = PromptIdempotencyConflict("proposal_1")
+    client, _, template_id = await seeded_app(proposal_repo=proposal_repo)
+    async with client:
+        response = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_workflow_unavailable_returns_503_and_marks_failed() -> None:
+    class FailingGateway(RecordingGateway):
+        async def start(self, proposal_id: str) -> None:
+            raise RuntimeError("temporal unreachable")
+
+    client, _repo, template_id = await seeded_app(gateway=FailingGateway())
+    proposal_repo = client._transport.app.state.prompt_proposal_service._proposal_repository
+    async with client:
+        response = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+
+    assert response.status_code == 503
+    stored = next(iter(proposal_repo.proposals.values()))
+    assert stored.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_proposal_detail_is_project_scoped() -> None:
+    client, _repo, template_id = await seeded_app()
+    async with client:
+        created = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+        proposal_id = created.json()["proposal_id"]
+        found = await client.get(
+            f"/api/v1/projects/project_a/prompt-lab/proposals/{proposal_id}",
+            headers=AUTH_HEADERS,
+        )
+        missing = await client.get(
+            f"/api/v1/projects/project_b/prompt-lab/proposals/{proposal_id}",
+            headers=AUTH_HEADERS,
+        )
+
+    assert found.status_code == 200
+    assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_history_route_requires_stage_and_returns_page() -> None:
+    client, _, template_id = await seeded_app()
+    async with client:
+        await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+        page = await client.get(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            params={"stage_id": "narrative_plan", "limit": 5},
+            headers=AUTH_HEADERS,
+        )
+
+    assert page.status_code == 200
+    assert len(page.json()["proposals"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_reject_and_stale_paths() -> None:
+    client, proposal_repo, template_id = await seeded_app()
+    async with client:
+        created = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(template_id),
+        )
+        proposal_id = created.json()["proposal_id"]
+
+        stale = await client.post(
+            f"/api/v1/projects/project_a/prompt-lab/proposals/{proposal_id}/apply",
+            headers=AUTH_HEADERS,
+            json={
+                "source_template_revision": 1,
+                "source_binding_revision": 9,
+                "change_ids": ["change_abc"],
+            },
+        )
+        assert stale.status_code == 409
+        assert isinstance(PromptProposalStale, type)  # keep import meaningful
+
+        proposal_repo.proposals[("project_a", proposal_id)] = PromptProposal.model_validate(
+            {
+                **created.json(),
+                "status": "succeeded",
+                "changes": [
+                    {
+                        "change_id": "change_abc",
+                        "layer": "template",
+                        "before_text": "before",
+                        "after_text": "after",
+                        "start_line": 0,
+                        "end_line": 1,
+                    }
+                ],
+            }
+        )
+        applied = await client.post(
+            f"/api/v1/projects/project_a/prompt-lab/proposals/{proposal_id}/apply",
+            headers=AUTH_HEADERS,
+            json={
+                "source_template_revision": 1,
+                "source_binding_revision": 1,
+                "change_ids": ["change_abc"],
+            },
+        )
+        assert applied.status_code == 200
+
+        rejected = await client.post(
+            f"/api/v1/projects/project_a/prompt-lab/proposals/{proposal_id}/reject",
+            headers=AUTH_HEADERS,
+        )
+        assert rejected.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_openapi_exposes_only_the_documented_c2_routes() -> None:
+    client, _repo, _ = await seeded_app()
+    async with client:
+        app = client._transport.app  # type: ignore[attr-defined]
+    paths = app.openapi()["paths"]
+    c2_paths = [path for path in paths if "prompt" in path]
+    assert "/api/v1/prompt-providers" in paths
+    assert "/api/v1/prompt-stages/{stage_id}/starter" in paths
+    joined = " ".join(c2_paths).lower()
+    assert "improve" not in joined
+    assert "translate" not in joined
