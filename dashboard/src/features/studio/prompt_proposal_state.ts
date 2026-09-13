@@ -111,18 +111,34 @@ function selectedModel(state: PromptProposalState) {
 export function canGenerateProposal(
   state: PromptProposalState,
   facts: { online: boolean; formDirty: boolean },
+  operation?: "improve" | "translate",
+  targetLayer?: "template" | "project_override",
 ): { allowed: boolean; reason?: GenerateBlockReason } {
   if (!facts.online) return { allowed: false, reason: "offline" };
   if (facts.formDirty) return { allowed: false, reason: "unsaved_changes" };
-  if (state.savedTemplateRevision === null || state.savedBindingRevision === null) {
+  if (
+    state.savedTemplateId === null ||
+    state.savedTemplateRevision === null ||
+    state.savedBindingRevision === null
+  ) {
     return { allowed: false, reason: "missing_saved_source" };
   }
   const { provider, model } = selectedModel(state);
   if (!provider || !model) return { allowed: false, reason: "no_provider" };
+  if (operation && !model.capabilities.includes(operation)) {
+    return { allowed: false, reason: "model_not_allowed" };
+  }
   if (state.activeProposal && (state.activeProposal.status === "queued" || state.activeProposal.status === "running")) {
     return { allowed: false, reason: "proposal_in_flight" };
   }
-  if (lockedLayers(state).size > 0) return { allowed: false, reason: "layer_locked" };
+  const locked = lockedLayers(state);
+  if (operation === "improve" && targetLayer && locked.has(targetLayer)) {
+    return { allowed: false, reason: "layer_locked" };
+  }
+  if (operation === "translate" && locked.has("template")) {
+    return { allowed: false, reason: "layer_locked" };
+  }
+  if (!operation && locked.size > 0) return { allowed: false, reason: "layer_locked" };
   return { allowed: true };
 }
 
@@ -188,13 +204,15 @@ export function promptProposalReducer(
       return { ...state, preference: action.latest, lastError: "preference_conflict" };
     case "locks_loaded":
       return { ...state, locks: action.locks };
-    case "lock_saved":
+    case "lock_saved": {
+      const existing = state.locks.some((lock) => lock.layer === action.lock.layer);
       return {
         ...state,
-        locks: state.locks.map((lock) =>
-          lock.layer === action.lock.layer ? action.lock : lock,
-        ),
+        locks: existing
+          ? state.locks.map((lock) => (lock.layer === action.lock.layer ? action.lock : lock))
+          : [...state.locks, action.lock],
       };
+    }
     case "proposal_loaded":
       return {
         ...state,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer } from "react";
+import { useEffect, useReducer, useState } from "react";
 
 import type { ControlPlaneClient } from "@/api/control-plane";
 import {
@@ -48,6 +48,10 @@ const POLL_INTERVAL_MS = 1_500;
 export function PromptProposalPanel(props: Props) {
   const { client, projectId, stageId, formDirty, online, onApplied, onUseStarter, onCreateScratch } =
     props;
+  const [instructions, setInstructions] = useState("");
+  const [targetLanguage, setTargetLanguage] = useState("en-US");
+  const [improveLayer, setImproveLayer] = useState<"template" | "project_override">("template");
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [state, dispatch] = useReducer(
     promptProposalReducer,
     undefined,
@@ -60,8 +64,6 @@ export function PromptProposalPanel(props: Props) {
         savedOverrideText: props.savedOverrideText,
       }),
   );
-  void useCallback(() => undefined, []);
-
   useEffect(() => {
     dispatch({
       type: "saved_revisions_changed",
@@ -157,6 +159,9 @@ export function PromptProposalPanel(props: Props) {
       source_template_revision: props.savedTemplateRevision,
       source_binding_revision: props.savedBindingRevision,
     };
+    const layer = kind === "improve" ? improveLayer : "template";
+    const gate = canGenerateProposal(state, { online, formDirty }, kind, layer);
+    if (!gate.allowed) return;
     void client
       .createPromptProposal(
         projectId,
@@ -167,7 +172,8 @@ export function PromptProposalPanel(props: Props) {
               stage_id: stageId,
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
-              target_layer: "template",
+              target_layer: layer,
+              improvement_instructions: instructions.trim() ? instructions : null,
               ...sourceIdentity,
             }
           : {
@@ -175,7 +181,7 @@ export function PromptProposalPanel(props: Props) {
               stage_id: stageId,
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
-              target_language: "en-US",
+              target_language: targetLanguage,
               ...sourceIdentity,
             },
       )
@@ -350,11 +356,44 @@ export function PromptProposalPanel(props: Props) {
         </button>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label htmlFor="pp-improve-layer">Improve target</label>
+        <select
+          id="pp-improve-layer"
+          className="rounded-md border border-border bg-background px-2 py-1"
+          value={improveLayer}
+          onChange={(event) =>
+            setImproveLayer(event.target.value as "template" | "project_override")
+          }
+        >
+          <option value="template">Template</option>
+          <option value="project_override">Project override</option>
+        </select>
+        <label htmlFor="pp-instructions">Instructions (optional)</label>
+        <input
+          id="pp-instructions"
+          className="min-w-48 rounded-md border border-border bg-background px-2 py-1"
+          maxLength={2000}
+          value={instructions}
+          onChange={(event) => setInstructions(event.target.value)}
+        />
+        <label htmlFor="pp-language">Target language</label>
+        <input
+          id="pp-language"
+          className="w-24 rounded-md border border-border bg-background px-2 py-1"
+          value={targetLanguage}
+          onChange={(event) => setTargetLanguage(event.target.value)}
+        />
+      </div>
+
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <button
           type="button"
           className={toolbarButton}
-          disabled={!generateCheck.allowed || identityMissing}
+          disabled={
+            !canGenerateProposal(state, { online, formDirty }, "improve", improveLayer).allowed ||
+            identityMissing
+          }
           onClick={() => generate("improve")}
         >
           Improve with AI
@@ -362,7 +401,10 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={!generateCheck.allowed || identityMissing}
+          disabled={
+            !canGenerateProposal(state, { online, formDirty }, "translate", "template").allowed ||
+            identityMissing
+          }
           onClick={() => generate("translate")}
         >
           Translate with AI
@@ -393,10 +435,37 @@ export function PromptProposalPanel(props: Props) {
                   ? `Proposal failed (${proposal.failure_code ?? "unknown"})`
                   : `Proposal ${proposal.status}`}
           </div>
-          {proposal.kind === "translate" && proposal.translated_template_body && (
-            <pre className="whitespace-pre-wrap rounded-md border border-border bg-card p-2 text-xs">
-              {proposal.translated_template_body}
-            </pre>
+          {proposal.kind === "translate" && (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <p className="font-semibold">Source template</p>
+                <pre className="whitespace-pre-wrap rounded-md border border-border bg-card p-2">
+                  {proposal.source.template_body}
+                </pre>
+              </div>
+              <div>
+                <p className="font-semibold">Proposed template</p>
+                <pre className="whitespace-pre-wrap rounded-md border border-border bg-card p-2">
+                  {proposal.translated_template_body ?? ""}
+                </pre>
+              </div>
+              {proposal.source.project_override !== null && (
+                <>
+                  <div>
+                    <p className="font-semibold">Source override</p>
+                    <pre className="whitespace-pre-wrap rounded-md border border-border bg-card p-2">
+                      {proposal.source.project_override}
+                    </pre>
+                  </div>
+                  <div>
+                    <p className="font-semibold">Proposed override</p>
+                    <pre className="whitespace-pre-wrap rounded-md border border-border bg-card p-2">
+                      {proposal.translated_project_override ?? ""}
+                    </pre>
+                  </div>
+                </>
+              )}
+            </div>
           )}
           {proposal.kind === "improve" &&
             proposal.changes.map((change) => (
@@ -445,7 +514,14 @@ export function PromptProposalPanel(props: Props) {
             <button
               type="button"
               className={toolbarButton}
-              disabled={!generateCheck.allowed}
+              disabled={
+                !canGenerateProposal(
+                  state,
+                  { online, formDirty },
+                  proposal.kind,
+                  proposal.target_layers[0],
+                ).allowed || props.savedTemplateId === null
+              }
               onClick={() => generate(proposal.kind)}
             >
               Regenerate
@@ -461,6 +537,26 @@ export function PromptProposalPanel(props: Props) {
       {formDirty && !proposal && (
         <p className="text-xs text-muted-foreground">Save changes first</p>
       )}
+
+      <details
+        open={historyOpen}
+        onToggle={(event) => setHistoryOpen((event.target as HTMLDetailsElement).open)}
+      >
+        <summary className="cursor-pointer text-sm font-semibold">Proposal history</summary>
+        <ul className="mt-1 flex flex-col gap-1 text-xs">
+          {state.history.map((item) => (
+            <li key={item.proposal_id}>
+              <button
+                type="button"
+                className={toolbarButton}
+                onClick={() => dispatch({ type: "proposal_loaded", proposal: item })}
+              >
+                {`${item.kind} · ${item.status} · ${item.created_at}`}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </details>
     </section>
   );
 }

@@ -64,6 +64,7 @@ function readyState(): PromptProposalState {
   return createPromptProposalState({
     stageId: "narrative_plan",
     providers: [provider],
+    savedTemplateId: "ptpl_001",
     savedTemplateRevision: 1,
     savedBindingRevision: 1,
     savedOverrideText: "Use Indonesian",
@@ -92,11 +93,15 @@ test("generation requires saved revisions and unlocks when clean", () => {
   const noSaved = createPromptProposalState({
     stageId: "narrative_plan",
     providers: [provider],
+    savedTemplateId: null,
     savedTemplateRevision: null,
     savedBindingRevision: null,
     savedOverrideText: "",
   });
   expect(canGenerateProposal(noSaved, { online: true, formDirty: false }).allowed).toBe(false);
+  expect(
+    canGenerateProposal(noSaved, { online: true, formDirty: false }, "improve", "template").reason,
+  ).toBe("missing_saved_source");
 
   const allowed = canGenerateProposal(readyState(), { online: true, formDirty: false });
   expect(allowed.allowed).toBe(true);
@@ -110,7 +115,12 @@ test("locked target layer blocks generation", () => {
       { project_id: "project_a", stage_id: "narrative_plan", layer: "project_override", locked: false, revision: 1, updated_at: "2026-09-13T08:00:00Z" },
     ],
   });
-  expect(canGenerateProposal(locked, { online: true, formDirty: false }).allowed).toBe(false);
+  expect(
+    canGenerateProposal(locked, { online: true, formDirty: false }, "improve", "template").allowed,
+  ).toBe(false);
+  expect(
+    canGenerateProposal(locked, { online: true, formDirty: false }, "improve", "project_override").allowed,
+  ).toBe(true);
 });
 
 test("queued proposal blocks a second generation", () => {
@@ -172,4 +182,89 @@ test("reject and supersede transitions update the active proposal", () => {
   const ready = promptProposalReducer(readyState(), { type: "proposal_loaded", proposal });
   const rejected = promptProposalReducer(ready, { type: "proposal_status_changed", status: "rejected" });
   expect(rejected.activeProposal?.status).toBe("rejected");
+});
+
+
+test("generate gate is operation- and target-aware", () => {
+  const lockedTemplate = promptProposalReducer(readyState(), {
+    type: "locks_loaded",
+    locks: [
+      { project_id: "project_a", stage_id: "narrative_plan", layer: "template", locked: true, revision: 1, updated_at: "2026-09-13T08:00:00Z" },
+      { project_id: "project_a", stage_id: "narrative_plan", layer: "project_override", locked: false, revision: 1, updated_at: "2026-09-13T08:00:00Z" },
+    ],
+  });
+  expect(
+    canGenerateProposal(lockedTemplate, { online: true, formDirty: false }, "improve", "template").allowed,
+  ).toBe(false);
+  expect(
+    canGenerateProposal(lockedTemplate, { online: true, formDirty: false }, "improve", "project_override").allowed,
+  ).toBe(true);
+});
+
+test("capability gate is per-operation", () => {
+  const improveOnly = promptProposalReducer(readyState(), {
+    type: "providers_loaded",
+    providers: [
+      {
+        provider_id: "novita",
+        label: "Novita",
+        enabled: true,
+        models: [
+          {
+            model_id: "improve/model",
+            label: "Improve only",
+            capabilities: ["improve"] as Array<"improve" | "translate">,
+            max_input_chars: 12000,
+          },
+        ],
+      },
+    ],
+  });
+  promptProposalReducer(improveOnly, {
+    type: "select_provider",
+    providerId: "novita",
+    modelId: "improve/model",
+  });
+  const state = { ...improveOnly, selectedProviderId: "novita", selectedModelId: "improve/model" };
+  expect(canGenerateProposal(state, { online: true, formDirty: false }, "improve", "template").allowed).toBe(true);
+  expect(canGenerateProposal(state, { online: true, formDirty: false }, "translate", "template").allowed).toBe(false);
+});
+
+test("saved tuple syncs through the explicit action", () => {
+  const synced = promptProposalReducer(readyState(), {
+    type: "saved_revisions_changed",
+    templateId: "ptpl_real",
+    templateRevision: 5,
+    bindingRevision: 3,
+    overrideText: "Override",
+  });
+  expect(synced.savedTemplateId).toBe("ptpl_real");
+  expect(synced.savedTemplateRevision).toBe(5);
+  expect(synced.savedBindingRevision).toBe(3);
+});
+
+test("preference conflict keeps the latest returned resource", () => {
+  const latest = {
+    project_id: "project_a",
+    stage_id: "narrative_plan",
+    provider_id: "novita",
+    model_id: "deepseek/deepseek-v3.1",
+    revision: 9,
+    updated_at: "2026-09-13T08:00:00Z",
+  };
+  const conflicted = promptProposalReducer(readyState(), {
+    type: "preference_conflict",
+    latest,
+  });
+  expect(conflicted.preference?.revision).toBe(9);
+  expect(conflicted.lastError).toBe("preference_conflict");
+});
+
+test("lock_saved upserts the returned lock", () => {
+  const saved = promptProposalReducer(readyState(), {
+    type: "lock_saved",
+    lock: { project_id: "project_a", stage_id: "narrative_plan", layer: "template", locked: true, revision: 4, updated_at: "2026-09-13T08:00:00Z" },
+  });
+  expect(saved.locks.find((lock) => lock.layer === "template")?.locked).toBe(true);
+  expect(saved.locks.find((lock) => lock.layer === "template")?.revision).toBe(4);
 });
