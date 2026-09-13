@@ -53,9 +53,7 @@ def test_prompt_proposal_tables_carry_closed_constraints_and_bounds() -> None:
         "'applied', 'rejected', 'superseded'))" in sql
     )
     assert "layer TEXT NOT NULL CHECK (layer IN ('template', 'project_override'))" in sql
-    assert (
-        "REFERENCES prompt_template_revisions (project_id, template_id, revision)" in sql
-    )
+    assert "REFERENCES prompt_template_revisions (project_id, template_id, revision)" in sql
     assert "ownership TEXT NOT NULL CHECK (ownership = 'ai_assisted')" in sql
     assert "approval_mode TEXT NOT NULL CHECK (approval_mode = 'user_approved')" in sql
     assert (
@@ -65,9 +63,8 @@ def test_prompt_proposal_tables_carry_closed_constraints_and_bounds() -> None:
 
 
 def test_earlier_editor_migrations_remain_byte_identical() -> None:
-    assert (
-        "CREATE TABLE IF NOT EXISTS prompt_template_revisions"
-        in migration("0002_prompt_lab_foundation.sql")
+    assert "CREATE TABLE IF NOT EXISTS prompt_template_revisions" in migration(
+        "0002_prompt_lab_foundation.sql"
     )
     assert "CREATE TABLE IF NOT EXISTS edit_document_revisions" in migration(
         "0001_edit_document_revisions.sql"

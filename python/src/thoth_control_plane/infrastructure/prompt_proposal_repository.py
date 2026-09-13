@@ -419,6 +419,16 @@ class PostgresPromptProposalRepository:
         except Exception as error:
             raise PromptProposalStoreUnavailable() from error
 
+    async def get_proposal_for_worker(self, proposal_id: str) -> PromptProposal | None:
+        """Worker-only lookup by proposal ID; never project-scoped."""
+        try:
+            connection = await AsyncConnection.connect(self._database_url)
+            async with connection:
+                cursor = connection.cursor()
+                return await self._select_proposal_by_id(cursor, proposal_id)
+        except Exception as error:
+            raise PromptProposalStoreUnavailable() from error
+
     async def get_proposal(self, project_id: str, proposal_id: str) -> PromptProposal | None:
         try:
             connection = await AsyncConnection.connect(self._database_url)

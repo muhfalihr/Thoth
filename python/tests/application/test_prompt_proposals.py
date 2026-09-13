@@ -13,6 +13,7 @@ from thoth_control_plane.application.prompt_proposal_ports import (
     ProjectPromptModelPreference,
     PromptIdempotencyConflict,
     PromptModelNotInCatalog,
+    PromptPreferenceRevisionConflict,
     PromptProposalActiveGeneration,
     PromptProposalApplyResult,
     PromptProposalEmptyLayer,
@@ -84,6 +85,10 @@ class MemoryProposalRepository:
     ) -> ProjectPromptModelPreference:
         key = (project_id, stage_id)
         previous = self.preferences.get(key)
+        if previous is not None and (
+            request.base_revision is None or request.base_revision != previous.revision
+        ):
+            raise PromptPreferenceRevisionConflict(previous)
         preference = ProjectPromptModelPreference.model_validate(
             {
                 "project_id": project_id,
@@ -146,7 +151,12 @@ class MemoryProposalRepository:
     async def list_proposals(
         self, project_id: str, stage_id: str, cursor: str | None, limit: int
     ) -> PromptProposalPage:
-        return PromptProposalPage.model_validate({"proposals": [], "next_cursor": None})
+        proposals = tuple(
+            record
+            for (pid, _), record in self.proposals.items()
+            if pid == project_id and record.stage_id == stage_id
+        )
+        return PromptProposalPage.model_validate({"proposals": proposals, "next_cursor": None})
 
     async def mark_running(self, proposal_id: str) -> PromptProposal:
         return self._patch(proposal_id, status="running")

@@ -380,11 +380,15 @@ def test_no_fastapi_request_model_exposes_activity_mode() -> None:
     }
 
     assert request_schema_names == {
+        "ApplyPromptProposalRequest",
         "ApprovalSubmission",
         "ContentSetImportRequest",
+        "CreatePromptProposalRequest",
         "EditDocumentPatch",
         "RetryRequest",
         "SaveProjectPromptBindingRequest",
+        "SavePromptLayerLockRequest",
+        "SavePromptModelPreferenceRequest",
         "SavePromptTemplateRequest",
         "WorkflowRequest",
     }

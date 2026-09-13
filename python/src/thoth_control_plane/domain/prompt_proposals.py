@@ -97,6 +97,13 @@ class PromptProviderDefinition(StrictModel):
     enabled: bool
     models: tuple[PromptModelDefinition, ...]
 
+    @field_validator("models", mode="before")
+    @classmethod
+    def _coerce_models(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
+
 
 class ProjectPromptModelPreference(StrictModel):
     project_id: ProjectId
@@ -177,6 +184,13 @@ class PromptProposal(StrictModel):
     created_at: str
     started_at: str | None = None
     finished_at: str | None = None
+
+    @field_validator("target_layers", "changes", mode="before")
+    @classmethod
+    def _coerce_tuples(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
 
     @model_validator(mode="after")
     def validate_layers(self) -> PromptProposal:
@@ -359,3 +373,10 @@ class PromptProposalPage(StrictModel):
 
     proposals: tuple[PromptProposal, ...]
     next_cursor: str | None = None
+
+    @field_validator("proposals", mode="before")
+    @classmethod
+    def _coerce_proposals(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value

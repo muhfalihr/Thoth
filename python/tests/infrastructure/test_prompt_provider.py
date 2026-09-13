@@ -13,6 +13,8 @@ from thoth_control_plane.infrastructure.prompt_provider import (
     public_prompt_provider_catalog,
 )
 
+pytestmark = pytest.mark.asyncio
+
 RUNTIME_PROVIDER = {
     "provider_id": "novita",
     "label": "Novita",
@@ -257,6 +259,7 @@ async def test_adapter_enforces_input_limit_and_capability() -> None:
             "hidden_instruction": "server-owned instruction",
         }
     )
+
     def unused_handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("capability check must happen before any request")
 
