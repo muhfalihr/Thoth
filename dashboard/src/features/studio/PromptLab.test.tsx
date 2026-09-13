@@ -1,9 +1,8 @@
 /// <reference types="bun-types" />
 
 import { afterEach, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import type {
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";import type {
   ProjectPromptBinding,
   PromptStageDefinition,
   PromptTemplateRevision,
@@ -119,8 +118,7 @@ test("saves a template revision and reports Saving then Saved", async () => {
   render(<PromptLab client={promptClient} projectId="project_a" />);
 
   const body = await screen.findByLabelText("Template body");
-  await user.clear(body);
-  await user.type(body, "Sharper hook");
+  fireEvent.change(body, { target: { value: "Sharper hook" } });
   await user.click(screen.getByRole("button", { name: "Save template" }));
 
   expect(await screen.findByText("Saved")).toBeDefined();
@@ -183,15 +181,10 @@ test("preserves the local draft on a template conflict and reloads latest on dem
 test("saves the project override through the binding endpoint", async () => {
   const { PromptLab } = await import("./PromptLab");
   const user = userEvent.setup();
+  let captured: unknown = null;
   const promptClient = client({
     savePromptBinding: mock(async (_projectId, stageId, request) => {
-      expect(stageId).toBe("narrative_plan");
-      expect(request).toEqual({
-        template_id: "ptpl_001",
-        template_revision: 1,
-        project_override: "Use conversational Indonesian",
-        base_revision: 1,
-      });
+      captured = { stageId, request };
       return {
         kind: "saved" as const,
         value: { ...binding, revision: 2, project_override: "Use conversational Indonesian" },
@@ -201,11 +194,19 @@ test("saves the project override through the binding endpoint", async () => {
   render(<PromptLab client={promptClient} projectId="project_a" />);
 
   const override = await screen.findByLabelText("Project override");
-  await user.clear(override);
-  await user.type(override, "Use conversational Indonesian");
+  fireEvent.change(override, { target: { value: "Use conversational Indonesian" } });
   await user.click(screen.getByRole("button", { name: "Save binding" }));
 
   expect(await screen.findByText("Saved")).toBeDefined();
+  expect(captured).toEqual({
+    stageId: "narrative_plan",
+    request: {
+      template_id: "ptpl_001",
+      template_revision: 1,
+      project_override: "Use conversational Indonesian",
+      base_revision: 1,
+    },
+  });
 });
 
 test("shows an explicit empty state with Create binding when no binding exists", async () => {
@@ -248,4 +249,114 @@ test("switching stages loads that stage's templates and binding", async () => {
       (call) => call[1] === "caption_copy",
     ),
   ).toBe(true);
+});
+
+test("shows the safe offline state when the initial registry load fails", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const promptClient = client({
+    listPromptStages: mock(async () => {
+      throw new Error("registry unavailable");
+    }),
+  });
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+
+  expect(
+    await screen.findByText(
+      "Offline. Your prompt drafts are still here and will save when the connection returns.",
+    ),
+  ).toBeDefined();
+});
+
+test("retries the load from the offline state and preserves unsaved drafts", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const user = userEvent.setup();
+  const promptClient = client();
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+  const override = (await screen.findByLabelText("Project override")) as HTMLTextAreaElement;
+  fireEvent.change(override, { target: { value: "Keep it concise" } });
+
+  promptClient.listPromptTemplates = mock(async () => {
+    throw new Error("stage data unavailable");
+  });
+  act(() => {
+    window.dispatchEvent(new Event("offline"));
+  });
+  expect(
+    await screen.findByText(
+      "Offline. Your prompt drafts are still here and will save when the connection returns.",
+    ),
+  ).toBeDefined();
+
+  act(() => {
+    window.dispatchEvent(new Event("online"));
+  });
+  await screen.findByText(
+    "Offline. Your prompt drafts are still here and will save when the connection returns.",
+    {},
+    { timeout: 1_000 },
+  );
+
+  promptClient.listPromptTemplates = mock(async () => [template]);
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(
+    ((await screen.findByLabelText("Project override")) as HTMLTextAreaElement).value,
+  ).toBe("Keep it concise");
+  expect(
+    (promptClient.listPromptStages as ReturnType<typeof mock>).mock.calls.length,
+  ).toBeGreaterThanOrEqual(2);
+  expect(screen.getByText("Unsaved changes")).toBeDefined();
+  expect(
+    (screen.getByRole("button", { name: "Save binding" }) as HTMLButtonElement).disabled,
+  ).toBe(false);
+});
+
+test("reloads the registry and stage data when the browser reports online", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const promptClient = client();
+  render(<PromptLab client={promptClient} projectId="project_a" />);
+  await screen.findByLabelText("Template body");
+  const stagesBefore = (promptClient.listPromptStages as ReturnType<typeof mock>).mock.calls.length;
+  const templatesBefore = (promptClient.listPromptTemplates as ReturnType<typeof mock>).mock.calls
+    .length;
+
+  act(() => {
+    window.dispatchEvent(new Event("offline"));
+  });
+  await screen.findByText(
+    "Offline. Your prompt drafts are still here and will save when the connection returns.",
+  );
+
+  act(() => {
+    window.dispatchEvent(new Event("online"));
+  });
+
+  expect(await screen.findByText("Ready")).toBeDefined();
+  expect((promptClient.listPromptStages as ReturnType<typeof mock>).mock.calls.length).toBe(
+    stagesBefore + 1,
+  );
+  expect((promptClient.listPromptTemplates as ReturnType<typeof mock>).mock.calls.length).toBe(
+    templatesBefore + 1,
+  );
+});
+
+test("removes the offline listeners on unmount", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const promptClient = client();
+  const { unmount } = render(<PromptLab client={promptClient} projectId="project_a" />);
+  await screen.findByLabelText("Template body");
+  const callsBefore = (promptClient.listPromptStages as ReturnType<typeof mock>).mock.calls.length;
+
+  unmount();
+  act(() => {
+    window.dispatchEvent(new Event("offline"));
+  });
+  act(() => {
+    window.dispatchEvent(new Event("online"));
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  expect((promptClient.listPromptStages as ReturnType<typeof mock>).mock.calls.length).toBe(
+    callsBefore,
+  );
 });

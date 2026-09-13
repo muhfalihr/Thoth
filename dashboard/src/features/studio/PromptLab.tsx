@@ -1,4 +1,4 @@
-import { useEffect, useId, useReducer } from "react";
+import { useEffect, useId, useReducer, useState } from "react";
 
 import type { ControlPlaneClient, SavePromptTemplateRequest } from "@/api/control-plane";
 import {
@@ -46,6 +46,7 @@ export function PromptLab({ client, projectId }: Props) {
     undefined,
     () => createPromptLabState({ selectedStageId: "" }),
   );
+  const [attempt, setAttempt] = useState(0);
   const languageId = useId();
   const bodyId = useId();
   const overrideId = useId();
@@ -57,7 +58,7 @@ export function PromptLab({ client, projectId }: Props) {
       .then((stages) => {
         if (!active) return;
         dispatch({ type: "stages_loaded", stages });
-        if (stages.length > 0) {
+        if (stages.length > 0 && !state.selectedStageId) {
           dispatch({ type: "select_stage", stageId: stages[0].stage_id });
         }
       })
@@ -67,7 +68,8 @@ export function PromptLab({ client, projectId }: Props) {
     return () => {
       active = false;
     };
-  }, [client, projectId]);
+    // selectedStageId is read only to keep an existing stage selection stable across retries.
+  }, [client, projectId, attempt, state.selectedStageId]);
 
   useEffect(() => {
     if (!state.selectedStageId) return;
@@ -95,7 +97,27 @@ export function PromptLab({ client, projectId }: Props) {
     return () => {
       active = false;
     };
-  }, [client, projectId, state.selectedStageId]);
+  }, [client, projectId, state.selectedStageId, attempt]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleOffline = () => dispatch({ type: "went_offline" });
+    const handleOnline = () => {
+      dispatch({ type: "went_online" });
+      setAttempt((value) => value + 1);
+    };
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
+
+  const recover = () => {
+    dispatch({ type: "went_online" });
+    setAttempt((value) => value + 1);
+  };
 
   const languageValid = LANGUAGE_PATTERN.test(state.languageDraft);
   const bodyValid =
@@ -206,6 +228,9 @@ export function PromptLab({ client, projectId }: Props) {
           className="flex flex-wrap items-center gap-3 border-b border-border bg-muted px-4 py-2 text-sm"
         >
           <p>Offline. Your prompt drafts are still here and will save when the connection returns.</p>
+          <button type="button" className={toolbarButton} onClick={recover}>
+            Retry
+          </button>
         </div>
       )}
 

@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-13 — Prompt Lab offline recovery fix
+
+Fixed the Prompt Lab offline-recovery defect where a failed registry or stage-data
+load left the workspace permanently offline with no recovery path.
+
+- `PromptLab` now listens to browser `offline`/`online` events (removed on unmount)
+  and offers an accessible `Retry` action in the offline banner; both paths dispatch
+  `went_online` and reload the stage registry plus the selected-stage data.
+- The reducer tracks `formDirty` so reconnecting honestly reports `dirty` for
+  unsaved drafts, `went_online` is a no-op while online, and reloaded stage data
+  refreshes templates/bindings without clobbering unsaved local drafts.
+- Saves re-enable automatically after recovery; API contracts, provider boundaries,
+  disabled Improve/Translate controls, and migrations are unchanged.
+- Verified: focused Python Prompt Lab suites 71 passed; focused dashboard suites
+  51 passed; `tsc` production build and oxlint clean; `git diff --check` clean.
+
 ## 2026-09-13 — Creator Studio Prompt Lab C1
 
 Implemented the approved local-only Prompt Lab foundation for Creator Studio.

@@ -35,6 +35,7 @@ export type PromptLabState = StageFormSnapshot & {
   stageForms: Record<string, StageFormSnapshot>;
   saveStatus: PromptLabStatus;
   isOffline: boolean;
+  formDirty: boolean;
   lastFailedSave: PromptLabSaveKind | null;
   latestTemplate: PromptTemplateRevision | null;
   latestBinding: ProjectPromptBinding | null;
@@ -126,6 +127,7 @@ export function createPromptLabState(input: {
     saveStatus:
       input.resolved !== undefined ? "saved" : input.binding !== undefined ? "ready" : "loading",
     isOffline: false,
+    formDirty: false,
     lastFailedSave: null,
     latestTemplate: null,
     latestBinding: null,
@@ -137,8 +139,9 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
     case "stages_loaded":
       return { ...state, stages: action.stages };
     case "stage_data_loaded": {
-      const pristine = state.stageForms[state.selectedStageId] === undefined;
-      if (pristine) {
+      const mayReseed =
+        !state.formDirty && state.stageForms[state.selectedStageId] === undefined;
+      if (mayReseed) {
         const next = createPromptLabState({
           stages: state.stages,
           selectedStageId: state.selectedStageId,
@@ -158,9 +161,11 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         binding: action.binding,
         saveStatus: state.isOffline
           ? "offline"
-          : state.saveStatus === "loading"
-            ? "ready"
-            : state.saveStatus,
+          : state.formDirty
+            ? "dirty"
+            : state.saveStatus === "loading"
+              ? "ready"
+              : state.saveStatus,
       };
     }
     case "resolved_loaded":
@@ -195,6 +200,7 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         templateBaseRevision: selected.revision,
         templateBodyDraft: selected.body,
         languageDraft: selected.language,
+        formDirty: false,
         saveStatus: statusAfterLocalChange(state),
       };
     }
@@ -204,20 +210,32 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         templateIdDraft: null,
         templateBaseRevision: null,
         templateBodyDraft: "",
+        formDirty: true,
         saveStatus: statusAfterLocalChange(state),
       };
     case "edit_template_body": {
       if (state.templateBodyDraft === action.value) return state;
-      return { ...state, templateBodyDraft: action.value, saveStatus: statusAfterLocalChange(state) };
+      return {
+        ...state,
+        templateBodyDraft: action.value,
+        formDirty: true,
+        saveStatus: statusAfterLocalChange(state),
+      };
     }
     case "edit_language":
       if (state.languageDraft === action.value) return state;
-      return { ...state, languageDraft: action.value, saveStatus: statusAfterLocalChange(state) };
+      return {
+        ...state,
+        languageDraft: action.value,
+        formDirty: true,
+        saveStatus: statusAfterLocalChange(state),
+      };
     case "edit_project_override": {
       if (state.projectOverrideDraft === action.value) return state;
       return {
         ...state,
         projectOverrideDraft: action.value,
+        formDirty: true,
         saveStatus: statusAfterLocalChange(state),
       };
     }
@@ -228,6 +246,7 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         ...state,
         templateIdDraft: action.saved.template_id,
         templateBaseRevision: action.saved.revision,
+        formDirty: false,
         latestTemplate: null,
         lastFailedSave: null,
         saveStatus: statusAfterSettle(state),
@@ -245,6 +264,7 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         ...state,
         binding: action.saved,
         bindingBaseRevision: action.saved.revision,
+        formDirty: false,
         latestBinding: null,
         lastFailedSave: null,
         saveStatus: statusAfterSettle(state),
@@ -294,10 +314,11 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
         saveStatus: state.saveStatus === "saving" ? "saving" : "offline",
       };
     case "went_online":
+      if (!state.isOffline) return state;
       return {
         ...state,
         isOffline: false,
-        saveStatus: state.saveStatus === "offline" || state.saveStatus === "saved" ? "saved" : state.saveStatus,
+        saveStatus: state.saveStatus === "saving" ? "saving" : state.formDirty ? "dirty" : "saved",
       };
     default:
       return state;
