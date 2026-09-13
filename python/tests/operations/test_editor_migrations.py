@@ -12,13 +12,68 @@ def migration(name: str) -> str:
     return (MIGRATIONS / name).read_text(encoding="utf-8")
 
 
-def test_editor_migrations_stay_two_explicit_files_without_a_framework() -> None:
+def test_editor_migrations_stay_three_explicit_files_without_a_framework() -> None:
     assert MIGRATION_FILES == [
         "0001_edit_document_revisions.sql",
         "0002_prompt_lab_foundation.sql",
+        "0003_prompt_lab_ai_proposals.sql",
     ]
-    assert "schema_migrations" not in migration(MIGRATION_FILES[1]).lower()
-    assert "alembic" not in migration(MIGRATION_FILES[1]).lower()
+    for name in MIGRATION_FILES:
+        sql = migration(name).lower()
+        assert "schema_migrations" not in sql
+        assert "alembic" not in sql
+
+
+def test_prompt_proposal_schema_enforces_one_active_generation_per_stage() -> None:
+    sql = migration("0003_prompt_lab_ai_proposals.sql")
+
+    assert "CREATE UNIQUE INDEX prompt_proposals_one_active_generation" in sql
+    assert "WHERE status IN ('queued', 'running')" in sql
+
+
+def test_prompt_proposal_tables_carry_closed_constraints_and_bounds() -> None:
+    sql = " ".join(migration("0003_prompt_lab_ai_proposals.sql").split())
+
+    for table in (
+        "prompt_provider_preferences",
+        "prompt_layer_locks",
+        "prompt_proposals",
+        "prompt_proposal_changes",
+        "prompt_proposal_idempotency",
+        "prompt_proposal_applications",
+    ):
+        assert f"CREATE TABLE {table}" in sql
+    assert "PRIMARY KEY (project_id, stage_id)" in sql
+    assert "PRIMARY KEY (project_id, stage_id, layer)" in sql
+    assert "PRIMARY KEY (proposal_id, change_id)" in sql
+    assert "PRIMARY KEY (project_id, idempotency_key)" in sql
+    assert "kind TEXT NOT NULL CHECK (kind IN ('improve', 'translate'))" in sql
+    assert (
+        "status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', "
+        "'applied', 'rejected', 'superseded'))" in sql
+    )
+    assert "layer TEXT NOT NULL CHECK (layer IN ('template', 'project_override'))" in sql
+    assert (
+        "REFERENCES prompt_template_revisions (project_id, template_id, revision)" in sql
+    )
+    assert "ownership TEXT NOT NULL CHECK (ownership = 'ai_assisted')" in sql
+    assert "approval_mode TEXT NOT NULL CHECK (approval_mode = 'user_approved')" in sql
+    assert (
+        "(status IN ('queued', 'running') AND finished_at IS NULL) "
+        "OR (status NOT IN ('queued', 'running') AND finished_at IS NOT NULL)" in sql
+    )
+
+
+def test_earlier_editor_migrations_remain_byte_identical() -> None:
+    assert (
+        "CREATE TABLE IF NOT EXISTS prompt_template_revisions"
+        in migration("0002_prompt_lab_foundation.sql")
+    )
+    assert "CREATE TABLE IF NOT EXISTS edit_document_revisions" in migration(
+        "0001_edit_document_revisions.sql"
+    )
+    assert "ALTER TABLE" not in migration("0001_edit_document_revisions.sql").upper()
+    assert "ALTER TABLE" not in migration("0002_prompt_lab_foundation.sql").upper()
 
 
 def test_prompt_template_revisions_table_is_append_only_and_project_scoped() -> None:
