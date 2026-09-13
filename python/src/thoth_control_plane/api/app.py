@@ -40,6 +40,9 @@ from thoth_control_plane.infrastructure.editor_repository import PostgresEditDoc
 from thoth_control_plane.infrastructure.prompt_proposal_gateway import (
     TemporalPromptProposalGateway,
 )
+from thoth_control_plane.infrastructure.prompt_provider import (
+    public_prompt_provider_catalog,
+)
 from thoth_control_plane.infrastructure.prompt_proposal_repository import (
     PostgresPromptProposalRepository,
 )
@@ -56,7 +59,7 @@ def create_app(
     prompt_repository: PromptLabRepository | None = None,
     prompt_proposal_repository: C2ProposalRepository | None = None,
     prompt_proposal_gateway: C2ProposalGateway | None = None,
-    prompt_provider_catalog: tuple[PromptProviderDefinition, ...] = (),
+    prompt_provider_catalog: tuple[PromptProviderDefinition, ...] | None = None,
 ) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
     settings = settings or Settings()  # type: ignore[call-arg]
@@ -72,10 +75,15 @@ def create_app(
         prompt_proposal_repository = PostgresPromptProposalRepository(
             settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
         )
+    effective_catalog = (
+        prompt_provider_catalog
+        if prompt_provider_catalog is not None
+        else public_prompt_provider_catalog(settings)
+    )
     prompt_proposal_service = PromptProposalService(
         prompt_repository=prompt_repository,
         proposal_repository=prompt_proposal_repository,
-        catalog=prompt_provider_catalog,
+        catalog=effective_catalog,
         gateway=prompt_proposal_gateway,
     )
 

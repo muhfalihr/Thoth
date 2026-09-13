@@ -28,6 +28,7 @@ type Props = {
   client: PromptProposalPanelClient;
   projectId: string;
   stageId: string;
+  savedTemplateId: string | null;
   savedTemplateRevision: number | null;
   savedBindingRevision: number | null;
   savedOverrideText: string;
@@ -53,12 +54,28 @@ export function PromptProposalPanel(props: Props) {
     () =>
       createPromptProposalState({
         stageId,
+        savedTemplateId: props.savedTemplateId,
         savedTemplateRevision: props.savedTemplateRevision,
         savedBindingRevision: props.savedBindingRevision,
         savedOverrideText: props.savedOverrideText,
       }),
   );
   void useCallback(() => undefined, []);
+
+  useEffect(() => {
+    dispatch({
+      type: "saved_revisions_changed",
+      templateId: props.savedTemplateId,
+      templateRevision: props.savedTemplateRevision,
+      bindingRevision: props.savedBindingRevision,
+      overrideText: props.savedOverrideText,
+    });
+  }, [
+    props.savedTemplateId,
+    props.savedTemplateRevision,
+    props.savedBindingRevision,
+    props.savedOverrideText,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -127,7 +144,19 @@ export function PromptProposalPanel(props: Props) {
   }, [client, projectId, state.activeProposal, online]);
 
   const generate = (kind: "improve" | "translate") => {
+    if (
+      props.savedTemplateId === null ||
+      props.savedTemplateRevision === null ||
+      props.savedBindingRevision === null
+    ) {
+      return;
+    }
     const idempotencyKey = `poll_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const sourceIdentity = {
+      source_template_id: props.savedTemplateId,
+      source_template_revision: props.savedTemplateRevision,
+      source_binding_revision: props.savedBindingRevision,
+    };
     void client
       .createPromptProposal(
         projectId,
@@ -139,9 +168,7 @@ export function PromptProposalPanel(props: Props) {
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
               target_layer: "template",
-              source_template_id: `ptpl_${state.savedTemplateRevision ?? 0}`,
-              source_template_revision: state.savedTemplateRevision ?? 0,
-              source_binding_revision: state.savedBindingRevision ?? 0,
+              ...sourceIdentity,
             }
           : {
               kind,
@@ -149,9 +176,7 @@ export function PromptProposalPanel(props: Props) {
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
               target_language: "en-US",
-              source_template_id: `ptpl_${state.savedTemplateRevision ?? 0}`,
-              source_template_revision: state.savedTemplateRevision ?? 0,
-              source_binding_revision: state.savedBindingRevision ?? 0,
+              ...sourceIdentity,
             },
       )
       .then((proposal) => dispatch({ type: "proposal_loaded", proposal }))
@@ -187,6 +212,10 @@ export function PromptProposalPanel(props: Props) {
   };
 
   const generateCheck = canGenerateProposal(state, { online, formDirty });
+  const identityMissing =
+    props.savedTemplateId === null ||
+    props.savedTemplateRevision === null ||
+    props.savedBindingRevision === null;
   const proposal = state.activeProposal;
   const applyCheck =
     proposal && props.savedTemplateRevision !== null && props.savedBindingRevision !== null
@@ -325,7 +354,7 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={!generateCheck.allowed}
+          disabled={!generateCheck.allowed || identityMissing}
           onClick={() => generate("improve")}
         >
           Improve with AI
@@ -333,7 +362,7 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={!generateCheck.allowed}
+          disabled={!generateCheck.allowed || identityMissing}
           onClick={() => generate("translate")}
         >
           Translate with AI

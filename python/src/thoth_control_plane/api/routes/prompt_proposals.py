@@ -61,8 +61,31 @@ def get_prompt_proposal_service(request: Request) -> PromptProposalService:
     return request.app.state.prompt_proposal_service
 
 
-def _http_error(code: int) -> HTTPException:
-    return HTTPException(status_code=code)
+_ERROR_CONTRACT: dict[type[Exception], tuple[int, str]] = {
+    PromptProposalNotFound: (404, "proposal_not_found"),
+    PromptTemplateNotFound: (404, "source_not_found"),
+    PromptBindingNotFound: (404, "source_not_found"),
+    PromptStageNotRegistered: (404, "stage_not_found"),
+    PromptProposalStale: (409, "source_revision_changed"),
+    PromptProposalLayerLocked: (409, "layer_locked"),
+    PromptProposalActiveGeneration: (409, "proposal_already_running"),
+    PromptIdempotencyConflict: (409, "idempotency_conflict"),
+    PromptPreferenceRevisionConflict: (409, "preference_revision_conflict"),
+    PromptProposalInvalidTransition: (409, "invalid_transition"),
+    PromptModelNotInCatalog: (422, "model_not_allowed"),
+    PromptProposalEmptyLayer: (422, "empty_target_layer"),
+    PromptProposalInvalidSelection: (422, "invalid_change_selection"),
+    PromptProposalStoreUnavailable: (503, "store_unavailable"),
+    PromptWorkflowUnavailable: (503, "workflow_unavailable"),
+}
+
+
+def _http_error(error: Exception) -> HTTPException:
+    """Map one typed application error to its stable safe status and detail.code."""
+    for error_type, (status_code, code) in _ERROR_CONTRACT.items():
+        if isinstance(error, error_type):
+            return HTTPException(status_code=status_code, detail={"code": code})
+    return HTTPException(status_code=500)
 
 
 @router.get("/prompt-providers", response_model=list[PromptProviderDefinition])
@@ -82,7 +105,7 @@ async def get_prompt_starter(
     try:
         starter = service.get_starter(stage_id)
     except PromptStageNotRegistered as error:
-        raise _http_error(status.HTTP_404_NOT_FOUND) from error
+        raise _http_error(error) from error
     if starter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return starter
@@ -101,9 +124,9 @@ async def get_prompt_preference(
     try:
         preference = await service.get_preference(project_id, stage_id)
     except PromptStageNotRegistered as error:
-        raise _http_error(status.HTTP_404_NOT_FOUND) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
     if preference is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return preference
@@ -123,11 +146,11 @@ async def save_prompt_preference(
     try:
         return await service.save_preference(project_id, stage_id, request)
     except _CONFLICT_ERRORS as error:
-        raise _http_error(status.HTTP_409_CONFLICT) from error
+        raise _http_error(error) from error
     except _INVALID_ERRORS as error:
-        raise _http_error(status.HTTP_422_UNPROCESSABLE_ENTITY) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
 
 
 @router.get(
@@ -143,9 +166,9 @@ async def get_prompt_locks(
     try:
         return list(await service.get_locks(project_id, stage_id))
     except PromptStageNotRegistered as error:
-        raise _http_error(status.HTTP_404_NOT_FOUND) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
 
 
 @router.put(
@@ -165,11 +188,11 @@ async def save_prompt_lock(
     try:
         return await service.save_lock(project_id, stage_id, layer, request)
     except _CONFLICT_ERRORS as error:
-        raise _http_error(status.HTTP_409_CONFLICT) from error
+        raise _http_error(error) from error
     except _INVALID_ERRORS as error:
-        raise _http_error(status.HTTP_422_UNPROCESSABLE_ENTITY) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
 
 
 @router.post(
@@ -189,15 +212,15 @@ async def create_prompt_proposal(
     try:
         return await service.create_proposal(project_id, request, _.actor_id, idempotency_key)
     except _CONFLICT_ERRORS as error:
-        raise _http_error(status.HTTP_409_CONFLICT) from error
+        raise _http_error(error) from error
     except _NOT_FOUND_ERRORS as error:
-        raise _http_error(status.HTTP_404_NOT_FOUND) from error
+        raise _http_error(error) from error
     except _INVALID_ERRORS as error:
-        raise _http_error(status.HTTP_422_UNPROCESSABLE_ENTITY) from error
+        raise _http_error(error) from error
     except PromptWorkflowUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
 
 
 @router.get(
@@ -215,9 +238,9 @@ async def list_prompt_proposals(
     try:
         return await service.list_proposals(project_id, stage_id, cursor, limit)
     except PromptStageNotRegistered as error:
-        raise _http_error(status.HTTP_422_UNPROCESSABLE_ENTITY) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
 
 
 @router.get(
@@ -233,9 +256,9 @@ async def get_prompt_proposal(
     try:
         return await service.get_proposal(project_id, proposal_id)
     except PromptProposalNotFound as error:
-        raise _http_error(status.HTTP_404_NOT_FOUND) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
 
 
 @router.post(
@@ -252,13 +275,13 @@ async def apply_prompt_proposal(
     try:
         return await service.apply(project_id, proposal_id, request, _.actor_id)
     except _CONFLICT_ERRORS as error:
-        raise _http_error(status.HTTP_409_CONFLICT) from error
+        raise _http_error(error) from error
     except PromptProposalNotFound as error:
-        raise _http_error(status.HTTP_404_NOT_FOUND) from error
+        raise _http_error(error) from error
     except _INVALID_ERRORS as error:
-        raise _http_error(status.HTTP_422_UNPROCESSABLE_ENTITY) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error
 
 
 @router.post(
@@ -274,8 +297,8 @@ async def reject_prompt_proposal(
     try:
         return await service.reject(project_id, proposal_id, _.actor_id)
     except PromptProposalNotFound as error:
-        raise _http_error(status.HTTP_404_NOT_FOUND) from error
+        raise _http_error(error) from error
     except PromptProposalInvalidTransition as error:
-        raise _http_error(status.HTTP_409_CONFLICT) from error
+        raise _http_error(error) from error
     except PromptProposalStoreUnavailable as error:
-        raise _http_error(status.HTTP_503_SERVICE_UNAVAILABLE) from error
+        raise _http_error(error) from error

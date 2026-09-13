@@ -355,6 +355,103 @@ async def test_apply_reject_and_stale_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_settings_catalog_is_projected_when_no_catalog_injected() -> None:
+    """Production create_app with no injected catalog must expose the configured catalog."""
+    from thoth_control_plane.api import create_app as factory
+    from tests.infrastructure.test_prompt_provider import RUNTIME_PROVIDER
+
+    prompt_repo = MemoryPromptLabRepository()
+    app = factory(
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_PROMPT_PROVIDER_CATALOG=[RUNTIME_PROVIDER],
+        ),
+        None,
+        prompt_repository=prompt_repo,
+        prompt_proposal_repository=MemoryProposalRepository(),
+        prompt_proposal_gateway=RecordingGateway(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        catalog = await client.get("/api/v1/prompt-providers", headers=AUTH_HEADERS)
+
+    assert catalog.status_code == 200
+    assert [item["provider_id"] for item in catalog.json()] == ["novita"]
+    assert "base_url" not in catalog.text
+    assert "credential_id" not in catalog.text
+    assert "protocol" not in catalog.text
+    assert "api.novita.example" not in catalog.text
+
+
+@pytest.mark.asyncio
+async def test_injected_catalog_overrides_settings_catalog() -> None:
+    from thoth_control_plane.api import create_app as factory
+    from tests.infrastructure.test_prompt_provider import RUNTIME_PROVIDER
+
+    app = factory(
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_PROMPT_PROVIDER_CATALOG=[RUNTIME_PROVIDER],
+        ),
+        None,
+        prompt_repository=MemoryPromptLabRepository(),
+        prompt_proposal_repository=MemoryProposalRepository(),
+        prompt_proposal_gateway=RecordingGateway(),
+        prompt_provider_catalog=(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        catalog = await client.get("/api/v1/prompt-providers", headers=AUTH_HEADERS)
+
+    assert catalog.status_code == 200
+    assert catalog.json() == []
+
+
+@pytest.mark.asyncio
+async def test_known_failures_return_typed_safe_detail_codes() -> None:
+    client, _, template_id = await seeded_app()
+    async with client:
+        missing = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals/proposal_x/apply",
+            headers=AUTH_HEADERS,
+            json={
+                "source_template_revision": 1,
+                "source_binding_revision": 1,
+                "change_ids": ["change_abc"],
+            },
+        )
+        stale_repo = MemoryProposalRepository()
+        stale_client, _, stale_template = await seeded_app(proposal_repo=stale_repo)
+        created = await stale_client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json=create_improvement(stale_template),
+        )
+        stale_repo.proposals[("project_a", created.json()["proposal_id"])] = (
+            stale_repo.proposals[("project_a", created.json()["proposal_id"])].model_copy(
+                update={"status": "succeeded"}
+            )
+        )
+        stale = await stale_client.post(
+            f"/api/v1/projects/project_a/prompt-lab/proposals/{created.json()['proposal_id']}/apply",
+            headers=AUTH_HEADERS,
+            json={
+                "source_template_revision": 1,
+                "source_binding_revision": 9,
+                "change_ids": ["change_abc"],
+            },
+        )
+
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "proposal_not_found"
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "source_revision_changed"
+    for response in (missing, stale):
+        for forbidden in ("postgresql", "http", "traceback", "Exception"):
+            assert forbidden.lower() not in response.text.lower()
+
+
+@pytest.mark.asyncio
 async def test_openapi_exposes_only_the_documented_c2_routes() -> None:
     client, _repo, _ = await seeded_app()
     async with client:

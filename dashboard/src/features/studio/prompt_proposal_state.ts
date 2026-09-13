@@ -33,6 +33,7 @@ export type PromptProposalState = {
   selectedChangeIds: string[];
   selectedProviderId: string | null;
   selectedModelId: string | null;
+  savedTemplateId: string | null;
   savedTemplateRevision: number | null;
   savedBindingRevision: number | null;
   savedOverrideText: string;
@@ -53,7 +54,13 @@ export type PromptProposalAction =
   | { type: "history_loaded"; proposals: PromptProposalResource[] }
   | { type: "select_provider"; providerId: string; modelId: string }
   | { type: "toggle_change"; changeId: string }
-  | { type: "saved_revisions_changed"; templateRevision: number | null; bindingRevision: number | null; overrideText: string }
+  | {
+      type: "saved_revisions_changed";
+      templateId: string | null;
+      templateRevision: number | null;
+      bindingRevision: number | null;
+      overrideText: string;
+    }
   | { type: "went_offline" }
   | { type: "went_online" }
   | { type: "error"; code: string };
@@ -61,6 +68,7 @@ export type PromptProposalAction =
 export function createPromptProposalState(input: {
   stageId: string;
   providers?: PromptProvider[];
+  savedTemplateId?: string | null;
   savedTemplateRevision: number | null;
   savedBindingRevision: number | null;
   savedOverrideText: string;
@@ -75,6 +83,7 @@ export function createPromptProposalState(input: {
     selectedChangeIds: [],
     selectedProviderId: input.providers?.[0]?.provider_id ?? null,
     selectedModelId: input.providers?.[0]?.models[0]?.model_id ?? null,
+    savedTemplateId: input.savedTemplateId ?? null,
     savedTemplateRevision: input.savedTemplateRevision,
     savedBindingRevision: input.savedBindingRevision,
     savedOverrideText: input.savedOverrideText,
@@ -220,6 +229,7 @@ export function promptProposalReducer(
     case "saved_revisions_changed":
       return {
         ...state,
+        savedTemplateId: action.templateId,
         savedTemplateRevision: action.templateRevision,
         savedBindingRevision: action.bindingRevision,
         savedOverrideText: action.overrideText,

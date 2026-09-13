@@ -110,6 +110,7 @@ function panelProps(overrides: Record<string, unknown> = {}) {
     client: client(),
     projectId: "project_a",
     stageId: "narrative_plan",
+    savedTemplateId: "ptpl_001",
     savedTemplateRevision: 1,
     savedBindingRevision: 1,
     savedOverrideText: "Use Indonesian",
@@ -222,3 +223,45 @@ test("Generate is blocked while the authoring form is dirty", async () => {
   expect(screen.getAllByText("Save changes first").length).toBeGreaterThan(0);
 });
 
+
+test("proposal creation sends the exact saved template identity", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const api = client();
+  render(
+    <PromptProposalPanel
+      {...panelProps({ client: api })}
+      savedTemplateId="ptpl_real_9"
+      savedTemplateRevision={4}
+      savedBindingRevision={2}
+    />,
+  );
+
+  await screen.findByLabelText("Provider");
+  await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+
+  expect((api.createPromptProposal as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  const payload = (api.createPromptProposal as ReturnType<typeof mock>).mock.calls[0][2];
+  expect(payload.source_template_id).toBe("ptpl_real_9");
+  expect(payload.source_template_revision).toBe(4);
+  expect(payload.source_binding_revision).toBe(2);
+  expect(String(payload.source_template_id)).not.toContain("ptpl_4");
+});
+
+test("generation is disabled without a saved template identity", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const api = client();
+  render(
+    <PromptProposalPanel
+      {...panelProps({ client: api })}
+      savedTemplateId={null}
+      savedTemplateRevision={null}
+      savedBindingRevision={null}
+    />,
+  );
+
+  await screen.findByLabelText("Provider");
+  const improve = screen.getByRole("button", { name: "Improve with AI" }) as HTMLButtonElement;
+  expect(improve.disabled).toBe(true);
+  expect(screen.getByText("Save changes first")).toBeDefined();
+});

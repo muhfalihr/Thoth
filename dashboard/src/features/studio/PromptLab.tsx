@@ -416,6 +416,7 @@ export function PromptLab({ client, projectId }: Props) {
             client={client}
             projectId={projectId}
             stageId={state.selectedStageId}
+            savedTemplateId={serverBinding?.template_id ?? null}
             savedTemplateRevision={serverBinding?.template_revision ?? null}
             savedBindingRevision={serverBinding?.revision ?? null}
             savedOverrideText={serverBinding?.project_override ?? ""}
