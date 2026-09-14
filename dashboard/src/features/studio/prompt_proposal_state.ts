@@ -14,14 +14,16 @@ export type GenerateBlockReason =
   | "no_provider"
   | "model_not_allowed"
   | "layer_locked"
-  | "proposal_in_flight";
+  | "proposal_in_flight"
+  | "resources_unavailable";
 
 export type ApplyBlockReason =
   | "offline"
   | "source_changed"
   | "not_succeeded"
   | "no_selection"
-  | "layer_locked";
+  | "layer_locked"
+  | "resources_unavailable";
 
 export type PromptProposalState = {
   stageId: string;
@@ -39,6 +41,12 @@ export type PromptProposalState = {
   savedOverrideText: string;
   status: PromptProposalStatus;
   lastError: string | null;
+  // False from the moment a stage load starts until it completes in full. Every
+  // proposal mutation (generate/apply/reject/preference write/lock write) must
+  // check this before treating the loaded catalog/preference/locks as authoritative,
+  // so a partial or failed load can never be mistaken for "nothing is locked" or
+  // "no preference exists".
+  resourcesReady: boolean;
 };
 
 export type PromptProposalAction =
@@ -53,6 +61,14 @@ export type PromptProposalAction =
   | { type: "proposal_loaded"; proposal: PromptProposalResource }
   | { type: "proposal_status_changed"; status: PromptProposalResource["status"] }
   | { type: "history_loaded"; proposals: PromptProposalResource[] }
+  | {
+      type: "stage_load_succeeded";
+      providers: PromptProvider[];
+      preference: PromptModelPreference | null;
+      locks: PromptLayerLock[];
+      history: PromptProposalResource[];
+      activeProposal: PromptProposalResource | null;
+    }
   | { type: "select_provider"; providerId: string; modelId: string }
   | { type: "toggle_change"; changeId: string }
   | {
@@ -91,6 +107,7 @@ export function createPromptProposalState(input: {
     savedOverrideText: input.savedOverrideText,
     status: "ready",
     lastError: null,
+    resourcesReady: true,
   };
 }
 
@@ -116,6 +133,7 @@ export function canGenerateProposal(
   operation?: "improve" | "translate",
   targetLayer?: "template" | "project_override",
 ): { allowed: boolean; reason?: GenerateBlockReason } {
+  if (!state.resourcesReady) return { allowed: false, reason: "resources_unavailable" };
   if (!facts.online) return { allowed: false, reason: "offline" };
   if (facts.formDirty) return { allowed: false, reason: "unsaved_changes" };
   if (
@@ -151,6 +169,7 @@ export function canApplyProposal(
   state: PromptProposalState,
   facts: { online: boolean; templateRevision: number; bindingRevision: number },
 ): { allowed: boolean; reason?: ApplyBlockReason } {
+  if (!state.resourcesReady) return { allowed: false, reason: "resources_unavailable" };
   const proposal = state.activeProposal;
   if (!proposal) return { allowed: false, reason: "not_succeeded" };
   if (!facts.online) return { allowed: false, reason: "offline" };
@@ -187,6 +206,29 @@ export function promptProposalReducer(
         preference: null,
         status: "ready",
         lastError: null,
+        resourcesReady: false,
+      };
+    case "stage_load_succeeded":
+      return {
+        ...state,
+        providers: action.providers,
+        preference: action.preference,
+        locks: action.locks,
+        history: action.history,
+        activeProposal: action.activeProposal,
+        selectedChangeIds: [],
+        selectedProviderId:
+          action.preference?.provider_id ??
+          state.selectedProviderId ??
+          action.providers[0]?.provider_id ??
+          null,
+        selectedModelId:
+          action.preference?.model_id ??
+          state.selectedModelId ??
+          action.providers[0]?.models[0]?.model_id ??
+          null,
+        lastError: null,
+        resourcesReady: true,
       };
     case "providers_loaded":
       return {
@@ -274,7 +316,7 @@ export function promptProposalReducer(
     case "error":
       return { ...state, lastError: action.code };
     case "stage_load_failed":
-      return { ...state, lastError: "stage_load_failed" };
+      return { ...state, lastError: "stage_load_failed", resourcesReady: false };
     default:
       return state;
   }

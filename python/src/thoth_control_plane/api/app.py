@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from temporalio.service import RPCError
@@ -159,6 +161,25 @@ def create_app(
             mapped_status: int = status_code,
         ) -> JSONResponse:
             return JSONResponse(status_code=mapped_status, content={"detail": str(exc)})
+
+    # The Idempotency-Key header on proposal creation is required in the OpenAPI
+    # contract (so generated clients cannot omit it), but FastAPI's own missing-
+    # header validation error exposes raw pydantic loc/msg detail. Rewrite only
+    # that one case to the stable safe code the route already returns for a
+    # present-but-blank key; every other validation error keeps FastAPI's default
+    # handling untouched.
+    @app.exception_handler(RequestValidationError)
+    async def missing_idempotency_key_handler(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        if request.method == "POST" and request.url.path.endswith("/prompt-lab/proposals"):
+            for error in exc.errors():
+                loc = tuple(str(part).lower() for part in error.get("loc", ()))
+                if loc == ("header", "idempotency-key"):
+                    return JSONResponse(
+                        status_code=422, content={"detail": {"code": "missing_idempotency_key"}}
+                    )
+        return await request_validation_exception_handler(request, exc)
 
     @app.middleware("http")
     async def add_contract_version(request: Request, call_next) -> Response:

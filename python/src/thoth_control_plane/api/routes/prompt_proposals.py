@@ -219,9 +219,9 @@ async def create_prompt_proposal(
     request: CreatePromptProposalRequest,
     _: Annotated[Actor, Depends(current_actor)],
     service: Annotated[PromptProposalService, Depends(get_prompt_proposal_service)],
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
 ) -> PromptProposal:
-    if not idempotency_key or not idempotency_key.strip():
+    if not idempotency_key.strip():
         raise HTTPException(status_code=422, detail={"code": "missing_idempotency_key"})
     try:
         return await service.create_proposal(project_id, request, _.actor_id, idempotency_key)

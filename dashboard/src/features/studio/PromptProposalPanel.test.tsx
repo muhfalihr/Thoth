@@ -265,6 +265,17 @@ test("proposal creation sends the exact saved template identity", async () => {
   expect(String(payload.source_template_id)).not.toContain("ptpl_4");
 });
 
+test("generate refuses to send a request for a stage id outside the known set", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const api = client();
+  render(<PromptProposalPanel {...panelProps({ client: api, stageId: "not_a_real_stage" })} />);
+
+  await screen.findByLabelText("Provider");
+  await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+  expect((api.createPromptProposal as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+});
+
 test("switching stages clears the prior stage's proposal before the new stage loads", async () => {
   const { PromptProposalPanel } = await import("./PromptProposalPanel");
   const staleHistory = deferred<{ proposals: unknown[]; next_cursor: null }>();
@@ -535,6 +546,85 @@ test("a rejected poll reschedules exactly one bounded retry instead of stopping 
   expect(calls).toBe(2);
 });
 
+test("an initial load failure disables Generate, Save preference, and lock writes", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const api = client({ getPromptLocks: mock(() => Promise.reject(new Error("network blip"))) });
+  render(<PromptProposalPanel {...panelProps({ client: api })} />);
+
+  await screen.findByRole("alert");
+  const improve = screen.getByRole("button", { name: "Improve with AI" }) as HTMLButtonElement;
+  const translate = screen.getByRole("button", { name: "Translate with AI" }) as HTMLButtonElement;
+  const savePreference = screen.getByRole("button", { name: "Save preference" }) as HTMLButtonElement;
+  const lockTemplate = screen.getByRole("button", { name: "Lock template" }) as HTMLButtonElement;
+  expect(improve.disabled).toBe(true);
+  expect(translate.disabled).toBe(true);
+  expect(savePreference.disabled).toBe(true);
+  expect(lockTemplate.disabled).toBe(true);
+});
+
+test("no proposal polling begins after an incomplete initial load", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const api = client({
+    listPromptProposals: mock(() => Promise.reject(new Error("network blip"))),
+  });
+  render(<PromptProposalPanel {...panelProps({ client: api })} />);
+  await screen.findByRole("alert");
+
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  expect((api.getPromptProposal as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+});
+
+test("a failed reconnect reload does not let stale-cleared locks appear generatable", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  let locksCalls = 0;
+  const api = client({
+    getPromptLocks: mock(() => {
+      locksCalls += 1;
+      if (locksCalls === 1) {
+        return Promise.resolve([
+          {
+            project_id: "project_a",
+            stage_id: "narrative_plan",
+            layer: "template",
+            locked: true,
+            revision: 1,
+            updated_at: "2026-09-13T08:00:00Z",
+          },
+        ]);
+      }
+      return Promise.reject(new Error("network blip"));
+    }),
+  });
+  const { rerender } = render(<PromptProposalPanel {...panelProps({ client: api, online: false })} />);
+  await screen.findByRole("button", { name: "Unlock template" });
+
+  rerender(<PromptProposalPanel {...panelProps({ client: api, online: true })} />);
+  await screen.findByRole("alert");
+
+  const improve = screen.getByRole("button", { name: "Improve with AI" }) as HTMLButtonElement;
+  expect(improve.disabled).toBe(true);
+});
+
+test("a subsequent complete reload restores actions after a prior failure", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  let locksCalls = 0;
+  const api = client({
+    getPromptLocks: mock(() => {
+      locksCalls += 1;
+      return locksCalls === 1 ? Promise.reject(new Error("network blip")) : Promise.resolve([]);
+    }),
+  });
+  render(<PromptProposalPanel {...panelProps({ client: api })} />);
+  const retry = await screen.findByRole("button", { name: "Retry loading proposals" });
+  await user.click(retry);
+
+  await screen.findByLabelText("Provider");
+  const improve = screen.getByRole("button", { name: "Improve with AI" }) as HTMLButtonElement;
+  expect(improve.disabled).toBe(false);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 test("a failed required reload during reconnect leaves the proposal panel fail-closed", async () => {
   const { PromptProposalPanel } = await import("./PromptProposalPanel");
   let locksCalls = 0;
@@ -687,4 +777,122 @@ test("Regenerate targets the proposal's own recorded layer, not the current Impr
   expect((regenerate as HTMLButtonElement).disabled).toBe(false);
   await user.click(regenerate);
   expect((api.createPromptProposal as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("a deferred starter response from an earlier stage cannot populate the new stage's editor", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const starterResponse = deferred<typeof starter>();
+  const api = client({ getPromptStarter: mock(() => starterResponse.promise) });
+  const onUseStarter = mock(() => {});
+  const { rerender } = render(
+    <PromptProposalPanel {...panelProps({ client: api, onUseStarter, hasBinding: false })} />,
+  );
+  await user.click(await screen.findByRole("button", { name: "Use starter" }));
+
+  rerender(
+    <PromptProposalPanel
+      {...panelProps({ client: api, onUseStarter, hasBinding: false, stageId: "visual_plan" })}
+    />,
+  );
+  await screen.findByLabelText("Provider");
+
+  starterResponse.resolve(starter);
+  await starterResponse.promise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(onUseStarter).not.toHaveBeenCalled();
+});
+
+test("a deferred starter response settling after unmount does not invoke the starter callback", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const starterResponse = deferred<typeof starter>();
+  const api = client({ getPromptStarter: mock(() => starterResponse.promise) });
+  const onUseStarter = mock(() => {});
+  const { unmount } = render(
+    <PromptProposalPanel {...panelProps({ client: api, onUseStarter, hasBinding: false })} />,
+  );
+  await user.click(await screen.findByRole("button", { name: "Use starter" }));
+
+  unmount();
+  starterResponse.resolve(starter);
+  await starterResponse.promise;
+
+  expect(onUseStarter).not.toHaveBeenCalled();
+});
+
+test("a deferred apply completion after unmount does not call onApplied", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const applyResponse = deferred<{
+    proposal: typeof succeededProposal;
+    resulting_template_id: string;
+    resulting_template_revision: number;
+    resulting_binding_revision: number;
+  }>();
+  const api = client({ applyPromptProposal: mock(() => applyResponse.promise) });
+  const onApplied = mock(() => {});
+  const { unmount } = render(<PromptProposalPanel {...panelProps({ client: api, onApplied })} />);
+
+  const checkbox = await screen.findByRole("checkbox");
+  await user.click(checkbox);
+  await user.click(screen.getByRole("button", { name: "Apply selected" }));
+  expect((api.applyPromptProposal as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+
+  unmount();
+  applyResponse.resolve({
+    proposal: succeededProposal,
+    resulting_template_id: "ptpl_001",
+    resulting_template_revision: 2,
+    resulting_binding_revision: 2,
+  });
+  await applyResponse.promise;
+
+  expect(onApplied).not.toHaveBeenCalled();
+});
+
+test("an old-stage lock request settling cannot clear the pending state of a newer-stage lock request on the same layer", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const staleLock = deferred<{
+    kind: "saved";
+    value: { project_id: string; stage_id: string; layer: string; locked: boolean; revision: number; updated_at: string };
+  }>();
+  const freshLock = deferred<{
+    kind: "saved";
+    value: { project_id: string; stage_id: string; layer: string; locked: boolean; revision: number; updated_at: string };
+  }>();
+  let lockCalls = 0;
+  const api = client({
+    savePromptLock: mock(() => {
+      lockCalls += 1;
+      return lockCalls === 1 ? staleLock.promise : freshLock.promise;
+    }),
+  });
+  const { rerender } = render(<PromptProposalPanel {...panelProps({ client: api })} />);
+  await user.click(await screen.findByRole("button", { name: "Lock template" }));
+
+  rerender(<PromptProposalPanel {...panelProps({ client: api, stageId: "visual_plan" })} />);
+  await screen.findByLabelText("Provider");
+  await user.click(await screen.findByRole("button", { name: "Lock template" }));
+
+  const lockTemplate = screen.getByRole("button", { name: "Lock template" }) as HTMLButtonElement;
+  expect(lockTemplate.disabled).toBe(true);
+
+  staleLock.resolve({
+    kind: "saved",
+    value: {
+      project_id: "project_a",
+      stage_id: "narrative_plan",
+      layer: "template",
+      locked: true,
+      revision: 1,
+      updated_at: "2026-09-13T08:00:00Z",
+    },
+  });
+  await staleLock.promise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(lockTemplate.disabled).toBe(true);
 });

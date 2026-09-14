@@ -41,6 +41,15 @@ export type SavePromptModelPreferencePayload =
   components["schemas"]["SavePromptModelPreferenceRequest"];
 export type SavePromptLayerLockPayload = components["schemas"]["SavePromptLayerLockRequest"];
 export type CreatePromptProposalPayload = components["schemas"]["CreatePromptProposalRequest"];
+export type PromptStageId = CreatePromptProposalPayload["stage_id"];
+const PROMPT_STAGE_IDS: readonly PromptStageId[] = [
+  "narrative_plan",
+  "visual_plan",
+  "caption_copy",
+];
+export function isPromptStageId(value: string): value is PromptStageId {
+  return (PROMPT_STAGE_IDS as readonly string[]).includes(value);
+}
 export type ApplyPromptProposalPayload = components["schemas"]["ApplyPromptProposalRequest"];
 export type PromptProposalApplyResultResource =
   components["schemas"]["PromptProposalApplyResult"];

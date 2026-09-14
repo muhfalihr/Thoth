@@ -290,6 +290,44 @@ test("a failed stage load records a stable error code without touching other sta
   expect(failed.activeProposal).toBe(withProposal.activeProposal);
 });
 
+test("a failed stage load blocks generation even though locks and preference look empty", () => {
+  const cleared = promptProposalReducer(readyState(), { type: "stage_selected", stageId: "narrative_plan" });
+  const failed = promptProposalReducer(cleared, { type: "stage_load_failed" });
+  expect(failed.locks).toEqual([]);
+  expect(failed.preference).toBeNull();
+  const gate = canGenerateProposal(failed, { online: true, formDirty: false });
+  expect(gate.allowed).toBe(false);
+  expect(gate.reason).toBe("resources_unavailable");
+});
+
+test("a failed stage load blocks apply even when a stale active proposal reference exists", () => {
+  const withProposal = promptProposalReducer(readyState(), { type: "proposal_loaded", proposal });
+  const failed = promptProposalReducer(withProposal, { type: "stage_load_failed" });
+  const gate = canApplyProposal(failed, { online: true, templateRevision: 1, bindingRevision: 1 });
+  expect(gate.allowed).toBe(false);
+  expect(gate.reason).toBe("resources_unavailable");
+});
+
+test("a stage selection blocks generation until the load completes", () => {
+  const cleared = promptProposalReducer(readyState(), { type: "stage_selected", stageId: "narrative_plan" });
+  expect(canGenerateProposal(cleared, { online: true, formDirty: false }).allowed).toBe(false);
+});
+
+test("a complete stage load atomically installs resources and unblocks generation", () => {
+  const cleared = promptProposalReducer(readyState(), { type: "stage_selected", stageId: "narrative_plan" });
+  const loaded = promptProposalReducer(cleared, {
+    type: "stage_load_succeeded",
+    providers: [provider],
+    preference: null,
+    locks: [],
+    history: [],
+    activeProposal: null,
+  });
+  expect(loaded.providers).toEqual([provider]);
+  expect(loaded.resourcesReady).toBe(true);
+  expect(canGenerateProposal(loaded, { online: true, formDirty: false }).allowed).toBe(true);
+});
+
 test("translate is blocked by either an actually-targeted locked layer", () => {
   const templateLocked = promptProposalReducer(readyState(), {
     type: "locks_loaded",

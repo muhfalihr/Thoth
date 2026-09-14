@@ -590,3 +590,18 @@ async def test_openapi_exposes_only_the_documented_c2_routes() -> None:
     joined = " ".join(c2_paths).lower()
     assert "improve" not in joined
     assert "translate" not in joined
+
+
+@pytest.mark.asyncio
+async def test_openapi_requires_idempotency_key_for_proposal_creation() -> None:
+    client, _repo, _ = await seeded_app()
+    async with client:
+        app = client._transport.app  # type: ignore[attr-defined]
+    operation = app.openapi()["paths"]["/api/v1/projects/{project_id}/prompt-lab/proposals"]["post"]
+    header_params = [
+        parameter
+        for parameter in operation["parameters"]
+        if parameter["in"] == "header" and parameter["name"] == "Idempotency-Key"
+    ]
+    assert len(header_params) == 1
+    assert header_params[0]["required"] is True

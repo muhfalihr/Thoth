@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
-import type { ControlPlaneClient, CreatePromptProposalPayload } from "@/api/control-plane";
+import { isPromptStageId, type ControlPlaneClient } from "@/api/control-plane";
 import {
   canApplyProposal,
   canGenerateProposal,
@@ -63,6 +63,8 @@ function generateReasonText(reason: GenerateBlockReason | undefined): string | n
     case "no_provider":
     case "model_not_allowed":
       return "Select a provider and model";
+    case "resources_unavailable":
+      return "Reload failed - retry to continue";
     default:
       return null;
   }
@@ -75,7 +77,9 @@ export function PromptProposalPanel(props: Props) {
   const [targetLanguage, setTargetLanguage] = useState("en-US");
   const [improveLayer, setImproveLayer] = useState<"template" | "project_override">("template");
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [pendingLocks, setPendingLocks] = useState<Set<string>>(new Set());
+  const [pendingLocks, setPendingLocks] = useState<Set<"template" | "project_override">>(
+    new Set(),
+  );
   const [state, dispatch] = useReducer(
     promptProposalReducer,
     undefined,
@@ -110,6 +114,24 @@ export function PromptProposalPanel(props: Props) {
   // project/stage/reconnect attempt can never mutate the current stage's state.
   const generationRef = useRef(0);
 
+  // Bumping the generation on unmount reuses every generationRef check already
+  // guarding generate/apply/reject/preference-save `.then()`/`.catch()` callbacks
+  // above, so a response that settles after this panel is gone is discarded the
+  // same way a stale stage's response is: no extra per-callback plumbing needed.
+  useEffect(() => {
+    return () => {
+      generationRef.current += 1;
+    };
+  }, []);
+
+  // A stage switch invalidates any lock request still in flight for the old stage
+  // (its .finally() below can no longer own this layer's pending flag), so the new
+  // stage's buttons must not stay stuck showing "pending" for a request that will
+  // never touch them.
+  useEffect(() => {
+    setPendingLocks(new Set());
+  }, [stageId]);
+
   // Loads one stage's owned resources strictly in order (catalog, then preference,
   // then locks, then history/active proposal) so a slower earlier call can never
   // land after a later one and clobber it. Used for both a stage switch and a
@@ -122,22 +144,25 @@ export function PromptProposalPanel(props: Props) {
       try {
         const providers = await client.listPromptProviders();
         if (generationRef.current !== generation) return;
-        dispatch({ type: "providers_loaded", providers });
         const preference = await client.getPromptPreference(projectId, sid);
         if (generationRef.current !== generation) return;
-        dispatch({ type: "preference_loaded", preference });
         const locks = await client.getPromptLocks(projectId, sid);
         if (generationRef.current !== generation) return;
-        dispatch({ type: "locks_loaded", locks });
         const page = await client.listPromptProposals(projectId, sid, undefined, 5);
         if (generationRef.current !== generation) return;
         const proposals = page?.proposals ?? [];
-        dispatch({ type: "history_loaded", proposals });
-        const activeOne =
+        const activeProposal =
           proposals.find((proposal) => proposal.status === "queued" || proposal.status === "running") ??
           proposals[0] ??
           null;
-        if (activeOne) dispatch({ type: "proposal_loaded", proposal: activeOne });
+        dispatch({
+          type: "stage_load_succeeded",
+          providers,
+          preference,
+          locks,
+          history: proposals,
+          activeProposal,
+        });
       } catch {
         if (generationRef.current === generation) dispatch({ type: "stage_load_failed" });
       }
@@ -149,6 +174,14 @@ export function PromptProposalPanel(props: Props) {
     const generation = ++generationRef.current;
     void loadStage(stageId, generation);
   }, [loadStage, stageId]);
+
+  // Manual recovery from a failed load (no automatic retry loop, no new
+  // dependency): bumps the generation so a stale in-flight attempt from before
+  // the click can never land after this one.
+  const retryLoad = () => {
+    const generation = ++generationRef.current;
+    void loadStage(stageId, generation);
+  };
 
   const wasOnlineRef = useRef(online);
   const stageIdRef = useRef(stageId);
@@ -211,6 +244,7 @@ export function PromptProposalPanel(props: Props) {
     layerOverride?: "template" | "project_override",
   ) => {
     if (!gate.allowed) return;
+    if (!isPromptStageId(stageId)) return;
     if (
       props.savedTemplateId === null ||
       props.savedTemplateRevision === null ||
@@ -233,7 +267,7 @@ export function PromptProposalPanel(props: Props) {
         kind === "improve"
           ? {
               kind,
-              stage_id: stageId as CreatePromptProposalPayload["stage_id"],
+              stage_id: stageId,
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
               target_layer: layer,
@@ -242,7 +276,7 @@ export function PromptProposalPanel(props: Props) {
             }
           : {
               kind,
-              stage_id: stageId as CreatePromptProposalPayload["stage_id"],
+              stage_id: stageId,
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
               target_language: targetLanguage,
@@ -324,9 +358,13 @@ export function PromptProposalPanel(props: Props) {
   );
 
   const useStarter = () => {
+    const generation = generationRef.current;
     void client
       .getPromptStarter(stageId)
-      .then((starter) => onUseStarter(starter.body, starter.language))
+      .then((starter) => {
+        if (generationRef.current !== generation) return;
+        onUseStarter(starter.body, starter.language);
+      })
       .catch(() => undefined);
   };
 
@@ -351,18 +389,31 @@ export function PromptProposalPanel(props: Props) {
         if (generationRef.current !== generation) return;
         dispatch({ type: "error", code: "store_unavailable" });
       })
-      .finally(() =>
+      .finally(() => {
+        if (generationRef.current !== generation) return;
         setPendingLocks((prev) => {
           const next = new Set(prev);
           next.delete(layer);
           return next;
-        }),
-      );
+        });
+      });
   };
 
   return (
     <section aria-label="AI proposals" className="flex flex-col gap-3 border-t border-border pt-3">
       <h3 className="text-sm font-semibold">AI proposals</h3>
+
+      {!state.resourcesReady && state.lastError === "stage_load_failed" && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-3 border-b border-destructive/50 bg-destructive/10 px-3 py-2 text-sm"
+        >
+          <p>Couldn't load AI proposal data. Check your connection and retry.</p>
+          <button type="button" className={toolbarButton} onClick={retryLoad}>
+            Retry loading proposals
+          </button>
+        </div>
+      )}
 
       {!props.hasBinding && (
         <div className="flex flex-wrap gap-2">
@@ -421,7 +472,7 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={!online}
+          disabled={!online || state.lastError === "stage_load_failed"}
           onClick={() => {
             if (state.selectedProviderId && state.selectedModelId) {
               const generation = generationRef.current;
@@ -454,7 +505,9 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={!online || pendingLocks.has("template")}
+          disabled={
+            !online || state.lastError === "stage_load_failed" || pendingLocks.has("template")
+          }
           onClick={() => toggleLock("template", lockedTemplate)}
         >
           {lockedTemplate ? "Unlock template" : "Lock template"}
@@ -462,7 +515,11 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={!online || pendingLocks.has("project_override")}
+          disabled={
+            !online ||
+            state.lastError === "stage_load_failed" ||
+            pendingLocks.has("project_override")
+          }
           onClick={() => toggleLock("project_override", lockedOverride)}
         >
           {lockedOverride ? "Unlock project override" : "Lock project override"}

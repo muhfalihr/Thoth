@@ -1741,8 +1741,8 @@ export interface operations {
     create_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals_post: {
         parameters: {
             query?: never;
-            header?: {
-                "Idempotency-Key"?: string | null;
+            header: {
+                "Idempotency-Key": string;
                 Authorization?: string | null;
             };
             path: {
