@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from thoth_control_plane.config import Settings
 from thoth_control_plane.domain.prompt_proposals import (
     PromptProposalWorkflowInput,
 )
@@ -48,14 +48,10 @@ class _StartedHandle:
     pass
 
 
-def settings() -> Settings:
-    return Settings(THOTH_CONTROL_PLANE_API_KEY="test-key")
-
-
 @pytest.mark.asyncio
 async def test_gateway_starts_id_only_workflow_without_retrying_start() -> None:
     client = RecordingTemporalClient()
-    gateway = TemporalPromptProposalGateway(client, settings=settings())
+    gateway = TemporalPromptProposalGateway(client)
 
     await gateway.start("proposal_1")
 
@@ -67,16 +63,12 @@ async def test_gateway_starts_id_only_workflow_without_retrying_start() -> None:
 
 @pytest.mark.asyncio
 async def test_gateway_treats_already_started_as_success() -> None:
-    class AlreadyStartedClient(RecordingTemporalClient):
-        async def start_workflow(self, *args, **kwargs):  # type: ignore[override]
-            self.calls += 1
-            self.input = args[1] if args else kwargs.get("arg")
-            self.task_queue = kwargs["task_queue"]
-            self.workflow_id = kwargs["id"]
-            raise Exception("workflow execution already started")
-
-    client = AlreadyStartedClient()
-    gateway = TemporalPromptProposalGateway(client, settings=settings())
+    client = RecordingTemporalClient(
+        failure=WorkflowAlreadyStartedError(
+            workflow_id="prompt-proposal/proposal_1", workflow_type="PromptProposalWorkflow"
+        )
+    )
+    gateway = TemporalPromptProposalGateway(client)
 
     await gateway.start("proposal_1")
 
@@ -84,14 +76,22 @@ async def test_gateway_treats_already_started_as_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gateway_maps_unreachable_temporal_to_safe_error() -> None:
-    class UnreachableClient(RecordingTemporalClient):
-        async def start_workflow(self, *args, **kwargs):  # type: ignore[override]
-            self.calls += 1
-            raise RuntimeError("connection refused")
+async def test_gateway_does_not_pattern_match_already_started_by_message_text() -> None:
+    """A message that merely contains "already" must not be swallowed as success."""
+    client = RecordingTemporalClient(failure=RuntimeError("connection already closed"))
+    gateway = TemporalPromptProposalGateway(client)
 
-    client = UnreachableClient()
-    gateway = TemporalPromptProposalGateway(client, settings=settings())
+    from thoth_control_plane.application.prompt_proposal_ports import PromptWorkflowUnavailable
+
+    with pytest.raises(PromptWorkflowUnavailable):
+        await gateway.start("proposal_1")
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_maps_unreachable_temporal_to_safe_error() -> None:
+    client = RecordingTemporalClient(failure=RuntimeError("connection refused"))
+    gateway = TemporalPromptProposalGateway(client)
 
     from thoth_control_plane.application.prompt_proposal_ports import PromptWorkflowUnavailable
 

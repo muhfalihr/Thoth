@@ -685,9 +685,15 @@ export interface components {
             project_id: string;
             /** Revision */
             revision: number;
-            /** Stage Id */
-            stage_id: string;
-            /** Updated At */
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            /**
+             * Updated At
+             * Format: date-time
+             */
             updated_at: string;
         };
         /** ProjectPromptModelPreference */
@@ -700,9 +706,15 @@ export interface components {
             provider_id: string;
             /** Revision */
             revision: number;
-            /** Stage Id */
-            stage_id: string;
-            /** Updated At */
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
+            /**
+             * Updated At
+             * Format: date-time
+             */
             updated_at: string;
         };
         /** PromptModelDefinition */
@@ -723,7 +735,10 @@ export interface components {
              * @default []
              */
             changes: components["schemas"]["PromptProposalChange"][];
-            /** Created At */
+            /**
+             * Created At
+             * Format: date-time
+             */
             created_at: string;
             /** Failure Code */
             failure_code?: ("provider_unavailable" | "provider_timeout" | "provider_rate_limited" | "invalid_provider_output" | "source_revision_changed" | "layer_locked" | "proposal_already_running" | "model_not_allowed" | "store_unavailable" | "workflow_unavailable") | null;
@@ -745,8 +760,11 @@ export interface components {
             /** Provider Id */
             provider_id: string;
             source: components["schemas"]["PromptProposalSource"];
-            /** Stage Id */
-            stage_id: string;
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
             /** Started At */
             started_at?: string | null;
             /**

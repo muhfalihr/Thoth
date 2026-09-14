@@ -96,7 +96,7 @@ class MemoryProposalRepository:
                 "provider_id": request.provider_id,
                 "model_id": request.model_id,
                 "revision": (previous.revision + 1) if previous else 1,
-                "updated_at": NOW.isoformat(),
+                "updated_at": NOW,
             }
         )
         self.preferences[key] = preference
@@ -111,7 +111,7 @@ class MemoryProposalRepository:
                     "layer": layer,
                     "locked": layer in self.locked_layers,
                     "revision": 1,
-                    "updated_at": NOW.isoformat(),
+                    "updated_at": NOW,
                 }
             )
             for layer in ("template", "project_override")
@@ -129,7 +129,7 @@ class MemoryProposalRepository:
                 "layer": layer,
                 "locked": request.locked,
                 "revision": (previous.revision + 1) if previous else 1,
-                "updated_at": NOW.isoformat(),
+                "updated_at": NOW,
             }
         )
         self.locks[key] = lock
@@ -140,7 +140,7 @@ class MemoryProposalRepository:
     ) -> PromptProposal:
         if self.fail_reserve:
             raise self.fail_reserve
-        stored = proposal.model_copy(update={"created_at": NOW.isoformat()})
+        stored = proposal.model_copy(update={"created_at": NOW})
         self.reserved.append((stored, idempotency_key, payload_hash))
         self.proposals[(proposal.project_id, proposal.proposal_id)] = stored
         return stored
@@ -182,7 +182,7 @@ class MemoryProposalRepository:
         applied = self._patch(proposal_id, status="applied")
         return PromptProposalApplyResult.model_validate(
             {
-                "proposal": applied.model_dump(mode="json"),
+                "proposal": applied,
                 "resulting_template_id": applied.source.template_id,
                 "resulting_template_revision": applied.source.template_revision + 1,
                 "resulting_binding_revision": applied.source.binding_revision + 1,
@@ -196,7 +196,7 @@ class MemoryProposalRepository:
         applied = self._patch(proposal_id, status="applied")
         return PromptProposalApplyResult.model_validate(
             {
-                "proposal": applied.model_dump(mode="json"),
+                "proposal": applied,
                 "resulting_template_id": "ptpl_translated",
                 "resulting_template_revision": 1,
                 "resulting_binding_revision": applied.source.binding_revision + 1,
@@ -837,3 +837,159 @@ async def test_preference_and_lock_use_cases_validate_stage_and_catalog() -> Non
         SavePromptLayerLockRequest.model_validate({"locked": True}),
     )
     assert locked.locked is True
+
+
+@pytest.mark.asyncio
+async def test_translate_targets_template_only_when_override_blank() -> None:
+    prompt_repo = MemoryPromptLabRepository()
+    template = await prompt_repo.save_template(
+        project_id="project_a",
+        template_id="ptpl_seed",
+        base_revision=None,
+        stage_id="narrative_plan",
+        language="id-ID",
+        body="Stage text",
+    )
+    await prompt_repo.save_binding(
+        project_id="project_a",
+        stage_id="narrative_plan",
+        request=SaveProjectPromptBindingRequest.model_validate(
+            {"template_id": template.template_id, "template_revision": 1, "project_override": None}
+        ),
+    )
+    proposal_repo = MemoryProposalRepository()
+    service = PromptProposalService(
+        prompt_repository=prompt_repo,
+        proposal_repository=proposal_repo,
+        catalog=catalog(),
+        gateway=RecordingGateway(),
+    )
+
+    created = await service.create_proposal(
+        "project_a",
+        CreatePromptProposalRequest.model_validate(
+            {
+                "kind": "translate",
+                "stage_id": "narrative_plan",
+                "provider_id": "novita",
+                "model_id": "deepseek/deepseek-v3.1",
+                "target_language": "en-US",
+                "source_template_id": template.template_id,
+                "source_template_revision": 1,
+                "source_binding_revision": 1,
+            }
+        ),
+        ACTOR,
+        "request-1",
+    )
+
+    assert created.target_layers == ("template",)
+
+
+@pytest.mark.asyncio
+async def test_preference_accepts_any_enabled_capability_then_validates_per_action() -> None:
+    prompt_repo = MemoryPromptLabRepository()
+    template = await prompt_repo.save_template(
+        project_id="project_a",
+        template_id="ptpl_seed",
+        base_revision=None,
+        stage_id="narrative_plan",
+        language="id-ID",
+        body="Stage text",
+    )
+    await prompt_repo.save_binding(
+        project_id="project_a",
+        stage_id="narrative_plan",
+        request=SaveProjectPromptBindingRequest.model_validate(
+            {"template_id": template.template_id, "template_revision": 1, "project_override": None}
+        ),
+    )
+    improve_only_catalog = (
+        PromptProviderDefinition.model_validate(
+            {
+                "provider_id": "novita",
+                "label": "Novita",
+                "enabled": True,
+                "models": [
+                    {
+                        "model_id": "improve/model",
+                        "label": "Improve only",
+                        "capabilities": ["improve"],
+                        "max_input_chars": 12000,
+                    }
+                ],
+            }
+        ),
+    )
+    proposal_repo = MemoryProposalRepository()
+    service = PromptProposalService(
+        prompt_repository=prompt_repo,
+        proposal_repository=proposal_repo,
+        catalog=improve_only_catalog,
+        gateway=RecordingGateway(),
+    )
+
+    saved = await service.save_preference(
+        "project_a",
+        "narrative_plan",
+        SavePromptModelPreferenceRequest.model_validate(
+            {"provider_id": "novita", "model_id": "improve/model"}
+        ),
+    )
+    assert saved.provider_id == "novita"
+
+    with pytest.raises(PromptModelNotInCatalog):
+        await service.create_proposal(
+            "project_a",
+            CreatePromptProposalRequest.model_validate(
+                {
+                    "kind": "translate",
+                    "stage_id": "narrative_plan",
+                    "provider_id": "novita",
+                    "model_id": "improve/model",
+                    "target_language": "en-US",
+                    "source_template_id": template.template_id,
+                    "source_template_revision": 1,
+                    "source_binding_revision": 1,
+                }
+            ),
+            ACTOR,
+            "request-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_preference_save_accepts_translate_only_model() -> None:
+    translate_only_catalog = (
+        PromptProviderDefinition.model_validate(
+            {
+                "provider_id": "novita",
+                "label": "Novita",
+                "enabled": True,
+                "models": [
+                    {
+                        "model_id": "translate/model",
+                        "label": "Translate only",
+                        "capabilities": ["translate"],
+                        "max_input_chars": 12000,
+                    }
+                ],
+            }
+        ),
+    )
+    service = PromptProposalService(
+        prompt_repository=MemoryPromptLabRepository(),
+        proposal_repository=MemoryProposalRepository(),
+        catalog=translate_only_catalog,
+        gateway=RecordingGateway(),
+    )
+
+    saved = await service.save_preference(
+        "project_a",
+        "narrative_plan",
+        SavePromptModelPreferenceRequest.model_validate(
+            {"provider_id": "novita", "model_id": "translate/model"}
+        ),
+    )
+
+    assert saved.model_id == "translate/model"

@@ -106,7 +106,7 @@ def create_app(
             app.state.workflow_service = WorkflowService(resolved_gateway)
         effective_gateway = prompt_proposal_gateway
         if effective_gateway is None and isinstance(resolved_gateway, TemporalWorkflowGateway):
-            effective_gateway = TemporalPromptProposalGateway(resolved_gateway.client, settings)
+            effective_gateway = TemporalPromptProposalGateway(resolved_gateway.client)
         app.state.prompt_proposal_service = PromptProposalService(
             prompt_repository=prompt_repository,
             proposal_repository=prompt_proposal_repository,

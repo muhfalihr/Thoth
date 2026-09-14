@@ -275,3 +275,21 @@ def test_adapter_exposes_hard_request_timeout_and_no_redirects() -> None:
     provider = adapter()
     assert provider.request_timeout_seconds == 120.0
     assert provider.follow_redirects_enabled is False
+
+
+async def test_adapter_rejects_non_string_json_values() -> None:
+    from thoth_control_plane.application.prompt_proposal_ports import ProviderInvalidOutput
+
+    for bad in (123, True, ["x"], {"nested": "x"}, None):
+
+        def handler(request: httpx.Request, bad=bad) -> httpx.Response:
+            import json as jsonlib
+
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": jsonlib.dumps({"template": bad})}}]},
+                request=request,
+            )
+
+        with pytest.raises(ProviderInvalidOutput):
+            await adapter(handler=handler).propose(provider_request())

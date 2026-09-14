@@ -17,9 +17,6 @@ from thoth_control_plane.domain.prompt_proposals import (
     PromptProposalWorkflowResult,
 )
 
-with workflow.unsafe.imports_passed_through():
-    pass
-
 
 @workflow.defn
 class PromptProposalWorkflow:

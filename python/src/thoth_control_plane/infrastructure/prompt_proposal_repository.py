@@ -65,10 +65,12 @@ PROPOSAL_KEYS = (
 )
 
 
-def _iso(value: object) -> str | None:
+def _iso(value: object) -> datetime | None:
     if isinstance(value, datetime):
-        return value.isoformat()
-    return value if isinstance(value, str) else None
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value)
+    return None
 
 
 def _proposal(row: tuple[object, ...]) -> PromptProposal:
@@ -176,7 +178,7 @@ class PostgresPromptProposalRepository:
                             "provider_id": request.provider_id,
                             "model_id": request.model_id,
                             "revision": 1,
-                            "updated_at": datetime.now(UTC).isoformat(),
+                            "updated_at": datetime.now(UTC),
                         }
                     )
                     await cursor.execute(
@@ -275,6 +277,10 @@ class PostgresPromptProposalRepository:
             async with connection:
                 cursor = connection.cursor()
                 await cursor.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                    (project_id, stage_id),
+                )
+                await cursor.execute(
                     """
                     SELECT layer, locked, revision, updated_at
                     FROM prompt_layer_locks
@@ -292,7 +298,7 @@ class PostgresPromptProposalRepository:
                             "layer": layer,
                             "locked": request.locked,
                             "revision": 1,
-                            "updated_at": datetime.now(UTC).isoformat(),
+                            "updated_at": datetime.now(UTC),
                         }
                     )
                     await cursor.execute(
@@ -372,7 +378,7 @@ class PostgresPromptProposalRepository:
                 active = await cursor.fetchone()
                 if active is not None:
                     raise PromptProposalActiveGeneration(active[0])
-                saved = proposal.model_copy(update={"created_at": datetime.now(UTC).isoformat()})
+                saved = proposal.model_copy(update={"created_at": datetime.now(UTC)})
                 await cursor.execute(
                     """
                     INSERT INTO prompt_proposals
@@ -400,6 +406,14 @@ class PostgresPromptProposalRepository:
                         saved.provider_id,
                         saved.model_id,
                     ),
+                )
+                await cursor.execute(
+                    """
+                    UPDATE prompt_proposals
+                    SET status = 'superseded', finished_at = CURRENT_TIMESTAMP
+                    WHERE project_id = %s AND stage_id = %s AND status = 'succeeded'
+                    """,
+                    (saved.project_id, saved.stage_id),
                 )
                 await cursor.execute(
                     """
@@ -532,41 +546,40 @@ class PostgresPromptProposalRepository:
                     )
                 if not text_by_layer or set(text_by_layer) - set(current.target_layers):
                     raise PromptProposalInvalidTransition()
-                if True:
-                    layer = current.target_layers[0]
-                    source_text = (
-                        current.source.template_body
-                        if layer == "template"
-                        else current.source.project_override or ""
-                    )
-                    changes = build_prompt_changes(layer, source_text, text_by_layer[layer])
-                    for ordinal, change in enumerate(changes):
-                        await cursor.execute(
-                            """
-                            INSERT INTO prompt_proposal_changes
-                                (proposal_id, change_id, ordinal, layer, before_text,
-                                    after_text, start_line, end_line)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                proposal_id,
-                                change.change_id,
-                                ordinal,
-                                change.layer,
-                                change.before_text,
-                                change.after_text,
-                                change.start_line,
-                                change.end_line,
-                            ),
-                        )
+                layer = current.target_layers[0]
+                source_text = (
+                    current.source.template_body
+                    if layer == "template"
+                    else current.source.project_override or ""
+                )
+                changes = build_prompt_changes(layer, source_text, text_by_layer[layer])
+                for ordinal, change in enumerate(changes):
                     await cursor.execute(
                         """
-                        UPDATE prompt_proposals
-                        SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP
-                        WHERE proposal_id = %s
+                        INSERT INTO prompt_proposal_changes
+                            (proposal_id, change_id, ordinal, layer, before_text,
+                                after_text, start_line, end_line)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """,
-                        (proposal_id,),
+                        (
+                            proposal_id,
+                            change.change_id,
+                            ordinal,
+                            change.layer,
+                            change.before_text,
+                            change.after_text,
+                            change.start_line,
+                            change.end_line,
+                        ),
                     )
+                await cursor.execute(
+                    """
+                    UPDATE prompt_proposals
+                    SET status = 'succeeded', finished_at = CURRENT_TIMESTAMP
+                    WHERE proposal_id = %s
+                    """,
+                    (proposal_id,),
+                )
                 return current.model_copy(update={"status": "succeeded"})
         except PromptProposalInvalidTransition:
             raise
@@ -713,7 +726,7 @@ class PostgresPromptProposalRepository:
                 applied = await self._finish_apply(cursor, current)
                 return PromptProposalApplyResult.model_validate(
                     {
-                        "proposal": applied.model_dump(mode="json"),
+                        "proposal": applied,
                         "resulting_template_id": resulting_template_id,
                         "resulting_template_revision": resulting_template_revision,
                         "resulting_binding_revision": resulting_binding_revision,
@@ -801,7 +814,7 @@ class PostgresPromptProposalRepository:
                 applied = await self._finish_apply(cursor, current)
                 return PromptProposalApplyResult.model_validate(
                     {
-                        "proposal": applied.model_dump(mode="json"),
+                        "proposal": applied,
                         "resulting_template_id": resulting_template_id,
                         "resulting_template_revision": resulting_template_revision,
                         "resulting_binding_revision": resulting_binding_revision,
@@ -821,15 +834,15 @@ class PostgresPromptProposalRepository:
     async def _lock_for_apply(
         self, cursor: Any, project_id: str, proposal_id: str
     ) -> tuple[PromptProposal, dict[str, Any], list[ProjectPromptLayerLock]]:
-        await cursor.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
-            (project_id, "stage-lock"),
-        )
         current = await self._select_proposal(cursor, project_id, proposal_id)
         if current is None:
             raise PromptProposalNotFound()
         if current.status != "succeeded":
             raise PromptProposalInvalidTransition()
+        await cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (project_id, current.stage_id),
+        )
         await cursor.execute(
             """
             SELECT template_id, template_revision, project_override, revision
@@ -859,6 +872,7 @@ class PostgresPromptProposalRepository:
             SELECT layer, locked, revision, updated_at
             FROM prompt_layer_locks
             WHERE project_id = %s AND stage_id = %s
+            FOR UPDATE
             """,
             (project_id, current.stage_id),
         )

@@ -631,10 +631,16 @@
             "type": "integer"
           },
           "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
             "title": "Stage Id",
             "type": "string"
           },
           "updated_at": {
+            "format": "date-time",
             "title": "Updated At",
             "type": "string"
           }
@@ -674,10 +680,16 @@
             "type": "integer"
           },
           "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
             "title": "Stage Id",
             "type": "string"
           },
           "updated_at": {
+            "format": "date-time",
             "title": "Updated At",
             "type": "string"
           }
@@ -746,6 +758,7 @@
             "type": "array"
           },
           "created_at": {
+            "format": "date-time",
             "title": "Created At",
             "type": "string"
           },
@@ -775,6 +788,7 @@
           "finished_at": {
             "anyOf": [
               {
+                "format": "date-time",
                 "type": "string"
               },
               {
@@ -828,12 +842,18 @@
             "$ref": "#/components/schemas/PromptProposalSource"
           },
           "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
             "title": "Stage Id",
             "type": "string"
           },
           "started_at": {
             "anyOf": [
               {
+                "format": "date-time",
                 "type": "string"
               },
               {

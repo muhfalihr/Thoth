@@ -115,6 +115,23 @@ class PromptProposalService:
                     return provider, model
         raise PromptModelNotInCatalog()
 
+    def _require_catalog_model_any(
+        self, provider_id: str, model_id: str
+    ) -> tuple[PromptProviderDefinition, object]:
+        """Accept any enabled catalog model that supports at least one capability.
+
+        Each Generate action validates its own required capability separately
+        via `_require_catalog_model`; saving a preference only needs the model
+        to exist and be usable for something.
+        """
+        for provider in self._catalog:
+            if provider.provider_id != provider_id or not provider.enabled:
+                continue
+            for model in provider.models:
+                if model.model_id == model_id and model.capabilities:
+                    return provider, model
+        raise PromptModelNotInCatalog()
+
     async def get_preference(
         self, project_id: str, stage_id: str
     ) -> ProjectPromptModelPreference | None:
@@ -135,7 +152,7 @@ class PromptProposalService:
         request: SavePromptModelPreferenceRequest,
     ) -> ProjectPromptModelPreference:
         self._require_stage(stage_id)
-        self._require_catalog_model(request.provider_id, request.model_id, kind="improve")
+        self._require_catalog_model_any(request.provider_id, request.model_id)
         try:
             return await self._require_repository().save_preference(project_id, stage_id, request)
         except PASSTHROUGH_REPO_ERRORS:
@@ -199,12 +216,13 @@ class PromptProposalService:
                 raise PromptProposalEmptyLayer()
             input_chars = len(layer_text)
         else:
-            for layer in ("template", "project_override"):
-                text = self._saved_layer_text(binding, template, layer)
-                if text is not None and text.strip():
-                    self._require_unlocked(locks, layer)
-            target_layers = ("template", "project_override")
-            input_chars = len(template.body) + len(binding.project_override or "")
+            override_text = binding.project_override
+            has_override = override_text is not None and override_text.strip() != ""
+            self._require_unlocked(locks, "template")
+            if has_override:
+                self._require_unlocked(locks, "project_override")
+            target_layers = ("template", "project_override") if has_override else ("template",)
+            input_chars = len(template.body) + len(override_text or "")
         if input_chars > model.max_input_chars:
             raise PromptModelNotInCatalog()
 
@@ -228,7 +246,7 @@ class PromptProposalService:
                 "improvement_instructions": request.improvement_instructions,
                 "provider_id": request.provider_id,
                 "model_id": request.model_id,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": datetime.now(UTC),
             }
         )
         payload_hash = sha256(request.model_dump_json().encode("utf-8")).hexdigest()

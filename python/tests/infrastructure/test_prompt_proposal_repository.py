@@ -57,7 +57,7 @@ def proposal(**overrides: object) -> PromptProposal:
         "translated_template_body": None,
         "translated_project_override": None,
         "failure_code": None,
-        "created_at": NOW.isoformat(),
+        "created_at": NOW,
         "started_at": None,
         "finished_at": None,
     }
@@ -112,9 +112,9 @@ def proposal_row(source: PromptProposal) -> tuple[object, ...]:
         "translated_template_body": source.translated_template_body,
         "translated_project_override": source.translated_project_override,
         "failure_code": source.failure_code,
-        "created_at": datetime.fromisoformat(source.created_at),
-        "started_at": datetime.fromisoformat(source.started_at) if source.started_at else None,
-        "finished_at": (datetime.fromisoformat(source.finished_at) if source.finished_at else None),
+        "created_at": source.created_at,
+        "started_at": source.started_at,
+        "finished_at": source.finished_at,
     }
     return tuple(values[key] for key in PROPOSAL_KEYS)
 
@@ -239,12 +239,12 @@ async def test_save_preference_rebases_on_matching_base_revision(
             "provider_id": "novita",
             "model_id": "deepseek/deepseek-v3.1",
             "revision": 3,
-            "updated_at": NOW.isoformat(),
+            "updated_at": NOW,
         }
     )
     cursor = patched(
         monkeypatch,
-        [[("novita", "deepseek/deepseek-v3.1", existing.revision, NOW.isoformat())]],
+        [[("novita", "deepseek/deepseek-v3.1", existing.revision, NOW)]],
     )
 
     saved = await repository().save_preference(
@@ -268,7 +268,7 @@ async def test_save_preference_rebases_on_matching_base_revision(
 async def test_save_preference_conflict_carries_latest(monkeypatch: pytest.MonkeyPatch) -> None:
     patched(
         monkeypatch,
-        [[("novita", "deepseek/deepseek-v3.1", 5, NOW.isoformat())]],
+        [[("novita", "deepseek/deepseek-v3.1", 5, NOW)]],
     )
 
     with pytest.raises(PromptPreferenceRevisionConflict) as error:
@@ -319,7 +319,7 @@ async def test_save_lock_updates_on_matching_base_revision(
 
     assert saved.locked is True
     assert saved.revision == 3
-    _, update_params = cursor.calls[1]
+    _, update_params = cursor.calls[2]
     assert update_params == (True, 3, "project_a", "narrative_plan", "template")
 
 
@@ -392,6 +392,23 @@ async def test_reserve_proposal_inserts_proposal_changes_and_idempotency(
         if " ".join(query.split()).lower().startswith("insert")
     ]
     assert inserted == ["prompt_proposals", "prompt_proposal_idempotency"]
+
+
+@pytest.mark.asyncio
+async def test_reserve_proposal_supersedes_only_prior_succeeded_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = patched(monkeypatch)
+
+    await repository().reserve_proposal(proposal(), "request-1", "hash-1")
+
+    supersede_query, supersede_params = next(
+        (q, p) for q, p in cursor.calls if " ".join(q.split()).lower().startswith("update")
+    )
+    assert "SET status = 'superseded'" in supersede_query
+    assert "AND status = 'succeeded'" in supersede_query
+    assert supersede_params == ("project_a", "narrative_plan")
+    assert cursor.update_count == 1
 
 
 @pytest.mark.asyncio
@@ -750,6 +767,42 @@ async def test_apply_translation_locked_target_layer_fails_closed(
 
 
 @pytest.mark.asyncio
+async def test_apply_improvement_advisory_lock_uses_project_and_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = proposal(status="succeeded")
+    cursor = patched(
+        monkeypatch,
+        apply_rows(source, binding=binding_row(revision=1), locks=[lock_row("template", False)]),
+    )
+
+    await repository().apply_improvement(
+        "project_a", "proposal_1", [improvement_changes()[0].change_id], "actor_owner"
+    )
+
+    _, advisory_params = next((q, p) for q, p in cursor.calls if "pg_advisory_xact_lock" in q)
+    assert advisory_params == ("project_a", "narrative_plan")
+
+
+@pytest.mark.asyncio
+async def test_apply_improvement_reads_lock_rows_with_for_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = proposal(status="succeeded")
+    cursor = patched(
+        monkeypatch,
+        apply_rows(source, binding=binding_row(revision=1), locks=[lock_row("template", False)]),
+    )
+
+    await repository().apply_improvement(
+        "project_a", "proposal_1", [improvement_changes()[0].change_id], "actor_owner"
+    )
+
+    lock_query, _ = next((q, p) for q, p in cursor.calls if "FROM prompt_layer_locks" in q)
+    assert "FOR UPDATE" in lock_query
+
+
+@pytest.mark.asyncio
 async def test_store_failures_are_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
     async def broken(_: str) -> Connection:
         raise RuntimeError("postgresql://secret.example")
@@ -763,3 +816,20 @@ async def test_store_failures_are_redacted(monkeypatch: pytest.MonkeyPatch) -> N
         PromptProposalStoreUnavailable, match=r"^prompt proposal store unavailable$"
     ):
         await repository().get_proposal("project_a", "proposal_1")
+
+
+@pytest.mark.asyncio
+async def test_save_lock_serializes_with_apply_via_stage_advisory_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = patched(monkeypatch, [[("template", False, 1, NOW)]])
+    await repository().save_lock(
+        "project_a",
+        "narrative_plan",
+        "template",
+        SavePromptLayerLockRequest.model_validate({"locked": True, "base_revision": 1}),
+    )
+
+    lock_query, lock_params = cursor.calls[0]
+    assert "pg_advisory_xact_lock" in lock_query
+    assert lock_params == ("project_a", "narrative_plan")

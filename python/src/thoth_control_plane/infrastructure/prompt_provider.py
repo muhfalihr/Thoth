@@ -81,7 +81,7 @@ class OpenAICompatiblePromptProvider:
         credential = self._secrets.get(runtime.credential_id)
         if credential is None or not credential.get_secret_value().strip():
             raise ProviderUnavailable()
-        payload = self._build_payload(runtime, request)
+        payload = self._build_payload(request)
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,
@@ -128,9 +128,7 @@ class OpenAICompatiblePromptProvider:
         raise ProviderUnavailable()
 
     @staticmethod
-    def _build_payload(
-        runtime: PromptProviderRuntimeDefinition, request: ProviderPromptRequest
-    ) -> dict[str, Any]:
+    def _build_payload(request: ProviderPromptRequest) -> dict[str, Any]:
         layers_block = "\n\n".join(
             f"[{layer}]\n{text}" for layer, text in request.text_by_layer.items()
         )
@@ -183,7 +181,10 @@ class OpenAICompatiblePromptProvider:
                 raise ProviderInvalidOutput()
             if set(parsed) != set(request.text_by_layer):
                 raise ProviderInvalidOutput()
-            text_by_layer = {layer: str(parsed[layer]) for layer in request.text_by_layer}
+            for layer in request.text_by_layer:
+                if not isinstance(parsed[layer], str):
+                    raise ProviderInvalidOutput()
+            text_by_layer = {layer: parsed[layer] for layer in request.text_by_layer}
             return ProviderPromptResult.model_validate({"text_by_layer": text_by_layer})
         except ProviderInvalidOutput:
             raise

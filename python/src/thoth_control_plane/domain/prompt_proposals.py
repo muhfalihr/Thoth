@@ -6,9 +6,14 @@ from collections.abc import Sequence
 from hashlib import sha256
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from thoth_control_plane.domain.models import OpaqueId, ProjectId, StrictModel
+from thoth_control_plane.domain.prompts import PromptStageId
+
+# Accept both datetime objects and ISO-8601 strings (repository rows and JSON
+# payloads alike); AwareDatetime still rejects naive datetimes either way.
+Timestamp: TypeAlias = Annotated[AwareDatetime, Field(strict=False)]
 
 SafeIdentifier: TypeAlias = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")]
 PositiveInt: TypeAlias = Annotated[int, Field(gt=0)]
@@ -107,20 +112,20 @@ class PromptProviderDefinition(StrictModel):
 
 class ProjectPromptModelPreference(StrictModel):
     project_id: ProjectId
-    stage_id: str
+    stage_id: PromptStageId
     provider_id: SafeIdentifier
     model_id: SafeIdentifier
     revision: PositiveInt
-    updated_at: str
+    updated_at: Timestamp
 
 
 class ProjectPromptLayerLock(StrictModel):
     project_id: ProjectId
-    stage_id: str
+    stage_id: PromptStageId
     layer: PromptLayer
     locked: bool
     revision: PositiveInt
-    updated_at: str
+    updated_at: Timestamp
 
 
 class SavePromptModelPreferenceRequest(StrictModel):
@@ -168,7 +173,7 @@ class PromptProposalChange(StrictModel):
 class PromptProposal(StrictModel):
     proposal_id: OpaqueId
     project_id: ProjectId
-    stage_id: str
+    stage_id: PromptStageId
     kind: PromptProposalKind
     status: PromptProposalStatus
     target_layers: tuple[PromptLayer, ...]
@@ -181,9 +186,9 @@ class PromptProposal(StrictModel):
     translated_template_body: PromptBody | None = None
     translated_project_override: PromptOverride | None = None
     failure_code: PromptProposalFailureCode | None = None
-    created_at: str
-    started_at: str | None = None
-    finished_at: str | None = None
+    created_at: Timestamp
+    started_at: Timestamp | None = None
+    finished_at: Timestamp | None = None
 
     @field_validator("target_layers", "changes", mode="before")
     @classmethod
