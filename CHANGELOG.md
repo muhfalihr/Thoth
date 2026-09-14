@@ -2,6 +2,80 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-14 — Prompt Lab AI Proposals (C2) review corrections, round 2
+
+The prior "review corrections" entry below (commit `c945623`) claimed all
+nine C2 findings were closed and the round was awaiting Codex re-review. Two
+independent Codex re-reviews of that commit rejected the claim, together
+finding twelve further defects it had missed. This entry (commit `0789f57`)
+closes all twelve.
+
+- Narrowed the wire `stage_id` to the closed `PromptStageId` type at the
+  production API boundary itself, not only at internal call sites;
+  regenerated `openapi.json` and `dashboard/src/api/generated/control-plane.ts`.
+- Fixed a deadlock-prone advisory-lock acquisition order shared by
+  `save_lock` and both Apply transactions.
+- Fixed `PromptProposalPanel` stage isolation: a single `loadStage` helper
+  replaces the prior duplicated load paths, an explicit `stage_selected`
+  action clears stale view state on stage change, the reconnect reload now
+  runs catalog → preference → locks → history sequentially instead of
+  racing, and the proposal poll interval is cleaned up on unmount/stage
+  change.
+- Fixed lock/unlock gating: Unlock is now clickable while online even when
+  already locked; both buttons disable offline or mid-save; lock saves now
+  send the current `base_revision`; a 409 on a lock or preference save now
+  adopts the server's latest resource instead of discarding it as a generic
+  error; Translate's gate now checks both actual target layers instead of
+  only `template`; and Improve/Translate/Regenerate now share one gate
+  computation between their `disabled` attribute and their click handler,
+  closing a case where Regenerate could evaluate a different target layer
+  in each.
+- Fixed a `PromptLab` initial-load race: editing the project override before
+  the first stage load completed left the binding's `base_revision` `null`
+  through to Save; it is now hydrated from the load response, but only when
+  never previously established.
+- Root-caused the dashboard suite's cross-file instability: an unrestored
+  `jest.useFakeTimers()` call in `GuidedStudio.test.tsx` (missing the global
+  `afterEach` reset its sibling file already had) can permanently hang any
+  later test file in the same Bun process that awaits a real timer — this,
+  not nondeterminism, was the "cross-file test-order flake" the prior round
+  logged as pre-existing and left alone. Fixed and confirmed with a
+  throwaway repro that reproduces the hang without the fix and passes with
+  it.
+- Fixed, as mechanical cleanup on files this round already touches, the four
+  `ruff` findings the prior round found pre-existing and explicitly left
+  untouched (import order in `api/app.py` and `test_prompt_proposals.py`,
+  one unused-variable unpack).
+- Fixed `PromptProposalPanel`'s proposal poll to schedule its next `setTimeout`
+  only from inside the previous request's own `.then()`/`.catch()`, instead of
+  a recursive `setInterval`-style schedule that could pile up overlapping
+  in-flight polls.
+- Replaced the panel's per-callback stale-response guards with one shared
+  `generationRef` counter, checked by every stage-owned async load and
+  mutation callback, so a fast reconnect/stage-change reliably discards every
+  in-flight response from the stage it left rather than only some of them.
+- Replaced the panel's single generic blocked-reason paragraph with
+  per-button reason text (`improveGate`/`translateGate`/`regenerateGate`,
+  via a shared `generateReasonText()` helper) — Regenerate no longer shows a
+  reason that actually belongs to Improve or Translate's own gate.
+- Added typed 409 conflict response bodies (`PreferenceRevisionConflictBody`,
+  `LockRevisionConflictBody`, both `{code, latest}`) for the preference and
+  lock save routes, replacing the untyped bare-resource 409 body; the
+  dashboard's `saveWithConflict()` unwraps the new envelope for these two
+  call sites only, leaving template/binding 409s unchanged.
+- Extracted the C2 control-plane test fixtures duplicated across
+  `GuidedStudio.test.tsx` and `GuidedStudio.final-fix.test.tsx` into a shared
+  `prompt-proposal-test-fixtures.ts` so the two suites can no longer drift
+  out of sync with each other.
+
+Verification: dashboard `bun test` 188/188 across 3 consecutive full runs,
+lint clean, build clean; Python `pytest -m "not live"` 972 passed / 31
+skipped / 3 deselected, `ruff check`/`ruff format --check` clean;
+`build_cuda.bat` full CUDA release build exit 0, zero errors/warnings;
+`docker compose -f compose.stage1.local.yml config` exit 0; `git diff --check`
+clean; Scout `bun install --frozen-lockfile` + `test:acquisition` (68 files)
++ `test:runtime` (126/126) all green.
+
 ## 2026-09-14 — Prompt Lab AI Proposals (C2) review corrections
 
 Addressed the remaining Codex C2 review findings on top of the prior
