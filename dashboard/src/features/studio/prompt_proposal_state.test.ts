@@ -246,7 +246,7 @@ test("saved tuple syncs through the explicit action", () => {
 test("preference conflict keeps the latest returned resource", () => {
   const latest = {
     project_id: "project_a",
-    stage_id: "narrative_plan",
+    stage_id: "narrative_plan" as const,
     provider_id: "novita",
     model_id: "deepseek/deepseek-v3.1",
     revision: 9,

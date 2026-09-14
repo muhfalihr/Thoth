@@ -91,7 +91,7 @@ const C2_STARTER = {
 
 const C2_PREFERENCE = {
   project_id: "project_a",
-  stage_id: "narrative_plan",
+  stage_id: "narrative_plan" as const,
   provider_id: "novita",
   model_id: "deepseek/deepseek-v3.1",
   revision: 1,
@@ -100,7 +100,7 @@ const C2_PREFERENCE = {
 
 const C2_LOCK = {
   project_id: "project_a",
-  stage_id: "narrative_plan",
+  stage_id: "narrative_plan" as const,
   layer: "template" as const,
   locked: true,
   revision: 1,
@@ -110,7 +110,7 @@ const C2_LOCK = {
 const C2_PROPOSAL = {
   proposal_id: "proposal_1",
   project_id: "project_a",
-  stage_id: "narrative_plan",
+  stage_id: "narrative_plan" as const,
   kind: "improve" as const,
   status: "succeeded" as const,
   target_layers: ["template"] as Array<"template" | "project_override">,

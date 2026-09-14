@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-14 — Prompt Lab AI Proposals (C2) review corrections
+
+Addressed the remaining Codex C2 review findings on top of the prior
+corrective commits, closing out every open contract requirement.
+
+- Fixed translate-lock scoping so a lock on an empty non-target override no
+  longer blocks Apply, unified `save_lock` and both Apply transactions on the
+  same `pg_advisory_xact_lock(hashtext(project_id), hashtext(stage_id))`
+  convention with `FOR UPDATE` reads, and required an enabled catalog model
+  with a matching capability for both saved preferences and each Generate
+  operation.
+- Replaced Temporal already-started detection with the concrete
+  `WorkflowAlreadyStartedError` (no more message-text matching), and closed
+  four dead-code findings: an empty `imports_passed_through()` block, an
+  unused gateway `Settings` field, an unused provider runtime parameter, and
+  an unconditional `if True:` block.
+- Migrated proposal/preference/lock timestamps to a timezone-aware `Timestamp`
+  type (still rejecting naive datetimes, still ISO-8601 on the wire) and
+  regenerated `openapi.json` / `control-plane.ts` for the resulting
+  `stage_id` enum and `date-time` format additions; updated the three
+  dashboard test fixtures whose `stage_id` literals widened under the new
+  union type.
+- Added fresh regression coverage for two previously-untested contracts: the
+  Temporal gateway no longer swallowing unrelated "already"-worded errors as
+  success, and reserving a new proposal superseding only a prior `succeeded`
+  proposal for the same project-stage (never `applied`/`rejected`/`failed`
+  history).
+- Offline gates: focused Prompt Lab suite 137 passed, full Python suite 967
+  passed / 31 skipped, ruff check/format clean (pre-existing debt in
+  untouched files left as-is), `build_cuda.bat` clean (no Rust source
+  changed), `docker compose config` structurally valid, `git diff --check`
+  clean, dashboard 165 tests / 0 lint errors / production build passed
+  (a pre-existing cross-file test-order flake observed, not a regression),
+  Scout acquisition and runtime suites passed, and OpenAPI export + TS
+  generation reproduced byte-identical on a second run. No push, deployment,
+  provider request, secret access, or Stage 1 evidence mutation occurred.
+
 ## 2026-09-13 — Creator Studio Prompt Lab AI Proposals (C2)
 
 Implemented the approved offline C2 delivery for review-before-Apply AI prompt
