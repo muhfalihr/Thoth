@@ -584,8 +584,11 @@ export interface components {
             source_template_id: string;
             /** Source Template Revision */
             source_template_revision: number;
-            /** Stage Id */
-            stage_id: string;
+            /**
+             * Stage Id
+             * @enum {string}
+             */
+            stage_id: "narrative_plan" | "visual_plan" | "caption_copy";
             /** Target Language */
             target_language?: string | null;
             /** Target Layer */
@@ -640,6 +643,16 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** LockRevisionConflictBody */
+        LockRevisionConflictBody: {
+            /**
+             * Code
+             * @default lock_revision_conflict
+             * @constant
+             */
+            code: "lock_revision_conflict";
+            latest: components["schemas"]["ProjectPromptLayerLock"];
+        };
         /** MainImport */
         MainImport: {
             /** Description */
@@ -653,6 +666,16 @@ export interface components {
             format: string;
             /** Language */
             language: string;
+        };
+        /** PreferenceRevisionConflictBody */
+        PreferenceRevisionConflictBody: {
+            /**
+             * Code
+             * @default preference_revision_conflict
+             * @constant
+             */
+            code: "preference_revision_conflict";
+            latest: components["schemas"]["ProjectPromptModelPreference"];
         };
         /** ProjectPromptBinding */
         ProjectPromptBinding: {
@@ -1577,6 +1600,15 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectPromptLayerLock"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockRevisionConflictBody"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -1649,6 +1681,15 @@ export interface operations {
                     "application/json": components["schemas"]["ProjectPromptModelPreference"];
                 };
             };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreferenceRevisionConflictBody"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -1700,8 +1741,8 @@ export interface operations {
     create_prompt_proposal_api_v1_projects__project_id__prompt_lab_proposals_post: {
         parameters: {
             query?: never;
-            header: {
-                "Idempotency-Key": string;
+            header?: {
+                "Idempotency-Key"?: string | null;
                 Authorization?: string | null;
             };
             path: {

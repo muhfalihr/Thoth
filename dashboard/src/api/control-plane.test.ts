@@ -7,6 +7,8 @@ import {
   type EditDocument,
   type EditDocumentPatch,
   type ProjectPromptBinding,
+  type PromptLayerLock,
+  type PromptModelPreference,
   type PromptStageDefinition,
   type PromptTemplateRevision,
   type ResolvedPromptDraft,
@@ -117,6 +119,48 @@ test("saves prompt bindings with PUT and preserves the typed conflict latest", a
     "http://control-plane.test/api/v1/projects/project%2Fa/prompt-lab/bindings/narrative_plan",
     expect.objectContaining({ method: "PUT" }),
   );
+});
+
+test("unwraps the typed preference conflict envelope into its latest resource", async () => {
+  const latest = {
+    project_id: "project_a",
+    stage_id: "narrative_plan",
+    provider_id: "novita",
+    model_id: "deepseek/deepseek-v3.1",
+    revision: 9,
+    updated_at: "2026-09-13T08:00:00Z",
+  } satisfies PromptModelPreference;
+  const body = { code: "preference_revision_conflict", latest };
+  const fetchMock = mock(async () => new Response(JSON.stringify(body), { status: 409 }));
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret" });
+
+  await expect(
+    client.savePromptPreference("project_a", "narrative_plan", {
+      provider_id: "novita",
+      model_id: "deepseek/deepseek-v3.1",
+      base_revision: 1,
+    }),
+  ).resolves.toEqual({ kind: "conflict", latest });
+});
+
+test("unwraps the typed lock conflict envelope into its latest resource", async () => {
+  const latest = {
+    project_id: "project_a",
+    stage_id: "narrative_plan",
+    layer: "template",
+    locked: true,
+    revision: 9,
+    updated_at: "2026-09-13T08:00:00Z",
+  } satisfies PromptLayerLock;
+  const body = { code: "lock_revision_conflict", latest };
+  const fetchMock = mock(async () => new Response(JSON.stringify(body), { status: 409 }));
+  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret" });
+
+  await expect(
+    client.savePromptLock("project_a", "narrative_plan", "template", { locked: false, base_revision: 1 }),
+  ).resolves.toEqual({ kind: "conflict", latest });
 });
 
 test("fetches the visible resolved prompt draft", async () => {

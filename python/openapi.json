@@ -278,6 +278,11 @@
             "type": "integer"
           },
           "stage_id": {
+            "enum": [
+              "narrative_plan",
+              "visual_plan",
+              "caption_copy"
+            ],
             "title": "Stage Id",
             "type": "string"
           },
@@ -498,6 +503,25 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "LockRevisionConflictBody": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "const": "lock_revision_conflict",
+            "default": "lock_revision_conflict",
+            "title": "Code",
+            "type": "string"
+          },
+          "latest": {
+            "$ref": "#/components/schemas/ProjectPromptLayerLock"
+          }
+        },
+        "required": [
+          "latest"
+        ],
+        "title": "LockRevisionConflictBody",
+        "type": "object"
+      },
       "MainImport": {
         "additionalProperties": false,
         "properties": {
@@ -548,6 +572,25 @@
           "language"
         ],
         "title": "OutputRequest",
+        "type": "object"
+      },
+      "PreferenceRevisionConflictBody": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "const": "preference_revision_conflict",
+            "default": "preference_revision_conflict",
+            "title": "Code",
+            "type": "string"
+          },
+          "latest": {
+            "$ref": "#/components/schemas/ProjectPromptModelPreference"
+          }
+        },
+        "required": [
+          "latest"
+        ],
+        "title": "PreferenceRevisionConflictBody",
         "type": "object"
       },
       "ProjectPromptBinding": {
@@ -2870,6 +2913,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockRevisionConflictBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3006,6 +3059,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferenceRevisionConflictBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3124,10 +3187,17 @@
           {
             "in": "header",
             "name": "Idempotency-Key",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Idempotency-Key",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           },
           {

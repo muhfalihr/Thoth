@@ -149,6 +149,7 @@ async def test_preference_routes_roundtrip_and_conflict() -> None:
     assert saved.status_code == 200
     assert saved.json()["revision"] == 1
     assert conflict.status_code == 409
+    assert conflict.json()["code"] == "preference_revision_conflict"
 
 
 @pytest.mark.asyncio
@@ -203,6 +204,19 @@ async def test_create_without_saved_binding_is_not_found() -> None:
         )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_an_unregistered_stage_id_at_the_schema() -> None:
+    client, _, template_id = await seeded_app()
+    async with client:
+        response = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
+            json={**create_improvement(template_id), "stage_id": "not_a_real_stage"},
+        )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -357,8 +371,8 @@ async def test_apply_reject_and_stale_paths() -> None:
 @pytest.mark.asyncio
 async def test_settings_catalog_is_projected_when_no_catalog_injected() -> None:
     """Production create_app with no injected catalog must expose the configured catalog."""
-    from thoth_control_plane.api import create_app as factory
     from tests.infrastructure.test_prompt_provider import RUNTIME_PROVIDER
+    from thoth_control_plane.api import create_app as factory
 
     prompt_repo = MemoryPromptLabRepository()
     app = factory(
@@ -385,8 +399,8 @@ async def test_settings_catalog_is_projected_when_no_catalog_injected() -> None:
 
 @pytest.mark.asyncio
 async def test_injected_catalog_overrides_settings_catalog() -> None:
-    from thoth_control_plane.api import create_app as factory
     from tests.infrastructure.test_prompt_provider import RUNTIME_PROVIDER
+    from thoth_control_plane.api import create_app as factory
 
     app = factory(
         Settings(
@@ -408,8 +422,123 @@ async def test_injected_catalog_overrides_settings_catalog() -> None:
 
 
 @pytest.mark.asyncio
-async def test_known_failures_return_typed_safe_detail_codes() -> None:
+async def test_settings_catalog_survives_lifespan() -> None:
+    """The effective catalog computed at factory time must not be discarded at startup."""
+    from tests.infrastructure.test_prompt_provider import RUNTIME_PROVIDER
+    from thoth_control_plane.api import create_app as factory
+
+    class FakeWorkflowGateway:
+        async def check_connection(self) -> bool:
+            return True
+
+    app = factory(
+        Settings(
+            THOTH_CONTROL_PLANE_API_KEY="test-key",
+            THOTH_PROMPT_PROVIDER_CATALOG=[RUNTIME_PROVIDER],
+        ),
+        FakeWorkflowGateway(),
+        prompt_repository=MemoryPromptLabRepository(),
+        prompt_proposal_repository=MemoryProposalRepository(),
+        prompt_proposal_gateway=RecordingGateway(),
+    )
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            catalog = await client.get("/api/v1/prompt-providers", headers=AUTH_HEADERS)
+
+    assert catalog.status_code == 200
+    assert [item["provider_id"] for item in catalog.json()] == ["novita"]
+    assert "base_url" not in catalog.text
+    assert "credential_id" not in catalog.text
+    assert "protocol" not in catalog.text
+
+
+@pytest.mark.asyncio
+async def test_missing_resources_and_invalid_lock_layer_return_safe_codes(monkeypatch) -> None:
+    import thoth_control_plane.application.prompt_proposals as service_module
+
+    monkeypatch.setattr(service_module, "PROMPT_STARTERS", {})
     client, _, template_id = await seeded_app()
+    async with client:
+        missing_starter = await client.get(
+            "/api/v1/prompt-stages/narrative_plan/starter", headers=AUTH_HEADERS
+        )
+        missing_preference = await client.get(
+            "/api/v1/projects/project_a/prompt-lab/preferences/narrative_plan",
+            headers=AUTH_HEADERS,
+        )
+        invalid_layer = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/locks/narrative_plan/bogus_layer",
+            headers=AUTH_HEADERS,
+            json={"locked": True},
+        )
+        blank_key = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers={**AUTH_HEADERS, "Idempotency-Key": "   "},
+            json=create_improvement(template_id),
+        )
+        missing_key = await client.post(
+            "/api/v1/projects/project_a/prompt-lab/proposals",
+            headers=AUTH_HEADERS,
+            json=create_improvement(template_id),
+        )
+
+    assert missing_starter.status_code == 404
+    assert missing_starter.json()["detail"]["code"] == "starter_not_found"
+    assert missing_preference.status_code == 404
+    assert missing_preference.json()["detail"]["code"] == "preference_not_found"
+    assert invalid_layer.status_code == 404
+    assert invalid_layer.json()["detail"]["code"] == "invalid_lock_layer"
+    assert blank_key.status_code == 422
+    assert blank_key.json()["detail"]["code"] == "missing_idempotency_key"
+    assert missing_key.status_code == 422
+    assert missing_key.json()["detail"]["code"] == "missing_idempotency_key"
+
+
+@pytest.mark.asyncio
+async def test_preference_and_lock_conflicts_preserve_the_latest_resource() -> None:
+    client, _, _ = await seeded_app()
+    async with client:
+        saved = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/preferences/narrative_plan",
+            headers=AUTH_HEADERS,
+            json={"provider_id": "novita", "model_id": "deepseek/deepseek-v3.1"},
+        )
+        preference_conflict = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/preferences/narrative_plan",
+            headers=AUTH_HEADERS,
+            json={
+                "provider_id": "novita",
+                "model_id": "deepseek/deepseek-v3.1",
+                "base_revision": 99,
+            },
+        )
+        locked = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/locks/narrative_plan/template",
+            headers=AUTH_HEADERS,
+            json={"locked": True},
+        )
+        lock_conflict = await client.put(
+            "/api/v1/projects/project_a/prompt-lab/locks/narrative_plan/template",
+            headers=AUTH_HEADERS,
+            json={"locked": False, "base_revision": 99},
+        )
+
+    assert saved.status_code == 200
+    assert preference_conflict.status_code == 409
+    assert preference_conflict.json()["code"] == "preference_revision_conflict"
+    assert preference_conflict.json()["latest"]["revision"] == saved.json()["revision"]
+    assert preference_conflict.json()["latest"]["model_id"] == saved.json()["model_id"]
+    assert locked.status_code == 200
+    assert lock_conflict.status_code == 409
+    assert lock_conflict.json()["code"] == "lock_revision_conflict"
+    assert lock_conflict.json()["latest"]["revision"] == locked.json()["revision"]
+    assert lock_conflict.json()["latest"]["locked"] == locked.json()["locked"]
+
+
+@pytest.mark.asyncio
+async def test_known_failures_return_typed_safe_detail_codes() -> None:
+    client, _, _template_id = await seeded_app()
     async with client:
         missing = await client.post(
             "/api/v1/projects/project_a/prompt-lab/proposals/proposal_x/apply",
@@ -427,11 +556,9 @@ async def test_known_failures_return_typed_safe_detail_codes() -> None:
             headers={**AUTH_HEADERS, "Idempotency-Key": "request-1"},
             json=create_improvement(stale_template),
         )
-        stale_repo.proposals[("project_a", created.json()["proposal_id"])] = (
-            stale_repo.proposals[("project_a", created.json()["proposal_id"])].model_copy(
-                update={"status": "succeeded"}
-            )
-        )
+        stale_repo.proposals[("project_a", created.json()["proposal_id"])] = stale_repo.proposals[
+            ("project_a", created.json()["proposal_id"])
+        ].model_copy(update={"status": "succeeded"})
         stale = await stale_client.post(
             f"/api/v1/projects/project_a/prompt-lab/proposals/{created.json()['proposal_id']}/apply",
             headers=AUTH_HEADERS,

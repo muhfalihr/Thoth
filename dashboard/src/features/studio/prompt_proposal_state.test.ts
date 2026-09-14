@@ -268,3 +268,47 @@ test("lock_saved upserts the returned lock", () => {
   expect(saved.locks.find((lock) => lock.layer === "template")?.locked).toBe(true);
   expect(saved.locks.find((lock) => lock.layer === "template")?.revision).toBe(4);
 });
+
+test("lock conflict keeps the latest returned resource", () => {
+  const latest = {
+    project_id: "project_a",
+    stage_id: "narrative_plan" as const,
+    layer: "template" as const,
+    locked: true,
+    revision: 9,
+    updated_at: "2026-09-13T08:00:00Z",
+  };
+  const conflicted = promptProposalReducer(readyState(), { type: "lock_conflict", latest });
+  expect(conflicted.locks.find((lock) => lock.layer === "template")?.revision).toBe(9);
+  expect(conflicted.lastError).toBe("lock_conflict");
+});
+
+test("a failed stage load records a stable error code without touching other state", () => {
+  const withProposal = promptProposalReducer(readyState(), { type: "proposal_loaded", proposal });
+  const failed = promptProposalReducer(withProposal, { type: "stage_load_failed" });
+  expect(failed.lastError).toBe("stage_load_failed");
+  expect(failed.activeProposal).toBe(withProposal.activeProposal);
+});
+
+test("translate is blocked by either an actually-targeted locked layer", () => {
+  const templateLocked = promptProposalReducer(readyState(), {
+    type: "locks_loaded",
+    locks: [
+      { project_id: "project_a", stage_id: "narrative_plan", layer: "template", locked: true, revision: 1, updated_at: "2026-09-13T08:00:00Z" },
+    ],
+  });
+  expect(canGenerateProposal(templateLocked, { online: true, formDirty: false }, "translate", "template").allowed).toBe(false);
+
+  // readyState() has a non-blank savedOverrideText, so translate also targets project_override.
+  const overrideLocked = promptProposalReducer(readyState(), {
+    type: "locks_loaded",
+    locks: [
+      { project_id: "project_a", stage_id: "narrative_plan", layer: "project_override", locked: true, revision: 1, updated_at: "2026-09-13T08:00:00Z" },
+    ],
+  });
+  expect(canGenerateProposal(overrideLocked, { online: true, formDirty: false }, "translate", "template").allowed).toBe(false);
+
+  // A blank override is not a translate target, so locking it should not block translate.
+  const blankOverrideState = { ...overrideLocked, savedOverrideText: "" };
+  expect(canGenerateProposal(blankOverrideState, { online: true, formDirty: false }, "translate", "template").allowed).toBe(true);
+});

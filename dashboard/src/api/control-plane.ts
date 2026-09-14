@@ -29,6 +29,12 @@ export type PromptProvider = components["schemas"]["PromptProviderDefinition"];
 export type PromptStarter = components["schemas"]["PromptStarterDefinition"];
 export type PromptModelPreference = components["schemas"]["ProjectPromptModelPreference"];
 export type PromptLayerLock = components["schemas"]["ProjectPromptLayerLock"];
+export type PromptPreferenceSaveResult =
+  | { kind: "saved"; value: PromptModelPreference }
+  | { kind: "conflict"; latest: PromptModelPreference };
+export type PromptLockSaveResult =
+  | { kind: "saved"; value: PromptLayerLock }
+  | { kind: "conflict"; latest: PromptLayerLock };
 export type PromptProposalResource = components["schemas"]["PromptProposal"];
 export type PromptProposalPageResource = components["schemas"]["PromptProposalPage"];
 export type SavePromptModelPreferencePayload =
@@ -81,14 +87,14 @@ export type ControlPlaneClient = {
     projectId: string,
     stageId: string,
     request: SavePromptModelPreferencePayload,
-  ) => Promise<PromptModelPreference>;
+  ) => Promise<PromptPreferenceSaveResult>;
   getPromptLocks: (projectId: string, stageId: string) => Promise<PromptLayerLock[]>;
   savePromptLock: (
     projectId: string,
     stageId: string,
     layer: string,
     request: SavePromptLayerLockPayload,
-  ) => Promise<PromptLayerLock>;
+  ) => Promise<PromptLockSaveResult>;
   createPromptProposal: (
     projectId: string,
     idempotencyKey: string,
@@ -141,13 +147,23 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
     return response.json() as Promise<T>;
   }
 
-  async function saveWithConflict<T>(path: string, method: "POST" | "PUT", body: unknown) {
+  // `typedConflict` unwraps the `{ code, latest }` envelope that preference/lock 409s use;
+  // template/binding 409s still return the bare latest resource.
+  async function saveWithConflict<T>(
+    path: string,
+    method: "POST" | "PUT",
+    body: unknown,
+    typedConflict = false,
+  ) {
     const response = await doFetch(`${baseUrl}${path}`, {
       method,
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
-    if (response.status === 409) return { kind: "conflict" as const, latest: (await response.json()) as T };
+    if (response.status === 409) {
+      const raw = await response.json();
+      return { kind: "conflict" as const, latest: (typedConflict ? raw.latest : raw) as T };
+    }
     if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
     return { kind: "saved" as const, value: (await response.json()) as T };
   }
@@ -242,18 +258,22 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
         throw error;
       }),
     savePromptPreference: (projectId, stageId, req) =>
-      request<PromptModelPreference>(
+      saveWithConflict<PromptModelPreference>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/preferences/${encodeURIComponent(stageId)}`,
-        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) },
+        "PUT",
+        req,
+        true,
       ),
     getPromptLocks: (projectId, stageId) =>
       request<PromptLayerLock[]>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/locks/${encodeURIComponent(stageId)}`,
       ),
     savePromptLock: (projectId, stageId, layer, req) =>
-      request<PromptLayerLock>(
+      saveWithConflict<PromptLayerLock>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/locks/${encodeURIComponent(stageId)}/${encodeURIComponent(layer)}`,
-        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) },
+        "PUT",
+        req,
+        true,
       ),
     createPromptProposal: (projectId, idempotencyKey, req) =>
       request<PromptProposalResource>(

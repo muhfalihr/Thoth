@@ -49,6 +49,7 @@ export type PromptProposalAction =
   | { type: "preference_conflict"; latest: PromptModelPreference }
   | { type: "locks_loaded"; locks: PromptLayerLock[] }
   | { type: "lock_saved"; lock: PromptLayerLock }
+  | { type: "lock_conflict"; latest: PromptLayerLock }
   | { type: "proposal_loaded"; proposal: PromptProposalResource }
   | { type: "proposal_status_changed"; status: PromptProposalResource["status"] }
   | { type: "history_loaded"; proposals: PromptProposalResource[] }
@@ -63,7 +64,8 @@ export type PromptProposalAction =
     }
   | { type: "went_offline" }
   | { type: "went_online" }
-  | { type: "error"; code: string };
+  | { type: "error"; code: string }
+  | { type: "stage_load_failed" };
 
 export function createPromptProposalState(input: {
   stageId: string;
@@ -135,8 +137,11 @@ export function canGenerateProposal(
   if (operation === "improve" && targetLayer && locked.has(targetLayer)) {
     return { allowed: false, reason: "layer_locked" };
   }
-  if (operation === "translate" && locked.has("template")) {
-    return { allowed: false, reason: "layer_locked" };
+  if (operation === "translate") {
+    const overrideTargeted = state.savedOverrideText.trim().length > 0;
+    if (locked.has("template") || (overrideTargeted && locked.has("project_override"))) {
+      return { allowed: false, reason: "layer_locked" };
+    }
   }
   if (!operation && locked.size > 0) return { allowed: false, reason: "layer_locked" };
   return { allowed: true };
@@ -213,6 +218,16 @@ export function promptProposalReducer(
           : [...state.locks, action.lock],
       };
     }
+    case "lock_conflict": {
+      const existing = state.locks.some((lock) => lock.layer === action.latest.layer);
+      return {
+        ...state,
+        locks: existing
+          ? state.locks.map((lock) => (lock.layer === action.latest.layer ? action.latest : lock))
+          : [...state.locks, action.latest],
+        lastError: "lock_conflict",
+      };
+    }
     case "proposal_loaded":
       return {
         ...state,
@@ -258,6 +273,8 @@ export function promptProposalReducer(
       return { ...state, status: "ready" };
     case "error":
       return { ...state, lastError: action.code };
+    case "stage_load_failed":
+      return { ...state, lastError: "stage_load_failed" };
     default:
       return state;
   }

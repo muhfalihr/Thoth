@@ -128,6 +128,16 @@ class ProjectPromptLayerLock(StrictModel):
     updated_at: Timestamp
 
 
+class PreferenceRevisionConflictBody(StrictModel):
+    code: Literal["preference_revision_conflict"] = "preference_revision_conflict"
+    latest: ProjectPromptModelPreference
+
+
+class LockRevisionConflictBody(StrictModel):
+    code: Literal["lock_revision_conflict"] = "lock_revision_conflict"
+    latest: ProjectPromptLayerLock
+
+
 class SavePromptModelPreferenceRequest(StrictModel):
     provider_id: SafeIdentifier
     model_id: SafeIdentifier
@@ -218,7 +228,7 @@ class PromptProposal(StrictModel):
 
 class CreatePromptProposalRequest(StrictModel):
     kind: PromptProposalKind
-    stage_id: str
+    stage_id: PromptStageId
     provider_id: SafeIdentifier
     model_id: SafeIdentifier
     target_layer: PromptLayer | None = None

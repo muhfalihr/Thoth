@@ -40,11 +40,11 @@ from thoth_control_plane.infrastructure.editor_repository import PostgresEditDoc
 from thoth_control_plane.infrastructure.prompt_proposal_gateway import (
     TemporalPromptProposalGateway,
 )
-from thoth_control_plane.infrastructure.prompt_provider import (
-    public_prompt_provider_catalog,
-)
 from thoth_control_plane.infrastructure.prompt_proposal_repository import (
     PostgresPromptProposalRepository,
+)
+from thoth_control_plane.infrastructure.prompt_provider import (
+    public_prompt_provider_catalog,
 )
 from thoth_control_plane.infrastructure.prompt_repository import PostgresPromptLabRepository
 from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflowGateway
@@ -110,7 +110,7 @@ def create_app(
         app.state.prompt_proposal_service = PromptProposalService(
             prompt_repository=prompt_repository,
             proposal_repository=prompt_proposal_repository,
-            catalog=prompt_provider_catalog,
+            catalog=effective_catalog,
             gateway=effective_gateway,
         )
         yield

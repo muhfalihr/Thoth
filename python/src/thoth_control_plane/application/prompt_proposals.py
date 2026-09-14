@@ -16,6 +16,7 @@ from thoth_control_plane.application.prompt_lab import (
 )
 from thoth_control_plane.application.prompt_proposal_ports import (
     PromptIdempotencyConflict,
+    PromptLockRevisionConflict,
     PromptModelNotInCatalog,
     PromptPreferenceRevisionConflict,
     PromptProposalActiveGeneration,
@@ -50,6 +51,7 @@ from thoth_control_plane.domain.prompts import (
 
 PASSTHROUGH_REPO_ERRORS = (
     PromptIdempotencyConflict,
+    PromptLockRevisionConflict,
     PromptPreferenceRevisionConflict,
     PromptProposalActiveGeneration,
     PromptProposalStale,

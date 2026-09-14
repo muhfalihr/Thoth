@@ -418,6 +418,25 @@ test("stage reload preserves the dirty binding template target separately from t
   expect(reloaded.bindingDirty).toBe(true);
 });
 
+test("editing the override before the initial load still records the loaded base revision", () => {
+  const initial = createPromptLabState({ stages, selectedStageId: "narrative_plan" });
+  expect(initial.bindingBaseRevision).toBeNull();
+
+  const dirtyBeforeLoad = promptLabReducer(initial, {
+    type: "edit_project_override",
+    value: "Local override before load",
+  });
+
+  const loaded = promptLabReducer(dirtyBeforeLoad, {
+    type: "stage_data_loaded",
+    templates: [template],
+    binding,
+  });
+
+  expect(loaded.projectOverrideDraft).toBe("Local override before load");
+  expect(loaded.bindingBaseRevision).toBe(1);
+});
+
 test("editing while recovery is active keeps the recovering status", () => {
   const offline = promptLabReducer(readyState(), { type: "went_offline" });
   const recovering = promptLabReducer(offline, { type: "recovery_started" });

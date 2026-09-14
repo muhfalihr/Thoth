@@ -65,7 +65,7 @@ PROPOSAL_KEYS = (
 )
 
 
-def _iso(value: object) -> datetime | None:
+def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
@@ -98,9 +98,9 @@ def _proposal(row: tuple[object, ...]) -> PromptProposal:
             "translated_template_body": values["translated_template_body"],
             "translated_project_override": values["translated_project_override"],
             "failure_code": values["failure_code"],
-            "created_at": _iso(values["created_at"]),
-            "started_at": _iso(values["started_at"]),
-            "finished_at": _iso(values["finished_at"]),
+            "created_at": _as_datetime(values["created_at"]),
+            "started_at": _as_datetime(values["started_at"]),
+            "finished_at": _as_datetime(values["finished_at"]),
         }
     )
 
@@ -147,7 +147,7 @@ class PostgresPromptProposalRepository:
                         "provider_id": row[0],
                         "model_id": row[1],
                         "revision": row[2],
-                        "updated_at": _iso(row[3]),
+                        "updated_at": _as_datetime(row[3]),
                     }
                 )
         except Exception as error:
@@ -203,7 +203,7 @@ class PostgresPromptProposalRepository:
                         "provider_id": row[0],
                         "model_id": row[1],
                         "revision": row[2],
-                        "updated_at": _iso(row[3]),
+                        "updated_at": _as_datetime(row[3]),
                     }
                 )
                 if request.base_revision is None or request.base_revision != latest.revision:
@@ -259,7 +259,7 @@ class PostgresPromptProposalRepository:
                             "layer": row[0],
                             "locked": row[1],
                             "revision": row[2],
-                            "updated_at": _iso(row[3]),
+                            "updated_at": _as_datetime(row[3]),
                         }
                     )
                     for row in rows
@@ -317,7 +317,7 @@ class PostgresPromptProposalRepository:
                         "layer": row[0],
                         "locked": row[1],
                         "revision": row[2],
-                        "updated_at": _iso(row[3]),
+                        "updated_at": _as_datetime(row[3]),
                     }
                 )
                 if request.base_revision is None or request.base_revision != latest.revision:
@@ -834,15 +834,27 @@ class PostgresPromptProposalRepository:
     async def _lock_for_apply(
         self, cursor: Any, project_id: str, proposal_id: str
     ) -> tuple[PromptProposal, dict[str, Any], list[ProjectPromptLayerLock]]:
+        # Reserve acquires the project-stage advisory lock before superseding the
+        # prior succeeded proposal row. Apply must acquire that same lock before
+        # taking any row lock on the proposal, or the two transactions can each
+        # hold what the other is waiting for. The stage is immutable for a given
+        # proposal, so reading it without FOR UPDATE first is safe.
+        await cursor.execute(
+            "SELECT stage_id FROM prompt_proposals WHERE project_id = %s AND proposal_id = %s",
+            (project_id, proposal_id),
+        )
+        stage_row = await cursor.fetchone()
+        if stage_row is None:
+            raise PromptProposalNotFound()
+        await cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+            (project_id, stage_row[0]),
+        )
         current = await self._select_proposal(cursor, project_id, proposal_id)
         if current is None:
             raise PromptProposalNotFound()
         if current.status != "succeeded":
             raise PromptProposalInvalidTransition()
-        await cursor.execute(
-            "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
-            (project_id, current.stage_id),
-        )
         await cursor.execute(
             """
             SELECT template_id, template_revision, project_override, revision
@@ -885,7 +897,7 @@ class PostgresPromptProposalRepository:
                     "layer": row[0],
                     "locked": row[1],
                     "revision": row[2],
-                    "updated_at": _iso(row[3]),
+                    "updated_at": _as_datetime(row[3]),
                 }
             )
             for row in lock_rows

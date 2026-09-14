@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from thoth_control_plane.api.dependencies import current_actor
 from thoth_control_plane.application.ports import (
@@ -14,6 +15,7 @@ from thoth_control_plane.application.ports import (
 from thoth_control_plane.application.prompt_lab import PromptStageNotRegistered
 from thoth_control_plane.application.prompt_proposal_ports import (
     PromptIdempotencyConflict,
+    PromptLockRevisionConflict,
     PromptModelNotInCatalog,
     PromptPreferenceRevisionConflict,
     PromptProposalActiveGeneration,
@@ -32,6 +34,8 @@ from thoth_control_plane.domain import Actor
 from thoth_control_plane.domain.prompt_proposals import (
     ApplyPromptProposalRequest,
     CreatePromptProposalRequest,
+    LockRevisionConflictBody,
+    PreferenceRevisionConflictBody,
     ProjectPromptLayerLock,
     ProjectPromptModelPreference,
     PromptProposal,
@@ -45,7 +49,6 @@ from thoth_control_plane.domain.prompts import PromptStarterDefinition
 router = APIRouter()
 
 _CONFLICT_ERRORS = (
-    PromptPreferenceRevisionConflict,
     PromptProposalActiveGeneration,
     PromptProposalStale,
     PromptProposalLayerLocked,
@@ -70,7 +73,6 @@ _ERROR_CONTRACT: dict[type[Exception], tuple[int, str]] = {
     PromptProposalLayerLocked: (409, "layer_locked"),
     PromptProposalActiveGeneration: (409, "proposal_already_running"),
     PromptIdempotencyConflict: (409, "idempotency_conflict"),
-    PromptPreferenceRevisionConflict: (409, "preference_revision_conflict"),
     PromptProposalInvalidTransition: (409, "invalid_transition"),
     PromptModelNotInCatalog: (422, "model_not_allowed"),
     PromptProposalEmptyLayer: (422, "empty_target_layer"),
@@ -107,7 +109,7 @@ async def get_prompt_starter(
     except PromptStageNotRegistered as error:
         raise _http_error(error) from error
     if starter is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        raise HTTPException(status_code=404, detail={"code": "starter_not_found"})
     return starter
 
 
@@ -128,13 +130,14 @@ async def get_prompt_preference(
     except PromptProposalStoreUnavailable as error:
         raise _http_error(error) from error
     if preference is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        raise HTTPException(status_code=404, detail={"code": "preference_not_found"})
     return preference
 
 
 @router.put(
     "/projects/{project_id}/prompt-lab/preferences/{stage_id}",
     response_model=ProjectPromptModelPreference,
+    responses={status.HTTP_409_CONFLICT: {"model": PreferenceRevisionConflictBody}},
 )
 async def save_prompt_preference(
     project_id: str,
@@ -142,9 +145,14 @@ async def save_prompt_preference(
     request: SavePromptModelPreferenceRequest,
     _: Annotated[Actor, Depends(current_actor)],
     service: Annotated[PromptProposalService, Depends(get_prompt_proposal_service)],
-) -> ProjectPromptModelPreference:
+) -> ProjectPromptModelPreference | JSONResponse:
     try:
         return await service.save_preference(project_id, stage_id, request)
+    except PromptPreferenceRevisionConflict as error:
+        body = PreferenceRevisionConflictBody(latest=error.latest)
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT, content=body.model_dump(mode="json")
+        )
     except _CONFLICT_ERRORS as error:
         raise _http_error(error) from error
     except _INVALID_ERRORS as error:
@@ -174,6 +182,7 @@ async def get_prompt_locks(
 @router.put(
     "/projects/{project_id}/prompt-lab/locks/{stage_id}/{layer}",
     response_model=ProjectPromptLayerLock,
+    responses={status.HTTP_409_CONFLICT: {"model": LockRevisionConflictBody}},
 )
 async def save_prompt_lock(
     project_id: str,
@@ -182,11 +191,16 @@ async def save_prompt_lock(
     request: SavePromptLayerLockRequest,
     _: Annotated[Actor, Depends(current_actor)],
     service: Annotated[PromptProposalService, Depends(get_prompt_proposal_service)],
-) -> ProjectPromptLayerLock:
+) -> ProjectPromptLayerLock | JSONResponse:
     if layer not in ("template", "project_override"):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        raise HTTPException(status_code=404, detail={"code": "invalid_lock_layer"})
     try:
         return await service.save_lock(project_id, stage_id, layer, request)
+    except PromptLockRevisionConflict as error:
+        body = LockRevisionConflictBody(latest=error.latest)
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT, content=body.model_dump(mode="json")
+        )
     except _CONFLICT_ERRORS as error:
         raise _http_error(error) from error
     except _INVALID_ERRORS as error:
@@ -204,11 +218,11 @@ async def create_prompt_proposal(
     project_id: str,
     request: CreatePromptProposalRequest,
     _: Annotated[Actor, Depends(current_actor)],
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     service: Annotated[PromptProposalService, Depends(get_prompt_proposal_service)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> PromptProposal:
-    if not idempotency_key.strip():
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    if not idempotency_key or not idempotency_key.strip():
+        raise HTTPException(status_code=422, detail={"code": "missing_idempotency_key"})
     try:
         return await service.create_proposal(project_id, request, _.actor_id, idempotency_key)
     except _CONFLICT_ERRORS as error:

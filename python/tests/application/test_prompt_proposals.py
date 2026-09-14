@@ -12,6 +12,7 @@ from thoth_control_plane.application.prompt_proposal_ports import (
     ProjectPromptLayerLock,
     ProjectPromptModelPreference,
     PromptIdempotencyConflict,
+    PromptLockRevisionConflict,
     PromptModelNotInCatalog,
     PromptPreferenceRevisionConflict,
     PromptProposalActiveGeneration,
@@ -122,6 +123,10 @@ class MemoryProposalRepository:
     ) -> ProjectPromptLayerLock:
         key = (project_id, stage_id, layer)
         previous = self.locks.get(key)
+        if previous is not None and (
+            request.base_revision is None or request.base_revision != previous.revision
+        ):
+            raise PromptLockRevisionConflict(previous)
         lock = ProjectPromptLayerLock.model_validate(
             {
                 "project_id": project_id,

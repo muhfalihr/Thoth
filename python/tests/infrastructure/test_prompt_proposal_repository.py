@@ -559,7 +559,7 @@ def improvement_changes() -> list[PromptProposalChange]:
 def apply_rows(
     source: PromptProposal, *, binding: tuple[object, ...] | None, locks: list[tuple[object, ...]]
 ) -> list[list[tuple[object, ...]]]:
-    entries: list[list[tuple[object, ...]]] = [[proposal_row(source)]]
+    entries: list[list[tuple[object, ...]]] = [[(source.stage_id,)], [proposal_row(source)]]
     if binding is not None:
         entries.append([binding])
     entries.append(list(locks))
@@ -723,6 +723,7 @@ async def test_apply_translation_creates_new_template_identity(
     cursor = patched(
         monkeypatch,
         [
+            [(source.stage_id,)],
             [proposal_row(source)],
             [binding_row(revision=1)],
             [lock_row("template", False), lock_row("project_override", False)],
@@ -753,6 +754,7 @@ async def test_apply_translation_locked_target_layer_fails_closed(
     cursor = patched(
         monkeypatch,
         [
+            [(source.stage_id,)],
             [proposal_row(source)],
             [binding_row(revision=1)],
             [lock_row("template", False), lock_row("project_override", True)],
@@ -782,6 +784,37 @@ async def test_apply_improvement_advisory_lock_uses_project_and_stage(
 
     _, advisory_params = next((q, p) for q, p in cursor.calls if "pg_advisory_xact_lock" in q)
     assert advisory_params == ("project_a", "narrative_plan")
+
+
+@pytest.mark.asyncio
+async def test_apply_improvement_acquires_advisory_lock_before_proposal_row_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apply must never hold the proposal row lock while waiting on the advisory lock.
+
+    Reserve acquires the advisory lock before superseding the prior succeeded
+    proposal row; Apply must acquire the same advisory lock before locking that
+    row too, or the two transactions can deadlock on each other.
+    """
+    source = proposal(status="succeeded")
+    cursor = patched(
+        monkeypatch,
+        apply_rows(source, binding=binding_row(revision=1), locks=[lock_row("template", False)]),
+    )
+
+    await repository().apply_improvement(
+        "project_a", "proposal_1", [improvement_changes()[0].change_id], "actor_owner"
+    )
+
+    advisory_index = next(
+        index for index, (query, _) in enumerate(cursor.calls) if "pg_advisory_xact_lock" in query
+    )
+    proposal_lock_index = next(
+        index
+        for index, (query, _) in enumerate(cursor.calls)
+        if "FROM prompt_proposals" in query and "FOR UPDATE" in query
+    )
+    assert advisory_index < proposal_lock_index
 
 
 @pytest.mark.asyncio

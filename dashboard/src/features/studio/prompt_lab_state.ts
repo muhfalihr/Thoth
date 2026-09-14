@@ -218,6 +218,9 @@ export function promptLabReducer(state: PromptLabState, action: PromptLabAction)
                 state.bindingTemplateRevisionDraft ??
                 action.binding?.template_revision ??
                 cleanTemplateRevision,
+              // A dirty edit made before the first load has no base yet; hydrate it once
+              // without clobbering a base already established by an earlier load or save.
+              bindingBaseRevision: state.bindingBaseRevision ?? action.binding?.revision ?? null,
             }
           : {
               bindingTemplateIdDraft: action.binding?.template_id ?? cleanTemplateId,

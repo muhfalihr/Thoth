@@ -1,11 +1,12 @@
-import { useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
-import type { ControlPlaneClient } from "@/api/control-plane";
+import type { ControlPlaneClient, CreatePromptProposalPayload } from "@/api/control-plane";
 import {
   canApplyProposal,
   canGenerateProposal,
   createPromptProposalState,
   promptProposalReducer,
+  type GenerateBlockReason,
 } from "./prompt_proposal_state";
 
 export type PromptProposalPanelClient = Pick<
@@ -45,6 +46,28 @@ const toolbarButton =
 
 const POLL_INTERVAL_MS = 1_500;
 
+// Shared copy for a blocked generate gate's reason, computed once per button from
+// that button's own gate result so the visible text can never diverge from the
+// check that actually decided its disabled state.
+function generateReasonText(reason: GenerateBlockReason | undefined): string | null {
+  switch (reason) {
+    case "unsaved_changes":
+    case "missing_saved_source":
+      return "Save changes first";
+    case "offline":
+      return "Offline";
+    case "layer_locked":
+      return "Unlock the target layer first";
+    case "proposal_in_flight":
+      return "A proposal is already in flight";
+    case "no_provider":
+    case "model_not_allowed":
+      return "Select a provider and model";
+    default:
+      return null;
+  }
+}
+
 export function PromptProposalPanel(props: Props) {
   const { client, projectId, stageId, formDirty, online, onApplied, onUseStarter, onCreateScratch } =
     props;
@@ -52,6 +75,7 @@ export function PromptProposalPanel(props: Props) {
   const [targetLanguage, setTargetLanguage] = useState("en-US");
   const [improveLayer, setImproveLayer] = useState<"template" | "project_override">("template");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [pendingLocks, setPendingLocks] = useState<Set<string>>(new Set());
   const [state, dispatch] = useReducer(
     promptProposalReducer,
     undefined,
@@ -79,48 +103,69 @@ export function PromptProposalPanel(props: Props) {
     props.savedOverrideText,
   ]);
 
-  useEffect(() => {
-    let active = true;
-    void client
-      .listPromptProviders()
-      .then((providers) => active && dispatch({ type: "providers_loaded", providers }))
-      .catch(() => undefined);
-    void client
-      .getPromptLocks(projectId, stageId)
-      .then((locks) => active && dispatch({ type: "locks_loaded", locks }))
-      .catch(() => undefined);
-    void client
-      .getPromptPreference(projectId, stageId)
-      .then((preference) => active && dispatch({ type: "preference_loaded", preference }))
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [client, projectId, stageId]);
+  // One monotonically increasing generation counter shared by every stage-owned async
+  // operation: loads AND mutation callbacks (preference save, lock save, generate,
+  // apply, reject). Anything that settles after the stage has moved on to a newer
+  // generation is discarded instead of dispatched, so a stale response from an older
+  // project/stage/reconnect attempt can never mutate the current stage's state.
+  const generationRef = useRef(0);
+
+  // Loads one stage's owned resources strictly in order (catalog, then preference,
+  // then locks, then history/active proposal) so a slower earlier call can never
+  // land after a later one and clobber it. Used for both a stage switch and a
+  // reconnect, always starting from a clean slate via stage_selected. A rejection
+  // from any required call aborts the sequence fail-closed: no active proposal is
+  // installed and polling never starts on incomplete state.
+  const loadStage = useCallback(
+    async (sid: string, generation: number) => {
+      dispatch({ type: "stage_selected", stageId: sid });
+      try {
+        const providers = await client.listPromptProviders();
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "providers_loaded", providers });
+        const preference = await client.getPromptPreference(projectId, sid);
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "preference_loaded", preference });
+        const locks = await client.getPromptLocks(projectId, sid);
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "locks_loaded", locks });
+        const page = await client.listPromptProposals(projectId, sid, undefined, 5);
+        if (generationRef.current !== generation) return;
+        const proposals = page?.proposals ?? [];
+        dispatch({ type: "history_loaded", proposals });
+        const activeOne =
+          proposals.find((proposal) => proposal.status === "queued" || proposal.status === "running") ??
+          proposals[0] ??
+          null;
+        if (activeOne) dispatch({ type: "proposal_loaded", proposal: activeOne });
+      } catch {
+        if (generationRef.current === generation) dispatch({ type: "stage_load_failed" });
+      }
+    },
+    [client, projectId],
+  );
 
   useEffect(() => {
-    let active = true;
-    void client
-      .listPromptProposals(projectId, stageId, undefined, 5)
-      .then(async (page) => {
-        if (!active) return;
-        dispatch({ type: "history_loaded", proposals: page.proposals });
-        const activeOne = page.proposals.find(
-          (proposal) => proposal.status === "queued" || proposal.status === "running",
-        );
-        if (activeOne) {
-          dispatch({ type: "proposal_loaded", proposal: activeOne });
-        } else {
-          const latest = page.proposals[0];
-          if (latest) dispatch({ type: "proposal_loaded", proposal: latest });
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [client, projectId, stageId]);
+    const generation = ++generationRef.current;
+    void loadStage(stageId, generation);
+  }, [loadStage, stageId]);
 
+  const wasOnlineRef = useRef(online);
+  const stageIdRef = useRef(stageId);
+  stageIdRef.current = stageId;
+  useEffect(() => {
+    const wasOnline = wasOnlineRef.current;
+    wasOnlineRef.current = online;
+    if (wasOnline || !online) return;
+    const generation = ++generationRef.current;
+    void loadStage(stageIdRef.current, generation);
+  }, [online, loadStage]);
+
+  // Recursive, cancelled setTimeout: the next poll is scheduled only inside the
+  // previous GET's .then()/.catch(), so a rejected poll reschedules a single bounded
+  // retry instead of dying silently or hot-looping. Stops on a terminal status; the
+  // effect itself only restarts on a genuinely new proposal, connectivity change, or
+  // stage generation change (not on every dispatched proposal_loaded).
   useEffect(() => {
     if (!online) return;
     if (!state.activeProposal) return;
@@ -128,24 +173,44 @@ export function PromptProposalPanel(props: Props) {
       return;
     }
     const proposalId = state.activeProposal.proposal_id;
-    const timer = setTimeout(() => {
-      void client
-        .getPromptProposal(projectId, proposalId)
-        .then((proposal) => {
-          if (!activeGuard()) return;
-          dispatch({ type: "proposal_loaded", proposal });
-        })
-        .catch(() => undefined);
-    }, POLL_INTERVAL_MS);
-    let cancelled = false;
-    const activeGuard = () => !cancelled;
+    const generation = generationRef.current;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const poll = () => {
+      timer = setTimeout(() => {
+        void client
+          .getPromptProposal(projectId, proposalId)
+          .then((proposal) => {
+            if (!active || generationRef.current !== generation) return;
+            dispatch({ type: "proposal_loaded", proposal });
+            if (proposal.status === "queued" || proposal.status === "running") poll();
+          })
+          .catch(() => {
+            if (!active || generationRef.current !== generation) return;
+            poll();
+          });
+      }, POLL_INTERVAL_MS);
+    };
+    poll();
+
     return () => {
-      cancelled = true;
+      active = false;
       clearTimeout(timer);
     };
-  }, [client, projectId, state.activeProposal, online]);
+  }, [client, projectId, state.activeProposal?.proposal_id, online]);
 
-  const generate = (kind: "improve" | "translate") => {
+  // `gate` is always the exact same canGenerateProposal(...) result already used to
+  // compute the calling button's `disabled` attribute, so the click can never fire
+  // on a check the UI didn't actually show. `layerOverride` lets Regenerate target
+  // the proposal's own recorded layer instead of whatever the Improve dropdown
+  // currently shows.
+  const generate = (
+    kind: "improve" | "translate",
+    gate: { allowed: boolean },
+    layerOverride?: "template" | "project_override",
+  ) => {
+    if (!gate.allowed) return;
     if (
       props.savedTemplateId === null ||
       props.savedTemplateRevision === null ||
@@ -159,9 +224,8 @@ export function PromptProposalPanel(props: Props) {
       source_template_revision: props.savedTemplateRevision,
       source_binding_revision: props.savedBindingRevision,
     };
-    const layer = kind === "improve" ? improveLayer : "template";
-    const gate = canGenerateProposal(state, { online, formDirty }, kind, layer);
-    if (!gate.allowed) return;
+    const layer = layerOverride ?? (kind === "improve" ? improveLayer : "template");
+    const generation = generationRef.current;
     void client
       .createPromptProposal(
         projectId,
@@ -169,7 +233,7 @@ export function PromptProposalPanel(props: Props) {
         kind === "improve"
           ? {
               kind,
-              stage_id: stageId,
+              stage_id: stageId as CreatePromptProposalPayload["stage_id"],
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
               target_layer: layer,
@@ -178,20 +242,27 @@ export function PromptProposalPanel(props: Props) {
             }
           : {
               kind,
-              stage_id: stageId,
+              stage_id: stageId as CreatePromptProposalPayload["stage_id"],
               provider_id: state.selectedProviderId ?? "",
               model_id: state.selectedModelId ?? "",
               target_language: targetLanguage,
               ...sourceIdentity,
             },
       )
-      .then((proposal) => dispatch({ type: "proposal_loaded", proposal }))
-      .catch(() => dispatch({ type: "error", code: "store_unavailable" }));
+      .then((proposal) => {
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "proposal_loaded", proposal });
+      })
+      .catch(() => {
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "error", code: "store_unavailable" });
+      });
   };
 
   const apply = () => {
     const proposal = state.activeProposal;
     if (!proposal || proposal.status !== "succeeded") return;
+    const generation = generationRef.current;
     void client
       .applyPromptProposal(projectId, proposal.proposal_id, {
         source_template_revision: proposal.source.template_revision,
@@ -202,27 +273,42 @@ export function PromptProposalPanel(props: Props) {
             : [],
       })
       .then(() => {
+        if (generationRef.current !== generation) return;
         dispatch({ type: "proposal_status_changed", status: "applied" });
         onApplied();
       })
-      .catch(() => dispatch({ type: "error", code: "store_unavailable" }));
+      .catch(() => {
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "error", code: "store_unavailable" });
+      });
   };
 
   const reject = () => {
     const proposal = state.activeProposal;
     if (!proposal) return;
+    const generation = generationRef.current;
     void client
       .rejectPromptProposal(projectId, proposal.proposal_id)
-      .then((updated) => dispatch({ type: "proposal_status_changed", status: updated.status }))
-      .catch(() => dispatch({ type: "error", code: "store_unavailable" }));
+      .then((updated) => {
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "proposal_status_changed", status: updated.status });
+      })
+      .catch(() => {
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "error", code: "store_unavailable" });
+      });
   };
 
-  const generateCheck = canGenerateProposal(state, { online, formDirty });
+  const improveGate = canGenerateProposal(state, { online, formDirty }, "improve", improveLayer);
+  const translateGate = canGenerateProposal(state, { online, formDirty }, "translate", "template");
   const identityMissing =
     props.savedTemplateId === null ||
     props.savedTemplateRevision === null ||
     props.savedBindingRevision === null;
   const proposal = state.activeProposal;
+  const regenerateGate = proposal
+    ? canGenerateProposal(state, { online, formDirty }, proposal.kind, proposal.target_layers[0])
+    : { allowed: false as const, reason: undefined };
   const applyCheck =
     proposal && props.savedTemplateRevision !== null && props.savedBindingRevision !== null
       ? canApplyProposal(state, {
@@ -242,6 +328,36 @@ export function PromptProposalPanel(props: Props) {
       .getPromptStarter(stageId)
       .then((starter) => onUseStarter(starter.body, starter.language))
       .catch(() => undefined);
+  };
+
+  const toggleLock = (layer: "template" | "project_override", currentlyLocked: boolean) => {
+    const baseRevision = state.locks.find((lock) => lock.layer === layer)?.revision ?? null;
+    const generation = generationRef.current;
+    setPendingLocks((prev) => new Set(prev).add(layer));
+    void client
+      .savePromptLock(projectId, stageId, layer, {
+        locked: !currentlyLocked,
+        base_revision: baseRevision,
+      })
+      .then((result) => {
+        if (generationRef.current !== generation) return;
+        dispatch(
+          result.kind === "conflict"
+            ? { type: "lock_conflict", latest: result.latest }
+            : { type: "lock_saved", lock: result.value },
+        );
+      })
+      .catch(() => {
+        if (generationRef.current !== generation) return;
+        dispatch({ type: "error", code: "store_unavailable" });
+      })
+      .finally(() =>
+        setPendingLocks((prev) => {
+          const next = new Set(prev);
+          next.delete(layer);
+          return next;
+        }),
+      );
   };
 
   return (
@@ -308,14 +424,25 @@ export function PromptProposalPanel(props: Props) {
           disabled={!online}
           onClick={() => {
             if (state.selectedProviderId && state.selectedModelId) {
+              const generation = generationRef.current;
               void client
                 .savePromptPreference(projectId, stageId, {
                   provider_id: state.selectedProviderId,
                   model_id: state.selectedModelId,
                   base_revision: state.preference?.revision ?? null,
                 })
-                .then((preference) => dispatch({ type: "preference_saved", preference }))
-                .catch(() => dispatch({ type: "error", code: "store_unavailable" }));
+                .then((result) => {
+                  if (generationRef.current !== generation) return;
+                  dispatch(
+                    result.kind === "conflict"
+                      ? { type: "preference_conflict", latest: result.latest }
+                      : { type: "preference_saved", preference: result.value },
+                  );
+                })
+                .catch(() => {
+                  if (generationRef.current !== generation) return;
+                  dispatch({ type: "error", code: "store_unavailable" });
+                });
             }
           }}
         >
@@ -327,30 +454,16 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={lockedTemplate}
-          onClick={() =>
-            void client
-              .savePromptLock(projectId, stageId, "template", {
-                locked: !lockedTemplate,
-              })
-              .then((lock) => dispatch({ type: "lock_saved", lock }))
-              .catch(() => dispatch({ type: "error", code: "store_unavailable" }))
-          }
+          disabled={!online || pendingLocks.has("template")}
+          onClick={() => toggleLock("template", lockedTemplate)}
         >
           {lockedTemplate ? "Unlock template" : "Lock template"}
         </button>
         <button
           type="button"
           className={toolbarButton}
-          disabled={lockedOverride}
-          onClick={() =>
-            void client
-              .savePromptLock(projectId, stageId, "project_override", {
-                locked: !lockedOverride,
-              })
-              .then((lock) => dispatch({ type: "lock_saved", lock }))
-              .catch(() => dispatch({ type: "error", code: "store_unavailable" }))
-          }
+          disabled={!online || pendingLocks.has("project_override")}
+          onClick={() => toggleLock("project_override", lockedOverride)}
         >
           {lockedOverride ? "Unlock project override" : "Lock project override"}
         </button>
@@ -390,36 +503,27 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={
-            !canGenerateProposal(state, { online, formDirty }, "improve", improveLayer).allowed ||
-            identityMissing
-          }
-          onClick={() => generate("improve")}
+          disabled={!improveGate.allowed || identityMissing}
+          onClick={() => generate("improve", improveGate)}
         >
           Improve with AI
         </button>
         <button
           type="button"
           className={toolbarButton}
-          disabled={
-            !canGenerateProposal(state, { online, formDirty }, "translate", "template").allowed ||
-            identityMissing
-          }
-          onClick={() => generate("translate")}
+          disabled={!translateGate.allowed || identityMissing}
+          onClick={() => generate("translate", translateGate)}
         >
           Translate with AI
         </button>
-        {!generateCheck.allowed && generateCheck.reason && (
+        {!improveGate.allowed && generateReasonText(improveGate.reason) && (
           <p className="text-xs text-muted-foreground">
-            {generateCheck.reason === "unsaved_changes" || generateCheck.reason === "missing_saved_source"
-              ? "Save changes first"
-              : generateCheck.reason === "offline"
-                ? "Offline"
-                : generateCheck.reason === "layer_locked"
-                  ? "Unlock the target layer first"
-                  : generateCheck.reason === "proposal_in_flight"
-                    ? "A proposal is already in flight"
-                    : "Select a provider and model"}
+            {generateReasonText(improveGate.reason)}
+          </p>
+        )}
+        {!translateGate.allowed && generateReasonText(translateGate.reason) && (
+          <p className="text-xs text-muted-foreground">
+            {generateReasonText(translateGate.reason)}
           </p>
         )}
       </div>
@@ -514,21 +618,19 @@ export function PromptProposalPanel(props: Props) {
             <button
               type="button"
               className={toolbarButton}
-              disabled={
-                !canGenerateProposal(
-                  state,
-                  { online, formDirty },
-                  proposal.kind,
-                  proposal.target_layers[0],
-                ).allowed || props.savedTemplateId === null
-              }
-              onClick={() => generate(proposal.kind)}
+              disabled={!regenerateGate.allowed || props.savedTemplateId === null}
+              onClick={() => generate(proposal.kind, regenerateGate, proposal.target_layers[0])}
             >
               Regenerate
             </button>
           </div>
           {!applyCheck.allowed && applyCheck.reason === "source_changed" && (
             <p className="text-xs text-destructive">Source changed</p>
+          )}
+          {!regenerateGate.allowed && generateReasonText(regenerateGate.reason) && (
+            <p className="text-xs text-muted-foreground">
+              {generateReasonText(regenerateGate.reason)}
+            </p>
           )}
           {props.hasBinding === false && formDirty && <p className="sr-only">draft</p>}
         </div>
