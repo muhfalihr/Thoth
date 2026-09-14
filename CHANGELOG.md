@@ -2,13 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-14 — Prompt Lab AI Proposals (C2) review corrections, round 3
+
+The round 2 entry below (fix commit `42d830d`, docs commit `11fed99`) claimed
+twelve findings closed and the round was awaiting Codex re-review. That
+re-review rejected the claim, finding four further defects. This entry (fix
+commit `df140e6`) closes all four.
+
+- Made prompt-lab stage loading (catalog/preference/locks/history) genuinely
+  fail-closed: a request that rejects or resolves late for a stage the user
+  has since left can no longer silently succeed or overwrite the new stage's
+  view state.
+- Closed the remaining `PromptProposalPanel` async lifecycle leaks: unmount
+  now bumps the shared `generationRef` (every stage-owned callback already
+  checks it, so this covers apply/generate/reject/preference-save for free),
+  the starter-fetch callback is generation-checked before it calls
+  `onUseStarter`, the lock save's `.finally()` is guarded exactly like its
+  `.then()`/`.catch()`, and a stage switch resets local pending-lock UI state
+  so a lock request still in flight for the old stage can no longer leave the
+  new stage's button stuck disabled.
+- Restored `Idempotency-Key` as a required part of the public contract:
+  `openapi.json` and the generated dashboard client mark the header required
+  again; a missing or blank key still returns the safe
+  `detail.code = "missing_idempotency_key"` via a scoped
+  `RequestValidationError` handler, not FastAPI's raw validation body.
+- Removed the two remaining unsafe
+  `stageId as CreatePromptProposalPayload["stage_id"]` casts by adding a
+  runtime `isPromptStageId()` guard at the one call site that needed the
+  narrowed type, and narrowed `pendingLocks` from `Set<string>` to the actual
+  two-layer union.
+
+Verification: dashboard focused Prompt Lab suite (4 files) `bun test` 97/97;
+full `bun test` 201/201 (one of several full-suite runs hit a single
+pre-existing flake in `GuidedStudio.test.tsx`, confirmed reproducing
+identically against the unmodified prior commit `11fed99` in a throwaway
+worktree — not a regression from this round, not touched, root cause not
+re-investigated as it is outside this round's four scoped defects); lint
+clean; build clean; OpenAPI export and TS generation reproduced
+byte-identical on repeated runs. Python `pytest -m "not live"` 973 passed /
+31 skipped / 3 deselected; `ruff check` / `ruff format --check` clean on
+`python/src` and `python/tests`. `build_cuda.bat` exit 0 (no Rust source
+changed this round, correctly a no-op). `docker compose -f
+compose.stage1.local.yml config --quiet` exit 0. `git diff --check` clean.
+Scout `bun install --frozen-lockfile` + `test:acquisition` (68 files) +
+`test:runtime` (126/126) all green.
+
 ## 2026-09-14 — Prompt Lab AI Proposals (C2) review corrections, round 2
 
 The prior "review corrections" entry below (commit `c945623`) claimed all
 nine C2 findings were closed and the round was awaiting Codex re-review. Two
 independent Codex re-reviews of that commit rejected the claim, together
-finding twelve further defects it had missed. This entry (commit `0789f57`)
-closes all twelve.
+finding twelve further defects it had missed. This entry (fix commit
+`42d830d`, docs commit `11fed99`) closes all twelve. An intermediate rewrite
+of this round, commit `0789f57`, was superseded in place before landing and
+never reached history — it is not a valid reference.
 
 - Narrowed the wire `stage_id` to the closed `PromptStageId` type at the
   production API boundary itself, not only at internal call sites;
