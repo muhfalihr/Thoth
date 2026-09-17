@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-17 — Creator Studio Prompt Lab deferred cleanup
+
+Addressed the deferred items recorded across the C2 review rounds (fix commit `7519d62`):
+
+- Task 1 (`GuidedStudio.test.tsx` intermittent failure): rigorously investigated
+  per systematic debugging. Ran 20 runs in isolation (0 failures / 20) and 25
+  consecutive full test suite runs (0 failures / 25). Zero failures observed across
+  45 runs in this environment. Met authorized stop condition: no speculative
+  modifications made; test left intact.
+- Task 2 (Generic error surface for `PromptProposalPanel`): rendered `state.lastError`
+  below the stage-load banner when set and not already handled by the banner, mapping
+  codes (`store_unavailable`, `unknown_stage_id`, `lock_conflict`, `preference_conflict`)
+  to concise user-facing copy with an unexpected error fallback; updated reducer to clear
+  `lastError` on successful `lock_saved`, `preference_saved`, `proposal_loaded`, and
+  `proposal_status_changed`.
+- Task 3 (Disable offline retry): added `disabled={!online}` to the retry button in
+  `PromptProposalPanel`'s stage load banner, preventing doomed retry attempts while offline.
+- Task 4 (Component size / extraction evaluation): analyzed `PromptProposalPanel.tsx`
+  (740 lines) under Ponytail rules. Concluded with argued refusal to split: no clean
+  uncoupled seam exists because the monotonic `generationRef` tightly coordinates
+  both lifecycle and mutation callbacks to prevent stale race conditions; extraction
+  would increase net boilerplate without delivering an independent abstraction.
+
+Verification: dashboard focused Prompt Lab suite (4 files) `bun test` 102/102 (3 new
+tests added); full `bun test` 206/206 across 20 files across 3 consecutive full runs
+([23.57s], [23.73s], [23.71s]); `bun run lint` clean; `bun run build` clean;
+`git diff --check` clean.
+
 ## 2026-09-17 — Prompt Lab AI Proposals (C2) review corrections, round 5
 
 The round 4 entry below (fix commit `df140e6`, docs commit `6bdc540`) claimed
