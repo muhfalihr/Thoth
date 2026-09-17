@@ -3,7 +3,7 @@
 import { afterEach, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { EditDocument } from "@/api/control-plane";
+import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
 import { createC2ClientFixtureBase } from "./prompt-proposal-test-fixtures";
 
 mock.module("./StudioPreview", () => ({
@@ -178,12 +178,28 @@ test("associates a safe inline validation message with a blank heading", async (
 test("switches between Scenes and Prompt Lab tabs and preserves both drafts", async () => {
   const { GuidedStudio } = await import("./GuidedStudio");
   const user = userEvent.setup();
+  const patchEditDocument = mock(async (_projectId: string, _documentId: string, patch: EditDocumentPatch) => {
+    let saved: EditDocument = { ...document, revision: document.revision + 1 };
+    for (const op of patch.operations) {
+      if (op.kind === "replace_text") {
+        saved = {
+          ...saved,
+          clips: saved.clips.map((c) =>
+            c.clip_id === op.clip_id
+              ? { ...c, [op.field]: op.value, ownership: "user_edited" as const }
+              : c,
+          ),
+        };
+      }
+    }
+    return { kind: "saved" as const, document: saved };
+  });
   render(
     <GuidedStudio
       client={{
         ...promptClientBase,
         getEditDocument: mock(async () => document),
-        patchEditDocument: mock(async () => ({ kind: "saved" as const, document })),
+        patchEditDocument,
       }}
       projectId="project_001"
       documentId="document_001"
