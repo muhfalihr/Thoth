@@ -244,7 +244,10 @@ export function PromptProposalPanel(props: Props) {
     layerOverride?: "template" | "project_override",
   ) => {
     if (!gate.allowed) return;
-    if (!isPromptStageId(stageId)) return;
+    if (!isPromptStageId(stageId)) {
+      dispatch({ type: "error", code: "unknown_stage_id" });
+      return;
+    }
     if (
       props.savedTemplateId === null ||
       props.savedTemplateRevision === null ||
@@ -472,7 +475,7 @@ export function PromptProposalPanel(props: Props) {
         <button
           type="button"
           className={toolbarButton}
-          disabled={!online || state.lastError === "stage_load_failed"}
+          disabled={!online || !state.resourcesReady}
           onClick={() => {
             if (state.selectedProviderId && state.selectedModelId) {
               const generation = generationRef.current;
@@ -506,7 +509,7 @@ export function PromptProposalPanel(props: Props) {
           type="button"
           className={toolbarButton}
           disabled={
-            !online || state.lastError === "stage_load_failed" || pendingLocks.has("template")
+            !online || !state.resourcesReady || pendingLocks.has("template")
           }
           onClick={() => toggleLock("template", lockedTemplate)}
         >
@@ -517,7 +520,7 @@ export function PromptProposalPanel(props: Props) {
           className={toolbarButton}
           disabled={
             !online ||
-            state.lastError === "stage_load_failed" ||
+            !state.resourcesReady ||
             pendingLocks.has("project_override")
           }
           onClick={() => toggleLock("project_override", lockedOverride)}

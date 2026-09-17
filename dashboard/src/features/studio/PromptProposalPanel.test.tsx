@@ -1,6 +1,6 @@
 /// <reference types="bun-types" />
 
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PromptProposalPanelClient } from "./PromptProposalPanel";
@@ -436,6 +436,7 @@ test("both lock buttons are disabled offline and while a lock save is pending", 
   expect(screen.getByRole("button", { name: "Lock project override" }).hasAttribute("disabled")).toBe(true);
 
   rerender(<PromptProposalPanel {...panelProps({ client: api, online: true })} />);
+  await new Promise((resolve) => setTimeout(resolve, 0));
   const lockTemplate = screen.getByRole("button", { name: "Lock template" }) as HTMLButtonElement;
   expect(lockTemplate.disabled).toBe(false);
   await user.click(lockTemplate);
@@ -895,4 +896,49 @@ test("an old-stage lock request settling cannot clear the pending state of a new
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(lockTemplate.disabled).toBe(true);
+});
+
+test("a lock mutation attempted while stage load is in flight finds the control disabled and issues no save call", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const locksDeferred = deferred<any[]>();
+  const api = client({
+    getPromptLocks: mock(() => locksDeferred.promise),
+  });
+  render(<PromptProposalPanel {...panelProps({ client: api })} />);
+
+  const lockTemplate = (await screen.findByRole("button", {
+    name: "Lock template",
+  })) as HTMLButtonElement;
+
+  expect(lockTemplate.disabled).toBe(true);
+  await user.click(lockTemplate);
+  expect((api.savePromptLock as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+
+  locksDeferred.resolve([]);
+  await locksDeferred.promise;
+});
+
+test("rendering the panel with an unrecognized stageId and clicking Generate surfaces the error state and issues no proposal call", async () => {
+  const stateModule = await import("./prompt_proposal_state");
+  const reducerSpy = spyOn(stateModule, "promptProposalReducer");
+  try {
+    const { PromptProposalPanel } = await import("./PromptProposalPanel");
+    const user = userEvent.setup();
+    const api = client();
+    render(<PromptProposalPanel {...panelProps({ client: api, stageId: "not_a_real_stage" })} />);
+
+    await screen.findByLabelText("Provider");
+    await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+
+    expect((api.createPromptProposal as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+    const errorAction = reducerSpy.mock.calls.find(
+      (call) => (call[1] as { type: string }).type === "error",
+    );
+    expect(errorAction).toBeDefined();
+    const actionPayload = errorAction?.[1] as { type: string; code: string } | undefined;
+    expect(actionPayload?.code).toBe("unknown_stage_id");
+  } finally {
+    reducerSpy.mockRestore();
+  }
 });
