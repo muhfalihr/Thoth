@@ -246,7 +246,7 @@ export function promptProposalReducer(
         selectedModelId: action.preference?.model_id ?? state.selectedModelId,
       };
     case "preference_saved":
-      return { ...state, preference: action.preference };
+      return { ...state, preference: action.preference, lastError: null };
     case "preference_conflict":
       return { ...state, preference: action.latest, lastError: "preference_conflict" };
     case "locks_loaded":
@@ -258,6 +258,7 @@ export function promptProposalReducer(
         locks: existing
           ? state.locks.map((lock) => (lock.layer === action.lock.layer ? action.lock : lock))
           : [...state.locks, action.lock],
+        lastError: null,
       };
     }
     case "lock_conflict": {
@@ -275,12 +276,14 @@ export function promptProposalReducer(
         ...state,
         activeProposal: action.proposal,
         selectedChangeIds: [],
+        lastError: null,
       };
     case "proposal_status_changed":
       return state.activeProposal
         ? {
             ...state,
             activeProposal: { ...state.activeProposal, status: action.status },
+            lastError: null,
           }
         : state;
     case "history_loaded":

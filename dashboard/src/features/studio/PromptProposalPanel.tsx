@@ -70,6 +70,21 @@ function generateReasonText(reason: GenerateBlockReason | undefined): string | n
   }
 }
 
+function panelErrorMessage(code: string): string {
+  switch (code) {
+    case "store_unavailable":
+      return "Storage is unavailable. Check your connection and retry.";
+    case "unknown_stage_id":
+      return "Unrecognized prompt stage.";
+    case "lock_conflict":
+      return "Lock settings were modified elsewhere. Please review and retry.";
+    case "preference_conflict":
+      return "Model preferences were modified elsewhere. Please review and retry.";
+    default:
+      return "An unexpected error occurred. Please try again.";
+  }
+}
+
 export function PromptProposalPanel(props: Props) {
   const { client, projectId, stageId, formDirty, online, onApplied, onUseStarter, onCreateScratch } =
     props;
@@ -412,9 +427,18 @@ export function PromptProposalPanel(props: Props) {
           className="flex flex-wrap items-center gap-3 border-b border-destructive/50 bg-destructive/10 px-3 py-2 text-sm"
         >
           <p>Couldn't load AI proposal data. Check your connection and retry.</p>
-          <button type="button" className={toolbarButton} onClick={retryLoad}>
+          <button type="button" className={toolbarButton} onClick={retryLoad} disabled={!online}>
             Retry loading proposals
           </button>
+        </div>
+      )}
+
+      {state.lastError && (state.resourcesReady || state.lastError !== "stage_load_failed") && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-3 border-b border-destructive/50 bg-destructive/10 px-3 py-2 text-sm"
+        >
+          <p>{panelErrorMessage(state.lastError)}</p>
         </div>
       )}
 

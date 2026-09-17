@@ -942,3 +942,69 @@ test("rendering the panel with an unrecognized stageId and clicking Generate sur
     reducerSpy.mockRestore();
   }
 });
+
+test("failing lock save surfaces a visible error message on the DOM and clears when save succeeds", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  let failLock = true;
+  const api = client({
+    savePromptLock: mock(async () => {
+      if (failLock) throw new Error("store unavailable");
+      return {
+        kind: "saved" as const,
+        value: {
+          project_id: "project_a",
+          stage_id: "narrative_plan",
+          layer: "template",
+          locked: true,
+          revision: 2,
+          updated_at: "2026-09-13T08:00:00Z",
+        },
+      };
+    }),
+  });
+  render(<PromptProposalPanel {...panelProps({ client: api })} />);
+
+  const lockButton = await screen.findByRole("button", { name: "Lock template" });
+  await user.click(lockButton);
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Storage is unavailable. Check your connection and retry.");
+
+  failLock = false;
+  await user.click(lockButton);
+  expect(screen.queryByText("Storage is unavailable. Check your connection and retry.")).toBeNull();
+});
+
+test("unrecognized stageId clicking Generate surfaces a visible error message on the DOM", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const api = client();
+  render(<PromptProposalPanel {...panelProps({ client: api, stageId: "not_a_real_stage" })} />);
+
+  await screen.findByLabelText("Provider");
+  await user.click(screen.getByRole("button", { name: "Improve with AI" }));
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Unrecognized prompt stage.");
+});
+
+test("retry button in stage load banner is disabled when offline and issues no client call", async () => {
+  const { PromptProposalPanel } = await import("./PromptProposalPanel");
+  const user = userEvent.setup();
+  const api = client({
+    listPromptProviders: mock(async () => {
+      throw new Error("network error");
+    }),
+  });
+  render(<PromptProposalPanel {...panelProps({ client: api, online: false })} />);
+
+  const banner = await screen.findByRole("alert");
+  expect(banner.textContent).toContain("Couldn't load AI proposal data");
+
+  const retryButton = screen.getByRole("button", { name: "Retry loading proposals" }) as HTMLButtonElement;
+  expect(retryButton.disabled).toBe(true);
+
+  await user.click(retryButton);
+  expect((api.listPromptProviders as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
