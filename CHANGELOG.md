@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-17 — Prompt Lab flake fix and error persistence
+
+Addressed the flake and error persistence findings across two focused commits
+(`4f46fd4` and `7a31950`):
+
+- Task 1 (`GuidedStudio.test.tsx` tab-switch mock fix): the previous round's
+  stop decision was correct under the explicit no-guessing instruction it was
+  given after 45 clean runs (0/45). Subsequent gate review reproduced the flake
+  (1 in 12 full runs) and confirmed the mechanism: the mock at
+  `GuidedStudio.test.tsx:186` returned the static unedited `document` fixture
+  when debounced autosave fired after 500ms, causing `save_succeeded` to reset
+  the draft and overwrite the typed heading. Fixed by updating the mock to apply
+  received operations from the patch argument (`EditDocumentPatch`), matching the
+  established pattern at line 64. Audited all other mocks in `GuidedStudio.test.tsx`
+  and `GuidedStudio.final-fix.test.tsx`; all others confirmed correct as-is.
+- Task 2 (Error persistence across proposal poll refreshes): updated
+  `prompt_proposal_state.ts` `case "proposal_loaded"` to only reset
+  `lastError: null` when `action.proposal.proposal_id !== state.activeProposal?.proposal_id`,
+  preserving existing errors across background status poll ticks while still
+  clearing errors when a genuinely new proposal arrives.
+
+Verification: pre-fix baseline 5/5 passed; RED test added in
+`prompt_proposal_state.test.ts` (observed `Expected: "store_unavailable", Received: null`);
+GREEN on focused suite (4 files) `bun test` 103/103; full `bun test` 207/207
+across 20 files repeated across 15 consecutive post-fix runs (all 15 passed,
+zero failures); `bun run lint` clean; `bun run build` clean; `git diff --check` clean.
+
 ## 2026-09-17 — Creator Studio Prompt Lab deferred cleanup
 
 Addressed the deferred items recorded across the C2 review rounds (fix commit `7519d62`):
