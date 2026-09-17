@@ -350,3 +350,26 @@ test("translate is blocked by either an actually-targeted locked layer", () => {
   const blankOverrideState = { ...overrideLocked, savedOverrideText: "" };
   expect(canGenerateProposal(blankOverrideState, { online: true, formDirty: false }, "translate", "template").allowed).toBe(true);
 });
+
+test("proposal_loaded preserves lastError on poll refresh of the same proposal and clears it for a different proposal", () => {
+  const stateWithError: PromptProposalState = {
+    ...readyState(),
+    activeProposal: proposal,
+    lastError: "store_unavailable",
+  };
+
+  // Same proposal id (e.g. poll tick updating status)
+  const polled = promptProposalReducer(stateWithError, {
+    type: "proposal_loaded",
+    proposal: { ...proposal, status: "running" },
+  });
+  expect(polled.lastError).toBe("store_unavailable");
+
+  // Genuinely different proposal id (e.g. new generation completed)
+  const differentProposal = { ...proposal, proposal_id: "proposal_2" };
+  const replaced = promptProposalReducer(stateWithError, {
+    type: "proposal_loaded",
+    proposal: differentProposal,
+  });
+  expect(replaced.lastError).toBeNull();
+});

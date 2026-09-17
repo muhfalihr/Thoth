@@ -276,7 +276,10 @@ export function promptProposalReducer(
         ...state,
         activeProposal: action.proposal,
         selectedChangeIds: [],
-        lastError: null,
+        lastError:
+          action.proposal.proposal_id !== state.activeProposal?.proposal_id
+            ? null
+            : state.lastError,
       };
     case "proposal_status_changed":
       return state.activeProposal
