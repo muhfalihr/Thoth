@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-17 — Prompt Lab AI Proposals (C2) review corrections, round 5
+
+The round 4 entry below (fix commit `df140e6`, docs commit `6bdc540`) claimed
+all findings closed and awaited Codex re-review. That re-review identified two
+further corrections. This entry (fix commit `092344f`) closes both.
+
+- Gated Save preference, Lock template, and Lock project override on
+  `!state.resourcesReady` instead of `state.lastError === "stage_load_failed"`.
+  During in-flight stage load, `resourcesReady` is false and `lastError` is null,
+  so the controls were previously active on empty state before server locks were
+  loaded; the new gate ensures mutations remain disabled until all resources are
+  ready.
+- Replaced silent return on unrecognized `stageId` in `generate()` with
+  dispatching `{ type: "error", code: "unknown_stage_id" }` through the reducer's
+  existing error action channel, surfacing refusal without adding a new error
+  surface or toast.
+
+Verification: dashboard focused Prompt Lab suite (4 files) `bun test` 99/99
+(2 new tests added for in-flight lock disable and unknown-stage error dispatch);
+full `bun test` 203/203 across 20 files; `bun run lint` clean; `bun run build`
+clean; `git diff --check` clean.
+
 ## 2026-09-14 — Prompt Lab AI Proposals (C2) review corrections, round 3
 
 The round 2 entry below (fix commit `42d830d`, docs commit `11fed99`) claimed
