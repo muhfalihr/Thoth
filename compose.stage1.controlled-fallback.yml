@@ -1,0 +1,49 @@
+# Controlled fallback (`f1`) gate overlay: `-f compose.stage1.local.yml -f compose.stage1.controlled-fallback.yml`.
+#
+# One disposable, one-shot service that proves the deployed legacy fallback
+# supervisor can acquire a temporary CDP target through the real deployed
+# `legacy-cdp` sidecar, run the production source-reference-only command, and
+# release it. It joins only the existing private network, never publishes a
+# port, and never mounts the deployment artifact root, the browser profile, or
+# any persistent volume.
+#
+# The fixture is staged as a root-owned read-only file before this service
+# starts, so the URL is read only inside the container: it never appears in
+# this file, the rendered Compose config, or the Docker create request.
+services:
+  controlled-fallback:
+    image: ${THOTH_CONTROLLED_FALLBACK_IMAGE:?set digest-qualified controlled fallback image}
+    user: "10001:10001"
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec bun scout/runtime/legacy_fallback.ts
+        --url "$(cat /run/controlled-fallback/url)"
+        --out /run/controlled-fallback/output/source-report.json
+    environment:
+      THOTH_CDP: http://legacy-cdp:18800
+      THOTH_SCOUT_PROVIDER: novita
+      THOTH_SCOUT_CHAT_PROVIDER: novita
+      THOTH_SCOUT_VISION_PROVIDER: novita
+      THOTH_SCOUT_EMBED_PROVIDER: novita
+    env_file:
+      - path: ${THOTH_STAGE1_PROVIDER_ENV_FILE:?set restricted provider env file}
+        required: true
+    depends_on:
+      legacy-cdp:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?set external gate sample directory}/reference-input/url
+        target: /run/controlled-fallback/url
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?set external gate sample directory}/output
+        target: /run/controlled-fallback/output
+        bind:
+          create_host_path: false
+    networks: [stage1-private]
