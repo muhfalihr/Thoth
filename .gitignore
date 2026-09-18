@@ -9,6 +9,9 @@ news_cache/
 # ── Python (Playwright news search) ──────────────────────────────────────────────
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # ── Secrets & environment ────────────────────────────────────────────────────────
 .env
@@ -43,6 +46,9 @@ downloads/
 *.db-shm
 *.db-wal
 .opencode/
+.zcode/
+.thoth-artifacts/
+overlay_cache/
 
 # ── Fontconfig cache + raw font download dump (hanya .ttf yang dipakai) ──────────
 assets/fonts/.fc-cache/
