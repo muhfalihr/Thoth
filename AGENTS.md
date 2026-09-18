@@ -19,6 +19,47 @@ checkpoint at `.superpowers/sdd/<task>/progress.md` and its linked design and pl
   verification evidence, and audit records to `CHANGELOG.md`; do not recreate a
   chronological history section in `BLUEPRINT.md`.
 
+## Code intelligence routing
+
+This repository is already indexed by several complementary layers. Do not add another
+indexer, vector store, or RAG pipeline; use the layer that matches the question. Stop at
+the first row that answers it, and prefer an index over reading whole files — a `Read` of
+a 2000-line file to find one symbol is the most expensive way to answer a cheap question.
+
+| Question | Use | Notes |
+|---|---|---|
+| Exact string, regex, known token | `Grep` / `rg` | No index, never stale. Always correct for literals. |
+| What is `X`? Who calls it? What breaks if I change it? | `codegraph` MCP | `codegraph_context` first; then `codegraph_callers`/`codegraph_callees`/`codegraph_impact`. |
+| Survey several related symbols at once | `codegraph_explore` | One capped call instead of many `Read`s. |
+| Precise definition/reference/rename with compiler-grade accuracy | `serena` MCP | LSP-backed. See the language-coverage caveat below. |
+| Architecture, cross-cutting concept, onboarding to an unfamiliar area | `graphify query "<question>"` | Returns a scoped subgraph. `graphify path`/`explain` for relationships. |
+| Structural pattern match, codemod, mass refactor | `ast-grep` (`sg`) | AST-aware; use instead of regex for code shape. |
+
+Current coverage, verified 2026-09-18:
+
+- **codegraph** — 488 files, 9640 nodes, 10983 edges across Python, Rust, TypeScript, TSX,
+  and JavaScript. This is the default layer for symbol questions in every part of the
+  repository: the Rust crates, `python/`, `dashboard/`, and `scout/`.
+- **serena** — `.serena/project.yml` sets `language_servers: [rust]`, so Serena answers
+  only for Rust today. It returns nothing useful for `dashboard/` or `python/`. Until that
+  list is extended, route non-Rust symbol questions to codegraph.
+- **graphify** — `graphify-out/` holds 15229 nodes and 29036 links. `graph.json` records
+  `built_at_commit`; compare it against `HEAD` before trusting a broad architectural answer.
+  Read `graphify-out/GRAPH_REPORT.md` only for a broad architecture review, or when
+  `query`/`path`/`explain` do not surface enough context — it is far larger than a scoped
+  subgraph.
+- **headroom** is context compression, not code search. Never reach for it to locate code.
+
+Index hygiene:
+
+- Check freshness before trusting a broad answer: `codegraph_status` for coverage, and the
+  `built_at_commit` field in `graphify-out/graph.json` against `git rev-parse HEAD`.
+- Run `graphify update .` after modifying code, per `CLAUDE.md`. codegraph updates through
+  its own file watcher and lags writes by about a second.
+- `graphify-out/`, `.serena/`, and the `.codegraph/` database are gitignored and must stay
+  that way. Never stage or commit an index; only `.codegraph/.gitignore` and
+  `.codegraph/config.json` are tracked.
+
 ## Plugin routing
 
 At the start of every task, evaluate both routes below before acting:

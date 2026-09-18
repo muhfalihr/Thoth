@@ -174,15 +174,11 @@ jadi blok "REFERENSI STRUKTUR" (arc/hook/pelajaran) yang disuntik ke prompt nara
 Gating: `[narration] structure_rag` (default true) + `THOTH_SUPABASE_URL` + embed valid —
 INDEPENDEN dari `[vector_db] enabled` (itu RAG momen). Degrade diam bila tak tersedia.
 
-## graphify
+## Code indexing
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+Routing for code search, symbol lookup, and the graphify/codegraph/Serena indexes lives in
+`AGENTS.md`, section `Code intelligence routing`. Read it before searching the codebase, and
+do not duplicate those rules here.
 
 <!-- headroom:learn:start -->
 ## Agent skills
