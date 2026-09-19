@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -250,17 +251,22 @@ async def test_capability_issuance_returns_a_relative_url_and_an_httponly_cookie
 
 
 @pytest.mark.asyncio
-async def test_capability_value_never_appears_in_the_url_or_the_json_body(
-    gateway, tmp_path: Path
+async def test_capability_value_never_appears_in_the_url_the_body_or_the_log(
+    gateway, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    async with client_for(preview_app(gateway, tmp_path)) as client:
-        issued = await client.post(CAPABILITY_URL, headers=AUTH_HEADERS)
+    with caplog.at_level(logging.DEBUG):
+        async with client_for(preview_app(gateway, tmp_path)) as client:
+            issued = await client.post(CAPABILITY_URL, headers=AUTH_HEADERS)
+            served = await client.get(PREVIEW_URL)
 
     token = issued.cookies[PREVIEW_COOKIE_NAME]
 
+    assert served.status_code == 200
     assert token not in issued.text
     assert token not in issued.json()["preview_url"]
     assert PREVIEW_KEY not in issued.text
+    assert token not in caplog.text
+    assert PREVIEW_KEY not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -337,11 +343,9 @@ async def test_preview_refuses_a_missing_wrong_or_expired_capability(
 ) -> None:
     signer = EditorPreviewSigner(key=PREVIEW_KEY, ttl_seconds=300)
     now = datetime.now(tz=UTC)
-    other_asset = signer.issue(
-        actor_id="owner", project_id="project_001", asset_id="asset_other", now=now
-    ).token
+    other_asset = signer.issue(project_id="project_001", asset_id="asset_other", now=now).token
+    other_project = signer.issue(project_id="project_999", asset_id="asset_main", now=now).token
     expired = signer.issue(
-        actor_id="owner",
         project_id="project_001",
         asset_id="asset_main",
         now=now - timedelta(hours=2),
@@ -351,9 +355,10 @@ async def test_preview_refuses_a_missing_wrong_or_expired_capability(
         absent = await client.get(PREVIEW_URL)
         forged = await client.get(PREVIEW_URL, headers=cookie_header("not-a-capability"))
         wrong_asset = await client.get(PREVIEW_URL, headers=cookie_header(other_asset))
+        wrong_project = await client.get(PREVIEW_URL, headers=cookie_header(other_project))
         stale = await client.get(PREVIEW_URL, headers=cookie_header(expired))
 
-    for response in (absent, forged, wrong_asset, stale):
+    for response in (absent, forged, wrong_asset, wrong_project, stale):
         assert response.status_code == 403
         assert PREVIEW_KEY not in response.text
     assert "Max-Age=0" in forged.headers["set-cookie"]

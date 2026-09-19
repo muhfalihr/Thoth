@@ -17,7 +17,7 @@ from hashlib import sha256
 from pathlib import Path
 
 #: Bumped only when the canonical claim set changes shape.
-CAPABILITY_VERSION = 1
+CAPABILITY_VERSION = 2
 
 #: Fixed cookie name; isolation comes from the exact preview path, not the name.
 PREVIEW_COOKIE_NAME = "thoth_editor_preview"
@@ -59,7 +59,6 @@ class PreviewCapability:
 class PreviewClaims:
     """The verified scope a capability was issued for."""
 
-    actor_id: str
     project_id: str
     asset_id: str
     issued_at: datetime
@@ -87,16 +86,13 @@ class EditorPreviewSigner:
         self._key = material
         self._ttl_seconds = ttl_seconds
 
-    def issue(
-        self, *, actor_id: str, project_id: str, asset_id: str, now: datetime
-    ) -> PreviewCapability:
+    def issue(self, *, project_id: str, asset_id: str, now: datetime) -> PreviewCapability:
         issued_at = int(now.timestamp())
         expires_at = issued_at + self._ttl_seconds
         payload = _encode(
             json.dumps(
                 {
                     "v": CAPABILITY_VERSION,
-                    "act": actor_id,
                     "prj": project_id,
                     "ast": asset_id,
                     "iat": issued_at,
@@ -109,15 +105,7 @@ class EditorPreviewSigner:
         token = f"{payload}.{self._sign(payload)}"
         return PreviewCapability(token=token, expires_at=datetime.fromtimestamp(expires_at, tz=UTC))
 
-    def verify(
-        self,
-        token: str,
-        *,
-        project_id: str,
-        asset_id: str,
-        now: datetime,
-        actor_id: str | None = None,
-    ) -> PreviewClaims:
+    def verify(self, token: str, *, project_id: str, asset_id: str, now: datetime) -> PreviewClaims:
         """Return the verified claims, or fail without echoing any supplied value."""
         payload, _, signature = token.partition(".")
         if not payload or not signature or "." in signature:
@@ -133,8 +121,6 @@ class EditorPreviewSigner:
         scope = (claims.get("prj"), claims.get("ast"))
         if scope != (project_id, asset_id):
             raise PreviewCapabilityInvalid()
-        if actor_id is not None and claims.get("act") != actor_id:
-            raise PreviewCapabilityInvalid()
         issued_at, expires_at = claims.get("iat"), claims.get("exp")
         if not isinstance(issued_at, int) or not isinstance(expires_at, int):
             raise PreviewCapabilityInvalid()
@@ -144,7 +130,6 @@ class EditorPreviewSigner:
         if expires_at < moment:
             raise PreviewCapabilityExpired()
         return PreviewClaims(
-            actor_id=str(claims.get("act")),
             project_id=project_id,
             asset_id=asset_id,
             issued_at=datetime.fromtimestamp(issued_at, tz=UTC),

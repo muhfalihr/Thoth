@@ -19,7 +19,7 @@ from thoth_control_plane.infrastructure.editor_preview import (
 
 NOW = datetime(2026, 9, 19, 12, 0, 0, tzinfo=UTC)
 TTL = timedelta(seconds=300)
-SCOPE = {"actor_id": "owner", "project_id": "project_001", "asset_id": "asset_001"}
+SCOPE = {"project_id": "project_001", "asset_id": "asset_001"}
 
 
 @pytest.fixture
@@ -38,25 +38,35 @@ def test_preview_capability_is_scoped_and_expires(signer: EditorPreviewSigner) -
         signer.verify(capability.token, **SCOPE, now=NOW + TTL + timedelta(seconds=1))
 
 
-def test_preview_capability_binds_the_issuing_actor_and_project(
+def test_preview_capability_binds_the_project_and_the_asset(
     signer: EditorPreviewSigner,
 ) -> None:
     token = signer.issue(**SCOPE, now=NOW).token
 
-    for wrong in ({"actor_id": "intruder"}, {"project_id": "project_999"}):
+    for wrong in ({"project_id": "project_999"}, {"asset_id": "asset_999"}):
         with pytest.raises(PreviewCapabilityInvalid):
             signer.verify(token, **{**SCOPE, **wrong}, now=NOW)
 
 
-def test_preview_capability_verifies_without_an_actor_cross_check(
+def test_preview_capability_signs_only_the_scope_it_enforces(
     signer: EditorPreviewSigner,
 ) -> None:
+    payload = signer.issue(**SCOPE, now=NOW).token.split(".")[0]
+
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=="))
+
+    # An actor claim nothing verifies would misstate the boundary this token draws.
+    assert set(claims) == {"v", "prj", "ast", "iat", "exp"}
+
+
+def test_preview_capability_returns_the_verified_scope(signer: EditorPreviewSigner) -> None:
     token = signer.issue(**SCOPE, now=NOW).token
 
     claims = signer.verify(token, project_id="project_001", asset_id="asset_001", now=NOW)
 
-    assert claims.actor_id == "owner"
+    assert (claims.project_id, claims.asset_id) == ("project_001", "asset_001")
     assert claims.expires_at == NOW + TTL
+    assert not hasattr(claims, "actor_id")
 
 
 def test_preview_capability_rejects_a_foreign_signing_key(signer: EditorPreviewSigner) -> None:

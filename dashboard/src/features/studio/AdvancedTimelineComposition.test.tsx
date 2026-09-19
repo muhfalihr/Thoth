@@ -5,6 +5,10 @@ import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import type { EditDocumentV2 } from "@/api/control-plane";
+import { typedTimelineDocument } from "./timeline-test-fixtures";
+
+/** Props the media primitives received, in render order, per test. */
+const mediaProps: { audio: Record<string, unknown>[] } = { audio: [] };
 
 // Remotion primitives need a composition context that no unit test provides, so
 // they are replaced with inert markers that keep the real rendering decisions
@@ -27,13 +31,28 @@ mock.module("remotion", () => ({
     </div>
   ),
   Video: (props: Record<string, unknown>) => <div data-testid="video" {...props} />,
-  Audio: (props: Record<string, unknown>) => <div data-testid="audio" {...props} />,
+  // Volume is a frame callback, which no DOM attribute can carry, so it is
+  // captured instead of spread.
+  Audio: ({ volume, ...rest }: Record<string, unknown>) => {
+    mediaProps.audio.push({ volume, ...rest });
+    return <div data-testid="audio" {...rest} />;
+  },
   Img: (props: Record<string, unknown>) => <div data-testid="img" {...props} />,
 }));
 
 const { AdvancedTimelineComposition } = await import("./AdvancedTimelineComposition");
 
-afterEach(cleanup);
+afterEach(() => {
+  mediaProps.audio.length = 0;
+  cleanup();
+});
+
+/** The rendered volume callback of the audio clip at `index`. */
+function volumeOf(index: number): (frame: number) => number {
+  const volume = mediaProps.audio[index]?.volume;
+  if (typeof volume !== "function") throw new Error("audio volume must be a frame callback");
+  return volume as (frame: number) => number;
+}
 
 function documentV2(): EditDocumentV2 {
   return {
@@ -211,7 +230,9 @@ test("hidden tracks and hidden clips render nothing at all", () => {
 
 test("a muted track silences its audio instead of dropping the clip", () => {
   render(<AdvancedTimelineComposition document={documentV2()} previewSources={SOURCES} />);
-  expect(screen.getByTestId("audio").getAttribute("volume")).toBe("0");
+  expect(screen.getByTestId("audio")).toBeDefined();
+  const volume = volumeOf(0);
+  expect([volume(0), volume(60), volume(120)]).toEqual([0, 0, 0]);
 });
 
 test("clip text is rendered as text, never as markup", () => {
@@ -253,4 +274,105 @@ test("a missing or unsafe source becomes a placeholder and reports preview_unava
   expect(screen.queryByTestId("video")).toBeNull();
   expect(screen.getAllByTestId("preview-unavailable")).toHaveLength(2);
   expect(reported).toEqual(["asset_video", "asset_video"]);
+});
+
+const TYPED_SOURCES = {
+  asset_video: "/api/v1/projects/project_001/editor-assets/asset_video/preview",
+  asset_music: "/api/v1/projects/project_001/editor-assets/asset_music/preview",
+};
+
+test("fit, crop, and position shape how a video fills the canvas", () => {
+  render(<AdvancedTimelineComposition document={typedTimelineDocument()} previewSources={TYPED_SOURCES} />);
+  const [plain, shaped] = screen.getAllByTestId("video") as HTMLElement[];
+  const frames = screen.getAllByTestId("clip-frame") as HTMLElement[];
+
+  expect(plain!.style.objectFit).toBe("cover");
+  expect([plain!.style.width, plain!.style.height, plain!.style.left, plain!.style.top]).toEqual([
+    "100%",
+    "100%",
+    "0%",
+    "0%",
+  ]);
+  expect(frames[0]!.style.transform).toBe("translate(0px, 0px) scale(1)");
+
+  // A half-wide, 60%-tall crop has to enlarge the frame and shift it back.
+  expect(shaped!.style.objectFit).toBe("contain");
+  expect([shaped!.style.width, shaped!.style.height, shaped!.style.left, shaped!.style.top]).toEqual([
+    "200%",
+    "166.6667%",
+    "-20%",
+    "-33.3333%",
+  ]);
+  expect(frames[1]!.style.overflow).toBe("hidden");
+  expect(frames[1]!.style.transform).toBe("translate(40px, -20px) scale(1.5)");
+});
+
+test("fade in and fade out bound the volume at start, middle, and end", () => {
+  render(<AdvancedTimelineComposition document={typedTimelineDocument()} previewSources={TYPED_SOURCES} />);
+  const volume = volumeOf(0);
+  // Stored volume 0.4, 150 frames, 12 in, 24 out.
+  expect(volume(0)).toBe(0);
+  expect(volume(6)).toBeCloseTo(0.2, 6);
+  expect(volume(12)).toBeCloseTo(0.4, 6);
+  expect(volume(75)).toBeCloseTo(0.4, 6);
+  expect(volume(138)).toBeCloseTo(0.2, 6);
+  expect(volume(150)).toBe(0);
+  expect(volume(400)).toBe(0);
+});
+
+test("a clip without fades keeps its stored volume from the first frame", () => {
+  const document = typedTimelineDocument();
+  const audio = document.clips![4] as { fade_in_frames: number; fade_out_frames: number };
+  audio.fade_in_frames = 0;
+  audio.fade_out_frames = 0;
+  render(<AdvancedTimelineComposition document={document} previewSources={TYPED_SOURCES} />);
+  const volume = volumeOf(0);
+  expect([volume(0), volume(75), volume(150)]).toEqual([0.4, 0.4, 0.4]);
+});
+
+test("overlay parameters reach only the registered preset and a trusted accent", () => {
+  render(<AdvancedTimelineComposition document={typedTimelineDocument()} previewSources={TYPED_SOURCES} />);
+  const overlay = screen.getByTestId("overlay-lower_third");
+  expect(overlay.textContent).toBe("Headline");
+  expect(overlay.getAttribute("data-accent")).toBe("accent_primary");
+});
+
+test("an unknown accent slot falls back and never becomes markup or style", () => {
+  const document = typedTimelineDocument();
+  (document.clips![2] as { parameters: { accent_slot: string } }).parameters.accent_slot =
+    "url(javascript:alert(1))";
+  render(<AdvancedTimelineComposition document={document} previewSources={TYPED_SOURCES} />);
+  const overlay = screen.getByTestId("overlay-lower_third");
+  expect(overlay.getAttribute("data-accent")).toBe("default");
+  expect(overlay.className).not.toContain("javascript");
+  expect(overlay.getAttribute("style")).toBeNull();
+});
+
+test("caption cues use a trusted style and stay timed inside their clip", () => {
+  render(<AdvancedTimelineComposition document={typedTimelineDocument()} previewSources={TYPED_SOURCES} />);
+  const cues = screen.getAllByTestId("caption-cue") as HTMLElement[];
+  expect(cues.map((cue) => cue.textContent)).toEqual(["First cue", "Second cue"]);
+  expect(cues.every((cue) => cue.getAttribute("data-caption-style") === "caption_default")).toBe(true);
+
+  const ranges = screen
+    .getAllByTestId("sequence")
+    .filter((node) => node.getAttribute("data-name")?.startsWith("clip_caption_cue"))
+    .map((node) => [
+      Number(node.getAttribute("data-from")),
+      Number(node.getAttribute("data-duration")),
+    ]);
+  expect(ranges).toEqual([
+    [0, 30],
+    [30, 60],
+  ]);
+});
+
+test("an unregistered caption style falls back instead of taking the raw string", () => {
+  const document = typedTimelineDocument();
+  (document.clips![3] as { style_slot: string }).style_slot = "background:url(x);color:red";
+  render(<AdvancedTimelineComposition document={document} previewSources={TYPED_SOURCES} />);
+  const cue = (screen.getAllByTestId("caption-cue") as HTMLElement[])[0]!;
+  expect(cue.getAttribute("data-caption-style")).toBe("default");
+  expect(cue.className).not.toContain("url(");
+  expect(cue.getAttribute("style")).toBeNull();
 });

@@ -110,7 +110,7 @@ async def issue_editor_asset_preview_capability(
     project_id: str,
     asset_id: str,
     request: Request,
-    actor: Annotated[Actor, Depends(current_actor)],
+    _: Annotated[Actor, Depends(current_actor)],
     service: Annotated[EditorAssetService, Depends(get_editor_asset_service)],
     signer: Annotated[EditorPreviewSigner, Depends(get_preview_signer)],
 ) -> Response:
@@ -118,7 +118,6 @@ async def issue_editor_asset_preview_capability(
     await _ready_record(service, project_id, asset_id)
     settings = request.app.state.settings
     capability = signer.issue(
-        actor_id=actor.actor_id,
         project_id=project_id,
         asset_id=asset_id,
         now=datetime.now(tz=UTC),
