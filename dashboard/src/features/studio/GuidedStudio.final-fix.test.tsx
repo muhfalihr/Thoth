@@ -303,3 +303,142 @@ test("exposes native labelled controls for the resizable three-region workstatio
   expect(workstation.getAttribute("style")).toContain("--inspector-width: 24rem");
   expect(screen.getByLabelText("Draft preview")).toBeDefined();
 });
+
+const advancedClient = {
+  listEditorAssets: mock(async () => ({ assets: [], next_cursor: null })),
+  createEditorPreviewCapability: mock(async () => ({
+    preview_url: "/api/v1/projects/project_001/editor-assets/asset_video/preview",
+    expires_at: "2026-09-20T00:00:00Z",
+  })),
+};
+
+function upgradeReason(button: HTMLButtonElement) {
+  return globalThis.document.getElementById(button.getAttribute("aria-describedby") ?? "")?.textContent ?? "";
+}
+
+test("disables upgrade with an accessible reason until the draft is saved", async () => {
+  const upgradeEditDocument = mock(async () => ({ kind: "saved" as const, document: editDocument }));
+  const patchEditDocument = mock(() => new Promise<{ kind: "saved"; document: EditDocument }>(() => {}));
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        getEditDocument: mock(async () => editDocument),
+        patchEditDocument,
+        upgradeEditDocument,
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  const upgrade = screen.getByRole("button", { name: "Enable advanced timeline" }) as HTMLButtonElement;
+  expect(upgrade.disabled).toBe(false);
+
+  jest.useFakeTimers();
+  fireEvent.change(heading, { target: { value: "Edited heading" } });
+  expect(upgrade.disabled).toBe(true);
+  expect(upgradeReason(upgrade)).toContain("saved");
+
+  act(() => jest.advanceTimersByTime(500));
+  expect(screen.getByText("Saving")).toBeDefined();
+  expect(upgrade.disabled).toBe(true);
+  fireEvent.click(upgrade);
+  expect(upgradeEditDocument).toHaveBeenCalledTimes(0);
+});
+
+test("disables upgrade with an accessible reason while offline", async () => {
+  const upgradeEditDocument = mock(async () => ({ kind: "saved" as const, document: editDocument }));
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        getEditDocument: mock(async () => editDocument),
+        patchEditDocument: mock(async () => ({ kind: "saved" as const, document: editDocument })),
+        upgradeEditDocument,
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  await screen.findByLabelText("Heading");
+  const upgrade = screen.getByRole("button", { name: "Enable advanced timeline" }) as HTMLButtonElement;
+
+  setOnline(false);
+  act(() => window.dispatchEvent(new Event("offline")));
+
+  expect(upgrade.disabled).toBe(true);
+  expect(upgradeReason(upgrade)).toContain("online");
+  fireEvent.click(upgrade);
+  expect(upgradeEditDocument).toHaveBeenCalledTimes(0);
+});
+
+test("blocks document edits while an upgrade request is in flight", async () => {
+  let release: (value: { kind: "saved"; document: EditDocument }) => void = () => {};
+  const upgradeEditDocument = mock(
+    () =>
+      new Promise<{ kind: "saved"; document: EditDocument }>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const patchEditDocument = mock(async () => ({ kind: "saved" as const, document: editDocument }));
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const { timelineDocument } = await import("./timeline-test-fixtures");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        ...advancedClient,
+        getEditDocument: mock(async () => editDocument),
+        patchEditDocument,
+        upgradeEditDocument,
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = (await screen.findByLabelText("Heading")) as HTMLInputElement;
+  fireEvent.click(screen.getByRole("button", { name: "Enable advanced timeline" }));
+
+  jest.useFakeTimers();
+  fireEvent.change(heading, { target: { value: "Edit during upgrade" } });
+  expect(heading.value).toBe("Original heading");
+  act(() => jest.advanceTimersByTime(1_000));
+  expect(patchEditDocument).toHaveBeenCalledTimes(0);
+  jest.useRealTimers();
+
+  await act(async () => {
+    release({ kind: "saved", document: timelineDocument() as EditDocument });
+  });
+  expect(await screen.findByLabelText("Timeline")).toBeDefined();
+});
+
+test("keeps the version 1 draft editable after an upgrade conflict", async () => {
+  const latest = { ...editDocument, revision: 7 };
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        getEditDocument: mock(async () => editDocument),
+        patchEditDocument: mock(async () => ({ kind: "saved" as const, document: editDocument })),
+        upgradeEditDocument: mock(async () => ({ kind: "conflict" as const, latest })),
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Enable advanced timeline" }));
+
+  expect(await screen.findByText(/A newer version exists/)).toBeDefined();
+  const heading = screen.getByLabelText("Heading") as HTMLInputElement;
+  expect(heading.value).toBe("Original heading");
+  fireEvent.change(heading, { target: { value: "Still local" } });
+  expect(heading.value).toBe("Still local");
+});

@@ -12,6 +12,8 @@ export type EditorSaveStatus = "saved" | "dirty" | "saving" | "failed" | "confli
 
 export type EditorMode = "simple" | "advanced";
 
+export type UpgradeStatus = "idle" | "running" | "failed";
+
 type EditorSnapshot = {
   draft: EditDocument;
   pendingOperations: EditDocumentOperation[];
@@ -37,6 +39,7 @@ export type EditorState = EditorSnapshot & {
   isOffline: boolean;
   inFlightOperationIds: string[];
   latestConflict?: EditDocument;
+  upgradeStatus: UpgradeStatus;
 };
 
 export type EditorAction =
@@ -75,6 +78,10 @@ export type EditorAction =
   | { type: "set_zoom"; zoom: number }
   | { type: "set_snapping"; snapping: boolean }
   | { type: "set_ripple"; ripple: boolean }
+  | { type: "upgrade_started" }
+  | { type: "upgrade_succeeded"; document: EditDocument }
+  | { type: "upgrade_conflicted"; latest: EditDocument }
+  | { type: "upgrade_failed" }
   | { type: "preview_timeline_operation"; operation: EditDocumentOperation }
   | { type: "commit_timeline_operation"; operation: EditDocumentOperation }
   | { type: "cancel_timeline_preview" };
@@ -102,8 +109,40 @@ export function createEditorState(
     isOffline: false,
     inFlightOperationIds: [],
     pendingOperations: [],
+    upgradeStatus: "idle",
   };
 }
+
+/** Upgrade replaces the whole document, so it may only start from settled, online state. */
+export function canStartUpgrade(state: EditorState): boolean {
+  return (
+    state.upgradeStatus !== "running" &&
+    state.saveStatus === "saved" &&
+    !state.isOffline &&
+    !state.latestConflict &&
+    !state.pendingOperations.length &&
+    !state.inFlightOperationIds.length
+  );
+}
+
+/** Actions that read or write the document; an in-flight upgrade owns it exclusively. */
+const DOCUMENT_ACTIONS = new Set<EditorAction["type"]>([
+  "edit_text",
+  "edit_ownership",
+  "edit_duration",
+  "undo",
+  "redo",
+  "save_started",
+  "save_succeeded",
+  "save_failed",
+  "retry_save",
+  "save_conflicted",
+  "reload_latest",
+  "keep_editing_locally",
+  "preview_timeline_operation",
+  "commit_timeline_operation",
+  "cancel_timeline_preview",
+]);
 
 function saveStatusAfterLocalChange(state: EditorState): EditorSaveStatus {
   if (state.latestConflict) return "conflict";
@@ -229,6 +268,8 @@ function gestureOrigin(state: EditorState): EditorSnapshot {
 }
 
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
+  // One gate for keyboard, pointer, Inspector, and delayed callbacks alike.
+  if (state.upgradeStatus === "running" && DOCUMENT_ACTIONS.has(action.type)) return state;
   switch (action.type) {
     case "select_scene":
       return state.draft.scenes.some((scene) => scene.scene_id === action.sceneId)
@@ -369,6 +410,19 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         : { ...state, isOffline: false };
     case "save_conflicted":
       return { ...state, inFlightOperationIds: [], saveStatus: "conflict", latestConflict: action.latest };
+    case "upgrade_started":
+      return canStartUpgrade(state) ? { ...state, upgradeStatus: "running" } : state;
+    case "upgrade_succeeded": {
+      if (state.upgradeStatus !== "running") return state;
+      const upgraded = createEditorState(action.document, state.assets);
+      return { ...upgraded, isOffline: state.isOffline };
+    }
+    case "upgrade_conflicted":
+      return state.upgradeStatus === "running"
+        ? { ...state, upgradeStatus: "idle", saveStatus: "conflict", latestConflict: action.latest }
+        : state;
+    case "upgrade_failed":
+      return state.upgradeStatus === "running" ? { ...state, upgradeStatus: "failed" } : state;
     case "reload_latest": {
       if (!state.latestConflict) return state;
       const reloaded = createEditorState(state.latestConflict);

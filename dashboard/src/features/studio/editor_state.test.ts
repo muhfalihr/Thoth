@@ -613,3 +613,80 @@ test("loaded assets are indexed by ID and gate local asset operations", () => {
   });
   expect(unknown.pendingOperations).toEqual([]);
 });
+
+const editHeading = (state: ReturnType<typeof createEditorState>, value: string) =>
+  editorReducer(state, {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "heading",
+    value,
+    operationId: "op_local",
+  });
+
+test("upgrade starts only from a saved, online, operation-free state", () => {
+  const clean = createEditorState(document);
+  expect(editorReducer(clean, { type: "upgrade_started" }).upgradeStatus).toBe("running");
+
+  const dirty = editHeading(clean, "Local draft");
+  expect(editorReducer(dirty, { type: "upgrade_started" })).toEqual(dirty);
+
+  const offline = editorReducer(clean, { type: "went_offline" });
+  expect(editorReducer(offline, { type: "upgrade_started" })).toEqual(offline);
+
+  const conflicted = editorReducer(clean, {
+    type: "save_conflicted",
+    latest: { ...document, revision: 9 },
+  });
+  expect(editorReducer(conflicted, { type: "upgrade_started" })).toEqual(conflicted);
+});
+
+test("upgrade success never acknowledges pending autosave operations", () => {
+  const dirty = editHeading(createEditorState(document), "Local draft");
+  const result = editorReducer(dirty, { type: "upgrade_succeeded", document: timelineDocument() });
+
+  expect(result.draft).toEqual(dirty.draft);
+  expect(result.pendingOperations).toEqual(dirty.pendingOperations);
+});
+
+test("document edits are blocked while upgrade is running", () => {
+  const upgrading = editorReducer(createEditorState(document), { type: "upgrade_started" });
+
+  expect(editHeading(upgrading, "late edit")).toEqual(upgrading);
+  expect(editorReducer(upgrading, { type: "undo" })).toEqual(upgrading);
+  // Selection and playback stay usable: they never touch the document.
+  expect(editorReducer(upgrading, { type: "select_scene", sceneId: "scene_002" }).selectedSceneId).toBe(
+    "scene_002",
+  );
+});
+
+test("upgrade success adopts the version 2 document and opens advanced mode", () => {
+  const upgrading = editorReducer(createEditorState(document), { type: "upgrade_started" });
+  const upgraded = editorReducer(upgrading, {
+    type: "upgrade_succeeded",
+    document: timelineDocument(),
+  });
+
+  expect(upgraded.draft).toEqual(timelineDocument());
+  expect(upgraded.base).toEqual(timelineDocument());
+  expect(upgraded.mode).toBe("advanced");
+  expect(upgraded.upgradeStatus).toBe("idle");
+  expect(upgraded.saveStatus).toBe("saved");
+  expect(upgraded.history).toEqual([]);
+});
+
+test("upgrade conflict and failure keep the local draft", () => {
+  const upgrading = editorReducer(createEditorState(document), { type: "upgrade_started" });
+  const latest = { ...document, revision: 9 };
+
+  const conflicted = editorReducer(upgrading, { type: "upgrade_conflicted", latest });
+  expect(conflicted.draft).toEqual(document);
+  expect(conflicted.saveStatus).toBe("conflict");
+  expect(conflicted.latestConflict).toEqual(latest);
+  expect(conflicted.upgradeStatus).toBe("idle");
+
+  const failed = editorReducer(upgrading, { type: "upgrade_failed" });
+  expect(failed.draft).toEqual(document);
+  expect(failed.upgradeStatus).toBe("failed");
+  // A failed upgrade is retryable: editing is possible again.
+  expect(editHeading(failed, "after failure").pendingOperations).toHaveLength(1);
+});

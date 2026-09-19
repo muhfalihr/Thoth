@@ -8,7 +8,13 @@ import type {
 } from "@/api/control-plane";
 import type { PreviewSources } from "./AdvancedTimelineComposition";
 import { AssetLibrary } from "./AssetLibrary";
-import { editorReducer, createEditorState, toEditDocumentPatch, type EditorState } from "./editor_state";
+import {
+  canStartUpgrade,
+  createEditorState,
+  editorReducer,
+  toEditDocumentPatch,
+  type EditorState,
+} from "./editor_state";
 import { Inspector } from "./Inspector";
 import { IssuesPanel } from "./IssuesPanel";
 import { PromptLab, type PromptLabClient } from "./PromptLab";
@@ -59,9 +65,8 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const timeline = isTimelineDocument(state.draft) ? state.draft : undefined;
   const selectedClip = story?.clips.find((clip) => clip.clip_id === selectedScene?.clip_ids[0]);
   const [previewSources, setPreviewSources] = useState<PreviewSources>({});
-  const [upgrading, setUpgrading] = useState(false);
-  const [upgradeFailed, setUpgradeFailed] = useState(false);
-  /** Bumped on unmount so a response that outlives this document is dropped. */
+  const upgradeReasonId = useId();
+  /** Bumped on upgrade and unmount so a response that outlives this document is dropped. */
   const generation = useRef(0);
   useEffect(() => () => {
     generation.current += 1;
@@ -91,17 +96,21 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
     const patch = toEditDocumentPatch({ base, pendingOperations });
     const operationIds = patch.operations.map((operation) => operation.operation_id);
     const timeoutId = setTimeout(() => {
+      const requestGeneration = generation.current;
       dispatch({ type: "save_started", operationIds });
       void client
         .patchEditDocument(projectId, documentId, patch)
         .then((result) => {
+          if (requestGeneration !== generation.current) return;
           dispatch(
             result.kind === "saved"
               ? { type: "save_succeeded", document: result.document, operationIds }
               : { type: "save_conflicted", latest: result.latest },
           );
         })
-        .catch(() => dispatch({ type: "save_failed" }));
+        .catch(() => {
+          if (requestGeneration === generation.current) dispatch({ type: "save_failed" });
+        });
     }, 500);
     return () => clearTimeout(timeoutId);
   }, [base, client, documentId, draft, pendingOperations, projectId, saveStatus, story]);
@@ -139,22 +148,23 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
 
   const upgradeDocument = () => {
     const upgrade = client.upgradeEditDocument;
-    if (!upgrade || upgrading) return;
-    setUpgrading(true);
-    setUpgradeFailed(false);
-    const current = generation.current;
+    if (!upgrade || !canStartUpgrade(state)) return;
+    // A replacement invalidates every response owned by the document it replaces.
+    generation.current += 1;
+    const requestGeneration = generation.current;
+    dispatch({ type: "upgrade_started" });
     void upgrade(projectId, documentId, { base_revision: draft.revision }, makeOperationId())
       .then((result) => {
-        if (current !== generation.current) return;
-        if (result.kind === "conflict") {
-          dispatch({ type: "save_conflicted", latest: result.latest });
-          return;
-        }
-        dispatch({ type: "save_succeeded", document: result.document });
-        dispatch({ type: "set_editor_mode", mode: "advanced" });
+        if (requestGeneration !== generation.current) return;
+        dispatch(
+          result.kind === "conflict"
+            ? { type: "upgrade_conflicted", latest: result.latest }
+            : { type: "upgrade_succeeded", document: result.document },
+        );
       })
-      .catch(() => current === generation.current && setUpgradeFailed(true))
-      .finally(() => current === generation.current && setUpgrading(false));
+      .catch(() => {
+        if (requestGeneration === generation.current) dispatch({ type: "upgrade_failed" });
+      });
   };
 
   const statusLabel: Record<EditorState["saveStatus"], string> = {
@@ -200,9 +210,18 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         </button>
         {story && client.upgradeEditDocument ? (
           <>
-            <button type="button" className={toolbarButton} disabled={upgrading} onClick={upgradeDocument}>
+            <button
+              type="button"
+              className={toolbarButton}
+              disabled={!canStartUpgrade(state)}
+              aria-describedby={canStartUpgrade(state) ? undefined : upgradeReasonId}
+              onClick={upgradeDocument}
+            >
               Enable advanced timeline
             </button>
+            <span id={upgradeReasonId} className="sr-only">
+              Enabling the advanced timeline is available once your changes are saved and Studio is online.
+            </span>
             <span className="text-xs text-muted-foreground">
               Your scenes, text, and history stay as they are.
             </span>
@@ -237,7 +256,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         </div>
       </header>
 
-      {upgradeFailed && (
+      {state.upgradeStatus === "failed" && (
         <div role="alert" className="border-b border-destructive/50 bg-destructive/10 px-4 py-2 text-sm">
           <p>Could not enable the advanced timeline. Your document is unchanged.</p>
         </div>
