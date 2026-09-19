@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-20 — Creator Studio D1 advanced timeline foundation
+
+Implemented Tasks 1-13 of
+`docs/superpowers/plans/2026-09-19-creator-studio-advanced-timeline-foundation.md`
+as twelve commits on `codex/stage1-container-ci`, offline and test-first:
+
+- `56cd563` version 2 timeline document model; version 1 documents stay valid.
+- `784b76f` typed timeline operations applied against a document revision.
+- `1b3023e` persistence for timeline documents, editor assets, and upgrades,
+  behind a new migration; migrations `0001`-`0003` are unchanged.
+- `b0166dd` upgrade orchestration: version 1 scenes, text, and history survive.
+- `1e7d9aa` control-plane routes for timeline documents, assets, and upgrades.
+- `722803b` editor asset preview capability: an HttpOnly, exact-path,
+  short-lived cookie plus a same-origin `/api/v1` media proxy. No artifact
+  locator, path, or signing key appears in a URL, a JSON body, a persisted
+  document, a normal log, or a generated schema; a browser-supplied locator is
+  never trusted, and cross-project assets, traversal, absolute and drive paths,
+  URL-like locators, expired capabilities, wrong assets, and missing media all
+  fail closed with a generic error.
+- `8dc3fc9` generated client contracts (`python/openapi.json` and
+  `dashboard/src/api/generated/control-plane.ts` regenerated, never hand-edited).
+- `5a617c0` dashboard timeline state: selection, playhead, undo, and redo.
+- `5a9d1ca` Remotion preview composition that renders only capability-backed
+  sources and drops anything it cannot safely resolve.
+- `9343a0c` accessible timeline surface: keyboard-operable tracks, clips,
+  asset library, inspector, and issues panel.
+- `189edb2` Guided Studio integration: an opt-in upgrade control on version 1,
+  the advanced workstation on version 2, and guided editing wherever the
+  advanced endpoints are absent.
+- `5ecbe44` Stage 1 local compose and CI wiring for the preview signing key,
+  injected at runtime into the API service only, never baked into the image.
+
+Verification (all offline, no push, no deployment, no live request):
+`uv sync --frozen --all-groups --extra acquisition`; `pytest -m "not live"`
+1211 passed, 31 skipped; deployment suite 261 passed, 29 skipped;
+`ruff check` and `ruff format --check` clean (140 files); OpenAPI and TypeScript
+regeneration left `git diff --exit-code` clean; `bun test` 310 passed across 28
+files on three consecutive runs; `bun run lint` 4 pre-existing warnings only;
+`bun run build` clean; `build_cuda.bat` exit 0 with zero errors and zero
+warnings (no Rust source changed, so Cargo relinked nothing); scout
+`bun install --frozen-lockfile`, `test:acquisition`, and `test:runtime`
+126 passed, 0 failed; `docker compose config --quiet` exit 0; `git diff --check`
+clean. Stage 1 evidence, parity records, Issue #5, the controlled fallback, and
+the acceptance window were not touched.
+
 ## 2026-09-17 — Prompt Lab flake fix and error persistence
 
 Addressed the flake and error persistence findings across two focused commits
