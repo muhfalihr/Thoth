@@ -316,3 +316,10 @@ class EditDocumentV2(StrictModel):
 EditDocument: TypeAlias = Annotated[
     EditDocumentV1 | EditDocumentV2, Field(discriminator="schema_version")
 ]
+
+
+class DocumentRevisionConflictBody(StrictModel):
+    """Typed 409 body carrying the latest document so a client can reconcile."""
+
+    code: Literal["document_revision_conflict"] = "document_revision_conflict"
+    latest: EditDocument

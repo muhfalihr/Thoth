@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from temporalio.service import RPCError
 
 from thoth_control_plane.api.routes.edit_documents import router as edit_document_router
+from thoth_control_plane.api.routes.editor_assets import router as editor_asset_router
 from thoth_control_plane.api.routes.health import router as health_router
 from thoth_control_plane.api.routes.prompt_lab import router as prompt_lab_router
 from thoth_control_plane.api.routes.prompt_proposals import router as prompt_proposal_router
@@ -27,6 +28,8 @@ from thoth_control_plane.application import (
     WorkflowService,
 )
 from thoth_control_plane.application.edit_documents import EditDocumentService
+from thoth_control_plane.application.editor_asset_ports import EditorAssetRepository
+from thoth_control_plane.application.editor_assets import EditorAssetService
 from thoth_control_plane.application.ports import EditDocumentRepository, PromptLabRepository
 from thoth_control_plane.application.prompt_lab import PromptLabService
 from thoth_control_plane.application.prompt_proposal_ports import (
@@ -38,6 +41,9 @@ from thoth_control_plane.application.prompt_proposal_ports import (
 from thoth_control_plane.application.prompt_proposals import PromptProposalService
 from thoth_control_plane.config import Settings
 from thoth_control_plane.domain.prompt_proposals import PromptProviderDefinition
+from thoth_control_plane.infrastructure.editor_asset_repository import (
+    PostgresEditorAssetRepository,
+)
 from thoth_control_plane.infrastructure.editor_repository import PostgresEditDocumentRepository
 from thoth_control_plane.infrastructure.prompt_proposal_gateway import (
     TemporalPromptProposalGateway,
@@ -62,11 +68,16 @@ def create_app(
     prompt_proposal_repository: C2ProposalRepository | None = None,
     prompt_proposal_gateway: C2ProposalGateway | None = None,
     prompt_provider_catalog: tuple[PromptProviderDefinition, ...] | None = None,
+    editor_asset_repository: EditorAssetRepository | None = None,
 ) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
     settings = settings or Settings()  # type: ignore[call-arg]
     if editor_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
         editor_repository = PostgresEditDocumentRepository(
+            settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
+        )
+    if editor_asset_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
+        editor_asset_repository = PostgresEditorAssetRepository(
             settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
         )
     if prompt_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
@@ -127,6 +138,7 @@ def create_app(
     app.state.workflow_gateway = gateway or UnavailableWorkflowGateway()
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
     app.state.edit_document_service = EditDocumentService(editor_repository)
+    app.state.editor_asset_service = EditorAssetService(editor_asset_repository)
     app.state.prompt_lab_service = PromptLabService(prompt_repository)
     app.state.prompt_proposal_service = prompt_proposal_service
 
@@ -162,23 +174,30 @@ def create_app(
         ) -> JSONResponse:
             return JSONResponse(status_code=mapped_status, content={"detail": str(exc)})
 
-    # The Idempotency-Key header on proposal creation is required in the OpenAPI
-    # contract (so generated clients cannot omit it), but FastAPI's own missing-
-    # header validation error exposes raw pydantic loc/msg detail. Rewrite only
-    # that one case to the stable safe code the route already returns for a
-    # present-but-blank key; every other validation error keeps FastAPI's default
-    # handling untouched.
+    # A required Idempotency-Key header is part of the OpenAPI contract (so
+    # generated clients cannot omit it), but FastAPI's own missing-header error
+    # exposes raw pydantic loc/msg detail. The same applies to an asset page
+    # token, which would otherwise be reflected verbatim into the error body.
+    # Rewrite only those cases to a stable safe code; every other validation
+    # error keeps FastAPI's default handling untouched.
+    idempotent_suffixes = ("/prompt-lab/proposals", "/upgrade-timeline")
+
     @app.exception_handler(RequestValidationError)
-    async def missing_idempotency_key_handler(
+    async def safe_validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> Response:
-        if request.method == "POST" and request.url.path.endswith("/prompt-lab/proposals"):
+        path = request.url.path
+        if request.method == "POST" and path.endswith(idempotent_suffixes):
             for error in exc.errors():
                 loc = tuple(str(part).lower() for part in error.get("loc", ()))
                 if loc == ("header", "idempotency-key"):
                     return JSONResponse(
                         status_code=422, content={"detail": {"code": "missing_idempotency_key"}}
                     )
+        if request.method == "GET" and path.endswith("/editor-assets"):
+            return JSONResponse(
+                status_code=422, content={"detail": {"code": "invalid_asset_query"}}
+            )
         return await request_validation_exception_handler(request, exc)
 
     @app.middleware("http")
@@ -190,6 +209,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(workflow_router, prefix="/api/v1")
     app.include_router(edit_document_router, prefix="/api/v1")
+    app.include_router(editor_asset_router, prefix="/api/v1")
     app.include_router(prompt_lab_router, prefix="/api/v1")
     app.include_router(prompt_proposal_router, prefix="/api/v1")
     return app

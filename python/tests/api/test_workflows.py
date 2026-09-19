@@ -439,6 +439,11 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
         ("/api/v1/projects/{project_id}/edit-documents/import-content-set", "post"),
         ("/api/v1/projects/{project_id}/edit-documents/{document_id}", "get"),
         ("/api/v1/projects/{project_id}/edit-documents/{document_id}", "patch"),
+        (
+            "/api/v1/projects/{project_id}/edit-documents/{document_id}/upgrade-timeline",
+            "post",
+        ),
+        ("/api/v1/projects/{project_id}/editor-assets", "get"),
         ("/api/v1/prompt-providers", "get"),
         ("/api/v1/prompt-stages", "get"),
         ("/api/v1/prompt-stages/{stage_id}/starter", "get"),
