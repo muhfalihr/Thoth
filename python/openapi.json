@@ -1,6 +1,117 @@
 {
   "components": {
     "schemas": {
+      "AddClipFromAsset": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "add_clip_from_asset",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "source_from_frame": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Source From Frame",
+            "type": "integer"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "track_id",
+          "asset_id",
+          "from_frame",
+          "duration_in_frames"
+        ],
+        "title": "AddClipFromAsset",
+        "type": "object"
+      },
+      "AddTrack": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "add_track",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "order": {
+            "minimum": 0.0,
+            "title": "Order",
+            "type": "integer"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          },
+          "track_kind": {
+            "enum": [
+              "main_video",
+              "b_roll",
+              "overlay",
+              "caption",
+              "narration",
+              "music",
+              "sfx"
+            ],
+            "title": "Track Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "track_id",
+          "track_kind",
+          "label",
+          "order"
+        ],
+        "title": "AddTrack",
+        "type": "object"
+      },
       "ApplyPromptProposalRequest": {
         "additionalProperties": false,
         "properties": {
@@ -173,6 +284,114 @@
         "title": "ArtifactRef",
         "type": "object"
       },
+      "AssetRef": {
+        "additionalProperties": false,
+        "description": "Safe, immutable projection of a validated project asset.\n\nCarries identity and playback metadata only. The artifact locator and any\npreview capability stay server-side and never enter a persisted document.",
+        "properties": {
+          "asset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "checksum": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-fA-F]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum"
+          },
+          "duration_in_frames": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration In Frames"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 240.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fps"
+          },
+          "has_audio": {
+            "title": "Has Audio",
+            "type": "boolean"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "kind": {
+            "enum": [
+              "video",
+              "image",
+              "audio"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "validation_state": {
+            "enum": [
+              "ready",
+              "rejected",
+              "pending"
+            ],
+            "title": "Validation State",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "asset_id",
+          "project_id",
+          "kind",
+          "has_audio",
+          "validation_state"
+        ],
+        "title": "AssetRef",
+        "type": "object"
+      },
       "Canvas": {
         "additionalProperties": false,
         "properties": {
@@ -204,6 +423,35 @@
           "duration_in_frames"
         ],
         "title": "Canvas",
+        "type": "object"
+      },
+      "CaptionCue": {
+        "additionalProperties": false,
+        "description": "Cue timing is relative to the start of its caption clip.",
+        "properties": {
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "text": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_frame",
+          "duration_in_frames",
+          "text"
+        ],
+        "title": "CaptionCue",
         "type": "object"
       },
       "ContentSetImportRequest": {
@@ -326,7 +574,179 @@
         "title": "CreatePromptProposalRequest",
         "type": "object"
       },
-      "EditDocument": {
+      "Crop": {
+        "additionalProperties": false,
+        "properties": {
+          "height": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Height",
+            "type": "number"
+          },
+          "left": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Left",
+            "type": "number"
+          },
+          "top": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Top",
+            "type": "number"
+          },
+          "width": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Width",
+            "type": "number"
+          }
+        },
+        "title": "Crop",
+        "type": "object"
+      },
+      "DocumentRevisionConflictBody": {
+        "additionalProperties": false,
+        "description": "Typed 409 body carrying the latest document so a client can reconcile.",
+        "properties": {
+          "code": {
+            "const": "document_revision_conflict",
+            "default": "document_revision_conflict",
+            "title": "Code",
+            "type": "string"
+          },
+          "latest": {
+            "discriminator": {
+              "mapping": {
+                "1": "#/components/schemas/EditDocumentV1",
+                "2": "#/components/schemas/EditDocumentV2"
+              },
+              "propertyName": "schema_version"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EditDocumentV1"
+              },
+              {
+                "$ref": "#/components/schemas/EditDocumentV2"
+              }
+            ],
+            "title": "Latest"
+          }
+        },
+        "required": [
+          "latest"
+        ],
+        "title": "DocumentRevisionConflictBody",
+        "type": "object"
+      },
+      "EditDocumentPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "operations": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "add_clip_from_asset": "#/components/schemas/AddClipFromAsset",
+                  "add_track": "#/components/schemas/AddTrack",
+                  "move_clip": "#/components/schemas/MoveClip",
+                  "remove_clip": "#/components/schemas/RemoveClip",
+                  "remove_empty_track": "#/components/schemas/RemoveEmptyTrack",
+                  "reorder_track": "#/components/schemas/ReorderTrack",
+                  "replace_text": "#/components/schemas/ReplaceText",
+                  "set_clip_hidden": "#/components/schemas/SetClipHidden",
+                  "set_clip_locked": "#/components/schemas/SetClipLocked",
+                  "set_clip_volume": "#/components/schemas/SetClipVolume",
+                  "set_ownership": "#/components/schemas/SetOwnership",
+                  "set_scene_duration": "#/components/schemas/SetSceneDuration",
+                  "set_track_locked": "#/components/schemas/SetTrackLocked",
+                  "set_track_muted": "#/components/schemas/SetTrackMuted",
+                  "set_track_visibility": "#/components/schemas/SetTrackVisibility",
+                  "split_clip": "#/components/schemas/SplitClip",
+                  "trim_clip_end": "#/components/schemas/TrimClipEnd",
+                  "trim_clip_start": "#/components/schemas/TrimClipStart"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ReplaceText"
+                },
+                {
+                  "$ref": "#/components/schemas/SetOwnership"
+                },
+                {
+                  "$ref": "#/components/schemas/SetSceneDuration"
+                },
+                {
+                  "$ref": "#/components/schemas/AddTrack"
+                },
+                {
+                  "$ref": "#/components/schemas/RemoveEmptyTrack"
+                },
+                {
+                  "$ref": "#/components/schemas/ReorderTrack"
+                },
+                {
+                  "$ref": "#/components/schemas/AddClipFromAsset"
+                },
+                {
+                  "$ref": "#/components/schemas/RemoveClip"
+                },
+                {
+                  "$ref": "#/components/schemas/MoveClip"
+                },
+                {
+                  "$ref": "#/components/schemas/TrimClipStart"
+                },
+                {
+                  "$ref": "#/components/schemas/TrimClipEnd"
+                },
+                {
+                  "$ref": "#/components/schemas/SplitClip"
+                },
+                {
+                  "$ref": "#/components/schemas/SetClipHidden"
+                },
+                {
+                  "$ref": "#/components/schemas/SetClipLocked"
+                },
+                {
+                  "$ref": "#/components/schemas/SetClipVolume"
+                },
+                {
+                  "$ref": "#/components/schemas/SetTrackVisibility"
+                },
+                {
+                  "$ref": "#/components/schemas/SetTrackMuted"
+                },
+                {
+                  "$ref": "#/components/schemas/SetTrackLocked"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "base_revision",
+          "operations"
+        ],
+        "title": "EditDocumentPatch",
+        "type": "object"
+      },
+      "EditDocumentV1": {
         "additionalProperties": false,
         "description": "A complete, validated, immutable schema-v1 vertical text story revision.",
         "properties": {
@@ -395,49 +815,253 @@
           "tracks",
           "clips"
         ],
-        "title": "EditDocument",
+        "title": "EditDocumentV1",
         "type": "object"
       },
-      "EditDocumentPatch": {
+      "EditDocumentV2": {
         "additionalProperties": false,
+        "description": "A complete, validated, immutable schema-v2 multi-track document revision.",
         "properties": {
-          "base_revision": {
-            "exclusiveMinimum": 0.0,
-            "title": "Base Revision",
-            "type": "integer"
+          "asset_refs": {
+            "items": {
+              "$ref": "#/components/schemas/AssetRef"
+            },
+            "maxItems": 200,
+            "title": "Asset Refs",
+            "type": "array"
           },
-          "operations": {
+          "canvas": {
+            "$ref": "#/components/schemas/Canvas"
+          },
+          "clips": {
             "items": {
               "discriminator": {
                 "mapping": {
-                  "replace_text": "#/components/schemas/ReplaceText",
-                  "set_ownership": "#/components/schemas/SetOwnership",
-                  "set_scene_duration": "#/components/schemas/SetSceneDuration"
+                  "audio": "#/components/schemas/TimelineAudioClip",
+                  "caption": "#/components/schemas/TimelineCaptionClip",
+                  "overlay": "#/components/schemas/TimelineOverlayClip",
+                  "text": "#/components/schemas/TimelineTextClip",
+                  "video": "#/components/schemas/TimelineVideoClip"
                 },
                 "propertyName": "kind"
               },
               "oneOf": [
                 {
-                  "$ref": "#/components/schemas/ReplaceText"
+                  "$ref": "#/components/schemas/TimelineTextClip"
                 },
                 {
-                  "$ref": "#/components/schemas/SetOwnership"
+                  "$ref": "#/components/schemas/TimelineVideoClip"
                 },
                 {
-                  "$ref": "#/components/schemas/SetSceneDuration"
+                  "$ref": "#/components/schemas/TimelineOverlayClip"
+                },
+                {
+                  "$ref": "#/components/schemas/TimelineCaptionClip"
+                },
+                {
+                  "$ref": "#/components/schemas/TimelineAudioClip"
                 }
               ]
             },
+            "maxItems": 500,
+            "title": "Clips",
+            "type": "array"
+          },
+          "document_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/Scene"
+            },
+            "maxItems": 100,
             "minItems": 1,
-            "title": "Operations",
+            "title": "Scenes",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 2,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "template": {
+            "$ref": "#/components/schemas/TemplateRef"
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineTrack"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Tracks",
             "type": "array"
           }
         },
         "required": [
-          "base_revision",
-          "operations"
+          "schema_version",
+          "document_id",
+          "project_id",
+          "revision",
+          "template",
+          "canvas",
+          "scenes",
+          "tracks"
         ],
-        "title": "EditDocumentPatch",
+        "title": "EditDocumentV2",
+        "type": "object"
+      },
+      "EditorAsset": {
+        "additionalProperties": false,
+        "description": "Locator-free projection of one validated project asset.",
+        "properties": {
+          "asset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "checksum": {
+            "anyOf": [
+              {
+                "pattern": "^sha256:[0-9a-fA-F]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum"
+          },
+          "duration_in_frames": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration In Frames"
+          },
+          "fps": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 240.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fps"
+          },
+          "has_audio": {
+            "title": "Has Audio",
+            "type": "boolean"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "kind": {
+            "enum": [
+              "video",
+              "image",
+              "audio"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_type": {
+            "pattern": "^[a-z]+/[a-z0-9.+-]{1,64}$",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "validation_state": {
+            "enum": [
+              "ready",
+              "rejected",
+              "pending"
+            ],
+            "title": "Validation State",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "asset_id",
+          "project_id",
+          "kind",
+          "media_type",
+          "has_audio",
+          "validation_state"
+        ],
+        "title": "EditorAsset",
+        "type": "object"
+      },
+      "EditorAssetPage": {
+        "additionalProperties": false,
+        "description": "One bounded page of ready assets plus an opaque continuation token.",
+        "properties": {
+          "assets": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EditorAsset"
+            },
+            "maxItems": 50,
+            "title": "Assets",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "title": "EditorAssetPage",
         "type": "object"
       },
       "EventKind": {
@@ -553,6 +1177,50 @@
         "title": "MainImport",
         "type": "object"
       },
+      "MoveClip": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "move_clip",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "ripple": {
+            "default": false,
+            "title": "Ripple",
+            "type": "boolean"
+          },
+          "target_track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Target Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "target_track_id",
+          "from_frame"
+        ],
+        "title": "MoveClip",
+        "type": "object"
+      },
       "OutputRequest": {
         "additionalProperties": false,
         "properties": {
@@ -574,6 +1242,66 @@
         "title": "OutputRequest",
         "type": "object"
       },
+      "OverlayParameters": {
+        "additionalProperties": false,
+        "properties": {
+          "accent_slot": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accent Slot"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "title": "OverlayParameters",
+        "type": "object"
+      },
+      "Position": {
+        "additionalProperties": false,
+        "properties": {
+          "scale": {
+            "default": 1.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 4.0,
+            "title": "Scale",
+            "type": "number"
+          },
+          "x": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "title": "Position",
+        "type": "object"
+      },
       "PreferenceRevisionConflictBody": {
         "additionalProperties": false,
         "properties": {
@@ -591,6 +1319,27 @@
           "latest"
         ],
         "title": "PreferenceRevisionConflictBody",
+        "type": "object"
+      },
+      "PreviewCapabilityResponse": {
+        "additionalProperties": false,
+        "description": "Where to fetch the media and when the issued capability stops working.",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "preview_url": {
+            "title": "Preview Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview_url",
+          "expires_at"
+        ],
+        "title": "PreviewCapabilityResponse",
         "type": "object"
       },
       "ProjectPromptBinding": {
@@ -1296,6 +2045,93 @@
         "title": "PromptTemplateRevision",
         "type": "object"
       },
+      "RemoveClip": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "remove_clip",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id"
+        ],
+        "title": "RemoveClip",
+        "type": "object"
+      },
+      "RemoveEmptyTrack": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "remove_empty_track",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "track_id"
+        ],
+        "title": "RemoveEmptyTrack",
+        "type": "object"
+      },
+      "ReorderTrack": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "reorder_track",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "order": {
+            "minimum": 0.0,
+            "title": "Order",
+            "type": "integer"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "track_id",
+          "order"
+        ],
+        "title": "ReorderTrack",
+        "type": "object"
+      },
       "ReplaceText": {
         "additionalProperties": false,
         "properties": {
@@ -1651,6 +2487,104 @@
         "title": "Scene",
         "type": "object"
       },
+      "SetClipHidden": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "hidden": {
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "set_clip_hidden",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "hidden"
+        ],
+        "title": "SetClipHidden",
+        "type": "object"
+      },
+      "SetClipLocked": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "set_clip_locked",
+            "title": "Kind",
+            "type": "string"
+          },
+          "locked": {
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "locked"
+        ],
+        "title": "SetClipLocked",
+        "type": "object"
+      },
+      "SetClipVolume": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "set_clip_volume",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "volume": {
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Volume",
+            "type": "number"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "volume"
+        ],
+        "title": "SetClipVolume",
+        "type": "object"
+      },
       "SetOwnership": {
         "additionalProperties": false,
         "properties": {
@@ -1721,6 +2655,102 @@
         "title": "SetSceneDuration",
         "type": "object"
       },
+      "SetTrackLocked": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "set_track_locked",
+            "title": "Kind",
+            "type": "string"
+          },
+          "locked": {
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "track_id",
+          "locked"
+        ],
+        "title": "SetTrackLocked",
+        "type": "object"
+      },
+      "SetTrackMuted": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "set_track_muted",
+            "title": "Kind",
+            "type": "string"
+          },
+          "muted": {
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "track_id",
+          "muted"
+        ],
+        "title": "SetTrackMuted",
+        "type": "object"
+      },
+      "SetTrackVisibility": {
+        "additionalProperties": false,
+        "properties": {
+          "hidden": {
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "set_track_visibility",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "track_id",
+          "hidden"
+        ],
+        "title": "SetTrackVisibility",
+        "type": "object"
+      },
       "SourceInput": {
         "additionalProperties": false,
         "properties": {
@@ -1745,6 +2775,51 @@
           "intent"
         ],
         "title": "SourceInput",
+        "type": "object"
+      },
+      "SplitClip": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "split_clip",
+            "title": "Kind",
+            "type": "string"
+          },
+          "left_clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Left Clip Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "right_clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Right Clip Id",
+            "type": "string"
+          },
+          "split_frame": {
+            "minimum": 0.0,
+            "title": "Split Frame",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "split_frame",
+          "left_clip_id",
+          "right_clip_id"
+        ],
+        "title": "SplitClip",
         "type": "object"
       },
       "StageProgress": {
@@ -1958,6 +3033,550 @@
         "title": "TextClip",
         "type": "object"
       },
+      "TimelineAudioClip": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "fade_in_frames": {
+            "default": 0,
+            "maximum": 300.0,
+            "minimum": 0.0,
+            "title": "Fade In Frames",
+            "type": "integer"
+          },
+          "fade_out_frames": {
+            "default": 0,
+            "maximum": 300.0,
+            "minimum": 0.0,
+            "title": "Fade Out Frames",
+            "type": "integer"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "audio",
+            "title": "Kind",
+            "type": "string"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "ownership": {
+            "enum": [
+              "ai_managed",
+              "user_edited",
+              "locked"
+            ],
+            "title": "Ownership",
+            "type": "string"
+          },
+          "scene_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
+          "source_from_frame": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Source From Frame",
+            "type": "integer"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          },
+          "volume": {
+            "default": 1.0,
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Volume",
+            "type": "number"
+          }
+        },
+        "required": [
+          "clip_id",
+          "track_id",
+          "from_frame",
+          "duration_in_frames",
+          "ownership",
+          "kind",
+          "asset_id"
+        ],
+        "title": "TimelineAudioClip",
+        "type": "object"
+      },
+      "TimelineCaptionClip": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "cues": {
+            "items": {
+              "$ref": "#/components/schemas/CaptionCue"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Cues",
+            "type": "array"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "caption",
+            "title": "Kind",
+            "type": "string"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "ownership": {
+            "enum": [
+              "ai_managed",
+              "user_edited",
+              "locked"
+            ],
+            "title": "Ownership",
+            "type": "string"
+          },
+          "scene_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
+          "style_slot": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Style Slot",
+            "type": "string"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clip_id",
+          "track_id",
+          "from_frame",
+          "duration_in_frames",
+          "ownership",
+          "kind",
+          "style_slot",
+          "cues"
+        ],
+        "title": "TimelineCaptionClip",
+        "type": "object"
+      },
+      "TimelineOverlayClip": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "overlay",
+            "title": "Kind",
+            "type": "string"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "ownership": {
+            "enum": [
+              "ai_managed",
+              "user_edited",
+              "locked"
+            ],
+            "title": "Ownership",
+            "type": "string"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/OverlayParameters"
+          },
+          "preset_id": {
+            "enum": [
+              "lower_third",
+              "badge",
+              "progress_bar"
+            ],
+            "title": "Preset Id",
+            "type": "string"
+          },
+          "scene_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clip_id",
+          "track_id",
+          "from_frame",
+          "duration_in_frames",
+          "ownership",
+          "kind",
+          "preset_id"
+        ],
+        "title": "TimelineOverlayClip",
+        "type": "object"
+      },
+      "TimelineTextClip": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 2000,
+            "title": "Body",
+            "type": "string"
+          },
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "heading": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Heading",
+            "type": "string"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "ownership": {
+            "enum": [
+              "ai_managed",
+              "user_edited",
+              "locked"
+            ],
+            "title": "Ownership",
+            "type": "string"
+          },
+          "scene_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
+          "style_slot": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Style Slot",
+            "type": "string"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clip_id",
+          "track_id",
+          "from_frame",
+          "duration_in_frames",
+          "ownership",
+          "kind",
+          "heading",
+          "body",
+          "style_slot"
+        ],
+        "title": "TimelineTextClip",
+        "type": "object"
+      },
+      "TimelineTrack": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_ids": {
+            "items": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Clip Ids",
+            "type": "array"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "main_video",
+              "b_roll",
+              "overlay",
+              "caption",
+              "narration",
+              "music",
+              "sfx"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "muted": {
+            "default": false,
+            "title": "Muted",
+            "type": "boolean"
+          },
+          "order": {
+            "minimum": 0.0,
+            "title": "Order",
+            "type": "integer"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track_id",
+          "kind",
+          "label",
+          "order"
+        ],
+        "title": "TimelineTrack",
+        "type": "object"
+      },
+      "TimelineVideoClip": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Crop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "fit": {
+            "default": "cover",
+            "enum": [
+              "cover",
+              "contain",
+              "fill"
+            ],
+            "title": "Fit",
+            "type": "string"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "video",
+            "title": "Kind",
+            "type": "string"
+          },
+          "locked": {
+            "default": false,
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "ownership": {
+            "enum": [
+              "ai_managed",
+              "user_edited",
+              "locked"
+            ],
+            "title": "Ownership",
+            "type": "string"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scene_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
+          "source_from_frame": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Source From Frame",
+            "type": "integer"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clip_id",
+          "track_id",
+          "from_frame",
+          "duration_in_frames",
+          "ownership",
+          "kind",
+          "asset_id"
+        ],
+        "title": "TimelineVideoClip",
+        "type": "object"
+      },
       "Track": {
         "additionalProperties": false,
         "properties": {
@@ -1988,6 +3607,88 @@
           "clip_ids"
         ],
         "title": "Track",
+        "type": "object"
+      },
+      "TrimClipEnd": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "end_frame": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Frame",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "trim_clip_end",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "end_frame"
+        ],
+        "title": "TrimClipEnd",
+        "type": "object"
+      },
+      "TrimClipStart": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "trim_clip_start",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "from_frame"
+        ],
+        "title": "TrimClipStart",
+        "type": "object"
+      },
+      "UpgradeTimelineRequest": {
+        "additionalProperties": false,
+        "description": "An explicit, user-initiated upgrade of one document to schema version 2.",
+        "properties": {
+          "base_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base_revision"
+        ],
+        "title": "UpgradeTimelineRequest",
         "type": "object"
       },
       "ValidationError": {
@@ -2454,7 +4155,22 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EditDocument"
+                  "discriminator": {
+                    "mapping": {
+                      "1": "#/components/schemas/EditDocumentV1",
+                      "2": "#/components/schemas/EditDocumentV2"
+                    },
+                    "propertyName": "schema_version"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV1"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV2"
+                    }
+                  ],
+                  "title": "Response Import Content Set Api V1 Projects  Project Id  Edit Documents Import Content Set Post"
                 }
               }
             },
@@ -2518,7 +4234,22 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EditDocument"
+                  "discriminator": {
+                    "mapping": {
+                      "1": "#/components/schemas/EditDocumentV1",
+                      "2": "#/components/schemas/EditDocumentV2"
+                    },
+                    "propertyName": "schema_version"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV1"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV2"
+                    }
+                  ],
+                  "title": "Response Get Edit Document Api V1 Projects  Project Id  Edit Documents  Document Id  Get"
                 }
               }
             },
@@ -2590,7 +4321,22 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EditDocument"
+                  "discriminator": {
+                    "mapping": {
+                      "1": "#/components/schemas/EditDocumentV1",
+                      "2": "#/components/schemas/EditDocumentV2"
+                    },
+                    "propertyName": "schema_version"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV1"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV2"
+                    }
+                  ],
+                  "title": "Response Apply Edit Document Patch Api V1 Projects  Project Id  Edit Documents  Document Id  Patch"
                 }
               }
             },
@@ -2600,7 +4346,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/EditDocument"
+                  "$ref": "#/components/schemas/DocumentRevisionConflictBody"
                 }
               }
             },
@@ -2618,6 +4364,329 @@
           }
         },
         "summary": "Apply Edit Document Patch"
+      }
+    },
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}/upgrade-timeline": {
+      "post": {
+        "description": "Upgrade one document to schema version 2 under a caller-supplied replay key.",
+        "operationId": "upgrade_edit_document_timeline_api_v1_projects__project_id__edit_documents__document_id__upgrade_timeline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpgradeTimelineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "discriminator": {
+                    "mapping": {
+                      "1": "#/components/schemas/EditDocumentV1",
+                      "2": "#/components/schemas/EditDocumentV2"
+                    },
+                    "propertyName": "schema_version"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV1"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EditDocumentV2"
+                    }
+                  ],
+                  "title": "Response Upgrade Edit Document Timeline Api V1 Projects  Project Id  Edit Documents  Document Id  Upgrade Timeline Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentRevisionConflictBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upgrade Edit Document Timeline"
+      }
+    },
+    "/api/v1/projects/{project_id}/editor-assets": {
+      "get": {
+        "operationId": "list_editor_assets_api_v1_projects__project_id__editor_assets_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque page token",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "pattern": "^[A-Za-z0-9_-]+=*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque page token",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditorAssetPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Editor Assets"
+      }
+    },
+    "/api/v1/projects/{project_id}/editor-assets/{asset_id}/preview": {
+      "get": {
+        "description": "Stream one previewable artifact, authorized solely by the asset-scoped cookie.",
+        "operationId": "stream_editor_asset_preview_api_v1_projects__project_id__editor_assets__asset_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "thoth_editor_preview",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Thoth Editor Preview"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Editor Asset Preview"
+      }
+    },
+    "/api/v1/projects/{project_id}/editor-assets/{asset_id}/preview-capability": {
+      "post": {
+        "description": "Mint a short-lived capability for one ready asset of one project.",
+        "operationId": "issue_editor_asset_preview_capability_api_v1_projects__project_id__editor_assets__asset_id__preview_capability_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewCapabilityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Editor Asset Preview Capability"
       }
     },
     "/api/v1/projects/{project_id}/prompt-lab/bindings/{stage_id}": {

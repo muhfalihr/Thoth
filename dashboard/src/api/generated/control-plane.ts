@@ -79,6 +79,83 @@ export interface paths {
         patch: operations["apply_edit_document_patch_api_v1_projects__project_id__edit_documents__document_id__patch"];
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}/upgrade-timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upgrade Edit Document Timeline
+         * @description Upgrade one document to schema version 2 under a caller-supplied replay key.
+         */
+        post: operations["upgrade_edit_document_timeline_api_v1_projects__project_id__edit_documents__document_id__upgrade_timeline_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/editor-assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Editor Assets */
+        get: operations["list_editor_assets_api_v1_projects__project_id__editor_assets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/editor-assets/{asset_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Editor Asset Preview
+         * @description Stream one previewable artifact, authorized solely by the asset-scoped cookie.
+         */
+        get: operations["stream_editor_asset_preview_api_v1_projects__project_id__editor_assets__asset_id__preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/editor-assets/{asset_id}/preview-capability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue Editor Asset Preview Capability
+         * @description Mint a short-lived capability for one ready asset of one project.
+         */
+        post: operations["issue_editor_asset_preview_capability_api_v1_projects__project_id__editor_assets__asset_id__preview_capability_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/prompt-lab/bindings/{stage_id}": {
         parameters: {
             query?: never;
@@ -484,6 +561,52 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AddClipFromAsset */
+        AddClipFromAsset: {
+            /** Asset Id */
+            asset_id: string;
+            /** Clip Id */
+            clip_id: string;
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /** From Frame */
+            from_frame: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "add_clip_from_asset";
+            /** Operation Id */
+            operation_id: string;
+            /**
+             * Source From Frame
+             * @default 0
+             */
+            source_from_frame: number;
+            /** Track Id */
+            track_id: string;
+        };
+        /** AddTrack */
+        AddTrack: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "add_track";
+            /** Label */
+            label: string;
+            /** Operation Id */
+            operation_id: string;
+            /** Order */
+            order: number;
+            /** Track Id */
+            track_id: string;
+            /**
+             * Track Kind
+             * @enum {string}
+             */
+            track_kind: "main_video" | "b_roll" | "overlay" | "caption" | "narration" | "music" | "sfx";
+        };
         /** ApplyPromptProposalRequest */
         ApplyPromptProposalRequest: {
             /**
@@ -539,6 +662,41 @@ export interface components {
             /** Size Bytes */
             size_bytes?: number | null;
         };
+        /**
+         * AssetRef
+         * @description Safe, immutable projection of a validated project asset.
+         *
+         *     Carries identity and playback metadata only. The artifact locator and any
+         *     preview capability stay server-side and never enter a persisted document.
+         */
+        AssetRef: {
+            /** Asset Id */
+            asset_id: string;
+            /** Checksum */
+            checksum?: string | null;
+            /** Duration In Frames */
+            duration_in_frames?: number | null;
+            /** Fps */
+            fps?: number | null;
+            /** Has Audio */
+            has_audio: boolean;
+            /** Height */
+            height?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "video" | "image" | "audio";
+            /** Project Id */
+            project_id: string;
+            /**
+             * Validation State
+             * @enum {string}
+             */
+            validation_state: "ready" | "rejected" | "pending";
+            /** Width */
+            width?: number | null;
+        };
         /** Canvas */
         Canvas: {
             /** Duration In Frames */
@@ -558,6 +716,18 @@ export interface components {
              * @constant
              */
             width: 1080;
+        };
+        /**
+         * CaptionCue
+         * @description Cue timing is relative to the start of its caption clip.
+         */
+        CaptionCue: {
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /** From Frame */
+            from_frame: number;
+            /** Text */
+            text: string;
         };
         /** ContentSetImportRequest */
         ContentSetImportRequest: {
@@ -594,11 +764,55 @@ export interface components {
             /** Target Layer */
             target_layer?: ("template" | "project_override") | null;
         };
+        /** Crop */
+        Crop: {
+            /**
+             * Height
+             * @default 1
+             */
+            height: number;
+            /**
+             * Left
+             * @default 0
+             */
+            left: number;
+            /**
+             * Top
+             * @default 0
+             */
+            top: number;
+            /**
+             * Width
+             * @default 1
+             */
+            width: number;
+        };
         /**
-         * EditDocument
+         * DocumentRevisionConflictBody
+         * @description Typed 409 body carrying the latest document so a client can reconcile.
+         */
+        DocumentRevisionConflictBody: {
+            /**
+             * Code
+             * @default document_revision_conflict
+             * @constant
+             */
+            code: "document_revision_conflict";
+            /** Latest */
+            latest: components["schemas"]["EditDocumentV1"] | components["schemas"]["EditDocumentV2"];
+        };
+        /** EditDocumentPatch */
+        EditDocumentPatch: {
+            /** Base Revision */
+            base_revision: number;
+            /** Operations */
+            operations: (components["schemas"]["ReplaceText"] | components["schemas"]["SetOwnership"] | components["schemas"]["SetSceneDuration"] | components["schemas"]["AddTrack"] | components["schemas"]["RemoveEmptyTrack"] | components["schemas"]["ReorderTrack"] | components["schemas"]["AddClipFromAsset"] | components["schemas"]["RemoveClip"] | components["schemas"]["MoveClip"] | components["schemas"]["TrimClipStart"] | components["schemas"]["TrimClipEnd"] | components["schemas"]["SplitClip"] | components["schemas"]["SetClipHidden"] | components["schemas"]["SetClipLocked"] | components["schemas"]["SetClipVolume"] | components["schemas"]["SetTrackVisibility"] | components["schemas"]["SetTrackMuted"] | components["schemas"]["SetTrackLocked"])[];
+        };
+        /**
+         * EditDocumentV1
          * @description A complete, validated, immutable schema-v1 vertical text story revision.
          */
-        EditDocument: {
+        EditDocumentV1: {
             canvas: components["schemas"]["Canvas"];
             /** Clips */
             clips: components["schemas"]["TextClip"][];
@@ -611,20 +825,87 @@ export interface components {
             /** Scenes */
             scenes: components["schemas"]["Scene"][];
             /**
-             * Schema Version
-             * @constant
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
              */
-            schema_version: 1;
+            schema_version: "1";
             template: components["schemas"]["TemplateRef"];
             /** Tracks */
             tracks: components["schemas"]["Track"][];
         };
-        /** EditDocumentPatch */
-        EditDocumentPatch: {
-            /** Base Revision */
-            base_revision: number;
-            /** Operations */
-            operations: (components["schemas"]["ReplaceText"] | components["schemas"]["SetOwnership"] | components["schemas"]["SetSceneDuration"])[];
+        /**
+         * EditDocumentV2
+         * @description A complete, validated, immutable schema-v2 multi-track document revision.
+         */
+        EditDocumentV2: {
+            /** Asset Refs */
+            asset_refs?: components["schemas"]["AssetRef"][];
+            canvas: components["schemas"]["Canvas"];
+            /** Clips */
+            clips?: (components["schemas"]["TimelineTextClip"] | components["schemas"]["TimelineVideoClip"] | components["schemas"]["TimelineOverlayClip"] | components["schemas"]["TimelineCaptionClip"] | components["schemas"]["TimelineAudioClip"])[];
+            /** Document Id */
+            document_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            /** Scenes */
+            scenes: components["schemas"]["Scene"][];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            schema_version: "2";
+            template: components["schemas"]["TemplateRef"];
+            /** Tracks */
+            tracks: components["schemas"]["TimelineTrack"][];
+        };
+        /**
+         * EditorAsset
+         * @description Locator-free projection of one validated project asset.
+         */
+        EditorAsset: {
+            /** Asset Id */
+            asset_id: string;
+            /** Checksum */
+            checksum?: string | null;
+            /** Duration In Frames */
+            duration_in_frames?: number | null;
+            /** Fps */
+            fps?: number | null;
+            /** Has Audio */
+            has_audio: boolean;
+            /** Height */
+            height?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "video" | "image" | "audio";
+            /** Media Type */
+            media_type: string;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Validation State
+             * @enum {string}
+             */
+            validation_state: "ready" | "rejected" | "pending";
+            /** Width */
+            width?: number | null;
+        };
+        /**
+         * EditorAssetPage
+         * @description One bounded page of ready assets plus an opaque continuation token.
+         */
+        EditorAssetPage: {
+            /**
+             * Assets
+             * @default []
+             */
+            assets: components["schemas"]["EditorAsset"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /**
          * EventKind
@@ -660,12 +941,58 @@ export interface components {
             /** Title */
             title?: string | null;
         };
+        /** MoveClip */
+        MoveClip: {
+            /** Clip Id */
+            clip_id: string;
+            /** From Frame */
+            from_frame: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "move_clip";
+            /** Operation Id */
+            operation_id: string;
+            /**
+             * Ripple
+             * @default false
+             */
+            ripple: boolean;
+            /** Target Track Id */
+            target_track_id: string;
+        };
         /** OutputRequest */
         OutputRequest: {
             /** Format */
             format: string;
             /** Language */
             language: string;
+        };
+        /** OverlayParameters */
+        OverlayParameters: {
+            /** Accent Slot */
+            accent_slot?: string | null;
+            /** Text */
+            text?: string | null;
+        };
+        /** Position */
+        Position: {
+            /**
+             * Scale
+             * @default 1
+             */
+            scale: number;
+            /**
+             * X
+             * @default 0
+             */
+            x: number;
+            /**
+             * Y
+             * @default 0
+             */
+            y: number;
         };
         /** PreferenceRevisionConflictBody */
         PreferenceRevisionConflictBody: {
@@ -676,6 +1003,19 @@ export interface components {
              */
             code: "preference_revision_conflict";
             latest: components["schemas"]["ProjectPromptModelPreference"];
+        };
+        /**
+         * PreviewCapabilityResponse
+         * @description Where to fetch the media and when the issued capability stops working.
+         */
+        PreviewCapabilityResponse: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Preview Url */
+            preview_url: string;
         };
         /** ProjectPromptBinding */
         ProjectPromptBinding: {
@@ -918,6 +1258,44 @@ export interface components {
             /** Template Id */
             template_id: string;
         };
+        /** RemoveClip */
+        RemoveClip: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "remove_clip";
+            /** Operation Id */
+            operation_id: string;
+        };
+        /** RemoveEmptyTrack */
+        RemoveEmptyTrack: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "remove_empty_track";
+            /** Operation Id */
+            operation_id: string;
+            /** Track Id */
+            track_id: string;
+        };
+        /** ReorderTrack */
+        ReorderTrack: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "reorder_track";
+            /** Operation Id */
+            operation_id: string;
+            /** Order */
+            order: number;
+            /** Track Id */
+            track_id: string;
+        };
         /** ReplaceText */
         ReplaceText: {
             /** Clip Id */
@@ -1033,6 +1411,48 @@ export interface components {
             /** Start Frame */
             start_frame: number;
         };
+        /** SetClipHidden */
+        SetClipHidden: {
+            /** Clip Id */
+            clip_id: string;
+            /** Hidden */
+            hidden: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_clip_hidden";
+            /** Operation Id */
+            operation_id: string;
+        };
+        /** SetClipLocked */
+        SetClipLocked: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_clip_locked";
+            /** Locked */
+            locked: boolean;
+            /** Operation Id */
+            operation_id: string;
+        };
+        /** SetClipVolume */
+        SetClipVolume: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_clip_volume";
+            /** Operation Id */
+            operation_id: string;
+            /** Volume */
+            volume: number;
+        };
         /** SetOwnership */
         SetOwnership: {
             /** Clip Id */
@@ -1064,6 +1484,48 @@ export interface components {
             /** Scene Id */
             scene_id: string;
         };
+        /** SetTrackLocked */
+        SetTrackLocked: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_track_locked";
+            /** Locked */
+            locked: boolean;
+            /** Operation Id */
+            operation_id: string;
+            /** Track Id */
+            track_id: string;
+        };
+        /** SetTrackMuted */
+        SetTrackMuted: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_track_muted";
+            /** Muted */
+            muted: boolean;
+            /** Operation Id */
+            operation_id: string;
+            /** Track Id */
+            track_id: string;
+        };
+        /** SetTrackVisibility */
+        SetTrackVisibility: {
+            /** Hidden */
+            hidden: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_track_visibility";
+            /** Operation Id */
+            operation_id: string;
+            /** Track Id */
+            track_id: string;
+        };
         /** SourceInput */
         SourceInput: {
             /**
@@ -1076,6 +1538,24 @@ export interface components {
              * Format: uri
              */
             url: string;
+        };
+        /** SplitClip */
+        SplitClip: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "split_clip";
+            /** Left Clip Id */
+            left_clip_id: string;
+            /** Operation Id */
+            operation_id: string;
+            /** Right Clip Id */
+            right_clip_id: string;
+            /** Split Frame */
+            split_frame: number;
         };
         /** StageProgress */
         StageProgress: {
@@ -1157,6 +1637,255 @@ export interface components {
              */
             track_id: "track_visual";
         };
+        /** TimelineAudioClip */
+        TimelineAudioClip: {
+            /** Asset Id */
+            asset_id: string;
+            /** Clip Id */
+            clip_id: string;
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /**
+             * Fade In Frames
+             * @default 0
+             */
+            fade_in_frames: number;
+            /**
+             * Fade Out Frames
+             * @default 0
+             */
+            fade_out_frames: number;
+            /** From Frame */
+            from_frame: number;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "audio";
+            /**
+             * Locked
+             * @default false
+             */
+            locked: boolean;
+            /**
+             * Ownership
+             * @enum {string}
+             */
+            ownership: "ai_managed" | "user_edited" | "locked";
+            /** Scene Id */
+            scene_id?: string | null;
+            /**
+             * Source From Frame
+             * @default 0
+             */
+            source_from_frame: number;
+            /** Track Id */
+            track_id: string;
+            /**
+             * Volume
+             * @default 1
+             */
+            volume: number;
+        };
+        /** TimelineCaptionClip */
+        TimelineCaptionClip: {
+            /** Clip Id */
+            clip_id: string;
+            /** Cues */
+            cues: components["schemas"]["CaptionCue"][];
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /** From Frame */
+            from_frame: number;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "caption";
+            /**
+             * Locked
+             * @default false
+             */
+            locked: boolean;
+            /**
+             * Ownership
+             * @enum {string}
+             */
+            ownership: "ai_managed" | "user_edited" | "locked";
+            /** Scene Id */
+            scene_id?: string | null;
+            /** Style Slot */
+            style_slot: string;
+            /** Track Id */
+            track_id: string;
+        };
+        /** TimelineOverlayClip */
+        TimelineOverlayClip: {
+            /** Clip Id */
+            clip_id: string;
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /** From Frame */
+            from_frame: number;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "overlay";
+            /**
+             * Locked
+             * @default false
+             */
+            locked: boolean;
+            /**
+             * Ownership
+             * @enum {string}
+             */
+            ownership: "ai_managed" | "user_edited" | "locked";
+            parameters?: components["schemas"]["OverlayParameters"];
+            /**
+             * Preset Id
+             * @enum {string}
+             */
+            preset_id: "lower_third" | "badge" | "progress_bar";
+            /** Scene Id */
+            scene_id?: string | null;
+            /** Track Id */
+            track_id: string;
+        };
+        /** TimelineTextClip */
+        TimelineTextClip: {
+            /** Body */
+            body: string;
+            /** Clip Id */
+            clip_id: string;
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /** From Frame */
+            from_frame: number;
+            /** Heading */
+            heading: string;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "text";
+            /**
+             * Locked
+             * @default false
+             */
+            locked: boolean;
+            /**
+             * Ownership
+             * @enum {string}
+             */
+            ownership: "ai_managed" | "user_edited" | "locked";
+            /** Scene Id */
+            scene_id?: string | null;
+            /** Style Slot */
+            style_slot: string;
+            /** Track Id */
+            track_id: string;
+        };
+        /** TimelineTrack */
+        TimelineTrack: {
+            /** Clip Ids */
+            clip_ids?: string[];
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "main_video" | "b_roll" | "overlay" | "caption" | "narration" | "music" | "sfx";
+            /** Label */
+            label: string;
+            /**
+             * Locked
+             * @default false
+             */
+            locked: boolean;
+            /**
+             * Muted
+             * @default false
+             */
+            muted: boolean;
+            /** Order */
+            order: number;
+            /** Track Id */
+            track_id: string;
+        };
+        /** TimelineVideoClip */
+        TimelineVideoClip: {
+            /** Asset Id */
+            asset_id: string;
+            /** Clip Id */
+            clip_id: string;
+            crop?: components["schemas"]["Crop"] | null;
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /**
+             * Fit
+             * @default cover
+             * @enum {string}
+             */
+            fit: "cover" | "contain" | "fill";
+            /** From Frame */
+            from_frame: number;
+            /**
+             * Hidden
+             * @default false
+             */
+            hidden: boolean;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "video";
+            /**
+             * Locked
+             * @default false
+             */
+            locked: boolean;
+            /**
+             * Ownership
+             * @enum {string}
+             */
+            ownership: "ai_managed" | "user_edited" | "locked";
+            position?: components["schemas"]["Position"] | null;
+            /** Scene Id */
+            scene_id?: string | null;
+            /**
+             * Source From Frame
+             * @default 0
+             */
+            source_from_frame: number;
+            /** Track Id */
+            track_id: string;
+        };
         /** Track */
         Track: {
             /** Clip Ids */
@@ -1171,6 +1900,42 @@ export interface components {
              * @constant
              */
             track_id: "track_visual";
+        };
+        /** TrimClipEnd */
+        TrimClipEnd: {
+            /** Clip Id */
+            clip_id: string;
+            /** End Frame */
+            end_frame: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "trim_clip_end";
+            /** Operation Id */
+            operation_id: string;
+        };
+        /** TrimClipStart */
+        TrimClipStart: {
+            /** Clip Id */
+            clip_id: string;
+            /** From Frame */
+            from_frame: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "trim_clip_start";
+            /** Operation Id */
+            operation_id: string;
+        };
+        /**
+         * UpgradeTimelineRequest
+         * @description An explicit, user-initiated upgrade of one document to schema version 2.
+         */
+        UpgradeTimelineRequest: {
+            /** Base Revision */
+            base_revision: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -1362,7 +2127,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EditDocument"];
+                    "application/json": components["schemas"]["EditDocumentV1"] | components["schemas"]["EditDocumentV2"];
                 };
             };
             /** @description Validation Error */
@@ -1396,7 +2161,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EditDocument"];
+                    "application/json": components["schemas"]["EditDocumentV1"] | components["schemas"]["EditDocumentV2"];
                 };
             };
             /** @description Validation Error */
@@ -1434,7 +2199,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EditDocument"];
+                    "application/json": components["schemas"]["EditDocumentV1"] | components["schemas"]["EditDocumentV2"];
                 };
             };
             /** @description Conflict */
@@ -1443,7 +2208,160 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EditDocument"];
+                    "application/json": components["schemas"]["DocumentRevisionConflictBody"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upgrade_edit_document_timeline_api_v1_projects__project_id__edit_documents__document_id__upgrade_timeline_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpgradeTimelineRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditDocumentV1"] | components["schemas"]["EditDocumentV2"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentRevisionConflictBody"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_editor_assets_api_v1_projects__project_id__editor_assets_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque page token */
+                cursor?: string | null;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditorAssetPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_editor_asset_preview_api_v1_projects__project_id__editor_assets__asset_id__preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                asset_id: string;
+            };
+            cookie?: {
+                thoth_editor_preview?: string | null;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    issue_editor_asset_preview_capability_api_v1_projects__project_id__editor_assets__asset_id__preview_capability_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewCapabilityResponse"];
                 };
             };
             /** @description Validation Error */

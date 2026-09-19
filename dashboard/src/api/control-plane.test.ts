@@ -6,6 +6,8 @@ import {
   createControlPlaneClient,
   type EditDocument,
   type EditDocumentPatch,
+  type EditorAssetPage,
+  type EditorPreviewCapability,
   type ProjectPromptBinding,
   type PromptLayerLock,
   type PromptModelPreference,
@@ -197,9 +199,11 @@ test("exposes no provider-backed AI action on the prompt client", async () => {
   expect(typeof client.rejectPromptProposal).toBe("function");
 });
 
-test("patches edit documents with encoded IDs and returns conflict latest document", async () => {
+test("patches edit documents with encoded IDs and unwraps the typed conflict envelope", async () => {
   const latest = { revision: 4, title: "Latest" } as unknown as EditDocument;
-  const fetchMock = mock(async () => new Response(JSON.stringify(latest), { status: 409 }));
+  const fetchMock = mock(async () =>
+    new Response(JSON.stringify({ code: "document_revision_conflict", latest }), { status: 409 }),
+  );
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   const client = createControlPlaneClient({ baseUrl: "http://control-plane.test", apiKey: "secret" });
   const patch = {
@@ -493,4 +497,154 @@ test("does not let a slower initial snapshot overwrite a newer event refresh", a
   stop();
 
   expect(received.at(-1)?.status).toBe("running");
+});
+
+type RecordedCall = { url: string; init?: RequestInit };
+
+function recordingFetch(calls: RecordedCall[], respond: () => Response): typeof fetch {
+  return mock(async (url: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return respond();
+  }) as unknown as typeof fetch;
+}
+
+const UPGRADED_DOCUMENT = { schema_version: 2, revision: 5 } as unknown as EditDocument;
+
+test("upgradeEditDocument sends one idempotent POST with encoded identifiers", async () => {
+  const calls: RecordedCall[] = [];
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: recordingFetch(calls, () => new Response(JSON.stringify(UPGRADED_DOCUMENT), { status: 200 })),
+  });
+
+  await expect(
+    client.upgradeEditDocument("project_001", "edoc_001", { base_revision: 4 }, "upgrade_001"),
+  ).resolves.toEqual({ kind: "saved", document: UPGRADED_DOCUMENT });
+
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({
+    url: "/api/v1/projects/project_001/edit-documents/edoc_001/upgrade-timeline",
+    init: { method: "POST" },
+  });
+  expect(new Headers(calls[0].init?.headers).get("Idempotency-Key")).toBe("upgrade_001");
+  expect(calls[0].init?.body).toBe(JSON.stringify({ base_revision: 4 }));
+});
+
+test("upgradeEditDocument encodes unsafe identifiers into the path", async () => {
+  const calls: RecordedCall[] = [];
+  const client = createControlPlaneClient({
+    baseUrl: "http://control-plane.test",
+    apiKey: "secret",
+    fetch: recordingFetch(calls, () => new Response(JSON.stringify(UPGRADED_DOCUMENT), { status: 200 })),
+  });
+
+  await client.upgradeEditDocument("project / one", "doc / one", { base_revision: 1 }, "key / one");
+  expect(calls[0].url).toBe(
+    "http://control-plane.test/api/v1/projects/project%20%2F%20one/edit-documents/doc%20%2F%20one/upgrade-timeline",
+  );
+});
+
+test("upgradeEditDocument unwraps the typed revision conflict envelope", async () => {
+  const latest = { schema_version: 1, revision: 9 } as unknown as EditDocument;
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: mock(async () =>
+      new Response(JSON.stringify({ code: "document_revision_conflict", latest }), { status: 409 }),
+    ) as unknown as typeof fetch,
+  });
+
+  await expect(
+    client.upgradeEditDocument("project_001", "edoc_001", { base_revision: 4 }, "upgrade_001"),
+  ).resolves.toEqual({ kind: "conflict", latest });
+});
+
+test("upgradeEditDocument raises a generic error for other failures", async () => {
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: mock(async () => new Response("no", { status: 503 })) as unknown as typeof fetch,
+  });
+
+  await expect(
+    client.upgradeEditDocument("project_001", "edoc_001", { base_revision: 4 }, "upgrade_001"),
+  ).rejects.toThrow("Control plane request failed (503)");
+});
+
+test("listEditorAssets sends one bounded page request", async () => {
+  const page = { assets: [], next_cursor: null } as unknown as EditorAssetPage;
+  const calls: RecordedCall[] = [];
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: recordingFetch(calls, () => new Response(JSON.stringify(page), { status: 200 })),
+  });
+
+  await expect(client.listEditorAssets("project / one")).resolves.toEqual(page);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].url).toBe("/api/v1/projects/project%20%2F%20one/editor-assets?limit=20");
+  expect(calls[0].init?.method ?? "GET").toBe("GET");
+});
+
+test("listEditorAssets forwards an explicit cursor and clamps the page limit", async () => {
+  const page = { assets: [], next_cursor: null } as unknown as EditorAssetPage;
+  const calls: RecordedCall[] = [];
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: recordingFetch(calls, () => new Response(JSON.stringify(page), { status: 200 })),
+  });
+
+  await client.listEditorAssets("project_001", "Y3Vyc29y", 500);
+  await client.listEditorAssets("project_001", undefined, 0);
+  expect(calls.map((call) => call.url)).toEqual([
+    "/api/v1/projects/project_001/editor-assets?limit=50&cursor=Y3Vyc29y",
+    "/api/v1/projects/project_001/editor-assets?limit=1",
+  ]);
+});
+
+test("createEditorPreviewCapability posts with credentials and returns a same-origin URL", async () => {
+  const capability = {
+    preview_url: "/api/v1/projects/project_001/editor-assets/asset_001/preview",
+    expires_at: "2026-09-19T10:05:00Z",
+  } satisfies EditorPreviewCapability;
+  const calls: RecordedCall[] = [];
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: recordingFetch(calls, () => new Response(JSON.stringify(capability), { status: 200 })),
+  });
+
+  await expect(
+    client.createEditorPreviewCapability("project_001", "asset / 001"),
+  ).resolves.toEqual(capability);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatchObject({
+    url: "/api/v1/projects/project_001/editor-assets/asset%20%2F%20001/preview-capability",
+    init: { method: "POST", credentials: "include" },
+  });
+  // The capability itself travels only in the response cookie: no body is sent or read back.
+  expect(calls[0].init?.body).toBeUndefined();
+});
+
+test("no preview capability value reaches a document payload", async () => {
+  const calls: RecordedCall[] = [];
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: recordingFetch(calls, () =>
+      new Response(
+        JSON.stringify({
+          preview_url: "/api/v1/projects/project_001/editor-assets/asset_001/preview",
+          expires_at: "2026-09-19T10:05:00Z",
+        }),
+        { status: 200, headers: { "Set-Cookie": "thoth_editor_preview=token; HttpOnly" } },
+      ),
+    ),
+  });
+
+  const issued = await client.createEditorPreviewCapability("project_001", "asset_001");
+  expect(Object.keys(issued)).toEqual(["preview_url", "expires_at"]);
+  expect(JSON.stringify(issued)).not.toContain("token");
 });

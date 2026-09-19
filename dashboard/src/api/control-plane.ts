@@ -6,12 +6,20 @@ export type StylePreset = components["schemas"]["StylePreset"];
 export type ApprovalSubmission = components["schemas"]["ApprovalSubmission"];
 export type RetryRequest = components["schemas"]["RetryRequest"];
 export type ContentSetImportRequest = components["schemas"]["ContentSetImportRequest"];
-export type EditDocument = components["schemas"]["EditDocument"];
+export type EditDocumentV1 = components["schemas"]["EditDocumentV1"];
+export type EditDocumentV2 = components["schemas"]["EditDocumentV2"];
+export type EditDocument = EditDocumentV1 | EditDocumentV2;
 export type EditDocumentPatch = components["schemas"]["EditDocumentPatch"];
 export type EditDocumentOperation = EditDocumentPatch["operations"][number];
+export type UpgradeTimelineRequest = components["schemas"]["UpgradeTimelineRequest"];
+export type DocumentRevisionConflictBody =
+  components["schemas"]["DocumentRevisionConflictBody"];
 export type EditDocumentPatchResult =
   | { kind: "saved"; document: EditDocument }
   | { kind: "conflict"; latest: EditDocument };
+export type EditorAsset = components["schemas"]["EditorAsset"];
+export type EditorAssetPage = components["schemas"]["EditorAssetPage"];
+export type EditorPreviewCapability = components["schemas"]["PreviewCapabilityResponse"];
 export type PromptStageDefinition = components["schemas"]["PromptStageDefinition"];
 export type PromptTemplateRevision = components["schemas"]["PromptTemplateRevision"];
 export type SavePromptTemplateRequest = components["schemas"]["SavePromptTemplateRequest"];
@@ -73,6 +81,21 @@ export type ControlPlaneClient = {
     documentId: string,
     patch: EditDocumentPatch,
   ) => Promise<EditDocumentPatchResult>;
+  upgradeEditDocument: (
+    projectId: string,
+    documentId: string,
+    request: UpgradeTimelineRequest,
+    idempotencyKey: string,
+  ) => Promise<EditDocumentPatchResult>;
+  listEditorAssets: (
+    projectId: string,
+    cursor?: string,
+    limit?: number,
+  ) => Promise<EditorAssetPage>;
+  createEditorPreviewCapability: (
+    projectId: string,
+    assetId: string,
+  ) => Promise<EditorPreviewCapability>;
   listPromptStages: () => Promise<PromptStageDefinition[]>;
   listPromptTemplates: (projectId: string, stageId: string) => Promise<PromptTemplateRevision[]>;
   savePromptTemplate: (
@@ -177,6 +200,27 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
     return { kind: "saved" as const, value: (await response.json()) as T };
   }
 
+  // Document writes answer 409 with `{ code, latest }`, so the latest document is unwrapped
+  // from that envelope rather than read straight off the body.
+  async function documentWrite(
+    path: string,
+    method: "PATCH" | "POST",
+    body: unknown,
+    extraHeaders: HeadersInit = {},
+  ): Promise<EditDocumentPatchResult> {
+    const response = await doFetch(`${baseUrl}${path}`, {
+      method,
+      headers: headers({ "Content-Type": "application/json", ...extraHeaders }),
+      body: JSON.stringify(body),
+    });
+    if (response.status === 409) {
+      const conflict = (await response.json()) as DocumentRevisionConflictBody;
+      return { kind: "conflict", latest: conflict.latest };
+    }
+    if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
+    return { kind: "saved", document: (await response.json()) as EditDocument };
+  }
+
   const client: ControlPlaneClient = {
     listStylePresets: () => request<StylePreset[]>("/api/v1/style-presets"),
     createWorkflow: (workflow) =>
@@ -213,19 +257,33 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
       request<EditDocument>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}`,
       ),
-    async patchEditDocument(projectId, documentId, patch) {
-      const response = await fetch(
-        `${baseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}`,
-        {
-          method: "PATCH",
-          headers: headers({ "Content-Type": "application/json" }),
-          body: JSON.stringify(patch),
-        },
+    patchEditDocument: (projectId, documentId, patch) =>
+      documentWrite(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}`,
+        "PATCH",
+        patch,
+      ),
+    upgradeEditDocument: (projectId, documentId, request, idempotencyKey) =>
+      documentWrite(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}/upgrade-timeline`,
+        "POST",
+        request,
+        { "Idempotency-Key": idempotencyKey },
+      ),
+    listEditorAssets: (projectId, cursor, limit = 20) => {
+      const query = new URLSearchParams({ limit: String(Math.min(Math.max(limit, 1), 50)) });
+      if (cursor) query.set("cursor", cursor);
+      return request<EditorAssetPage>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/editor-assets?${query.toString()}`,
       );
-      if (response.status === 409) return { kind: "conflict", latest: await response.json() as EditDocument };
-      if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
-      return { kind: "saved", document: await response.json() as EditDocument };
     },
+    createEditorPreviewCapability: (projectId, assetId) =>
+      // `credentials: "include"` is what lets the HttpOnly capability cookie be stored;
+      // the capability value itself never enters this module.
+      request<EditorPreviewCapability>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/editor-assets/${encodeURIComponent(assetId)}/preview-capability`,
+        { method: "POST", credentials: "include" },
+      ),
     listPromptStages: () => request<PromptStageDefinition[]>("/api/v1/prompt-stages"),
     listPromptTemplates: (projectId, stageId) =>
       request<PromptTemplateRevision[]>(
