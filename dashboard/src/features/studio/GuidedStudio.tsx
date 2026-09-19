@@ -1,15 +1,33 @@
-import { useEffect, useId, useReducer, useState, type CSSProperties } from "react";
+import { useEffect, useId, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
 
-import type { ControlPlaneClient, EditDocument, EditDocumentV1 } from "@/api/control-plane";
+import type {
+  ControlPlaneClient,
+  EditDocument,
+  EditDocumentV1,
+  EditorAsset,
+} from "@/api/control-plane";
+import type { PreviewSources } from "./AdvancedTimelineComposition";
+import { AssetLibrary } from "./AssetLibrary";
 import { editorReducer, createEditorState, toEditDocumentPatch, type EditorState } from "./editor_state";
 import { Inspector } from "./Inspector";
+import { IssuesPanel } from "./IssuesPanel";
 import { PromptLab, type PromptLabClient } from "./PromptLab";
 import { SceneBoard } from "./SceneBoard";
-import { isTimelineDocument } from "./timeline_domain";
+import { Timeline } from "./Timeline";
+import { TimelineInspector } from "./TimelineInspector";
+import { compatibleTrackIds, isTimelineDocument } from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
 
 type Props = {
-  client: PromptLabClient & Pick<ControlPlaneClient, "getEditDocument" | "patchEditDocument">;
+  client: PromptLabClient &
+    Pick<ControlPlaneClient, "getEditDocument" | "patchEditDocument"> &
+    // Advanced editing degrades to guided editing wherever these are absent.
+    Partial<
+      Pick<
+        ControlPlaneClient,
+        "upgradeEditDocument" | "listEditorAssets" | "createEditorPreviewCapability"
+      >
+    >;
   projectId: string;
   documentId: string;
   onBack: () => void;
@@ -38,7 +56,16 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const selectedScene = state.draft.scenes.find((scene) => scene.scene_id === state.selectedSceneId);
   // Guided editing only ever drives a schema-v1 text story.
   const story = isTimelineDocument(state.draft) ? undefined : state.draft;
+  const timeline = isTimelineDocument(state.draft) ? state.draft : undefined;
   const selectedClip = story?.clips.find((clip) => clip.clip_id === selectedScene?.clip_ids[0]);
+  const [previewSources, setPreviewSources] = useState<PreviewSources>({});
+  const [upgrading, setUpgrading] = useState(false);
+  const [upgradeFailed, setUpgradeFailed] = useState(false);
+  /** Bumped on unmount so a response that outlives this document is dropped. */
+  const generation = useRef(0);
+  useEffect(() => () => {
+    generation.current += 1;
+  }, []);
   const { base, draft, pendingOperations, saveStatus } = state;
   const backDisabled = saveStatus !== "saved";
   const workstationStyle = {
@@ -80,6 +107,56 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   }, [base, client, documentId, draft, pendingOperations, projectId, saveStatus, story]);
 
   const makeOperationId = () => `op_${crypto.randomUUID()}`;
+
+  const { listEditorAssets, createEditorPreviewCapability } = client;
+  // A stable slice: a fresh object per render would restart the library's paged load.
+  const assetClient = useMemo(
+    () =>
+      listEditorAssets && createEditorPreviewCapability
+        ? { listEditorAssets, createEditorPreviewCapability }
+        : undefined,
+    [listEditorAssets, createEditorPreviewCapability],
+  );
+
+  const addAsset = (asset: EditorAsset) => {
+    if (!timeline) return;
+    const [trackId] = compatibleTrackIds(timeline, asset.kind === "audio" ? "audio" : "video");
+    if (!trackId) return;
+    dispatch({
+      type: "commit_timeline_operation",
+      operation: {
+        kind: "add_clip_from_asset",
+        operation_id: makeOperationId(),
+        clip_id: `clip_${crypto.randomUUID()}`,
+        track_id: trackId,
+        asset_id: asset.asset_id,
+        from_frame: state.playheadFrame,
+        duration_in_frames: asset.duration_in_frames ?? timeline.canvas.fps,
+        source_from_frame: 0,
+      },
+    });
+  };
+
+  const upgradeDocument = () => {
+    const upgrade = client.upgradeEditDocument;
+    if (!upgrade || upgrading) return;
+    setUpgrading(true);
+    setUpgradeFailed(false);
+    const current = generation.current;
+    void upgrade(projectId, documentId, { base_revision: draft.revision }, makeOperationId())
+      .then((result) => {
+        if (current !== generation.current) return;
+        if (result.kind === "conflict") {
+          dispatch({ type: "save_conflicted", latest: result.latest });
+          return;
+        }
+        dispatch({ type: "save_succeeded", document: result.document });
+        dispatch({ type: "set_editor_mode", mode: "advanced" });
+      })
+      .catch(() => current === generation.current && setUpgradeFailed(true))
+      .finally(() => current === generation.current && setUpgrading(false));
+  };
+
   const statusLabel: Record<EditorState["saveStatus"], string> = {
     saved: "Saved",
     dirty: "Unsaved changes",
@@ -121,6 +198,16 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         >
           Redo
         </button>
+        {story && client.upgradeEditDocument ? (
+          <>
+            <button type="button" className={toolbarButton} disabled={upgrading} onClick={upgradeDocument}>
+              Enable advanced timeline
+            </button>
+            <span className="text-xs text-muted-foreground">
+              Your scenes, text, and history stay as they are.
+            </span>
+          </>
+        ) : null}
         <div className="flex flex-wrap items-center gap-3 px-2 text-xs text-muted-foreground" aria-label="Workspace layout">
           <label htmlFor={sceneWidthId}>Scene board width</label>
           <input
@@ -150,6 +237,11 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         </div>
       </header>
 
+      {upgradeFailed && (
+        <div role="alert" className="border-b border-destructive/50 bg-destructive/10 px-4 py-2 text-sm">
+          <p>Could not enable the advanced timeline. Your document is unchanged.</p>
+        </div>
+      )}
       {state.saveStatus === "failed" && (
         <div role="alert" className="flex flex-wrap items-center gap-3 border-b border-destructive/50 bg-destructive/10 px-4 py-2 text-sm">
           <p>Your edits are still here. Check your connection and retry saving.</p>
@@ -226,29 +318,75 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           style={workstationStyle}
           className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[var(--scene-board-width)_minmax(0,1fr)_var(--inspector-width)] lg:overflow-hidden"
         >
-          {story ? (
+          {timeline ? (
+            assetClient ? (
+              <AssetLibrary
+                client={assetClient}
+                projectId={projectId}
+                generationRef={generation}
+                onAssets={(assets) => dispatch({ type: "set_assets", assets })}
+                onAdd={addAsset}
+                onPreviewSource={(assetId, previewUrl) =>
+                  setPreviewSources((current) => ({ ...current, [assetId]: previewUrl }))
+                }
+              />
+            ) : null
+          ) : story ? (
             <SceneBoard
               document={story}
               selectedSceneId={state.selectedSceneId}
               onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
             />
           ) : null}
-          <main className="min-h-[28rem] min-w-0 bg-black/40 p-4 lg:min-h-0">
-            <StudioPreview document={state.draft} embedded />
+          <main className="flex min-h-[28rem] min-w-0 flex-col gap-3 bg-black/40 p-4 lg:min-h-0">
+            <StudioPreview
+              document={state.draft}
+              embedded
+              previewSources={previewSources}
+              onPreviewUnavailable={(assetId) =>
+                // Same reference when the asset is already gone, so the player
+                // reporting an unusable source cannot loop the editor.
+                setPreviewSources((current) => {
+                  if (!(assetId in current)) return current;
+                  const { [assetId]: _dropped, ...rest } = current;
+                  return rest;
+                })
+              }
+            />
+            {timeline ? (
+              <>
+                <Timeline state={state} dispatch={dispatch} />
+                <IssuesPanel
+                  document={timeline}
+                  selectedIssueId={state.selectedIssueId}
+                  mode={state.mode}
+                  dispatch={dispatch}
+                />
+              </>
+            ) : null}
           </main>
-          <Inspector
-            scene={selectedScene}
-            clip={selectedClip}
-            onTextChange={(clipId, field, value) =>
-              dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
-            }
-            onOwnershipChange={(clipId, ownership) =>
-              dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
-            }
-            onDurationChange={(sceneId, durationInFrames) =>
-              dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
-            }
-          />
+          {timeline ? (
+            <TimelineInspector
+              document={timeline}
+              selectedClipId={state.selectedClipId}
+              selectedTrackId={state.selectedTrackId}
+              onOperation={(operation) => dispatch({ type: "commit_timeline_operation", operation })}
+            />
+          ) : (
+            <Inspector
+              scene={selectedScene}
+              clip={selectedClip}
+              onTextChange={(clipId, field, value) =>
+                dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
+              }
+              onOwnershipChange={(clipId, ownership) =>
+                dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
+              }
+              onDurationChange={(sceneId, durationInFrames) =>
+                dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
+              }
+            />
+          )}
         </div>
       </div>
 
