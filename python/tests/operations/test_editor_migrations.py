@@ -12,11 +12,12 @@ def migration(name: str) -> str:
     return (MIGRATIONS / name).read_text(encoding="utf-8")
 
 
-def test_editor_migrations_stay_three_explicit_files_without_a_framework() -> None:
+def test_editor_migrations_stay_explicit_forward_only_files_without_a_framework() -> None:
     assert MIGRATION_FILES == [
         "0001_edit_document_revisions.sql",
         "0002_prompt_lab_foundation.sql",
         "0003_prompt_lab_ai_proposals.sql",
+        "0004_advanced_timeline_foundation.sql",
     ]
     for name in MIGRATION_FILES:
         sql = migration(name).lower()
@@ -71,6 +72,74 @@ def test_earlier_editor_migrations_remain_byte_identical() -> None:
     )
     assert "ALTER TABLE" not in migration("0001_edit_document_revisions.sql").upper()
     assert "ALTER TABLE" not in migration("0002_prompt_lab_foundation.sql").upper()
+    assert "ALTER TABLE" not in migration("0003_prompt_lab_ai_proposals.sql").upper()
+    assert "ALTER TABLE" not in migration("0004_advanced_timeline_foundation.sql").upper()
+
+
+def test_editor_assets_table_is_project_scoped_with_bounded_media_metadata() -> None:
+    sql = " ".join(migration("0004_advanced_timeline_foundation.sql").split())
+
+    assert "CREATE TABLE editor_assets" in sql
+    assert "PRIMARY KEY (project_id, asset_id)" in sql
+    assert "UNIQUE (asset_id)" in sql
+    assert "kind TEXT NOT NULL CHECK (kind IN ('video', 'image', 'audio'))" in sql
+    assert (
+        "validation_state TEXT NOT NULL CHECK "
+        "(validation_state IN ('ready', 'rejected', 'pending'))" in sql
+    )
+    assert "media_type TEXT NOT NULL CHECK (media_type ~ '^[a-z]+/[a-z0-9.+-]{1,64}$')" in sql
+    assert (
+        "duration_in_frames INTEGER CHECK "
+        "(duration_in_frames IS NULL OR duration_in_frames > 0)" in sql
+    )
+    assert "width INTEGER CHECK (width IS NULL OR width > 0)" in sql
+    assert "height INTEGER CHECK (height IS NULL OR height > 0)" in sql
+    assert "fps DOUBLE PRECISION CHECK (fps IS NULL OR (fps > 0 AND fps <= 240))" in sql
+    assert "checksum TEXT CHECK (checksum IS NULL OR checksum ~ '^sha256:[0-9a-f]{64}$')" in sql
+    assert "provenance TEXT NOT NULL CHECK (length(btrim(provenance)) BETWEEN 1 AND 200)" in sql
+
+
+def test_editor_asset_locator_is_server_only_relative_and_length_bounded() -> None:
+    sql = " ".join(migration("0004_advanced_timeline_foundation.sql").split())
+
+    assert (
+        "artifact_location TEXT NOT NULL CHECK ( length(artifact_location) BETWEEN 1 AND 512" in sql
+    )
+    assert "artifact_location ~ '^[A-Za-z0-9][A-Za-z0-9._/-]*$'" in sql
+    assert "artifact_location NOT LIKE '%..%'" in sql
+
+
+def test_editor_assets_index_supports_bounded_newest_first_ready_listing() -> None:
+    sql = " ".join(migration("0004_advanced_timeline_foundation.sql").split())
+
+    assert (
+        "CREATE INDEX editor_assets_project_ready_created_idx ON editor_assets "
+        "(project_id, created_at DESC, asset_id DESC) WHERE validation_state = 'ready'" in sql
+    )
+
+
+def test_upgrade_idempotency_table_binds_a_key_to_one_result_revision() -> None:
+    sql = " ".join(migration("0004_advanced_timeline_foundation.sql").split())
+
+    assert "CREATE TABLE edit_document_upgrade_idempotency" in sql
+    assert "PRIMARY KEY (project_id, idempotency_key)" in sql
+    assert (
+        "idempotency_key TEXT NOT NULL CHECK "
+        "(length(btrim(idempotency_key)) BETWEEN 1 AND 128)" in sql
+    )
+    assert "payload_hash TEXT NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$')" in sql
+    assert "result_revision INTEGER NOT NULL CHECK (result_revision > 1)" in sql
+    assert (
+        "FOREIGN KEY (document_id, result_revision) "
+        "REFERENCES edit_document_revisions (document_id, revision)" in sql
+    )
+
+
+def test_advanced_timeline_migration_stores_no_capability_or_absolute_path() -> None:
+    sql = migration("0004_advanced_timeline_foundation.sql").lower()
+
+    for forbidden in ("capability", "signing", "cookie", "secret", "token", "http"):
+        assert forbidden not in sql
 
 
 def test_prompt_template_revisions_table_is_append_only_and_project_scoped() -> None:

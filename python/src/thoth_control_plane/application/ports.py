@@ -30,6 +30,13 @@ class EditDocumentRevisionConflict(Exception):
         super().__init__("edit document revision conflict")
 
 
+class EditDocumentUpgradeConflict(Exception):
+    """The document cannot be upgraded under the supplied idempotency key."""
+
+    def __init__(self) -> None:
+        super().__init__("edit document upgrade conflict")
+
+
 class ApprovalSubmission(BaseModel):
     """An approval decision supplied by a caller, before actor audit data is added."""
 
@@ -102,6 +109,15 @@ class EditDocumentRepository(Protocol):
     async def insert_revision(self, document: EditDocument) -> None: ...
 
     async def get_latest(self, *, project_id: str, document_id: str) -> EditDocument | None: ...
+
+    async def upgrade_to_timeline(
+        self,
+        *,
+        project_id: str,
+        document_id: str,
+        base_revision: int,
+        idempotency_key: str,
+    ) -> EditDocument: ...
 
     async def apply_operations(
         self,
