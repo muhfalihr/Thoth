@@ -5,9 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import uuid4
 
-from pydantic import Field, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
-from thoth_control_plane.application.ports import EditDocumentRevisionConflict
+from thoth_control_plane.application.ports import (
+    EditDocumentRevisionConflict,
+    EditDocumentUpgradeConflict,
+)
 from thoth_control_plane.domain.edit_document_operations import EditDocumentPatch
 from thoth_control_plane.domain.edit_document_v2 import EditDocument
 from thoth_control_plane.domain.edit_documents import (
@@ -34,6 +37,19 @@ class EditDocumentNotFound(Exception):
 
 class EditorUnavailable(Exception):
     """The optional editor persistence is not configured or reachable."""
+
+
+#: Opaque, caller-supplied replay key. Bounded and free of whitespace so it can
+#: never carry a path, a newline, or an unbounded blob into the store.
+IDEMPOTENCY_KEY_ADAPTER: TypeAdapter[str] = TypeAdapter(
+    Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")]
+)
+
+
+class UpgradeTimelineRequest(StrictModel):
+    """An explicit, user-initiated upgrade of one document to schema version 2."""
+
+    base_revision: Annotated[int, Field(gt=0)]
 
 
 OptionalTitle = Annotated[str | None, Field(max_length=300)]
@@ -181,6 +197,34 @@ class EditDocumentService:
                 project_id, document_id, patch.base_revision, patch.operations
             )
         except EditDocumentRevisionConflict:
+            raise
+        except Exception as error:
+            raise EditorUnavailable() from error
+
+    async def upgrade_to_timeline(
+        self,
+        project_id: ProjectId,
+        document_id: OpaqueId,
+        request: UpgradeTimelineRequest,
+        idempotency_key: str,
+    ) -> EditDocument:
+        """Upgrade one document to schema version 2, replaying a known key safely.
+
+        Transactionality, revision assignment, and idempotency all belong to the
+        repository; this service only validates the request and the ownership of
+        the document before delegating.
+        """
+        IDEMPOTENCY_KEY_ADAPTER.validate_python(idempotency_key)
+        await self.get_latest(project_id, document_id)
+        assert self._repository is not None
+        try:
+            return await self._repository.upgrade_to_timeline(
+                project_id=project_id,
+                document_id=document_id,
+                base_revision=request.base_revision,
+                idempotency_key=idempotency_key,
+            )
+        except (EditDocumentRevisionConflict, EditDocumentUpgradeConflict):
             raise
         except Exception as error:
             raise EditorUnavailable() from error

@@ -4,7 +4,14 @@ from thoth_control_plane.application.edit_documents import (
     ContentSetImportRequest,
     FootageImport,
     MainImport,
+    UpgradeTimelineRequest,
     build_edit_document,
+)
+from thoth_control_plane.application.editor_assets import (
+    EditorAssetNotFound,
+    EditorAssetService,
+    EditorAssetsUnavailable,
+    ListEditorAssetsRequest,
 )
 from thoth_control_plane.application.ports import (
     ApprovalSubmission,
@@ -34,12 +41,17 @@ __all__ = [
     "ApprovalSubmission",
     "ArtifactNotFound",
     "ContentSetImportRequest",
+    "EditorAssetNotFound",
+    "EditorAssetService",
+    "EditorAssetsUnavailable",
     "FootageImport",
     "IdempotencyConflict",
+    "ListEditorAssetsRequest",
     "MainImport",
     "RetryRequest",
     "StylePreset",
     "UnavailableWorkflowGateway",
+    "UpgradeTimelineRequest",
     "WorkflowEvent",
     "WorkflowGateway",
     "WorkflowNotFound",
