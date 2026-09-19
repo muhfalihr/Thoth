@@ -2,6 +2,82 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-20 — Creator Studio D1 advanced timeline review corrections
+
+Closed the independent Codex NO-GO review of D1 by executing
+`docs/superpowers/plans/2026-09-20-creator-studio-advanced-timeline-review-corrections.md`
+from baseline `a2cafa6` on `codex/stage1-container-ci`, offline and test-first,
+as four product commits plus this documentation commit. History was not
+rewritten; `9ed8fa9` inside the same range is an operator documentation commit
+that this correction neither owns nor touched.
+
+- `6bec914` upgrade is a dedicated reducer transition, not a reused autosave
+  acknowledgement: it is offered only while online, saved, and idle, it blocks
+  document-mutating actions while in flight, and it increments a monotonic
+  document generation so a late save, upgrade, asset page, or capability
+  response is a no-op instead of resurrecting a stale draft (AC1-AC3).
+- `e5365ab` one version 2 draft, two projections: a labelled Simple/Advanced
+  control selects panels over the same reducer draft, base, pending operations,
+  history, conflict, and save state, and guided text and scene-duration edits
+  now reach version 2 through the existing operations instead of being inert.
+  The Studio owns one `PlayerRef`, hands it to `StudioPreview`, and drives
+  `usePlayerTimeline`, so playhead scrubbing seeks the Player and Player
+  `frameupdate`, `seeked`, `play`, and `pause` feed transient editor state,
+  with listeners detached on Player replacement and unmount (AC4-AC5).
+- `e0104d5` asset pages accumulate by `asset_id` instead of replacing earlier
+  pages, so a first-page asset stays addable after pagination;
+  `createAddClipFromAssetOperation` in `timeline_domain.ts` is the single pure
+  constructor for `add_clip_from_asset`; Inspector values are controlled and
+  follow selection; and persisted typed fields with no approved operation are
+  rendered as labelled read-only values (AC6-AC7).
+- `c33a3a0` preview fidelity and capability truth: the composition projects
+  `fit`, crop geometry, and position, resolves overlay accents and caption
+  styles through local trusted registries that fall back instead of accepting a
+  stored string, keeps caption cue timing relative to its clip, and shapes audio
+  with a clamped `volume(frame)` fade whose muted track still wins. The
+  capability now signs only version, project, asset, issued-at, and expiry
+  (`CAPABILITY_VERSION` 2); the unenforced actor claim and its optional
+  verification branch are gone, while minting stays behind `current_actor` and
+  the HttpOnly, SameSite=Strict, exact-path cookie remains the sole bearer
+  (AC8-AC9).
+
+No new dependency, service, queue, migration, operation kind, state library,
+timeline library, or media package was added; migrations `0001`-`0004` and the
+generated `EditDocument` and `EditDocumentOperation` contracts are unchanged,
+and regenerating `python/openapi.json` and
+`dashboard/src/api/generated/control-plane.ts` left `git diff --exit-code`
+clean, so neither generated file was staged (AC11).
+
+Verification (all offline, no push, no deployment, no live request):
+`uv sync --frozen --all-groups --extra acquisition` audited 70 packages;
+`pytest -m "not live"` 1212 passed, 31 skipped, 3 deselected; deployment suite
+261 passed, 29 skipped; `ruff check` and `ruff format --check` clean
+(140 files); `bun test` 341 passed across 28 files on three consecutive runs;
+`bun run lint` 4 pre-existing warnings only (`button.tsx`, `badge.tsx`,
+`Discovery.tsx`, `PromptProposalPanel.tsx`, all predating this baseline);
+`bun run build` clean apart from the pre-existing chunk-size notice;
+`build_cuda.bat` exit 0 with zero errors and zero warnings (no Rust source
+changed, so Cargo relinked nothing); scout `bun install --frozen-lockfile`,
+`test:acquisition`, and `test:runtime` 126 passed, 0 failed;
+`docker compose config --quiet` exit 0 through WSL because Docker is not
+available natively on this machine; `git diff --check` clean. Searches over
+`python/openapi.json`, the generated TypeScript, and `dashboard/src` found no
+artifact locator, signing key, or capability value, and the studio and preview
+sources contain no `dangerouslySetInnerHTML`, `eval`, `new Function`, or
+`file://` outside negative-test fixtures (AC10, AC12).
+
+Historical audit, recorded without rewriting the D1 commits: Task 8 of the
+parent plan was implemented before its test was written, and the Task 9 commit
+carried six files the plan assigns to Task 11. Both deviations stand in the
+history above; this round did not amend them.
+
+Still not performed and still not authorized: push, pull request, tag, release,
+image publication, deployment, migration against a running database, real
+secret or asset access, live provider or Scout request, parity or controlled
+fallback work, Stage 1 evidence mutation, Issue #5 update, acceptance or soak
+activation, D2, and render-queue work. The next gate is an independent Codex
+re-review of these local commits.
+
 ## 2026-09-20 — Creator Studio D1 advanced timeline foundation
 
 Implemented Tasks 1-13 of
