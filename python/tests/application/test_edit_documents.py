@@ -17,7 +17,7 @@ from thoth_control_plane.domain.edit_document_operations import (
     EditDocumentPatch,
     apply_edit_operations,
 )
-from thoth_control_plane.domain.edit_documents import EditDocument
+from thoth_control_plane.domain.edit_document_v2 import EditDocument
 
 
 def request_payload() -> dict[str, object]:

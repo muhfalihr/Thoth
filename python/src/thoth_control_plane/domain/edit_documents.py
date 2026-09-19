@@ -58,7 +58,7 @@ class TextClip(StrictModel):
 Clip: TypeAlias = TextClip
 
 
-class EditDocument(StrictModel):
+class EditDocumentV1(StrictModel):
     """A complete, validated, immutable schema-v1 vertical text story revision."""
 
     schema_version: Literal[1]
@@ -72,7 +72,7 @@ class EditDocument(StrictModel):
     clips: Annotated[list[Clip], Field(min_length=1, max_length=200)]
 
     @model_validator(mode="after")
-    def validate_structure(self) -> EditDocument:
+    def validate_structure(self) -> EditDocumentV1:
         self._require_unique_ids()
         clips_by_id = {clip.clip_id: clip for clip in self.clips}
         scenes_by_id = {scene.scene_id: scene for scene in self.scenes}

@@ -11,12 +11,12 @@ from thoth_control_plane.domain.edit_document_operations import (
     EditDocumentPatch,
     apply_edit_operations,
 )
-from thoth_control_plane.domain.edit_documents import EditDocument
+from thoth_control_plane.domain.edit_documents import EditDocumentV1
 
 
 @pytest.fixture
-def document() -> EditDocument:
-    return EditDocument.model_validate(
+def document() -> EditDocumentV1:
+    return EditDocumentV1.model_validate(
         {
             "schema_version": 1,
             "document_id": "edoc_abc123",
@@ -81,7 +81,7 @@ def patch(*operations: dict[str, object]) -> EditDocumentPatch:
     return EditDocumentPatch.model_validate({"base_revision": 1, "operations": list(operations)})
 
 
-def test_replace_text_sets_user_ownership_without_mutating_input(document: EditDocument) -> None:
+def test_replace_text_sets_user_ownership_without_mutating_input(document: EditDocumentV1) -> None:
     original = deepcopy(document)
 
     result = apply_edit_operations(
@@ -103,7 +103,7 @@ def test_replace_text_sets_user_ownership_without_mutating_input(document: EditD
     assert document == original
 
 
-def test_set_ownership_changes_only_ownership(document: EditDocument) -> None:
+def test_set_ownership_changes_only_ownership(document: EditDocumentV1) -> None:
     result = apply_edit_operations(
         document,
         patch(
@@ -122,7 +122,7 @@ def test_set_ownership_changes_only_ownership(document: EditDocument) -> None:
     )
 
 
-def test_set_scene_duration_reflows_later_scenes_and_canvas(document: EditDocument) -> None:
+def test_set_scene_duration_reflows_later_scenes_and_canvas(document: EditDocumentV1) -> None:
     result = apply_edit_operations(
         document,
         patch(
@@ -222,7 +222,7 @@ def test_patch_rejects_invalid_operations(payload: dict[str, object]) -> None:
     ],
 )
 def test_apply_rejects_unknown_ids_and_invalid_results(
-    document: EditDocument, operation: dict[str, object]
+    document: EditDocumentV1, operation: dict[str, object]
 ) -> None:
     with pytest.raises((ValidationError, ValueError)):
         apply_edit_operations(document, patch(operation).operations)

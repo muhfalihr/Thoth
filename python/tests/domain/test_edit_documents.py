@@ -7,7 +7,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from thoth_control_plane.domain.edit_documents import EditDocument
+from thoth_control_plane.domain.edit_documents import EditDocumentV1
 
 
 def valid_document() -> dict[str, object]:
@@ -69,9 +69,9 @@ def valid_document() -> dict[str, object]:
 def test_valid_document_round_trips_without_coercion() -> None:
     payload = valid_document()
 
-    document = EditDocument.model_validate(payload)
+    document = EditDocumentV1.model_validate(payload)
 
-    assert EditDocument.model_validate_json(document.model_dump_json()) == document
+    assert EditDocumentV1.model_validate_json(document.model_dump_json()) == document
     assert document.model_dump(mode="json") == payload
 
 
@@ -97,7 +97,7 @@ def test_rejects_invalid_v1_field_values(path: tuple[object, ...], value: object
     target[path[-1]] = value  # type: ignore[index]
 
     with pytest.raises(ValidationError):
-        EditDocument.model_validate(payload)
+        EditDocumentV1.model_validate(payload)
 
 
 def test_rejects_unknown_fields() -> None:
@@ -105,7 +105,7 @@ def test_rejects_unknown_fields() -> None:
     payload["unsafe"] = "nope"
 
     with pytest.raises(ValidationError):
-        EditDocument.model_validate(payload)
+        EditDocumentV1.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_rejects_duplicate_ids(collection: str, field: str) -> None:
         payload[collection][1][field] = payload[collection][0][field]  # type: ignore[index]
 
     with pytest.raises(ValidationError):
-        EditDocument.model_validate(payload)
+        EditDocumentV1.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -149,16 +149,16 @@ def test_rejects_broken_cross_references_and_timing(
     target[path[-1]] = value  # type: ignore[index]
 
     with pytest.raises(ValidationError):
-        EditDocument.model_validate(payload)
+        EditDocumentV1.model_validate(payload)
 
 
 def test_rejects_more_than_v1_scene_or_clip_limits() -> None:
     too_many_scenes = valid_document()
     too_many_scenes["scenes"] = [deepcopy(too_many_scenes["scenes"][0]) for _ in range(101)]  # type: ignore[index]
     with pytest.raises(ValidationError):
-        EditDocument.model_validate(too_many_scenes)
+        EditDocumentV1.model_validate(too_many_scenes)
 
     too_many_clips = valid_document()
     too_many_clips["clips"] = [deepcopy(too_many_clips["clips"][0]) for _ in range(201)]  # type: ignore[index]
     with pytest.raises(ValidationError):
-        EditDocument.model_validate(too_many_clips)
+        EditDocumentV1.model_validate(too_many_clips)

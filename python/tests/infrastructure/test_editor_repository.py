@@ -9,7 +9,7 @@ import pytest
 
 from thoth_control_plane.application.ports import EditDocumentRevisionConflict
 from thoth_control_plane.domain.edit_document_operations import EditDocumentPatch
-from thoth_control_plane.domain.edit_documents import EditDocument
+from thoth_control_plane.domain.edit_documents import EditDocumentV1
 from thoth_control_plane.infrastructure.editor_repository import (
     EditDocumentConflict,
     EditDocumentPersistenceError,
@@ -17,8 +17,8 @@ from thoth_control_plane.infrastructure.editor_repository import (
 )
 
 
-def document() -> EditDocument:
-    return EditDocument.model_validate(
+def document() -> EditDocumentV1:
+    return EditDocumentV1.model_validate(
         {
             "schema_version": 1,
             "document_id": "edoc_abc123",
@@ -125,7 +125,7 @@ class InterleavedConnection:
         self.store = store
         self.first = first
         self.locked = False
-        self.pending: EditDocument | None = None
+        self.pending: EditDocumentV1 | None = None
 
     async def __aenter__(self) -> InterleavedConnection:
         return self

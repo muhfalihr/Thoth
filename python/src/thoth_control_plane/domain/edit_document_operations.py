@@ -6,7 +6,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from thoth_control_plane.domain.edit_documents import BodyText, EditDocument, Frame, Ownership
+from thoth_control_plane.domain.edit_documents import BodyText, EditDocumentV1, Frame, Ownership
 from thoth_control_plane.domain.models import OpaqueId, StrictModel
 
 
@@ -50,8 +50,8 @@ class EditDocumentPatch(StrictModel):
 
 
 def apply_edit_operations(
-    document: EditDocument, operations: list[EditDocumentOperation]
-) -> EditDocument:
+    document: EditDocumentV1, operations: list[EditDocumentOperation]
+) -> EditDocumentV1:
     """Apply ordered operations to a copy and return a freshly validated document."""
     result = document.model_copy(deep=True)
 
@@ -65,17 +65,17 @@ def apply_edit_operations(
         else:
             _set_scene_duration(result, operation)
 
-    return EditDocument.model_validate(result.model_dump())
+    return EditDocumentV1.model_validate(result.model_dump())
 
 
-def _find_clip(document: EditDocument, clip_id: str):
+def _find_clip(document: EditDocumentV1, clip_id: str):
     for clip in document.clips:
         if clip.clip_id == clip_id:
             return clip
     raise ValueError("operation references an unknown clip")
 
 
-def _set_scene_duration(document: EditDocument, operation: SetSceneDuration) -> None:
+def _set_scene_duration(document: EditDocumentV1, operation: SetSceneDuration) -> None:
     if not any(scene.scene_id == operation.scene_id for scene in document.scenes):
         raise ValueError("operation references an unknown scene")
 

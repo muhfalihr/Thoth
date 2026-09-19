@@ -13,7 +13,7 @@ from thoth_control_plane.domain import (
     WorkflowSummary,
 )
 from thoth_control_plane.domain.edit_document_operations import EditDocumentOperation
-from thoth_control_plane.domain.edit_documents import EditDocument
+from thoth_control_plane.domain.edit_document_v2 import EditDocument
 from thoth_control_plane.domain.prompts import (
     ProjectPromptBinding,
     PromptStageId,

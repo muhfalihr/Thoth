@@ -9,9 +9,10 @@ from pydantic import Field, field_validator
 
 from thoth_control_plane.application.ports import EditDocumentRevisionConflict
 from thoth_control_plane.domain.edit_document_operations import EditDocumentPatch
+from thoth_control_plane.domain.edit_document_v2 import EditDocument
 from thoth_control_plane.domain.edit_documents import (
     Canvas,
-    EditDocument,
+    EditDocumentV1,
     Scene,
     TemplateRef,
     TextClip,
@@ -70,7 +71,7 @@ class ContentSetImportRequest(StrictModel):
 
 def build_edit_document(
     project_id: ProjectId, request: ContentSetImportRequest, document_id: OpaqueId
-) -> EditDocument:
+) -> EditDocumentV1:
     """Build the deterministic, text-only schema-v1 document without side effects."""
 
     clips: list[TextClip] = [
@@ -102,7 +103,7 @@ def build_edit_document(
         )
         for index, clip in enumerate(clips, start=1)
     ]
-    return EditDocument(
+    return EditDocumentV1(
         schema_version=1,
         document_id=document_id,
         project_id=project_id,
@@ -147,7 +148,7 @@ class EditDocumentService:
 
     async def import_content_set(
         self, project_id: ProjectId, request: ContentSetImportRequest
-    ) -> EditDocument:
+    ) -> EditDocumentV1:
         if self._repository is None:
             raise EditorUnavailable()
         document = build_edit_document(project_id, request, f"edoc_{uuid4().hex}")

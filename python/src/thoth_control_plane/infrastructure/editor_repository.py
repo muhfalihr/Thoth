@@ -5,13 +5,16 @@ from __future__ import annotations
 from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
+from pydantic import TypeAdapter
 
 from thoth_control_plane.application.ports import EditDocumentRevisionConflict
 from thoth_control_plane.domain.edit_document_operations import (
     EditDocumentOperation,
     apply_edit_operations,
 )
-from thoth_control_plane.domain.edit_documents import EditDocument
+from thoth_control_plane.domain.edit_document_v2 import EditDocument
+
+DOCUMENT_ADAPTER: TypeAdapter[EditDocument] = TypeAdapter(EditDocument)
 
 
 class EditDocumentConflict(Exception):
@@ -72,7 +75,7 @@ class PostgresEditDocumentRepository:
                     (project_id, document_id),
                 )
                 row = await cursor.fetchone()
-                return EditDocument.model_validate(row[0]) if row else None
+                return DOCUMENT_ADAPTER.validate_python(row[0]) if row else None
         except Exception as error:
             raise EditDocumentPersistenceError() from error
 
@@ -106,11 +109,11 @@ class PostgresEditDocumentRepository:
                 row = await cursor.fetchone()
                 if row is None:
                     raise EditDocumentPersistenceError()
-                latest = EditDocument.model_validate(row[0])
+                latest = DOCUMENT_ADAPTER.validate_python(row[0])
                 if latest.revision != base_revision:
                     raise EditDocumentRevisionConflict(latest)
                 updated = apply_edit_operations(latest, operations)
-                result = EditDocument.model_validate(
+                result = DOCUMENT_ADAPTER.validate_python(
                     {**updated.model_dump(mode="json"), "revision": latest.revision + 1}
                 )
                 await cursor.execute(
