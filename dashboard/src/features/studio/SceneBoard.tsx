@@ -1,7 +1,11 @@
-import type { EditDocumentV1 } from "@/api/control-plane";
+/** The smallest scene strip shape both document versions share. */
+type SceneBoardDocument = {
+  scenes: { scene_id: string; role: string; duration_in_frames: number; clip_ids: string[] }[];
+  clips?: { clip_id: string; ownership?: string }[];
+};
 
 type Props = {
-  document: EditDocumentV1;
+  document: SceneBoardDocument;
   selectedSceneId: string;
   onSelect: (sceneId: string) => void;
 };
@@ -14,7 +18,7 @@ export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
       </h2>
       <div className="space-y-2">
         {document.scenes.map((scene, index) => {
-          const clip = document.clips.find((candidate) => candidate.clip_id === scene.clip_ids[0]);
+          const clip = document.clips?.find((candidate) => candidate.clip_id === scene.clip_ids[0]);
           const selected = scene.scene_id === selectedSceneId;
           return (
             <button
@@ -34,7 +38,7 @@ export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
                 <span className="font-mono">{scene.duration_in_frames}f</span>
               </span>
               <span className="mt-2 block truncate text-xs">
-                {clip?.ownership === "user_edited" ? "Edited" : clip?.ownership.replace("_", " ")}
+                {clip?.ownership === "user_edited" ? "Edited" : clip?.ownership?.replace("_", " ")}
               </span>
             </button>
           );

@@ -4,50 +4,10 @@ import { afterEach, expect, test } from "bun:test";
 import { act, cleanup, render } from "@testing-library/react";
 import { useRef } from "react";
 
+import { FakePlayer } from "./timeline-test-fixtures";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
 
 afterEach(cleanup);
-
-/** Minimal stand-in for Remotion's PlayerRef, counting every listener. */
-class FakePlayer implements PlayerTimelineRef {
-  listeners: Record<string, Set<(event: unknown) => void>> = {};
-  frame = 0;
-  seeks: number[] = [];
-  calls: string[] = [];
-
-  addEventListener(type: string, listener: (event: unknown) => void) {
-    (this.listeners[type] ??= new Set()).add(listener);
-  }
-
-  removeEventListener(type: string, listener: (event: unknown) => void) {
-    this.listeners[type]?.delete(listener);
-  }
-
-  getCurrentFrame() {
-    return this.frame;
-  }
-
-  seekTo(frame: number) {
-    this.seeks.push(frame);
-    this.frame = frame;
-  }
-
-  play() {
-    this.calls.push("play");
-  }
-
-  pause() {
-    this.calls.push("pause");
-  }
-
-  emit(type: string, event: unknown = {}) {
-    for (const listener of this.listeners[type] ?? []) listener(event);
-  }
-
-  get listenerCount() {
-    return Object.values(this.listeners).reduce((total, set) => total + set.size, 0);
-  }
-}
 
 type HarnessProps = {
   player: FakePlayer | null;

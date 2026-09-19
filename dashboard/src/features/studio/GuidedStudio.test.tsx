@@ -2,14 +2,27 @@
 
 import { afterEach, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { RefObject } from "react";
 import userEvent from "@testing-library/user-event";
-import type { EditDocument, EditDocumentPatch, EditDocumentV1 } from "@/api/control-plane";
+import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
 import { createC2ClientFixtureBase } from "./prompt-proposal-test-fixtures";
+import { FakePlayer } from "./timeline-test-fixtures";
+import type { PlayerTimelineRef } from "./usePlayerTimeline";
+
+/** Installed by the player tests; the mocked preview hands it to Studio's ref. */
+let previewPlayer: FakePlayer | null = null;
 
 mock.module("./StudioPreview", () => ({
-  StudioPreview: ({ document }: { document: EditDocumentV1 }) => (
-    <div aria-label="Draft preview">{document.clips[0]?.heading}</div>
-  ),
+  StudioPreview: ({
+    document,
+    playerRef,
+  }: {
+    document: EditDocument;
+    playerRef?: RefObject<PlayerTimelineRef | null>;
+  }) => {
+    if (playerRef) playerRef.current = previewPlayer;
+    return <div aria-label="Draft preview">{document.clips?.[0]?.kind}</div>;
+  },
 }));
 
 const promptClientBase = createC2ClientFixtureBase();
@@ -39,6 +52,7 @@ const document = {
 
 afterEach(() => {
   cleanup();
+  previewPlayer = null;
   jest.useRealTimers();
 });
 
@@ -477,4 +491,161 @@ test("an unavailable asset library leaves the timeline editable", async () => {
   expect((await screen.findByRole("alert")).textContent).toContain("Assets are unavailable");
   fireEvent.click(screen.getByRole("button", { name: "Mute Music" }));
   expect(screen.getByRole("button", { name: "Unmute Music" })).toBeDefined();
+});
+
+const advancedClientBase = {
+  listEditorAssets: mock(async () => ({ assets: [], next_cursor: null })),
+  createEditorPreviewCapability: mock(async () => ({
+    preview_url: "/api/v1/projects/project_001/editor-assets/asset_video/preview",
+    expires_at: "2026-09-20T00:00:00Z",
+  })),
+};
+
+async function renderTimelineStudio(
+  document: EditDocument,
+  patchEditDocument = mock(
+    async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+      kind: "saved" as const,
+      document,
+    }),
+  ),
+) {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const view = render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        ...advancedClientBase,
+        getEditDocument: mock(async () => document),
+        patchEditDocument,
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  await screen.findByLabelText("Timeline");
+  return { view, patchEditDocument };
+}
+
+test("offers labelled Simple and Advanced modes for a version 2 document", async () => {
+  const { upgradedTextDocument } = await import("./timeline-test-fixtures");
+  await renderTimelineStudio(upgradedTextDocument() as EditDocument);
+
+  const simple = screen.getByRole("button", { name: "Simple" });
+  const advanced = screen.getByRole("button", { name: "Advanced" });
+  expect(screen.getByLabelText("Editor mode")).toBeDefined();
+  expect(advanced.getAttribute("aria-pressed")).toBe("true");
+  expect(simple.getAttribute("aria-pressed")).toBe("false");
+
+  fireEvent.click(simple);
+
+  expect(simple.getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByLabelText("Scene board")).toBeDefined();
+  expect(screen.getByLabelText("Heading")).toBeDefined();
+  expect(screen.queryByLabelText("Timeline")).toBeNull();
+  expect(screen.queryByLabelText("Asset library")).toBeNull();
+});
+
+test("hides the mode control for a version 1 document", async () => {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        getEditDocument: mock(async () => document),
+        patchEditDocument: mock(async () => ({ kind: "saved" as const, document })),
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+
+  await screen.findByLabelText("Heading");
+  expect(screen.queryByLabelText("Editor mode")).toBeNull();
+});
+
+test("edits a version 2 text clip from Simple mode through the existing operations", async () => {
+  const { upgradedTextDocument } = await import("./timeline-test-fixtures");
+  const upgraded = upgradedTextDocument() as EditDocument;
+  const patchEditDocument = mock(
+    async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+      kind: "saved" as const,
+      document: upgraded,
+    }),
+  );
+  await renderTimelineStudio(upgraded, patchEditDocument);
+
+  fireEvent.click(screen.getByRole("button", { name: "Simple" }));
+  const heading = screen.getByLabelText("Heading") as HTMLInputElement;
+
+  jest.useFakeTimers();
+  fireEvent.change(heading, { target: { value: "Simple heading" } });
+  expect(heading.value).toBe("Simple heading");
+  act(() => jest.advanceTimersByTime(500));
+
+  expect(patchEditDocument).toHaveBeenCalledTimes(1);
+  const patch = patchEditDocument.mock.calls[0]![2];
+  expect(patch.operations).toHaveLength(1);
+  expect(patch.operations[0]).toMatchObject({
+    kind: "replace_text",
+    clip_id: "clip_001",
+    field: "heading",
+    value: "Simple heading",
+  });
+  expect(JSON.stringify(patch)).not.toContain("mode");
+});
+
+test("keeps unsaved version 2 edits across Simple, Advanced, and Prompt Lab", async () => {
+  const { upgradedTextDocument } = await import("./timeline-test-fixtures");
+  const upgraded = upgradedTextDocument() as EditDocument;
+  const patchEditDocument = mock(() => new Promise<{ kind: "saved"; document: EditDocument }>(() => {}));
+  await renderTimelineStudio(upgraded, patchEditDocument);
+
+  fireEvent.click(screen.getByRole("button", { name: "Hide Overlay" }));
+  fireEvent.click(screen.getByRole("button", { name: "Simple" }));
+  fireEvent.change(screen.getByLabelText("Heading"), { target: { value: "Round trip heading" } });
+
+  fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Prompt Lab" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Scenes" }));
+  fireEvent.click(screen.getByRole("button", { name: "Simple" }));
+
+  expect((screen.getByLabelText("Heading") as HTMLInputElement).value).toBe("Round trip heading");
+  fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
+  expect(screen.getByRole("button", { name: "Show Overlay" })).toBeDefined();
+});
+
+test("drives and follows the preview player from the timeline", async () => {
+  const { timelineDocument } = await import("./timeline-test-fixtures");
+  previewPlayer = new FakePlayer();
+  await renderTimelineStudio(timelineDocument() as EditDocument);
+  const player = previewPlayer;
+
+  act(() => player.emit("frameupdate", { detail: { frame: 42 } }));
+  expect((screen.getByLabelText("Playhead") as HTMLInputElement).value).toBe("42");
+
+  fireEvent.change(screen.getByLabelText("Playhead"), { target: { value: "75" } });
+  expect(player.seeks).toEqual([75]);
+  expect((screen.getByLabelText("Playhead") as HTMLInputElement).value).toBe("75");
+
+  fireEvent.click(screen.getByRole("button", { name: "Play preview" }));
+  act(() => player.emit("play"));
+  expect(player.calls).toEqual(["play"]);
+  fireEvent.click(screen.getByRole("button", { name: "Pause preview" }));
+  act(() => player.emit("pause"));
+  expect(player.calls).toEqual(["play", "pause"]);
+});
+
+test("detaches every player listener when Studio unmounts", async () => {
+  const { timelineDocument } = await import("./timeline-test-fixtures");
+  previewPlayer = new FakePlayer();
+  const { view } = await renderTimelineStudio(timelineDocument() as EditDocument);
+  const player = previewPlayer;
+  expect(player.listenerCount).toBeGreaterThan(0);
+
+  view.unmount();
+
+  expect(player.listenerCount).toBe(0);
 });

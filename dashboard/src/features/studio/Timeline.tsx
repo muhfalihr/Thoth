@@ -16,6 +16,10 @@ import {
 type Props = {
   state: EditorState;
   dispatch: (action: EditorAction) => void;
+  /** Preview transport, absent wherever the timeline renders without a player. */
+  onSeek?: (frame: number) => void;
+  onPlay?: () => void;
+  onPause?: () => void;
 };
 
 /** One pointer gesture in flight. Committed on pointer up, dropped on Escape. */
@@ -34,7 +38,7 @@ const newId = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 /** Snap within a fixed screen distance, so zooming out does not widen the pull. */
 const snapThreshold = (zoom: number) => Math.max(1, Math.round(8 / zoom));
 
-export function Timeline({ state, dispatch }: Props) {
+export function Timeline({ state, dispatch, onSeek, onPlay, onPause }: Props) {
   const gesture = useRef<Gesture | null>(null);
   const timeline = isTimelineDocument(state.draft) ? state.draft : undefined;
   const clips = timeline?.clips ?? [];
@@ -210,9 +214,20 @@ export function Timeline({ state, dispatch }: Props) {
           max={Math.max(0, duration - 1)}
           step={1}
           value={state.playheadFrame}
-          onChange={(event) => dispatch({ type: "set_playhead", frame: Number(event.target.value) })}
+          onChange={(event) => {
+            const frame = Number(event.target.value);
+            dispatch({ type: "set_playhead", frame });
+            onSeek?.(frame);
+          }}
           className="h-2 w-full accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
+        <button
+          type="button"
+          className="rounded border border-border px-2 py-0.5 text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => (state.playing ? onPause?.() : onPlay?.())}
+        >
+          {state.playing ? "Pause preview" : "Play preview"}
+        </button>
         <span className="font-mono text-xs text-muted-foreground">
           {state.playheadFrame}/{duration}f
         </span>

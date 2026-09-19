@@ -9,6 +9,7 @@ import type {
 } from "@/api/control-plane";
 import type { EditorAction } from "./editor_state";
 import { createEditorState, editorReducer, toEditDocumentPatch } from "./editor_state";
+import { upgradedTextDocument } from "./timeline-test-fixtures";
 
 const document = {
   schema_version: 1,
@@ -554,16 +555,60 @@ test("keeping timeline edits after a conflict rebases the same operations onto t
   expect(reloaded.pendingOperations).toEqual([]);
 });
 
-test("guided text-story actions are inert on a timeline document", () => {
+test("guided text actions are inert on a clip that holds no text", () => {
   const state = createEditorState(timelineDocument());
   const actions: EditorAction[] = [
     { type: "edit_text", clipId: "clip_main", field: "heading", value: "x", operationId: "op_a" },
     { type: "edit_ownership", clipId: "clip_main", ownership: "user_edited", operationId: "op_b" },
-    { type: "edit_duration", sceneId: "scene_001", durationInFrames: 150, operationId: "op_c" },
   ];
   for (const action of actions) {
     expect(editorReducer(state, action)).toBe(state);
   }
+});
+
+test("guided edits reach a timeline document through the same operations", () => {
+  const upgraded = upgradedTextDocument();
+  const edited = editorReducer(createEditorState(upgraded), {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "heading",
+    value: "Advanced heading",
+    operationId: "op_a",
+  });
+  const resized = editorReducer(edited, {
+    type: "edit_duration",
+    sceneId: "scene_001",
+    durationInFrames: 90,
+    operationId: "op_b",
+  });
+
+  expect(resized.pendingOperations).toEqual([
+    {
+      kind: "replace_text",
+      operation_id: "op_a",
+      clip_id: "clip_001",
+      field: "heading",
+      value: "Advanced heading",
+    },
+    {
+      kind: "set_scene_duration",
+      operation_id: "op_b",
+      scene_id: "scene_001",
+      duration_in_frames: 90,
+    },
+  ]);
+  const draft = resized.draft as EditDocumentV2;
+  expect(draft.clips?.[0]).toMatchObject({
+    clip_id: "clip_001",
+    heading: "Advanced heading",
+    ownership: "user_edited",
+    from_frame: 0,
+    duration_in_frames: 90,
+  });
+  expect(draft.scenes[0].duration_in_frames).toBe(90);
+  expect(draft.canvas.duration_in_frames).toBe(90);
+  // The upgraded document itself is never mutated in place.
+  expect(upgraded.canvas.duration_in_frames).toBe(150);
 });
 
 test("loaded assets are indexed by ID and gate local asset operations", () => {

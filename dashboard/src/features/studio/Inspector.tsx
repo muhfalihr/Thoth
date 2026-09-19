@@ -1,9 +1,10 @@
 import { useId } from "react";
 
-import type { EditDocumentV1 } from "@/api/control-plane";
+import type { EditableTextClip } from "./editor_state";
 
-type Scene = EditDocumentV1["scenes"][number];
-type TextClip = EditDocumentV1["clips"][number];
+/** Only the fields the guided controls read, so both document versions fit. */
+type Scene = { scene_id: string; duration_in_frames: number };
+type TextClip = EditableTextClip;
 type Ownership = TextClip["ownership"];
 
 type Props = {

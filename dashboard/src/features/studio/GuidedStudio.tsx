@@ -1,17 +1,14 @@
 import { useEffect, useId, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
 
-import type {
-  ControlPlaneClient,
-  EditDocument,
-  EditDocumentV1,
-  EditorAsset,
-} from "@/api/control-plane";
+import type { ControlPlaneClient, EditDocument, EditorAsset } from "@/api/control-plane";
 import type { PreviewSources } from "./AdvancedTimelineComposition";
 import { AssetLibrary } from "./AssetLibrary";
 import {
   canStartUpgrade,
   createEditorState,
   editorReducer,
+  findTextClip,
+  hasValidText,
   toEditDocumentPatch,
   type EditorState,
 } from "./editor_state";
@@ -23,6 +20,7 @@ import { Timeline } from "./Timeline";
 import { TimelineInspector } from "./TimelineInspector";
 import { compatibleTrackIds, isTimelineDocument } from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
+import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
 
 type Props = {
   client: PromptLabClient &
@@ -44,12 +42,6 @@ type StudioWorkspace = "scenes" | "prompts";
 const toolbarButton =
   "rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40";
 
-function validDraft(document: EditDocumentV1 | undefined) {
-  return !document || document.clips.every(
-    (clip) => clip.heading.trim().length > 0 && clip.heading.length <= 300 && clip.body.length <= 2_000,
-  );
-}
-
 function Editor({ client, projectId, documentId, onBack, document }: Props & { document: EditDocument }) {
   const [state, dispatch] = useReducer(editorReducer, document, createEditorState);
   const [workspace, setWorkspace] = useState<StudioWorkspace>("scenes");
@@ -60,12 +52,19 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const [sceneBoardWidth, setSceneBoardWidth] = useState(14);
   const [inspectorWidth, setInspectorWidth] = useState(19);
   const selectedScene = state.draft.scenes.find((scene) => scene.scene_id === state.selectedSceneId);
-  // Guided editing only ever drives a schema-v1 text story.
-  const story = isTimelineDocument(state.draft) ? undefined : state.draft;
   const timeline = isTimelineDocument(state.draft) ? state.draft : undefined;
-  const selectedClip = story?.clips.find((clip) => clip.clip_id === selectedScene?.clip_ids[0]);
+  // Both modes project the same draft; only version 2 can show the advanced one.
+  const advanced = Boolean(timeline) && state.mode === "advanced";
+  const selectedClip = findTextClip(state.draft, selectedScene?.clip_ids[0]);
   const [previewSources, setPreviewSources] = useState<PreviewSources>({});
   const upgradeReasonId = useId();
+  const modeGroupId = useId();
+  const playerRef = useRef<PlayerTimelineRef | null>(null);
+  const player = usePlayerTimeline(
+    playerRef,
+    (frame) => dispatch({ type: "set_playhead", frame }),
+    (playing) => dispatch({ type: "set_playing", playing }),
+  );
   /** Bumped on upgrade and unmount so a response that outlives this document is dropped. */
   const generation = useRef(0);
   useEffect(() => () => {
@@ -92,7 +91,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   }, []);
 
   useEffect(() => {
-    if (saveStatus !== "dirty" || !pendingOperations.length || !validDraft(story)) return;
+    if (saveStatus !== "dirty" || !pendingOperations.length || !hasValidText(draft)) return;
     const patch = toEditDocumentPatch({ base, pendingOperations });
     const operationIds = patch.operations.map((operation) => operation.operation_id);
     const timeoutId = setTimeout(() => {
@@ -113,7 +112,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         });
     }, 500);
     return () => clearTimeout(timeoutId);
-  }, [base, client, documentId, draft, pendingOperations, projectId, saveStatus, story]);
+  }, [base, client, documentId, draft, pendingOperations, projectId, saveStatus]);
 
   const makeOperationId = () => `op_${crypto.randomUUID()}`;
 
@@ -208,7 +207,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         >
           Redo
         </button>
-        {story && client.upgradeEditDocument ? (
+        {!timeline && client.upgradeEditDocument ? (
           <>
             <button
               type="button"
@@ -226,6 +225,21 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               Your scenes, text, and history stay as they are.
             </span>
           </>
+        ) : null}
+        {timeline ? (
+          <div role="group" aria-label="Editor mode" id={modeGroupId} className="flex gap-1">
+            {(["simple", "advanced"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={`${toolbarButton} ${state.mode === mode ? "bg-accent" : ""}`}
+                aria-pressed={state.mode === mode}
+                onClick={() => dispatch({ type: "set_editor_mode", mode })}
+              >
+                {mode === "simple" ? "Simple" : "Advanced"}
+              </button>
+            ))}
+          </div>
         ) : null}
         <div className="flex flex-wrap items-center gap-3 px-2 text-xs text-muted-foreground" aria-label="Workspace layout">
           <label htmlFor={sceneWidthId}>Scene board width</label>
@@ -337,7 +351,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           style={workstationStyle}
           className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[var(--scene-board-width)_minmax(0,1fr)_var(--inspector-width)] lg:overflow-hidden"
         >
-          {timeline ? (
+          {advanced ? (
             assetClient ? (
               <AssetLibrary
                 client={assetClient}
@@ -350,16 +364,17 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                 }
               />
             ) : null
-          ) : story ? (
+          ) : (
             <SceneBoard
-              document={story}
+              document={state.draft}
               selectedSceneId={state.selectedSceneId}
               onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
             />
-          ) : null}
+          )}
           <main className="flex min-h-[28rem] min-w-0 flex-col gap-3 bg-black/40 p-4 lg:min-h-0">
             <StudioPreview
               document={state.draft}
+              playerRef={playerRef}
               embedded
               previewSources={previewSources}
               onPreviewUnavailable={(assetId) =>
@@ -372,9 +387,15 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                 })
               }
             />
-            {timeline ? (
+            {advanced && timeline ? (
               <>
-                <Timeline state={state} dispatch={dispatch} />
+                <Timeline
+                  state={state}
+                  dispatch={dispatch}
+                  onSeek={player.seekTo}
+                  onPlay={player.play}
+                  onPause={player.pause}
+                />
                 <IssuesPanel
                   document={timeline}
                   selectedIssueId={state.selectedIssueId}
@@ -384,7 +405,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               </>
             ) : null}
           </main>
-          {timeline ? (
+          {advanced && timeline ? (
             <TimelineInspector
               document={timeline}
               selectedClipId={state.selectedClipId}

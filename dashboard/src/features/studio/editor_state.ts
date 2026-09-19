@@ -27,6 +27,7 @@ export type EditorState = EditorSnapshot & {
   selectedIssueId: string;
   mode: EditorMode;
   playheadFrame: number;
+  playing: boolean;
   zoom: number;
   snapping: boolean;
   ripple: boolean;
@@ -75,6 +76,7 @@ export type EditorAction =
   | { type: "select_clip"; clipId: string }
   | { type: "select_issue"; issueId: string }
   | { type: "set_playhead"; frame: number }
+  | { type: "set_playing"; playing: boolean }
   | { type: "set_zoom"; zoom: number }
   | { type: "set_snapping"; snapping: boolean }
   | { type: "set_ripple"; ripple: boolean }
@@ -99,6 +101,7 @@ export function createEditorState(
     selectedIssueId: "",
     mode: isTimelineDocument(document) ? "advanced" : "simple",
     playheadFrame: 0,
+    playing: false,
     zoom: 1,
     snapping: true,
     ripple: false,
@@ -171,30 +174,40 @@ function edited(
   };
 }
 
+/**
+ * Relay out the scene strip exactly as `set_scene_duration` does on the server,
+ * so the local draft matches the revision the backend returns.
+ */
 function resizeScene(
-  document: EditDocumentV1,
+  document: EditDocument,
   sceneId: string,
   durationInFrames: number,
-): EditDocumentV1 {
-  const sceneIndex = document.scenes.findIndex((scene) => scene.scene_id === sceneId);
-  if (sceneIndex < 0) return document;
-  const delta = durationInFrames - document.scenes[sceneIndex].duration_in_frames;
+): EditDocument {
+  const startField = isTimelineDocument(document) ? "from_frame" : "start_frame";
+  const clips = documentClips(document).map((clip) => ({ ...clip }));
+  const byId = new Map(clips.map((clip) => [clip.clip_id, clip]));
+  let startFrame = 0;
+  const scenes = document.scenes.map((scene) => {
+    const duration = scene.scene_id === sceneId ? durationInFrames : scene.duration_in_frames;
+    const clip = byId.get(scene.clip_ids[0]);
+    if (clip) {
+      clip[startField] = startFrame;
+      clip.duration_in_frames = duration;
+    }
+    const resized = { ...scene, start_frame: startFrame, duration_in_frames: duration };
+    startFrame += duration;
+    return resized;
+  });
+  // A version 2 canvas also has to hold every clip outside the scene strip.
+  const lastFrame = clips.reduce(
+    (end, clip) => Math.max(end, Number(clip[startField] ?? 0) + clip.duration_in_frames),
+    startFrame,
+  );
   return {
-    ...document,
-    canvas: { ...document.canvas, duration_in_frames: document.canvas.duration_in_frames + delta },
-    scenes: document.scenes.map((scene, index) =>
-      index === sceneIndex
-        ? { ...scene, duration_in_frames: durationInFrames }
-        : index > sceneIndex
-          ? { ...scene, start_frame: scene.start_frame + delta }
-          : scene,
-    ),
-    clips: document.clips.map((clip) => {
-      const clipSceneIndex = document.scenes.findIndex((scene) => scene.scene_id === clip.scene_id);
-      if (clipSceneIndex === sceneIndex) return { ...clip, duration_in_frames: durationInFrames };
-      return clipSceneIndex > sceneIndex ? { ...clip, start_frame: clip.start_frame + delta } : clip;
-    }),
-  };
+    ...withClips(document, clips),
+    scenes,
+    canvas: { ...document.canvas, duration_in_frames: lastFrame },
+  } as EditDocument;
 }
 
 function operationsToRetainDraft(
@@ -249,6 +262,61 @@ function textStoryDraft(state: EditorState): EditDocumentV1 | undefined {
   return isTimelineDocument(state.draft) ? undefined : state.draft;
 }
 
+/** The smallest clip shape both document versions share for guided text editing. */
+export type EditableTextClip = {
+  clip_id: string;
+  kind: string;
+  heading: string;
+  body: string;
+  ownership: "ai_managed" | "user_edited" | "locked";
+};
+
+type StructuralClip = { clip_id: string; kind: string; duration_in_frames: number } & Record<
+  string,
+  unknown
+>;
+
+function documentClips(document: EditDocument): StructuralClip[] {
+  return (document.clips ?? []) as StructuralClip[];
+}
+
+/** The scene's text clip, whichever schema version holds it. */
+export function findTextClip(
+  document: EditDocument,
+  clipId: string | undefined,
+): EditableTextClip | undefined {
+  const clip = documentClips(document).find((candidate) => candidate.clip_id === clipId);
+  return clip?.kind === "text" ? (clip as unknown as EditableTextClip) : undefined;
+}
+
+/** Every text clip carries a heading the backend refuses to store empty. */
+export function hasValidText(document: EditDocument): boolean {
+  return documentClips(document).every((clip) => {
+    if (clip.kind !== "text") return true;
+    const { heading, body } = clip as unknown as EditableTextClip;
+    return heading.trim().length > 0 && heading.length <= 300 && body.length <= 2_000;
+  });
+}
+
+function withClips(document: EditDocument, clips: StructuralClip[]): EditDocument {
+  return { ...document, clips } as EditDocument;
+}
+
+function replaceClip(
+  document: EditDocument,
+  clipId: string,
+  change: (clip: EditableTextClip) => EditableTextClip,
+): EditDocument {
+  return withClips(
+    document,
+    documentClips(document).map((clip) =>
+      clip.clip_id === clipId
+        ? (change(clip as unknown as EditableTextClip) as unknown as StructuralClip)
+        : clip,
+    ),
+  );
+}
+
 /** Apply one timeline operation, or return undefined when the document refuses it. */
 function timelineDraft(
   snapshot: EditorSnapshot,
@@ -276,18 +344,13 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ? { ...state, selectedSceneId: action.sceneId }
         : state;
     case "edit_text": {
-      const story = textStoryDraft(state);
-      if (!story) return state;
-      const current = story.clips.find((clip) => clip.clip_id === action.clipId);
+      const current = findTextClip(state.draft, action.clipId);
       if (!current || current[action.field] === action.value) return state;
-      const draft = {
-        ...story,
-        clips: story.clips.map((clip) =>
-          clip.clip_id === action.clipId
-            ? { ...clip, [action.field]: action.value, ownership: "user_edited" as const }
-            : clip,
-        ),
-      };
+      const draft = replaceClip(state.draft, action.clipId, (clip) => ({
+        ...clip,
+        [action.field]: action.value,
+        ownership: "user_edited",
+      }));
       return edited(state, draft, {
         kind: "replace_text",
         operation_id: action.operationId,
@@ -297,18 +360,11 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       });
     }
     case "edit_ownership": {
-      const story = textStoryDraft(state);
-      if (!story) return state;
-      const current = story.clips.find((clip) => clip.clip_id === action.clipId);
+      const current = findTextClip(state.draft, action.clipId);
       if (!current || current.ownership === action.ownership) return state;
       return edited(
         state,
-        {
-          ...story,
-          clips: story.clips.map((clip) =>
-            clip.clip_id === action.clipId ? { ...clip, ownership: action.ownership } : clip,
-          ),
-        },
+        replaceClip(state.draft, action.clipId, (clip) => ({ ...clip, ownership: action.ownership })),
         {
           kind: "set_ownership",
           operation_id: action.operationId,
@@ -318,16 +374,14 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       );
     }
     case "edit_duration": {
-      const story = textStoryDraft(state);
-      const current = story?.scenes.find((scene) => scene.scene_id === action.sceneId);
+      const current = state.draft.scenes.find((scene) => scene.scene_id === action.sceneId);
       if (
-        !story ||
         !current ||
         !Number.isInteger(action.durationInFrames) ||
         action.durationInFrames <= 0 ||
         current.duration_in_frames === action.durationInFrames
       ) return state;
-      return edited(state, resizeScene(story, action.sceneId, action.durationInFrames), {
+      return edited(state, resizeScene(state.draft, action.sceneId, action.durationInFrames), {
         kind: "set_scene_duration",
         operation_id: action.operationId,
         scene_id: action.sceneId,
@@ -479,6 +533,8 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       const frame = Math.min(Math.max(Math.round(action.frame), 0), last);
       return frame === state.playheadFrame ? state : { ...state, playheadFrame: frame };
     }
+    case "set_playing":
+      return state.playing === action.playing ? state : { ...state, playing: action.playing };
     case "set_zoom":
       return { ...state, zoom: clampZoom(action.zoom) };
     case "set_snapping":
