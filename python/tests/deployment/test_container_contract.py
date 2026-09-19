@@ -642,3 +642,15 @@ def test_the_parity_runbook_states_the_completion_boundary_and_its_budgets() -> 
     assert "necessary but not sufficient" in prose
     assert "supervised acquisition deadline" in prose
     assert "cleanup and attempt finalization continue after that outcome" in prose
+
+
+def test_editor_preview_signing_key_is_injected_at_runtime_only() -> None:
+    """The signing key is an operator input, so the image must never carry one."""
+    dockerfile = _repo_text("Dockerfile")
+    assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" not in dockerfile
+
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    smoke = workflow.split("  stack-smoke:", 1)[1]
+    assert 'echo "THOTH_EDITOR_PREVIEW_SIGNING_KEY=$(openssl rand -hex 24)"' in smoke
+    # Generated into the throwaway env file, never echoed as an output or a summary.
+    assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" not in smoke.split("> stage1.ci.env", 1)[1]

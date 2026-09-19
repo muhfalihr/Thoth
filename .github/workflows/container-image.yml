@@ -243,6 +243,7 @@ jobs:
             echo "THOTH_CONTROL_PLANE_API_KEY=$(openssl rand -hex 24)"
             echo "THOTH_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             echo "THOTH_EDITOR_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "THOTH_EDITOR_PREVIEW_SIGNING_KEY=$(openssl rand -hex 24)"
           } > stage1.ci.env
 
       - name: Validate the operator inputs

@@ -38,6 +38,7 @@ VALID_LOCAL_ENVIRONMENT = {
     "THOTH_CONTROL_PLANE_API_KEY": "local-api-key",
     "THOTH_POSTGRES_PASSWORD": "local-database-password",
     "THOTH_EDITOR_POSTGRES_PASSWORD": "local-editor-database-password",
+    "THOTH_EDITOR_PREVIEW_SIGNING_KEY": "local-preview-signing-key",
 }
 
 posix_only = pytest.mark.skipif(
@@ -297,3 +298,16 @@ def test_preflight_command_rejects_a_wide_provider_file_without_echoing_it(tmp_p
     assert "unrecognized variable" in result.output
     assert CANARY_KEY not in result.output
     assert "do-not-print" not in result.output
+
+
+def test_provider_file_rejects_the_editor_preview_signing_key(tmp_path: Path) -> None:
+    """The API's signing key is not a Scout provider input and never travels with one."""
+    candidate = _provider_file(
+        _outside_repository(tmp_path),
+        VALID_CONTENT + "THOTH_EDITOR_PREVIEW_SIGNING_KEY=do-not-print-this\n",
+    )
+
+    with pytest.raises(Stage1PreflightError) as failure:
+        check_stage1_provider_file(candidate, repository_root=tmp_path / "repo")
+
+    assert "do-not-print-this" not in str(failure.value)

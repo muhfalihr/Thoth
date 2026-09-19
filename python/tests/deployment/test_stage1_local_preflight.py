@@ -22,6 +22,7 @@ VALID_ENVIRONMENT = {
     "THOTH_CONTROL_PLANE_API_KEY": "local-api-key",
     "THOTH_POSTGRES_PASSWORD": "local-database-password",
     "THOTH_EDITOR_POSTGRES_PASSWORD": "local-editor-database-password",
+    "THOTH_EDITOR_PREVIEW_SIGNING_KEY": "local-preview-signing-key",
 }
 
 
@@ -187,3 +188,23 @@ def test_preflight_command_rejects_a_mutable_image_without_echoing_values(tmp_pa
     assert "THOTH_IMAGE" in result.output
     assert "latest" not in result.output
     assert "super-secret-api-key" not in result.output
+
+
+def test_missing_preview_signing_key_is_rejected() -> None:
+    environment = _environment()
+    del environment["THOTH_EDITOR_PREVIEW_SIGNING_KEY"]
+
+    with pytest.raises(Stage1PreflightError) as failure:
+        check_stage1_local_environment(environment, repository_root=REPOSITORY_ROOT)
+
+    assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" in str(failure.value)
+
+
+def test_placeholder_preview_signing_key_is_rejected_without_echoing_it() -> None:
+    with pytest.raises(Stage1PreflightError) as failure:
+        check_stage1_local_environment(
+            _environment(THOTH_EDITOR_PREVIEW_SIGNING_KEY="replace-with-local-secret"),
+            repository_root=REPOSITORY_ROOT,
+        )
+
+    assert "replace-with-local-secret" not in str(failure.value)

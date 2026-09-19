@@ -306,3 +306,45 @@ def test_prompt_provider_example_values_stay_empty() -> None:
     env = _env_file()
     assert "THOTH_PROMPT_PROVIDER_CATALOG=[]" in env
     assert "THOTH_PROMPT_PROVIDER_SECRETS={}" in env
+
+
+def test_editor_preview_signing_key_reaches_the_api_only() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    api = _service_block(compose, "api")
+    env_example = _env_file()
+
+    assert (
+        "THOTH_EDITOR_PREVIEW_SIGNING_KEY: "
+        "${THOTH_EDITOR_PREVIEW_SIGNING_KEY:?set THOTH_EDITOR_PREVIEW_SIGNING_KEY}" in api
+    )
+    # The dashboard is served outside Compose, so every other service is the check.
+    for service in (
+        "postgresql",
+        "editor-postgresql",
+        "temporal",
+        "temporal-ui",
+        "legacy-cdp",
+        "worker",
+    ):
+        assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" not in _service_block(compose, service)
+    assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY=replace-with-local-secret" in env_example
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    assert 'echo "THOTH_EDITOR_PREVIEW_SIGNING_KEY=$(openssl rand -hex 24)"' in workflow
+
+
+def test_editor_preview_adds_no_service_port_or_mount() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    api = _service_block(compose, "api")
+
+    assert api.count("target: /var/lib/thoth/artifacts") == 1
+    assert api.count("127.0.0.1:8000:8000") == 1
+    services = compose.split("\nnetworks:", 1)[0]
+    assert re.findall(r"(?m)^  [a-z][a-z0-9-]*:$", services) == [
+        "  postgresql:",
+        "  editor-postgresql:",
+        "  temporal:",
+        "  temporal-ui:",
+        "  legacy-cdp:",
+        "  api:",
+        "  worker:",
+    ]
