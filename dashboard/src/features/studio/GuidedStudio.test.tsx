@@ -3,11 +3,11 @@
 import { afterEach, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
+import type { EditDocument, EditDocumentPatch, EditDocumentV1 } from "@/api/control-plane";
 import { createC2ClientFixtureBase } from "./prompt-proposal-test-fixtures";
 
 mock.module("./StudioPreview", () => ({
-  StudioPreview: ({ document }: { document: EditDocument }) => (
+  StudioPreview: ({ document }: { document: EditDocumentV1 }) => (
     <div aria-label="Draft preview">{document.clips[0]?.heading}</div>
   ),
 }));

@@ -1,9 +1,10 @@
 import { Player } from "@remotion/player";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentProps, type RefObject } from "react";
 
 import type { ControlPlaneClient, EditDocument } from "@/api/control-plane";
-import { VerticalTextStory } from "./VerticalTextStory";
-import { getPlayerConfig } from "./preview";
+import type { PreviewSources } from "./AdvancedTimelineComposition";
+import { getPlayerConfig, previewComposition } from "./preview";
+import type { PlayerTimelineRef } from "./usePlayerTimeline";
 
 type Props = {
   document?: EditDocument;
@@ -12,9 +13,23 @@ type Props = {
   projectId?: string;
   documentId?: string;
   onBack?: () => void;
+  /** Same-origin preview paths, kept out of the document so they never persist. */
+  previewSources?: PreviewSources;
+  playerRef?: RefObject<PlayerTimelineRef | null>;
+  onPreviewUnavailable?: (assetId: string) => void;
 };
 
-export function StudioPreview({ document, embedded = false, client, projectId, documentId, onBack }: Props) {
+export function StudioPreview({
+  document,
+  embedded = false,
+  client,
+  projectId,
+  documentId,
+  onBack,
+  previewSources,
+  playerRef,
+  onPreviewUnavailable,
+}: Props) {
   const [loadedDocument, setLoadedDocument] = useState<EditDocument | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -35,11 +50,20 @@ export function StudioPreview({ document, embedded = false, client, projectId, d
 
   const currentDocument = document ?? loadedDocument;
 
+  // Remotion types the Player ref by its own PlayerRef; this view only drives the
+  // timeline subset of it.
+  const ref = playerRef as unknown as ComponentProps<typeof Player>["ref"];
+
   const preview = currentDocument ? (
     <div className="min-h-0 flex-1 overflow-auto rounded border border-border bg-black p-4">
       <Player
-        component={VerticalTextStory}
-        inputProps={{ document: currentDocument }}
+        ref={ref}
+        // The Player ties component and inputProps together through one generic;
+        // previewComposition already pairs them correctly.
+        {...(previewComposition(currentDocument, previewSources, onPreviewUnavailable) as {
+          component: never;
+          inputProps: never;
+        })}
         controls
         spaceKeyToPlayOrPause
         className="mx-auto max-h-full max-w-full"

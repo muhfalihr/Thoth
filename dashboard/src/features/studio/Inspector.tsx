@@ -1,9 +1,9 @@
 import { useId } from "react";
 
-import type { EditDocument } from "@/api/control-plane";
+import type { EditDocumentV1 } from "@/api/control-plane";
 
-type Scene = EditDocument["scenes"][number];
-type TextClip = EditDocument["clips"][number];
+type Scene = EditDocumentV1["scenes"][number];
+type TextClip = EditDocumentV1["clips"][number];
 type Ownership = TextClip["ownership"];
 
 type Props = {

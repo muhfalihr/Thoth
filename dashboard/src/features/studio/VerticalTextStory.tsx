@@ -1,9 +1,9 @@
 import { AbsoluteFill, Sequence } from "remotion";
 
-import type { EditDocument } from "@/api/control-plane";
+import type { EditDocumentV1 } from "@/api/control-plane";
 import { getOrderedTextClips } from "./preview";
 
-export function VerticalTextStory({ document }: { document: EditDocument }) {
+export function VerticalTextStory({ document }: { document: EditDocumentV1 }) {
   return (
     <AbsoluteFill className="bg-zinc-950 p-16 text-white">
       {getOrderedTextClips(document).map((clip) => (

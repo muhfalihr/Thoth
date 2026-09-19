@@ -1,7 +1,7 @@
-import type { EditDocument } from "@/api/control-plane";
+import type { EditDocumentV1 } from "@/api/control-plane";
 
 type Props = {
-  document: EditDocument;
+  document: EditDocumentV1;
   selectedSceneId: string;
   onSelect: (sceneId: string) => void;
 };

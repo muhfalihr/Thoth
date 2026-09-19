@@ -1,10 +1,11 @@
 import { useEffect, useId, useReducer, useState, type CSSProperties } from "react";
 
-import type { ControlPlaneClient, EditDocument } from "@/api/control-plane";
+import type { ControlPlaneClient, EditDocument, EditDocumentV1 } from "@/api/control-plane";
 import { editorReducer, createEditorState, toEditDocumentPatch, type EditorState } from "./editor_state";
 import { Inspector } from "./Inspector";
 import { PromptLab, type PromptLabClient } from "./PromptLab";
 import { SceneBoard } from "./SceneBoard";
+import { isTimelineDocument } from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
 
 type Props = {
@@ -19,8 +20,8 @@ type StudioWorkspace = "scenes" | "prompts";
 const toolbarButton =
   "rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40";
 
-function validDraft(document: EditDocument) {
-  return document.clips.every(
+function validDraft(document: EditDocumentV1 | undefined) {
+  return !document || document.clips.every(
     (clip) => clip.heading.trim().length > 0 && clip.heading.length <= 300 && clip.body.length <= 2_000,
   );
 }
@@ -35,7 +36,9 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const [sceneBoardWidth, setSceneBoardWidth] = useState(14);
   const [inspectorWidth, setInspectorWidth] = useState(19);
   const selectedScene = state.draft.scenes.find((scene) => scene.scene_id === state.selectedSceneId);
-  const selectedClip = state.draft.clips.find((clip) => clip.clip_id === selectedScene?.clip_ids[0]);
+  // Guided editing only ever drives a schema-v1 text story.
+  const story = isTimelineDocument(state.draft) ? undefined : state.draft;
+  const selectedClip = story?.clips.find((clip) => clip.clip_id === selectedScene?.clip_ids[0]);
   const { base, draft, pendingOperations, saveStatus } = state;
   const backDisabled = saveStatus !== "saved";
   const workstationStyle = {
@@ -57,7 +60,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   }, []);
 
   useEffect(() => {
-    if (saveStatus !== "dirty" || !pendingOperations.length || !validDraft(draft)) return;
+    if (saveStatus !== "dirty" || !pendingOperations.length || !validDraft(story)) return;
     const patch = toEditDocumentPatch({ base, pendingOperations });
     const operationIds = patch.operations.map((operation) => operation.operation_id);
     const timeoutId = setTimeout(() => {
@@ -74,7 +77,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         .catch(() => dispatch({ type: "save_failed" }));
     }, 500);
     return () => clearTimeout(timeoutId);
-  }, [base, client, documentId, draft, pendingOperations, projectId, saveStatus]);
+  }, [base, client, documentId, draft, pendingOperations, projectId, saveStatus, story]);
 
   const makeOperationId = () => `op_${crypto.randomUUID()}`;
   const statusLabel: Record<EditorState["saveStatus"], string> = {
@@ -223,11 +226,13 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           style={workstationStyle}
           className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[var(--scene-board-width)_minmax(0,1fr)_var(--inspector-width)] lg:overflow-hidden"
         >
-          <SceneBoard
-            document={state.draft}
-            selectedSceneId={state.selectedSceneId}
-            onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
-          />
+          {story ? (
+            <SceneBoard
+              document={story}
+              selectedSceneId={state.selectedSceneId}
+              onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
+            />
+          ) : null}
           <main className="min-h-[28rem] min-w-0 bg-black/40 p-4 lg:min-h-0">
             <StudioPreview document={state.draft} embedded />
           </main>
