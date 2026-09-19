@@ -444,6 +444,11 @@ def test_openapi_exposes_exact_required_path_method_pairs(gateway) -> None:
             "post",
         ),
         ("/api/v1/projects/{project_id}/editor-assets", "get"),
+        ("/api/v1/projects/{project_id}/editor-assets/{asset_id}/preview", "get"),
+        (
+            "/api/v1/projects/{project_id}/editor-assets/{asset_id}/preview-capability",
+            "post",
+        ),
         ("/api/v1/prompt-providers", "get"),
         ("/api/v1/prompt-stages", "get"),
         ("/api/v1/prompt-stages/{stage_id}/starter", "get"),

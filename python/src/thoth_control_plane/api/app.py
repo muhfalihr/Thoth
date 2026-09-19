@@ -44,6 +44,7 @@ from thoth_control_plane.domain.prompt_proposals import PromptProviderDefinition
 from thoth_control_plane.infrastructure.editor_asset_repository import (
     PostgresEditorAssetRepository,
 )
+from thoth_control_plane.infrastructure.editor_preview import EditorPreviewSigner
 from thoth_control_plane.infrastructure.editor_repository import PostgresEditDocumentRepository
 from thoth_control_plane.infrastructure.prompt_proposal_gateway import (
     TemporalPromptProposalGateway,
@@ -58,6 +59,16 @@ from thoth_control_plane.infrastructure.prompt_repository import PostgresPromptL
 from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflowGateway
 
 CONTRACT_VERSION = "1"
+
+
+def _preview_signer(settings: Settings) -> EditorPreviewSigner | None:
+    """Build the preview signer only when an operator supplied a signing key."""
+    if settings.THOTH_EDITOR_PREVIEW_SIGNING_KEY is None:
+        return None
+    return EditorPreviewSigner(
+        key=settings.THOTH_EDITOR_PREVIEW_SIGNING_KEY.get_secret_value(),
+        ttl_seconds=settings.THOTH_EDITOR_PREVIEW_TTL_SECONDS,
+    )
 
 
 def create_app(
@@ -139,6 +150,7 @@ def create_app(
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
     app.state.edit_document_service = EditDocumentService(editor_repository)
     app.state.editor_asset_service = EditorAssetService(editor_asset_repository)
+    app.state.editor_preview_signer = _preview_signer(settings)
     app.state.prompt_lab_service = PromptLabService(prompt_repository)
     app.state.prompt_proposal_service = prompt_proposal_service
 

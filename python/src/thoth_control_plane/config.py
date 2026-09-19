@@ -40,6 +40,15 @@ class SettingsValidationError(ValueError):
         return [{"type": "value_error", "msg": str(self)}]
 
 
+def _is_same_origin_path(value: str) -> bool:
+    """A preview URL must stay same-origin so no capability can travel to another host."""
+    return (
+        value.startswith("/")
+        and not value.startswith("//")
+        and not any(character in value for character in ":\\?#")
+    )
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables or explicit values."""
 
@@ -53,6 +62,9 @@ class Settings(BaseSettings):
     THOTH_LEGACY_API_BASE_URL: str | None = None
     THOTH_LEGACY_API_KEY: SecretStr | None = None
     THOTH_EDITOR_DATABASE_URL: SecretStr | None = None
+    THOTH_EDITOR_PREVIEW_SIGNING_KEY: SecretStr | None = None
+    THOTH_EDITOR_PREVIEW_TTL_SECONDS: Annotated[int, Field(ge=30, le=3600)] = 300
+    THOTH_EDITOR_PREVIEW_BASE_URL: str | None = None
     THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: SourceActivityMode = (
         "python_tiktok_with_legacy_fallback"
     )
@@ -77,6 +89,11 @@ class Settings(BaseSettings):
         if supplied_partial_value and not (has_base_url and has_api_key):
             raise SettingsValidationError(
                 "legacy gateway base URL and API key must be configured together"
+            )
+        preview_base_url = self.THOTH_EDITOR_PREVIEW_BASE_URL
+        if preview_base_url is not None and not _is_same_origin_path(preview_base_url):
+            raise SettingsValidationError(
+                "editor preview base URL must be a same-origin relative path"
             )
         provider_ids: set[str] = set()
         for provider in self.THOTH_PROMPT_PROVIDER_CATALOG:
