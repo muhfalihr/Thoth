@@ -19,6 +19,41 @@ checkpoint at `.superpowers/sdd/<task>/progress.md` and its linked design and pl
   verification evidence, and audit records to `CHANGELOG.md`; do not recreate a
   chronological history section in `BLUEPRINT.md`.
 
+## Technical stack and build verification
+
+- **Stack:** Rust 2024 edition (async Tokio), Windows (CUDA 13.2, LLVM), local `ffmpeg.exe` at root, NVIDIA NVENC for encoding, CUDA for Whisper, `config.toml` (no secrets) + `.env` (API keys).
+- **Mandatory verification sequence after every feature update:**
+  1. **Full CUDA build:** Run `build_cuda.bat` (never rely on `cargo check` alone; zero errors and zero critical warnings required):
+     ```cmd
+     cmd /c ".\build_cuda.bat > build_log.txt 2>&1"; "EXIT=$LASTEXITCODE"
+     ```
+  2. **Testing:** Run relevant unit tests (`cargo test --bin thoth <module>`). Fix any failures before proceeding.
+  3. **Record results:** Update the active SDD `progress.md` checkpoint and append the completed record to `CHANGELOG.md`. Never report complete from `cargo check` alone.
+
+## Engineering conventions and git commits
+
+- **Language rules:**
+  - Chat responses to the operator: **Always Indonesian** (including explanations, summaries, clarifications, build/test reports).
+  - Repository artifacts: **Always English** (code, comments, docstrings, variable names, commit messages, plans, specs, ADRs, issues, and all files under `docs/`).
+- **Git commits:**
+  - Write each commit message as one concise subject line, preferably no more than 72 characters.
+  - Use exactly one `git commit -m "<subject>"`; do not add a body, detailed description, blank-line continuation, or trailer.
+  - Never add `Co-Authored-By` or any AI attribution to a commit message.
+- **Code & schema conventions:**
+  - Use `#[serde(default)]` on new schema fields for backward-compatibility.
+  - Every new feature must degrade gracefully if disabled or unavailable.
+  - Log levels: `info!` for key progress, `warn!` for degradation, `debug!` for detail.
+
+## Environment and operational guardrails
+
+- **Python:** Use `python` (Anaconda 3.10). `python3` does NOT exist on this machine (returns exit 127).
+- **Shell pathing:** In Bash use forward slashes (`C:/Users/...`) and `rg`/`tail`. In PowerShell use backslashes and `Select-Object -Last N`.
+- **Large file access:** `src/analyze/service.rs` (~2400 lines) and generated JSON/HTML under `.understand-anything/tmp/`, `test/scraper/*.html`, and `arch-input.json` exceed read caps; use offset/limit, grep, or targeted scripts.
+- **Issue tracker & domain docs:**
+  - Issues live in GitHub (`muhfalihr/Thoth`) via `gh` CLI. See [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+  - Canonical triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+  - Domain docs: Single-context `CONTEXT.md` plus `docs/adr/` at the repo root. See [`docs/agents/domain.md`](docs/agents/domain.md).
+
 ## Code intelligence routing
 
 This repository is already indexed by several complementary layers. Do not add another
@@ -54,15 +89,15 @@ Index hygiene:
 
 - Check freshness before trusting a broad answer: `codegraph_status` for coverage, and the
   `built_at_commit` field in `graphify-out/graph.json` against `git rev-parse HEAD`.
-- Run `graphify update .` after modifying code, per `CLAUDE.md`. codegraph updates through
+- Run `graphify update .` after modifying code. codegraph updates through
   its own file watcher and lags writes by about a second.
 - `graphify-out/`, `.serena/`, and the `.codegraph/` database are gitignored and must stay
   that way. Never stage or commit an index; only `.codegraph/.gitignore` and
   `.codegraph/config.json` are tracked.
 
-## Plugin routing
+## Plugin and skill routing
 
-At the start of every task, evaluate both routes below before acting:
+At the start of every task, evaluate all routes below before acting:
 
 - **Ponytail:** For coding, debugging, refactoring, code review, or software design, activate the
   installed Ponytail skill at `full` intensity unless the operator selects another intensity or
@@ -76,6 +111,36 @@ At the start of every task, evaluate both routes below before acting:
   implementation or advice on the retrieved current documentation. If the Context7 capability is
   unavailable in the active session, state that limitation and use the library's primary
   documentation instead.
+- **Karpathy Guidelines (`karpathy-guidelines`):** For coding, debugging, refactoring, or review,
+  enforce Karpathy's four anti-pitfall disciplines:
+  1. *Think Before Coding:* State assumptions explicitly; don't pick interpretations silently;
+     surface tradeoffs and clarify confusion before implementing.
+  2. *Simplicity First:* Minimum code that solves the problem; no speculative abstractions or
+     unrequested configurability; rewrite if 50 lines suffice for 200.
+  3. *Surgical Changes:* Touch only required code; match surrounding style; clean up only self-created
+     orphans; leave orthogonal code and comments alone.
+  4. *Goal-Driven Execution:* Define verifiable success criteria first (tests/checks); loop until
+     verified. See `.agents/skills/karpathy-guidelines/SKILL.md`.
+
+### Matt Pocock engineering skills
+
+The repository includes the Matt Pocock engineering skill suite under `.agents/skills/`.
+When unsure which flow fits, invoke the router skill `/ask-matt`.
+
+| Phase / Trigger | Primary Skill | Notes & Invocation |
+|---|---|---|
+| Idea sharpening, design interview | `grill-with-docs` / `grilling` | State-retaining interview; records domain findings in `CONTEXT.md` and ADRs. |
+| UI / state spike | `prototype` | Build a throwaway prototype to answer design/state questions before implementation. |
+| Architecture & module design | `codebase-design` | Deep module vocabulary (interfaces, seams, depth, leverage, locality). |
+| Domain terminology & ADRs | `domain-modeling` | Pin down domain language; resolve overloaded terms into `CONTEXT.md`. |
+| Technical investigation | `research` | Delegate reading legwork against primary sources to a background agent. |
+| Requirements & tickets | `to-spec` → `to-tickets` | Transform ideas into specifications and blocker-linked tickets. |
+| Hard bug or regression | `diagnosing-bugs` | 6-phase loop; mandates a tight red-capable check before hypothesizing. |
+| Test-driven implementation | `tdd` / `implement` | Red-green loop at pre-agreed seams; prevents implementation coupling. |
+| Code review & diff inspection | `code-review` | Two-axis review (Standards + Spec) of diffs before committing. |
+| Merge / rebase conflict | `resolving-merge-conflicts` | Intent-based resolution traced to each side's primary source. |
+| Issue queue management | `triage` | Move raw issues into canonical roles (`docs/agents/triage-labels.md`). |
+| Writing agent documentation | `writing-for-agents` | Pruning, single source of truth, and progressive disclosure rules. |
 
 ### Codex: operator bridge
 
@@ -116,7 +181,7 @@ Every executor prompt prepared by Codex must be directly usable without relying 
 - explicit hard stops;
 - required final report format and next operator checkpoint.
 
-Keep chat responses to the operator in Indonesian. Keep repository artifacts, specifications, plans, prompts, code, comments, and commit messages in English, consistent with `CLAUDE.md`.
+Keep chat responses to the operator in Indonesian. Keep repository artifacts, specifications, plans, prompts, code, comments, and commit messages in English, consistent with repository standards.
 
 ## Operator authority
 
