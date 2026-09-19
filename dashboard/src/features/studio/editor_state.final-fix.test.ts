@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { EditDocument } from "@/api/control-plane";
+import type { EditDocument, EditDocumentV1 } from "@/api/control-plane";
 import { createEditorState, editorReducer } from "./editor_state";
 
 const editDocument = {
@@ -35,6 +35,9 @@ const editDocument = {
     },
   ],
 } satisfies EditDocument;
+
+/** The guided-editing tests only ever drive schema-v1 text stories. */
+const story = (value: EditDocument) => value as EditDocumentV1;
 
 test("preserves conflict state through local edit undo and redo until explicit recovery", () => {
   const edited = editorReducer(createEditorState(editDocument), {
@@ -78,7 +81,7 @@ test("offline retains pending draft and reconnect resumes dirty save eligibility
   });
 
   expect(state.saveStatus).toBe("offline");
-  expect(state.draft.clips[0].heading).toBe("Offline heading");
+  expect(story(state.draft).clips[0].heading).toBe("Offline heading");
   expect(state.pendingOperations).toHaveLength(1);
   expect(
     editorReducer(state, {
@@ -125,8 +128,8 @@ test("offline does not let undo overtake an in-flight save after another edit", 
     operationIds: ["op_sent"],
   });
   expect(state.saveStatus).toBe("offline");
-  expect(state.draft.clips[0].heading).toBe("Sent heading");
-  expect(state.draft.clips[0].body).toBe("Later local body");
+  expect(story(state.draft).clips[0].heading).toBe("Sent heading");
+  expect(story(state.draft).clips[0].body).toBe("Later local body");
   expect(state.pendingOperations.map((operation) => operation.operation_id)).toEqual(["op_later"]);
 
   expect(editorReducer(state, { type: "went_online" }).saveStatus).toBe("dirty");
@@ -152,7 +155,7 @@ test("reload latest preserves offline state after an in-flight conflict", () => 
 
   expect(state.isOffline).toBe(true);
   expect(state.saveStatus).toBe("offline");
-  expect(state.draft.clips[0].heading).toBe("Remote heading");
+  expect(story(state.draft).clips[0].heading).toBe("Remote heading");
 });
 
 test("in-flight save rejects redo even when a future snapshot exists", () => {

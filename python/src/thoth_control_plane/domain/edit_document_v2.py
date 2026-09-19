@@ -313,9 +313,11 @@ class EditDocumentV2(StrictModel):
                     raise ValueError("main video clips must not overlap")
 
 
-EditDocument: TypeAlias = Annotated[
-    EditDocumentV1 | EditDocumentV2, Field(discriminator="schema_version")
-]
+#: A plain union rather than a tagged one: the two integer ``schema_version``
+#: constants already make it unambiguous, and an OpenAPI discriminator makes the
+#: generated TypeScript declare the tag as the *string* ``"1"`` instead of the
+#: integer this API actually sends.
+EditDocument: TypeAlias = EditDocumentV1 | EditDocumentV2
 
 
 class DocumentRevisionConflictBody(StrictModel):

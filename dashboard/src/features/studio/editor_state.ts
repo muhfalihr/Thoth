@@ -1,6 +1,16 @@
-import type { EditDocument, EditDocumentOperation, EditDocumentPatch } from "@/api/control-plane";
+import type {
+  EditDocument,
+  EditDocumentOperation,
+  EditDocumentPatch,
+  EditDocumentV1,
+  EditorAsset,
+} from "@/api/control-plane";
+
+import { applyTimelineOperation, clampZoom, isTimelineDocument } from "./timeline_domain";
 
 export type EditorSaveStatus = "saved" | "dirty" | "saving" | "failed" | "conflict" | "offline";
+
+export type EditorMode = "simple" | "advanced";
 
 type EditorSnapshot = {
   draft: EditDocument;
@@ -10,6 +20,17 @@ type EditorSnapshot = {
 export type EditorState = EditorSnapshot & {
   base: EditDocument;
   selectedSceneId: string;
+  selectedTrackId: string;
+  selectedClipId: string;
+  selectedIssueId: string;
+  mode: EditorMode;
+  playheadFrame: number;
+  zoom: number;
+  snapping: boolean;
+  ripple: boolean;
+  assets: Record<string, EditorAsset>;
+  /** Pre-gesture snapshot, present only while a drag preview is on screen. */
+  preview?: EditorSnapshot;
   history: EditorSnapshot[];
   future: EditorSnapshot[];
   saveStatus: EditorSaveStatus;
@@ -44,13 +65,37 @@ export type EditorAction =
   | { type: "went_online" }
   | { type: "save_conflicted"; latest: EditDocument }
   | { type: "reload_latest" }
-  | { type: "keep_editing_locally"; operationIdPrefix: string };
+  | { type: "keep_editing_locally"; operationIdPrefix: string }
+  | { type: "set_assets"; assets: EditorAsset[] }
+  | { type: "set_editor_mode"; mode: EditorMode }
+  | { type: "select_track"; trackId: string }
+  | { type: "select_clip"; clipId: string }
+  | { type: "select_issue"; issueId: string }
+  | { type: "set_playhead"; frame: number }
+  | { type: "set_zoom"; zoom: number }
+  | { type: "set_snapping"; snapping: boolean }
+  | { type: "set_ripple"; ripple: boolean }
+  | { type: "preview_timeline_operation"; operation: EditDocumentOperation }
+  | { type: "commit_timeline_operation"; operation: EditDocumentOperation }
+  | { type: "cancel_timeline_preview" };
 
-export function createEditorState(document: EditDocument): EditorState {
+export function createEditorState(
+  document: EditDocument,
+  assets: Record<string, EditorAsset> = {},
+): EditorState {
   return {
     base: document,
     draft: document,
     selectedSceneId: document.scenes[0]?.scene_id ?? "",
+    selectedTrackId: "",
+    selectedClipId: "",
+    selectedIssueId: "",
+    mode: isTimelineDocument(document) ? "advanced" : "simple",
+    playheadFrame: 0,
+    zoom: 1,
+    snapping: true,
+    ripple: false,
+    assets,
     history: [],
     future: [],
     saveStatus: "saved",
@@ -87,7 +132,11 @@ function edited(
   };
 }
 
-function resizeScene(document: EditDocument, sceneId: string, durationInFrames: number): EditDocument {
+function resizeScene(
+  document: EditDocumentV1,
+  sceneId: string,
+  durationInFrames: number,
+): EditDocumentV1 {
   const sceneIndex = document.scenes.findIndex((scene) => scene.scene_id === sceneId);
   if (sceneIndex < 0) return document;
   const delta = durationInFrames - document.scenes[sceneIndex].duration_in_frames;
@@ -110,8 +159,8 @@ function resizeScene(document: EditDocument, sceneId: string, durationInFrames: 
 }
 
 function operationsToRetainDraft(
-  base: EditDocument,
-  draft: EditDocument,
+  base: EditDocumentV1,
+  draft: EditDocumentV1,
   operationIdPrefix: string,
 ): EditDocumentOperation[] {
   const operations: EditDocumentOperation[] = [];
@@ -156,6 +205,29 @@ function operationsToRetainDraft(
   return operations;
 }
 
+/** The guided actions only describe schema-v1 text stories. */
+function textStoryDraft(state: EditorState): EditDocumentV1 | undefined {
+  return isTimelineDocument(state.draft) ? undefined : state.draft;
+}
+
+/** Apply one timeline operation, or return undefined when the document refuses it. */
+function timelineDraft(
+  snapshot: EditorSnapshot,
+  operation: EditDocumentOperation,
+  assets: Record<string, EditorAsset>,
+): EditDocument | undefined {
+  if (!isTimelineDocument(snapshot.draft)) return undefined;
+  try {
+    return applyTimelineOperation(snapshot.draft, operation, assets);
+  } catch {
+    return undefined;
+  }
+}
+
+function gestureOrigin(state: EditorState): EditorSnapshot {
+  return state.preview ?? { draft: state.draft, pendingOperations: state.pendingOperations };
+}
+
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "select_scene":
@@ -163,11 +235,13 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         ? { ...state, selectedSceneId: action.sceneId }
         : state;
     case "edit_text": {
-      const current = state.draft.clips.find((clip) => clip.clip_id === action.clipId);
+      const story = textStoryDraft(state);
+      if (!story) return state;
+      const current = story.clips.find((clip) => clip.clip_id === action.clipId);
       if (!current || current[action.field] === action.value) return state;
       const draft = {
-        ...state.draft,
-        clips: state.draft.clips.map((clip) =>
+        ...story,
+        clips: story.clips.map((clip) =>
           clip.clip_id === action.clipId
             ? { ...clip, [action.field]: action.value, ownership: "user_edited" as const }
             : clip,
@@ -182,13 +256,15 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       });
     }
     case "edit_ownership": {
-      const current = state.draft.clips.find((clip) => clip.clip_id === action.clipId);
+      const story = textStoryDraft(state);
+      if (!story) return state;
+      const current = story.clips.find((clip) => clip.clip_id === action.clipId);
       if (!current || current.ownership === action.ownership) return state;
       return edited(
         state,
         {
-          ...state.draft,
-          clips: state.draft.clips.map((clip) =>
+          ...story,
+          clips: story.clips.map((clip) =>
             clip.clip_id === action.clipId ? { ...clip, ownership: action.ownership } : clip,
           ),
         },
@@ -201,14 +277,16 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       );
     }
     case "edit_duration": {
-      const current = state.draft.scenes.find((scene) => scene.scene_id === action.sceneId);
+      const story = textStoryDraft(state);
+      const current = story?.scenes.find((scene) => scene.scene_id === action.sceneId);
       if (
+        !story ||
         !current ||
         !Number.isInteger(action.durationInFrames) ||
         action.durationInFrames <= 0 ||
         current.duration_in_frames === action.durationInFrames
       ) return state;
-      return edited(state, resizeScene(state.draft, action.sceneId, action.durationInFrames), {
+      return edited(state, resizeScene(story, action.sceneId, action.durationInFrames), {
         kind: "set_scene_duration",
         operation_id: action.operationId,
         scene_id: action.sceneId,
@@ -305,11 +383,14 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     }
     case "keep_editing_locally": {
       if (!state.latestConflict) return state;
-      const pendingOperations = operationsToRetainDraft(
-        state.latestConflict,
-        state.draft,
-        action.operationIdPrefix,
-      );
+      // Timeline edits are already typed operations, so a rebase only swaps the base;
+      // a text story has to be diffed back into operations against the newer revision.
+      const conflict = state.latestConflict;
+      const story = textStoryDraft(state);
+      const pendingOperations =
+        isTimelineDocument(conflict) || !story
+          ? state.pendingOperations
+          : operationsToRetainDraft(conflict, story, action.operationIdPrefix);
       return {
         ...state,
         base: state.latestConflict,
@@ -319,6 +400,49 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         saveStatus: state.isOffline ? "offline" : pendingOperations.length ? "dirty" : "saved",
         latestConflict: undefined,
       };
+    }
+    case "set_assets":
+      return {
+        ...state,
+        assets: Object.fromEntries(action.assets.map((asset) => [asset.asset_id, asset])),
+      };
+    case "set_editor_mode":
+      return { ...state, mode: action.mode };
+    case "select_track":
+      return state.draft.tracks.some((track) => track.track_id === action.trackId)
+        ? { ...state, selectedTrackId: action.trackId, selectedClipId: "" }
+        : state;
+    case "select_clip": {
+      const clip = (state.draft.clips ?? []).find((entry) => entry.clip_id === action.clipId);
+      return clip
+        ? { ...state, selectedClipId: clip.clip_id, selectedTrackId: clip.track_id }
+        : state;
+    }
+    case "select_issue":
+      return { ...state, selectedIssueId: action.issueId };
+    case "set_playhead": {
+      const last = Math.max(state.draft.canvas.duration_in_frames - 1, 0);
+      const frame = Math.min(Math.max(Math.round(action.frame), 0), last);
+      return frame === state.playheadFrame ? state : { ...state, playheadFrame: frame };
+    }
+    case "set_zoom":
+      return { ...state, zoom: clampZoom(action.zoom) };
+    case "set_snapping":
+      return { ...state, snapping: action.snapping };
+    case "set_ripple":
+      return { ...state, ripple: action.ripple };
+    case "preview_timeline_operation": {
+      const origin = gestureOrigin(state);
+      const draft = timelineDraft(origin, action.operation, state.assets);
+      return draft ? { ...state, preview: origin, draft } : state;
+    }
+    case "cancel_timeline_preview":
+      return state.preview ? { ...state, ...state.preview, preview: undefined } : state;
+    case "commit_timeline_operation": {
+      const origin = gestureOrigin(state);
+      const draft = timelineDraft(origin, action.operation, state.assets);
+      if (!draft) return { ...state, ...origin, preview: undefined };
+      return { ...edited({ ...state, ...origin }, draft, action.operation), preview: undefined };
     }
   }
 }

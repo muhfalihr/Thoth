@@ -620,14 +620,7 @@
             "type": "string"
           },
           "latest": {
-            "discriminator": {
-              "mapping": {
-                "1": "#/components/schemas/EditDocumentV1",
-                "2": "#/components/schemas/EditDocumentV2"
-              },
-              "propertyName": "schema_version"
-            },
-            "oneOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/EditDocumentV1"
               },
@@ -4155,14 +4148,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "discriminator": {
-                    "mapping": {
-                      "1": "#/components/schemas/EditDocumentV1",
-                      "2": "#/components/schemas/EditDocumentV2"
-                    },
-                    "propertyName": "schema_version"
-                  },
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditDocumentV1"
                     },
@@ -4234,14 +4220,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "discriminator": {
-                    "mapping": {
-                      "1": "#/components/schemas/EditDocumentV1",
-                      "2": "#/components/schemas/EditDocumentV2"
-                    },
-                    "propertyName": "schema_version"
-                  },
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditDocumentV1"
                     },
@@ -4321,14 +4300,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "discriminator": {
-                    "mapping": {
-                      "1": "#/components/schemas/EditDocumentV1",
-                      "2": "#/components/schemas/EditDocumentV2"
-                    },
-                    "propertyName": "schema_version"
-                  },
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditDocumentV1"
                     },
@@ -4430,14 +4402,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "discriminator": {
-                    "mapping": {
-                      "1": "#/components/schemas/EditDocumentV1",
-                      "2": "#/components/schemas/EditDocumentV2"
-                    },
-                    "propertyName": "schema_version"
-                  },
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "$ref": "#/components/schemas/EditDocumentV1"
                     },

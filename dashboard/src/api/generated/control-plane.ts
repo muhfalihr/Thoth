@@ -825,10 +825,10 @@ export interface components {
             /** Scenes */
             scenes: components["schemas"]["Scene"][];
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Schema Version
+             * @constant
              */
-            schema_version: "1";
+            schema_version: 1;
             template: components["schemas"]["TemplateRef"];
             /** Tracks */
             tracks: components["schemas"]["Track"][];
@@ -852,10 +852,10 @@ export interface components {
             /** Scenes */
             scenes: components["schemas"]["Scene"][];
             /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
+             * Schema Version
+             * @constant
              */
-            schema_version: "2";
+            schema_version: 2;
             template: components["schemas"]["TemplateRef"];
             /** Tracks */
             tracks: components["schemas"]["TimelineTrack"][];
