@@ -216,3 +216,115 @@ export class FakePlayer {
     return Object.values(this.listeners).reduce((total, set) => total + set.size, 0);
   }
 }
+
+/**
+ * Two of every media clip, each carrying the typed fields D1 persists but has no
+ * operation to change, so the inspector can be checked across a selection change.
+ */
+export function typedTimelineDocument(): EditDocumentV2 {
+  return {
+    schema_version: 2,
+    document_id: "document_003",
+    project_id: "project_001",
+    revision: 1,
+    canvas: { width: 1080, height: 1920, fps: 30, duration_in_frames: 600 },
+    template: { template_id: "vertical_text_story", version: 1 },
+    scenes: [],
+    asset_refs: [
+      {
+        asset_id: "asset_video",
+        project_id: "project_001",
+        kind: "video",
+        has_audio: true,
+        validation_state: "ready",
+      },
+      {
+        asset_id: "asset_music",
+        project_id: "project_001",
+        kind: "audio",
+        has_audio: true,
+        validation_state: "ready",
+      },
+    ],
+    tracks: [
+      { ...lane, track_id: "track_main", kind: "main_video", label: "Main video", order: 0, clip_ids: ["clip_a", "clip_b"] },
+      { ...lane, track_id: "track_overlay", kind: "overlay", label: "Overlay", order: 1, clip_ids: ["clip_overlay"] },
+      { ...lane, track_id: "track_captions", kind: "caption", label: "Captions", order: 2, clip_ids: ["clip_caption"] },
+      { ...lane, track_id: "track_music", kind: "music", label: "Music", order: 3, clip_ids: ["clip_audio"] },
+    ],
+    clips: [
+      {
+        kind: "video",
+        clip_id: "clip_a",
+        track_id: "track_main",
+        asset_id: "asset_video",
+        from_frame: 0,
+        duration_in_frames: 60,
+        source_from_frame: 0,
+        ownership: "ai_managed",
+        hidden: false,
+        locked: false,
+        fit: "cover",
+        crop: { left: 0, top: 0, width: 1, height: 1 },
+        position: { x: 0, y: 0, scale: 1 },
+      },
+      {
+        kind: "video",
+        clip_id: "clip_b",
+        track_id: "track_main",
+        asset_id: "asset_video",
+        from_frame: 90,
+        duration_in_frames: 120,
+        source_from_frame: 30,
+        ownership: "user_edited",
+        hidden: false,
+        locked: false,
+        fit: "contain",
+        crop: { left: 0.1, top: 0.2, width: 0.5, height: 0.6 },
+        position: { x: 40, y: -20, scale: 1.5 },
+      },
+      {
+        kind: "overlay",
+        clip_id: "clip_overlay",
+        track_id: "track_overlay",
+        from_frame: 0,
+        duration_in_frames: 45,
+        ownership: "ai_managed",
+        hidden: false,
+        locked: false,
+        preset_id: "lower_third",
+        parameters: { text: "Headline", accent_slot: "accent_primary" },
+      },
+      {
+        kind: "caption",
+        clip_id: "clip_caption",
+        track_id: "track_captions",
+        from_frame: 0,
+        duration_in_frames: 90,
+        ownership: "ai_managed",
+        hidden: false,
+        locked: false,
+        style_slot: "caption_default",
+        cues: [
+          { from_frame: 0, duration_in_frames: 30, text: "First cue" },
+          { from_frame: 30, duration_in_frames: 60, text: "Second cue" },
+        ],
+      },
+      {
+        kind: "audio",
+        clip_id: "clip_audio",
+        track_id: "track_music",
+        asset_id: "asset_music",
+        from_frame: 0,
+        duration_in_frames: 150,
+        source_from_frame: 0,
+        ownership: "ai_managed",
+        hidden: false,
+        locked: false,
+        volume: 0.4,
+        fade_in_frames: 12,
+        fade_out_frames: 24,
+      },
+    ],
+  };
+}

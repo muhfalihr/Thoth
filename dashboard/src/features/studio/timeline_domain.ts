@@ -106,6 +106,33 @@ export function compatibleTrackIds(
     .map((track) => track.track_id);
 }
 
+/**
+ * The operation that drops `asset` onto the first track that accepts it.
+ *
+ * Returns nothing when no unlocked track takes the asset, so the caller can
+ * leave the document alone instead of emitting an operation the server refuses.
+ */
+export function createAddClipFromAssetOperation(
+  document: EditDocumentV2,
+  asset: EditorAsset,
+  playheadFrame: number,
+  ids: { operationId: string; clipId: string },
+): EditDocumentOperation | undefined {
+  const [trackId] = compatibleTrackIds(document, asset.kind === "audio" ? "audio" : "video");
+  if (!trackId) return undefined;
+  return {
+    kind: "add_clip_from_asset",
+    operation_id: ids.operationId,
+    clip_id: ids.clipId,
+    track_id: trackId,
+    asset_id: asset.asset_id,
+    from_frame: Math.max(0, Math.round(playheadFrame)),
+    // A still has no duration of its own; one canvas second reads as deliberate.
+    duration_in_frames: asset.duration_in_frames ?? document.canvas.fps,
+    source_from_frame: 0,
+  };
+}
+
 export function visibleLanes(document: EditDocumentV2): TimelineLane[] {
   const clips = document.clips ?? [];
   return [...document.tracks]

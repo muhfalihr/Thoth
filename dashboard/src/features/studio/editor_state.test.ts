@@ -622,10 +622,22 @@ test("loaded assets are indexed by ID and gate local asset operations", () => {
     duration_in_frames: 600,
   };
   const loaded = editorReducer(createEditorState(timelineDocument()), {
-    type: "set_assets",
+    type: "assets_loaded",
     assets: [asset],
+    replace: true,
   });
   expect(loaded.assets).toEqual({ asset_new: asset });
+
+  const second = { ...asset, asset_id: "asset_page_two" };
+  const both = editorReducer(loaded, {
+    type: "assets_loaded",
+    assets: [second],
+    replace: false,
+  });
+  expect(both.assets).toEqual({ asset_new: asset, asset_page_two: second });
+  expect(
+    editorReducer(both, { type: "assets_loaded", assets: [second], replace: true }).assets,
+  ).toEqual({ asset_page_two: second });
 
   const added = editorReducer(loaded, {
     type: "commit_timeline_operation",

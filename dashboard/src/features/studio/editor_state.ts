@@ -70,7 +70,7 @@ export type EditorAction =
   | { type: "save_conflicted"; latest: EditDocument }
   | { type: "reload_latest" }
   | { type: "keep_editing_locally"; operationIdPrefix: string }
-  | { type: "set_assets"; assets: EditorAsset[] }
+  | { type: "assets_loaded"; assets: EditorAsset[]; replace: boolean }
   | { type: "set_editor_mode"; mode: EditorMode }
   | { type: "select_track"; trackId: string }
   | { type: "select_clip"; clipId: string }
@@ -509,11 +509,11 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         latestConflict: undefined,
       };
     }
-    case "set_assets":
-      return {
-        ...state,
-        assets: Object.fromEntries(action.assets.map((asset) => [asset.asset_id, asset])),
-      };
+    case "assets_loaded": {
+      // A continuation page adds to what is already addable; a reload replaces it.
+      const page = Object.fromEntries(action.assets.map((asset) => [asset.asset_id, asset]));
+      return { ...state, assets: action.replace ? page : { ...state.assets, ...page } };
+    }
     case "set_editor_mode":
       return { ...state, mode: action.mode };
     case "select_track":

@@ -15,6 +15,9 @@ const input =
 
 const newId = () => `op_${crypto.randomUUID()}`;
 
+/** Shown wherever a persisted optional field carries no value. */
+const NOT_SET = "—";
+
 /** Omit distributed over the operation union, so each member keeps its own fields. */
 type OperationDraft = EditDocumentOperation extends infer T
   ? T extends EditDocumentOperation
@@ -36,11 +39,29 @@ export function TimelineInspector({
     muted: useId(),
     locked: useId(),
     ownership: useId(),
+    fit: useId(),
+    crop: useId(),
+    position: useId(),
+    fadeIn: useId(),
+    fadeOut: useId(),
+    overlayPreset: useId(),
+    overlayText: useId(),
+    overlayAccent: useId(),
+    captionStyle: useId(),
+    captionCues: useId(),
   };
   const clip = document.clips?.find((candidate) => candidate.clip_id === selectedClipId);
   const track = document.tracks.find(
     (candidate) => candidate.track_id === (clip?.track_id ?? selectedTrackId),
   );
+  /** A persisted field D1 stores but has no operation to change. */
+  const readOnlyField = (id: string, label: string, value: string) => (
+    <div className={field} key={id}>
+      <label htmlFor={id}>{label}</label>
+      <input id={id} className={input} value={value} readOnly disabled />
+    </div>
+  );
+
   // Every control emits the same typed operation the timeline gestures emit.
   const emit = (operation: OperationDraft) =>
     onOperation({ ...operation, operation_id: newId() } as EditDocumentOperation);
@@ -61,7 +82,7 @@ export function TimelineInspector({
               type="number"
               className={input}
               min={0}
-              defaultValue={clip.from_frame}
+              value={clip.from_frame}
               disabled={clip.locked === true || track?.locked === true}
               onChange={(event) =>
                 emit({
@@ -79,7 +100,7 @@ export function TimelineInspector({
               type="number"
               className={input}
               min={1}
-              defaultValue={clip.from_frame + clip.duration_in_frames}
+              value={clip.from_frame + clip.duration_in_frames}
               disabled={clip.locked === true || track?.locked === true}
               onChange={(event) =>
                 emit({
@@ -100,7 +121,7 @@ export function TimelineInspector({
                 min={0}
                 max={1}
                 step={0.1}
-                defaultValue={clip.volume ?? 1}
+                value={clip.volume ?? 1}
                 disabled={clip.locked === true || track?.locked === true}
                 onChange={(event) =>
                   emit({
@@ -163,6 +184,59 @@ export function TimelineInspector({
               <option value="locked">Locked</option>
             </select>
           </div>
+          {clip.kind === "video" ? (
+            <>
+              {readOnlyField(ids.fit, "Fit", clip.fit)}
+              {readOnlyField(
+                ids.crop,
+                "Crop",
+                clip.crop
+                  ? [clip.crop.left, clip.crop.top, clip.crop.width, clip.crop.height].join(", ")
+                  : NOT_SET,
+              )}
+              {readOnlyField(
+                ids.position,
+                "Position",
+                clip.position
+                  ? `${clip.position.x}, ${clip.position.y} ×${clip.position.scale}`
+                  : NOT_SET,
+              )}
+            </>
+          ) : null}
+          {clip.kind === "audio" ? (
+            <>
+              {readOnlyField(ids.fadeIn, "Fade in (frames)", String(clip.fade_in_frames ?? 0))}
+              {readOnlyField(ids.fadeOut, "Fade out (frames)", String(clip.fade_out_frames ?? 0))}
+            </>
+          ) : null}
+          {clip.kind === "overlay" ? (
+            <>
+              {readOnlyField(ids.overlayPreset, "Overlay preset", clip.preset_id)}
+              {readOnlyField(ids.overlayText, "Overlay text", clip.parameters?.text ?? NOT_SET)}
+              {readOnlyField(
+                ids.overlayAccent,
+                "Overlay accent",
+                clip.parameters?.accent_slot ?? NOT_SET,
+              )}
+            </>
+          ) : null}
+          {clip.kind === "caption" ? (
+            <>
+              {readOnlyField(ids.captionStyle, "Caption style", clip.style_slot)}
+              {readOnlyField(
+                ids.captionCues,
+                "Caption cues",
+                clip.cues.length
+                  ? clip.cues
+                      .map(
+                        (cue) =>
+                          `${cue.from_frame}–${cue.from_frame + cue.duration_in_frames} ${cue.text}`,
+                      )
+                      .join(" · ")
+                  : NOT_SET,
+              )}
+            </>
+          ) : null}
         </div>
       ) : track ? (
         <div className="space-y-2">

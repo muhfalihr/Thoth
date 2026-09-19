@@ -13,7 +13,7 @@ type Props = {
    * page or capability that arrives after a document switch is dropped.
    */
   generationRef: RefObject<number>;
-  onAssets: (assets: EditorAsset[]) => void;
+  onAssets: (assets: EditorAsset[], replace: boolean) => void;
   onAdd: (asset: EditorAsset) => void;
   onPreviewSource: (assetId: string, previewUrl: string) => void;
 };
@@ -48,7 +48,7 @@ export function AssetLibrary({
         setAssets((current) => (from ? [...current, ...page.assets] : page.assets));
         setCursor(page.next_cursor ?? null);
         setFailed(false);
-        callbacks.current.onAssets(page.assets);
+        callbacks.current.onAssets(page.assets, !from);
       })
       .catch(() => generation === generationRef.current && setFailed(true))
       .finally(() => generation === generationRef.current && setLoading(false));

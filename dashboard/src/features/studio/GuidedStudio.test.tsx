@@ -649,3 +649,65 @@ test("detaches every player listener when Studio unmounts", async () => {
 
   expect(player.listenerCount).toBe(0);
 });
+
+test("keeps a first-page asset addable after a second page loads", async () => {
+  const { timelineDocument } = await import("./timeline-test-fixtures");
+  const upgraded = timelineDocument() as EditDocument;
+  const assetPage = (assetId: string, cursor: string | null) => ({
+    assets: [
+      {
+        asset_id: assetId,
+        project_id: "project_001",
+        kind: "video" as const,
+        media_type: "video/mp4",
+        has_audio: true,
+        validation_state: "ready" as const,
+        duration_in_frames: 60,
+      },
+    ],
+    next_cursor: cursor,
+  });
+  const listEditorAssets = mock(async (_projectId: string, cursor?: string) =>
+    cursor ? assetPage("asset_second", null) : assetPage("asset_first", "cursor_2"),
+  );
+  const patchEditDocument = mock(
+    async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+      kind: "saved" as const,
+      document: upgraded,
+    }),
+  );
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        ...advancedClientBase,
+        listEditorAssets,
+        getEditDocument: mock(async () => upgraded),
+        patchEditDocument,
+      }}
+      projectId="project_001"
+      documentId="document_002"
+      onBack={() => {}}
+    />,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "Load more assets" }));
+  expect(await screen.findByText("asset_second")).toBeDefined();
+  expect(screen.getByText("asset_first")).toBeDefined();
+
+  jest.useFakeTimers();
+  try {
+    fireEvent.click(screen.getByLabelText("Add asset_first to timeline"));
+    act(() => jest.advanceTimersByTime(500));
+    const patch = patchEditDocument.mock.calls[0]![2];
+    expect(patch.operations).toHaveLength(1);
+    expect(patch.operations[0]).toMatchObject({
+      kind: "add_clip_from_asset",
+      asset_id: "asset_first",
+      track_id: "track_main",
+    });
+  } finally {
+    jest.useRealTimers();
+  }
+});

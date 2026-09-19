@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import type { EditDocumentOperation } from "@/api/control-plane";
 import { TimelineInspector } from "./TimelineInspector";
-import { timelineDocument } from "./timeline-test-fixtures";
+import { timelineDocument, typedTimelineDocument } from "./timeline-test-fixtures";
 
 afterEach(cleanup);
 
@@ -110,4 +110,106 @@ test("offers to remove a track once it is empty and unlocked", () => {
     operation_id: "op",
     track_id: "track_captions",
   });
+});
+
+test("shows the newly selected clip's values without remounting", () => {
+  const document = typedTimelineDocument();
+  const view = render(
+    <TimelineInspector
+      document={document}
+      selectedClipId="clip_a"
+      selectedTrackId=""
+      onOperation={() => {}}
+    />,
+  );
+  expect((screen.getByLabelText("Start frame") as HTMLInputElement).value).toBe("0");
+
+  view.rerender(
+    <TimelineInspector
+      document={document}
+      selectedClipId="clip_b"
+      selectedTrackId=""
+      onOperation={() => {}}
+    />,
+  );
+
+  expect((screen.getByLabelText("Start frame") as HTMLInputElement).value).toBe("90");
+  expect((screen.getByLabelText("End frame") as HTMLInputElement).value).toBe("210");
+  expect((screen.getByLabelText("Fit") as HTMLInputElement).value).toBe("contain");
+  expect((screen.getByLabelText("Crop") as HTMLInputElement).value).toBe("0.1, 0.2, 0.5, 0.6");
+  expect((screen.getByLabelText("Position") as HTMLInputElement).value).toBe("40, -20 ×1.5");
+});
+
+test("emits an edit against the clip that is selected now", () => {
+  const document = typedTimelineDocument();
+  const operations: EditDocumentOperation[] = [];
+  const view = render(
+    <TimelineInspector
+      document={document}
+      selectedClipId="clip_a"
+      selectedTrackId=""
+      onOperation={(operation) => operations.push(operation)}
+    />,
+  );
+  view.rerender(
+    <TimelineInspector
+      document={document}
+      selectedClipId="clip_b"
+      selectedTrackId=""
+      onOperation={(operation) => operations.push(operation)}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Start frame"), { target: { value: "95" } });
+
+  expect(operations.map(payload)).toEqual([
+    { kind: "trim_clip_start", operation_id: "op", clip_id: "clip_b", from_frame: 95 },
+  ]);
+});
+
+test("reports an audio clip's volume and fades for the current selection", () => {
+  const document = typedTimelineDocument();
+  render(
+    <TimelineInspector
+      document={document}
+      selectedClipId="clip_audio"
+      selectedTrackId=""
+      onOperation={() => {}}
+    />,
+  );
+
+  expect((screen.getByLabelText("Volume") as HTMLInputElement).value).toBe("0.4");
+  expect((screen.getByLabelText("Fade in (frames)") as HTMLInputElement).value).toBe("12");
+  expect((screen.getByLabelText("Fade out (frames)") as HTMLInputElement).value).toBe("24");
+});
+
+test("reports persisted overlay and caption fields as read-only values", () => {
+  const document = typedTimelineDocument();
+  const view = render(
+    <TimelineInspector
+      document={document}
+      selectedClipId="clip_overlay"
+      selectedTrackId=""
+      onOperation={() => {}}
+    />,
+  );
+
+  const preset = screen.getByLabelText("Overlay preset") as HTMLInputElement;
+  expect(preset.value).toBe("lower_third");
+  expect(preset.disabled).toBe(true);
+  expect((screen.getByLabelText("Overlay text") as HTMLInputElement).value).toBe("Headline");
+  expect((screen.getByLabelText("Overlay accent") as HTMLInputElement).value).toBe("accent_primary");
+
+  view.rerender(
+    <TimelineInspector
+      document={document}
+      selectedClipId="clip_caption"
+      selectedTrackId=""
+      onOperation={() => {}}
+    />,
+  );
+
+  expect((screen.getByLabelText("Caption style") as HTMLInputElement).value).toBe("caption_default");
+  expect((screen.getByLabelText("Caption cues") as HTMLInputElement).value).toBe(
+    "0–30 First cue · 30–90 Second cue",
+  );
 });

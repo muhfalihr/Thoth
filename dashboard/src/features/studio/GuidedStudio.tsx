@@ -18,7 +18,7 @@ import { PromptLab, type PromptLabClient } from "./PromptLab";
 import { SceneBoard } from "./SceneBoard";
 import { Timeline } from "./Timeline";
 import { TimelineInspector } from "./TimelineInspector";
-import { compatibleTrackIds, isTimelineDocument } from "./timeline_domain";
+import { createAddClipFromAssetOperation, isTimelineDocument } from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
 
@@ -128,21 +128,11 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
 
   const addAsset = (asset: EditorAsset) => {
     if (!timeline) return;
-    const [trackId] = compatibleTrackIds(timeline, asset.kind === "audio" ? "audio" : "video");
-    if (!trackId) return;
-    dispatch({
-      type: "commit_timeline_operation",
-      operation: {
-        kind: "add_clip_from_asset",
-        operation_id: makeOperationId(),
-        clip_id: `clip_${crypto.randomUUID()}`,
-        track_id: trackId,
-        asset_id: asset.asset_id,
-        from_frame: state.playheadFrame,
-        duration_in_frames: asset.duration_in_frames ?? timeline.canvas.fps,
-        source_from_frame: 0,
-      },
+    const operation = createAddClipFromAssetOperation(timeline, asset, state.playheadFrame, {
+      operationId: makeOperationId(),
+      clipId: `clip_${crypto.randomUUID()}`,
     });
+    if (operation) dispatch({ type: "commit_timeline_operation", operation });
   };
 
   const upgradeDocument = () => {
@@ -357,7 +347,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                 client={assetClient}
                 projectId={projectId}
                 generationRef={generation}
-                onAssets={(assets) => dispatch({ type: "set_assets", assets })}
+                onAssets={(assets, replace) => dispatch({ type: "assets_loaded", assets, replace })}
                 onAdd={addAsset}
                 onPreviewSource={(assetId, previewUrl) =>
                   setPreviewSources((current) => ({ ...current, [assetId]: previewUrl }))

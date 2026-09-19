@@ -10,6 +10,7 @@ import {
   applyTimelineOperation,
   clampZoom,
   compatibleTrackIds,
+  createAddClipFromAssetOperation,
   framesToPixels,
   isTimelineDocument,
   issueTarget,
@@ -422,4 +423,62 @@ test("track settings flip without touching any clip", () => {
 
   expect(muted.tracks[1].muted).toBe(true);
   expect(muted.clips).toEqual(documentV2().clips);
+});
+
+const IDS = { operationId: "op_asset", clipId: "clip_asset" };
+const TIMED_ASSET: EditorAsset = { ...READY_ASSET, duration_in_frames: 600 };
+
+test("an asset becomes an add operation on the first compatible unlocked track", () => {
+  expect(createAddClipFromAssetOperation(documentV2(), TIMED_ASSET, 45, IDS)).toEqual({
+    kind: "add_clip_from_asset",
+    operation_id: "op_asset",
+    clip_id: "clip_asset",
+    track_id: "track_main",
+    asset_id: "asset_new",
+    from_frame: 45,
+    duration_in_frames: 600,
+    source_from_frame: 0,
+  });
+
+  expect(
+    createAddClipFromAssetOperation(
+      documentV2(),
+      { ...TIMED_ASSET, kind: "audio", media_type: "audio/mpeg" },
+      0,
+      IDS,
+    ),
+  ).toMatchObject({ track_id: "track_music", from_frame: 0, duration_in_frames: 600 });
+});
+
+test("an image lands on a video track for one canvas second", () => {
+  expect(
+    createAddClipFromAssetOperation(
+      documentV2(),
+      { ...READY_ASSET, kind: "image", media_type: "image/png" },
+      12,
+      IDS,
+    ),
+  ).toMatchObject({ track_id: "track_main", duration_in_frames: 30, from_frame: 12 });
+});
+
+test("an asset with no unlocked compatible track produces no operation", () => {
+  const document = documentV2();
+  const locked = {
+    ...document,
+    tracks: document.tracks.map((track) => ({ ...track, locked: true })),
+  };
+  expect(createAddClipFromAssetOperation(locked, READY_ASSET, 0, IDS)).toBeUndefined();
+
+  const withoutAudio = {
+    ...document,
+    tracks: document.tracks.filter((track) => track.kind !== "music"),
+  };
+  expect(
+    createAddClipFromAssetOperation(
+      withoutAudio,
+      { ...READY_ASSET, kind: "audio", media_type: "audio/mpeg" },
+      0,
+      IDS,
+    ),
+  ).toBeUndefined();
 });
