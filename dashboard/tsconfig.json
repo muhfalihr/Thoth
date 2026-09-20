@@ -6,7 +6,12 @@
   ],
   "compilerOptions": {
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      // The shared composition resolves Remotion through this same mapping, so
+      // app and package load one module instance under the test runner.
+      "remotion": ["./node_modules/remotion"],
+      "@thoth/remotion-composition": ["../packages/remotion-composition/src/index.ts"],
+      "@thoth/remotion-composition/*": ["../packages/remotion-composition/src/*"]
     }
   }
 }

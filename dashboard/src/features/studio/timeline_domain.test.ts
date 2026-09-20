@@ -482,3 +482,8 @@ test("an asset with no unlocked compatible track produces no operation", () => {
     ),
   ).toBeUndefined();
 });
+
+test("lane selection has one implementation, shared with the renderer", async () => {
+  const shared = await import("@thoth/remotion-composition");
+  expect(visibleLanes).toBe(shared.visibleLanes);
+});

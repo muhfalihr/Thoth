@@ -60,3 +60,8 @@ test("a version 2 document is not mistaken for a version 1 text story", () => {
   const timeline = { ...document, schema_version: 2 } as unknown as EditDocumentV2;
   expect(() => getPlayerConfig(timeline)).not.toThrow();
 });
+
+test("preview source narrowing has one implementation, shared with the renderer", async () => {
+  const shared = await import("@thoth/remotion-composition");
+  expect(safePreviewSource).toBe(shared.safePreviewSource);
+});

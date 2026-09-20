@@ -16,9 +16,15 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
-    /* Path alias for shadcn/ui */
+    /* Path alias for shadcn/ui, plus the shared render composition. The
+       composition ships source only, so Remotion resolves from here. */
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@thoth/remotion-composition": ["../packages/remotion-composition/src/index.ts"],
+      "@thoth/remotion-composition/*": ["../packages/remotion-composition/src/*"],
+      "remotion": ["./node_modules/remotion"],
+      "react": ["./node_modules/@types/react"],
+      "react/*": ["./node_modules/@types/react/*"]
     },
 
     /* Linting */

@@ -1,0 +1,15 @@
+{
+  "name": "@thoth/remotion-composition",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The one trusted Remotion composition, shared by the Studio preview and the isolated renderer.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./register": "./src/register.tsx"
+  },
+  "peerDependencies": {
+    "react": "^19.2.7",
+    "remotion": "4.0.523"
+  }
+}

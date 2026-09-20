@@ -17,7 +17,11 @@ type TimelineTrack = EditDocumentV2["tracks"][number];
 type TimelineClip = NonNullable<EditDocumentV2["clips"]>[number];
 type AssetRef = NonNullable<EditDocumentV2["asset_refs"]>[number];
 
-export type TimelineLane = { track: TimelineTrack; clips: TimelineClip[] };
+// Lane selection is drawn as well as edited, so it lives with the composition
+// the renderer shares; editing callers keep importing it from here.
+import { visibleLanes } from "@thoth/remotion-composition";
+
+export { visibleLanes, type TimelineLane } from "@thoth/remotion-composition";
 
 export type TimelineIssueCode =
   | "main_track_gap"
@@ -131,18 +135,6 @@ export function createAddClipFromAssetOperation(
     duration_in_frames: asset.duration_in_frames ?? document.canvas.fps,
     source_from_frame: 0,
   };
-}
-
-export function visibleLanes(document: EditDocumentV2): TimelineLane[] {
-  const clips = document.clips ?? [];
-  return [...document.tracks]
-    .sort((left, right) => left.order - right.order)
-    .map((track) => ({
-      track,
-      clips: clips
-        .filter((clip) => clip.track_id === track.track_id)
-        .sort((left, right) => left.from_frame - right.from_frame),
-    }));
 }
 
 export function timelineIssues(document: EditDocumentV2): TimelineIssue[] {

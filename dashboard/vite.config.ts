@@ -9,7 +9,14 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@thoth/remotion-composition": path.resolve(
+        __dirname,
+        "../packages/remotion-composition/src",
+      ),
     },
+    // The shared composition lives outside this app, so Remotion and React must
+    // still resolve to this app's single copy of each.
+    dedupe: ["react", "react-dom", "remotion"],
   },
   server: {
     proxy: {

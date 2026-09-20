@@ -1,0 +1,29 @@
+{
+  // This package ships source only: it owns no dependency tree. Remotion and
+  // React always come from the surface that builds it, so preview and server
+  // render load exactly one copy of each and behave identically.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "remotion": ["../../dashboard/node_modules/remotion"],
+      // Types first, runtime second: a type-checker stops at the declarations
+      // and a runtime falls through to the implementation beside them.
+      "react": ["../../dashboard/node_modules/@types/react", "../../dashboard/node_modules/react"],
+      "react/*": [
+        "../../dashboard/node_modules/@types/react/*",
+        "../../dashboard/node_modules/react/*"
+      ]
+    }
+  },
+  "include": ["src"]
+}

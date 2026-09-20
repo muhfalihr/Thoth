@@ -5,10 +5,14 @@ import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import type { EditDocumentV2 } from "@/api/control-plane";
+import { previewComposition } from "./preview";
 import { typedTimelineDocument } from "./timeline-test-fixtures";
 
 /** Props the media primitives received, in render order, per test. */
 const mediaProps: { audio: Record<string, unknown>[] } = { audio: [] };
+
+/** Every composition the server root registered, in registration order. */
+const registrations: Record<string, unknown>[] = [];
 
 // Remotion primitives need a composition context that no unit test provides, so
 // they are replaced with inert markers that keep the real rendering decisions
@@ -38,12 +42,21 @@ mock.module("remotion", () => ({
     return <div data-testid="audio" {...rest} />;
   },
   Img: (props: Record<string, unknown>) => <div data-testid="img" {...props} />,
+  // The server root registers compositions instead of rendering them, so the
+  // registration itself is what the test inspects.
+  Composition: (props: Record<string, unknown>) => {
+    registrations.push(props);
+    return null;
+  },
+  registerRoot: () => undefined,
 }));
 
-const { AdvancedTimelineComposition } = await import("./AdvancedTimelineComposition");
+const { AdvancedTimelineComposition, COMPOSITION_ID } = await import("@thoth/remotion-composition");
+const { RenderRoot } = await import("@thoth/remotion-composition/register");
 
 afterEach(() => {
   mediaProps.audio.length = 0;
+  registrations.length = 0;
   cleanup();
 });
 
@@ -193,6 +206,30 @@ function documentV2(): EditDocumentV2 {
 }
 
 const SOURCES = { asset_video: "/api/v1/projects/project_001/editor-assets/asset_video/preview" };
+
+test("the browser preview and the server registration share one component and one ID", () => {
+  expect(COMPOSITION_ID).toBe("advanced_timeline_v1");
+  expect(previewComposition(documentV2()).component).toBe(AdvancedTimelineComposition);
+
+  render(<RenderRoot />);
+  expect(registrations).toHaveLength(1);
+  expect(registrations[0]!.id).toBe(COMPOSITION_ID);
+  expect(registrations[0]!.component).toBe(AdvancedTimelineComposition);
+});
+
+test("the registered composition takes its timing from the document, not from a default", () => {
+  render(<RenderRoot />);
+  const calculateMetadata = registrations[0]!.calculateMetadata as (input: {
+    props: { document: EditDocumentV2 };
+  }) => { width: number; height: number; fps: number; durationInFrames: number };
+
+  expect(calculateMetadata({ props: { document: documentV2() } })).toEqual({
+    width: 1080,
+    height: 1920,
+    fps: 30,
+    durationInFrames: 300,
+  });
+});
 
 test("renders visible lanes back to front in track order", () => {
   render(<AdvancedTimelineComposition document={documentV2()} previewSources={SOURCES} />);
@@ -355,8 +392,9 @@ test("an unknown accent slot falls back and never becomes markup or style", () =
   render(<AdvancedTimelineComposition document={document} previewSources={TYPED_SOURCES} />);
   const overlay = screen.getByTestId("overlay-lower_third");
   expect(overlay.getAttribute("data-accent")).toBe("default");
-  expect(overlay.className).not.toContain("javascript");
-  expect(overlay.getAttribute("style")).toBeNull();
+  // Styling is a registry lookup, so the stored slot never reaches the style attribute.
+  expect(overlay.getAttribute("style") ?? "").not.toContain("javascript");
+  expect(overlay.style.color).toBe("#ffffff");
 });
 
 test("caption cues use a trusted style and stay timed inside their clip", () => {
@@ -384,8 +422,8 @@ test("an unregistered caption style falls back instead of taking the raw string"
   render(<AdvancedTimelineComposition document={document} previewSources={TYPED_SOURCES} />);
   const cue = (screen.getAllByTestId("caption-cue") as HTMLElement[])[0]!;
   expect(cue.getAttribute("data-caption-style")).toBe("default");
-  expect(cue.className).not.toContain("url(");
-  expect(cue.getAttribute("style")).toBeNull();
+  // The unregistered slot is dropped whole; none of it survives as CSS.
+  expect(cue.getAttribute("style") ?? "").not.toContain("url(");
 });
 
 const STILL_SOURCE = "/api/v1/projects/project_001/editor-assets/asset_still/preview";
