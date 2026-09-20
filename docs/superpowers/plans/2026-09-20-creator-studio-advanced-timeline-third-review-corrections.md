@@ -44,7 +44,8 @@ Testing Library, Ruff, Oxlint, Vite.
 
 **Interfaces:**
 - Consumes: `save_succeeded`, `timelineIssues(returnedDocument)`.
-- Produces: `selectedIssueId` that is either still present or `null`.
+- Produces: `selectedIssueId` that is either the identifier the returned
+  document still produces or the existing empty-string sentinel `""`.
 
 - [ ] **Step 1: Write focused failing reducer tests.**
 

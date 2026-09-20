@@ -35,7 +35,8 @@ The correction keeps these invariants:
 When `save_succeeded` adopts a returned version 2 document, the editor may
 preserve `selectedIssueId` only when that exact identifier is present in
 `timelineIssues(returnedDocument)`. If the saved revision resolves, renames, or
-otherwise removes the issue, selection becomes `null`.
+otherwise removes the issue, selection falls back to the empty-string sentinel
+`""` that `EditorState.selectedIssueId` already uses for "nothing selected".
 
 Tests must select identifiers actually produced by `timelineIssues`; a made-up
 identifier is not evidence of preservation. They must cover both a surviving
