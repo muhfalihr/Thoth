@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, expect, jest, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { RefObject } from "react";
 import userEvent from "@testing-library/user-event";
 import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
@@ -650,23 +650,25 @@ test("detaches every player listener when Studio unmounts", async () => {
   expect(player.listenerCount).toBe(0);
 });
 
-test("keeps a first-page asset addable after a second page loads", async () => {
+const assetPage = (assetId: string, cursor: string | null) => ({
+  assets: [
+    {
+      asset_id: assetId,
+      project_id: "project_001",
+      kind: "video" as const,
+      media_type: "video/mp4",
+      has_audio: true,
+      validation_state: "ready" as const,
+      duration_in_frames: 60,
+    },
+  ],
+  next_cursor: cursor,
+});
+
+/** Two ready assets, one per page, in a Studio whose saves always succeed. */
+async function renderPagedAssetStudio() {
   const { timelineDocument } = await import("./timeline-test-fixtures");
   const upgraded = timelineDocument() as EditDocument;
-  const assetPage = (assetId: string, cursor: string | null) => ({
-    assets: [
-      {
-        asset_id: assetId,
-        project_id: "project_001",
-        kind: "video" as const,
-        media_type: "video/mp4",
-        has_audio: true,
-        validation_state: "ready" as const,
-        duration_in_frames: 60,
-      },
-    ],
-    next_cursor: cursor,
-  });
   const listEditorAssets = mock(async (_projectId: string, cursor?: string) =>
     cursor ? assetPage("asset_second", null) : assetPage("asset_first", "cursor_2"),
   );
@@ -691,6 +693,23 @@ test("keeps a first-page asset addable after a second page loads", async () => {
       onBack={() => {}}
     />,
   );
+  return { listEditorAssets, patchEditDocument };
+}
+
+/** Let the debounced autosave fire and its response settle. */
+async function completeAutosave(act_: () => void) {
+  jest.useFakeTimers();
+  try {
+    act_();
+    act(() => jest.advanceTimersByTime(500));
+  } finally {
+    jest.useRealTimers();
+  }
+  await act(async () => {});
+}
+
+test("keeps a first-page asset addable after a second page loads", async () => {
+  const { patchEditDocument } = await renderPagedAssetStudio();
 
   fireEvent.click(await screen.findByRole("button", { name: "Load more assets" }));
   expect(await screen.findByText("asset_second")).toBeDefined();
@@ -710,4 +729,43 @@ test("keeps a first-page asset addable after a second page loads", async () => {
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("stays in Simple mode after a version 2 autosave completes", async () => {
+  const { upgradedTextDocument } = await import("./timeline-test-fixtures");
+  const upgraded = upgradedTextDocument() as EditDocument;
+  const patchEditDocument = mock(
+    async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+      kind: "saved" as const,
+      document: { ...upgraded, revision: upgraded.revision + 1 },
+    }),
+  );
+  await renderTimelineStudio(upgraded, patchEditDocument);
+  fireEvent.click(screen.getByRole("button", { name: "Simple" }));
+
+  await completeAutosave(() =>
+    fireEvent.change(screen.getByLabelText("Heading"), { target: { value: "Saved heading" } }),
+  );
+
+  expect(patchEditDocument).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(screen.getByText("Saved")).toBeDefined());
+  expect(screen.getByRole("button", { name: "Simple" }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByLabelText("Heading")).toBeDefined();
+});
+
+test("keeps a loaded asset addable after an earlier asset edit saves", async () => {
+  const { patchEditDocument } = await renderPagedAssetStudio();
+  fireEvent.click(await screen.findByRole("button", { name: "Load more assets" }));
+  expect(await screen.findByText("asset_second")).toBeDefined();
+
+  await completeAutosave(() => fireEvent.click(screen.getByLabelText("Add asset_first to timeline")));
+  expect(patchEditDocument).toHaveBeenCalledTimes(1);
+
+  await completeAutosave(() => fireEvent.click(screen.getByLabelText("Add asset_second to timeline")));
+
+  expect(patchEditDocument).toHaveBeenCalledTimes(2);
+  expect(patchEditDocument.mock.calls[1]![2].operations[0]).toMatchObject({
+    kind: "add_clip_from_asset",
+    asset_id: "asset_second",
+  });
 });

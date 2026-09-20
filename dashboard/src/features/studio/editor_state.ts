@@ -331,6 +331,35 @@ function timelineDraft(
   }
 }
 
+/**
+ * The session state a save keeps. The revision the server returns owns the
+ * data; mode, selection, and playback belong to the editor that is still open,
+ * so they survive unless the returned document no longer holds them.
+ */
+function sessionAfterSave(
+  state: EditorState,
+  document: EditDocument,
+  saved: EditorState,
+): Partial<EditorState> {
+  const clip = documentClips(document).find((entry) => entry.clip_id === state.selectedClipId);
+  const trackExists = document.tracks.some((track) => track.track_id === state.selectedTrackId);
+  const lastFrame = Math.max(document.canvas.duration_in_frames - 1, 0);
+  return {
+    mode: isTimelineDocument(document) ? state.mode : saved.mode,
+    selectedSceneId: document.scenes.some((scene) => scene.scene_id === state.selectedSceneId)
+      ? state.selectedSceneId
+      : saved.selectedSceneId,
+    selectedTrackId: clip ? String(clip.track_id) : trackExists ? state.selectedTrackId : "",
+    selectedClipId: clip ? state.selectedClipId : "",
+    selectedIssueId: state.selectedIssueId,
+    playheadFrame: Math.min(state.playheadFrame, lastFrame),
+    playing: state.playing,
+    zoom: state.zoom,
+    snapping: state.snapping,
+    ripple: state.ripple,
+  };
+}
+
 function gestureOrigin(state: EditorState): EditorSnapshot {
   return state.preview ?? { draft: state.draft, pendingOperations: state.pendingOperations };
 }
@@ -435,15 +464,13 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
           latestConflict: undefined,
         };
       }
-      const saved = createEditorState(action.document);
+      const saved = createEditorState(action.document, state.assets);
       return {
         ...saved,
+        ...sessionAfterSave(state, action.document, saved),
         isOffline: state.isOffline,
         inFlightOperationIds: [],
         saveStatus: state.isOffline ? "offline" : saved.saveStatus,
-        selectedSceneId: action.document.scenes.some((scene) => scene.scene_id === state.selectedSceneId)
-          ? state.selectedSceneId
-          : saved.selectedSceneId,
       };
     }
     case "save_failed":

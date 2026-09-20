@@ -747,3 +747,84 @@ test("upgrade conflict and failure keep the local draft", () => {
   // A failed upgrade is retryable: editing is possible again.
   expect(editHeading(failed, "after failure").pendingOperations).toHaveLength(1);
 });
+
+const readyVideoAsset = (): EditorAsset => ({
+  asset_id: "asset_new",
+  project_id: "project_001",
+  kind: "video",
+  media_type: "video/mp4",
+  has_audio: true,
+  validation_state: "ready",
+  duration_in_frames: 600,
+});
+
+test("save success preserves version 2 session state and loaded assets", () => {
+  const asset = readyVideoAsset();
+  let state = createEditorState(timelineDocument(), { [asset.asset_id]: asset });
+  state = editorReducer(state, { type: "set_editor_mode", mode: "simple" });
+  state = editorReducer(state, { type: "select_clip", clipId: "clip_music" });
+  state = editorReducer(state, { type: "select_issue", issueId: "issue_001" });
+  state = editorReducer(state, { type: "set_playhead", frame: 77 });
+  state = editorReducer(state, { type: "set_playing", playing: true });
+  state = editorReducer(state, { type: "set_zoom", zoom: 2 });
+  state = editorReducer(state, { type: "set_snapping", snapping: false });
+  state = editorReducer(state, { type: "set_ripple", ripple: true });
+
+  const saved = editorReducer(state, {
+    type: "save_succeeded",
+    document: { ...timelineDocument(), revision: 5 },
+  });
+
+  expect(saved.mode).toBe("simple");
+  expect(saved.selectedClipId).toBe("clip_music");
+  expect(saved.selectedTrackId).toBe("track_music");
+  expect(saved.selectedIssueId).toBe("issue_001");
+  expect(saved.playheadFrame).toBe(77);
+  expect(saved.playing).toBe(true);
+  expect(saved.zoom).toBe(2);
+  expect(saved.snapping).toBe(false);
+  expect(saved.ripple).toBe(true);
+  expect(saved.assets).toEqual({ [asset.asset_id]: asset });
+  expect(saved.base).toMatchObject({ revision: 5 });
+  expect(saved.saveStatus).toBe("saved");
+});
+
+test("save success drops session identities the returned document no longer holds", () => {
+  let state = createEditorState(timelineDocument());
+  state = editorReducer(state, { type: "select_clip", clipId: "clip_music" });
+  state = editorReducer(state, { type: "set_playhead", frame: 250 });
+
+  const shortened = timelineDocument();
+  const persisted: EditDocumentV2 = {
+    ...shortened,
+    revision: 6,
+    canvas: { ...shortened.canvas, duration_in_frames: 120 },
+    scenes: [],
+    tracks: shortened.tracks.filter((track) => track.track_id !== "track_music"),
+    clips: shortened.clips?.filter((clip) => clip.clip_id !== "clip_music"),
+  };
+  const saved = editorReducer(state, { type: "save_succeeded", document: persisted });
+
+  expect(saved.selectedClipId).toBe("");
+  expect(saved.selectedTrackId).toBe("");
+  expect(saved.selectedSceneId).toBe("");
+  expect(saved.playheadFrame).toBe(119);
+});
+
+test("save success of a version 1 document stays in simple mode", () => {
+  const state = editorReducer(createEditorState(document), {
+    type: "edit_text",
+    clipId: "clip_001",
+    field: "heading",
+    value: "Edited heading",
+    operationId: "op_text",
+  });
+
+  const saved = editorReducer(state, {
+    type: "save_succeeded",
+    document: { ...document, revision: 4 },
+  });
+
+  expect(saved.mode).toBe("simple");
+  expect(saved.pendingOperations).toEqual([]);
+});
