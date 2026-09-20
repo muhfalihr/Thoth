@@ -7,13 +7,16 @@ public response. Every exception here carries a fixed safe message.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
 from thoth_control_plane.domain.render_jobs import (
     RenderJob,
     RenderJobEvent,
     RenderJobPage,
+    RenderOutputFacts,
 )
 
 
@@ -61,6 +64,87 @@ class InvalidRenderCursor(Exception):
 
     def __init__(self) -> None:
         super().__init__("render cursor invalid")
+
+
+class ArtifactPathInvalid(Exception):
+    """Raised when an identity or location cannot address a safe artifact path."""
+
+    def __init__(self) -> None:
+        super().__init__("render artifact path invalid")
+
+
+class ArtifactUnavailable(Exception):
+    """Raised when a required artifact is missing, oversized, or not as recorded."""
+
+    def __init__(self) -> None:
+        super().__init__("render artifact unavailable")
+
+
+@dataclass(frozen=True)
+class JobWorkspace:
+    """One job's staging area, described only by names the caller may use."""
+
+    render_job_id: str
+    bundle_name: str = "bundle.json"
+    assets_name: str = "assets"
+
+
+@dataclass(frozen=True)
+class StagedAsset:
+    """One asset copied into a workspace and verified against its record."""
+
+    asset_id: str
+    relative_name: str
+    size_bytes: int
+    checksum: str
+
+
+@dataclass(frozen=True)
+class PublishedArtifact:
+    """The one published render, addressed relative to the artifact root."""
+
+    relative_path: str
+    size_bytes: int
+    checksum: str
+
+
+class ArtifactRoot(Protocol):
+    """The only component allowed to compose or resolve an E1 filesystem path."""
+
+    def prepare(self, render_job_id: str) -> JobWorkspace:
+        """Create this job's workspace and temporary directory."""
+
+    def stage_asset(
+        self,
+        workspace: JobWorkspace,
+        *,
+        asset_id: str,
+        source: Path,
+        expected_checksum: str,
+        max_bytes: int,
+    ) -> StagedAsset:
+        """Copy one bounded, checksum-verified asset into the workspace."""
+
+    def write_bundle(self, workspace: JobWorkspace, bundle_json: bytes) -> str:
+        """Write the immutable bundle and return its relative name."""
+
+    def verify_temporary_output(self, render_job_id: str, expected: RenderOutputFacts) -> Path:
+        """Confirm the temporary render is a regular file matching its facts."""
+
+    def publish(
+        self,
+        render_job_id: str,
+        output: RenderOutputFacts,
+        metadata_json: bytes,
+        diagnostics_json: bytes,
+    ) -> PublishedArtifact:
+        """Atomically publish a verified render with its bounded records."""
+
+    def resolve_download(self, render_job_id: str, relative_path: str) -> Path:
+        """Resolve the one downloadable render this job published."""
+
+    def cleanup(self, render_job_id: str) -> None:
+        """Delete only this job's files, keeping its bounded safe records."""
 
 
 class RenderJobRepository(Protocol):
