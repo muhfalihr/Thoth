@@ -336,6 +336,28 @@ async def test_get_returns_none_for_another_project(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_the_active_slot_is_read_once_across_every_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = Cursor({JOB_SELECT: [row_for(job())]})
+
+    found = await repository(monkeypatch, cursor).get_active()
+
+    assert found == job()
+    statement = " ".join(cursor.calls[0][0].split())
+    assert "WHERE status IN ('preparing', 'rendering', 'finalizing')" in statement
+    assert "LIMIT 1" in statement
+    assert "project_id = %s" not in statement
+
+
+@pytest.mark.asyncio
+async def test_a_free_slot_reads_as_no_active_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    cursor = Cursor({JOB_SELECT: [None]})
+
+    assert await repository(monkeypatch, cursor).get_active() is None
+
+
+@pytest.mark.asyncio
 async def test_internal_read_is_not_project_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
     cursor = Cursor({JOB_SELECT: [row_for(job())]})
 

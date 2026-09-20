@@ -229,6 +229,25 @@ class PostgresRenderJobRepository:
         except Exception as error:
             raise RenderPersistenceError() from error
 
+    async def get_active(self) -> RenderJob | None:
+        try:
+            connection = await AsyncConnection.connect(self._database_url)
+            async with connection:
+                cursor = connection.cursor()
+                await cursor.execute(
+                    f"""
+                    SELECT {RENDER_JOB_COLUMNS}
+                    FROM render_jobs
+                    WHERE status IN {ACTIVE_STATUS_SQL}
+                    LIMIT 1
+                    """,
+                    (),
+                )
+                row = await cursor.fetchone()
+                return None if row is None else _row_to_job(row)
+        except Exception as error:
+            raise RenderPersistenceError() from error
+
     async def get(self, *, project_id: str, render_job_id: str) -> RenderJob | None:
         try:
             connection = await AsyncConnection.connect(self._database_url)

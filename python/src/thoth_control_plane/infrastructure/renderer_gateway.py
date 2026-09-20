@@ -29,6 +29,8 @@ REQUEST_TIMEOUT_SECONDS = 10.0
 class HttpRendererGateway:
     """Perform exactly one authenticated private request per action."""
 
+    configured = True
+
     def __init__(
         self,
         *,
@@ -96,6 +98,8 @@ class HttpRendererGateway:
 
 class UnavailableRendererGateway:
     """Stand in when no renderer is configured, so the control plane still starts."""
+
+    configured = False
 
     async def start(self, *, render_job_id: str, dispatch_id: str) -> None:
         raise RendererNotConfigured()
