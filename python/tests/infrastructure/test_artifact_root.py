@@ -84,6 +84,8 @@ def test_every_entry_point_validates_job_identity(tmp_path: Path, unsafe: str) -
     with pytest.raises(ArtifactPathInvalid):
         root.resolve_download(unsafe, "renders/rj_1/output.mp4")
     with pytest.raises(ArtifactPathInvalid):
+        root.read_bundle(unsafe)
+    with pytest.raises(ArtifactPathInvalid):
         root.cleanup(unsafe)
 
 
@@ -233,6 +235,20 @@ def test_write_bundle_returns_only_a_relative_name(tmp_path: Path) -> None:
     assert json.loads((tmp_path / "work" / JOB / "bundle.json").read_text("utf-8")) == {
         "version": 1
     }
+
+
+def test_read_bundle_returns_exactly_the_bytes_that_were_staged(tmp_path: Path) -> None:
+    root = LocalArtifactRoot(tmp_path)
+    workspace = root.prepare(JOB)
+    payload = json.dumps({"version": 1, "assets": []}).encode("utf-8")
+    root.write_bundle(workspace, payload)
+
+    assert root.read_bundle(JOB) == payload
+
+
+def test_read_bundle_refuses_a_job_that_was_never_staged(tmp_path: Path) -> None:
+    with pytest.raises(ArtifactUnavailable):
+        LocalArtifactRoot(tmp_path).read_bundle(JOB)
 
 
 # --- verification and publication ----------------------------------------

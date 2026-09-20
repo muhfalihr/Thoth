@@ -1,7 +1,10 @@
 """FastAPI application factory."""
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, Request, Response, status
@@ -14,8 +17,10 @@ from temporalio.service import RPCError
 from thoth_control_plane.api.routes.edit_documents import router as edit_document_router
 from thoth_control_plane.api.routes.editor_assets import router as editor_asset_router
 from thoth_control_plane.api.routes.health import router as health_router
+from thoth_control_plane.api.routes.internal_render_jobs import router as internal_render_router
 from thoth_control_plane.api.routes.prompt_lab import router as prompt_lab_router
 from thoth_control_plane.api.routes.prompt_proposals import router as prompt_proposal_router
+from thoth_control_plane.api.routes.render_jobs import router as render_job_router
 from thoth_control_plane.api.routes.workflows import router as workflow_router
 from thoth_control_plane.application import (
     ApprovalNotAllowed,
@@ -39,8 +44,11 @@ from thoth_control_plane.application.prompt_proposal_ports import (
     PromptProposalWorkflowGateway as C2ProposalGateway,
 )
 from thoth_control_plane.application.prompt_proposals import PromptProposalService
+from thoth_control_plane.application.render_bundles import RenderPresetSettings
+from thoth_control_plane.application.render_jobs import RenderJobService
 from thoth_control_plane.config import Settings
 from thoth_control_plane.domain.prompt_proposals import PromptProviderDefinition
+from thoth_control_plane.infrastructure.artifact_root import LocalArtifactRoot
 from thoth_control_plane.infrastructure.editor_asset_repository import (
     PostgresEditorAssetRepository,
 )
@@ -56,9 +64,19 @@ from thoth_control_plane.infrastructure.prompt_provider import (
     public_prompt_provider_catalog,
 )
 from thoth_control_plane.infrastructure.prompt_repository import PostgresPromptLabRepository
+from thoth_control_plane.infrastructure.render_job_repository import PostgresRenderJobRepository
+from thoth_control_plane.infrastructure.renderer_gateway import (
+    HttpRendererGateway,
+    UnavailableRendererGateway,
+)
 from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflowGateway
 
 CONTRACT_VERSION = "1"
+
+#: One staged clip is bounded well below this; the renderer never streams.
+RENDER_ASSET_MAX_BYTES = 1024 * 1024 * 1024
+#: How often the deadline scan runs. It is a bounded sweep, never a queue.
+RENDER_RECONCILE_INTERVAL_SECONDS = 60
 
 
 def _preview_signer(settings: Settings) -> EditorPreviewSigner | None:
@@ -71,6 +89,52 @@ def _preview_signer(settings: Settings) -> EditorPreviewSigner | None:
     )
 
 
+def _render_job_service(
+    settings: Settings,
+    editor_repository: EditDocumentRepository | None,
+    editor_asset_repository: EditorAssetRepository | None,
+) -> RenderJobService:
+    """Compose the render service from settings, degrading instead of failing.
+
+    A missing database or renderer only makes render unavailable: every other
+    part of the control plane must still start and serve.
+    """
+    database_url = settings.THOTH_EDITOR_DATABASE_URL
+    renderer = (
+        HttpRendererGateway(
+            base_url=str(settings.THOTH_RENDERER_INTERNAL_URL),
+            credential=settings.THOTH_RENDERER_INTERNAL_CREDENTIAL,  # type: ignore[arg-type]
+        )
+        if settings.renderer_enabled
+        else UnavailableRendererGateway()
+    )
+    return RenderJobService(
+        jobs=(
+            PostgresRenderJobRepository(database_url.get_secret_value())
+            if database_url is not None
+            else None
+        ),
+        documents=editor_repository,
+        assets=editor_asset_repository,
+        artifacts=LocalArtifactRoot(settings.THOTH_CONTROL_PLANE_ARTIFACT_ROOT),
+        renderer=renderer,
+        settings=RenderPresetSettings(
+            preset_id=settings.THOTH_RENDER_PRESET_ID,
+            renderer_version=settings.THOTH_RENDERER_VERSION,
+            max_asset_bytes=RENDER_ASSET_MAX_BYTES,
+        ),
+        max_render_seconds=settings.THOTH_RENDER_MAX_SECONDS,
+    )
+
+
+async def _reconcile_render_deadlines(service: RenderJobService, interval: float) -> None:
+    """Close jobs that outlived their deadline; nothing here starts a render."""
+    while True:
+        await asyncio.sleep(interval)
+        with contextlib.suppress(Exception):
+            await service.reconcile_expired(datetime.now(UTC))
+
+
 def create_app(
     settings: Settings | None = None,
     gateway: WorkflowGateway | None = None,
@@ -80,6 +144,7 @@ def create_app(
     prompt_proposal_gateway: C2ProposalGateway | None = None,
     prompt_provider_catalog: tuple[PromptProviderDefinition, ...] | None = None,
     editor_asset_repository: EditorAssetRepository | None = None,
+    render_job_service: RenderJobService | None = None,
 ) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
     settings = settings or Settings()  # type: ignore[call-arg]
@@ -111,6 +176,10 @@ def create_app(
         gateway=prompt_proposal_gateway,
     )
 
+    render_service = render_job_service or _render_job_service(
+        settings, editor_repository, editor_asset_repository
+    )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         resolved_gateway = gateway
@@ -137,7 +206,19 @@ def create_app(
             catalog=effective_catalog,
             gateway=effective_gateway,
         )
-        yield
+        # One bounded pass first, so a job left active by a restart is closed
+        # rather than resumed, then the same pass on a cancellable interval.
+        with contextlib.suppress(Exception):
+            await render_service.reconcile_expired(datetime.now(UTC))
+        reconciler = asyncio.create_task(
+            _reconcile_render_deadlines(render_service, RENDER_RECONCILE_INTERVAL_SECONDS)
+        )
+        try:
+            yield
+        finally:
+            reconciler.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reconciler
 
     app = FastAPI(
         title="Thoth Control Plane",
@@ -153,6 +234,7 @@ def create_app(
     app.state.editor_preview_signer = _preview_signer(settings)
     app.state.prompt_lab_service = PromptLabService(prompt_repository)
     app.state.prompt_proposal_service = prompt_proposal_service
+    app.state.render_job_service = render_service
 
     app.add_middleware(
         CORSMiddleware,
@@ -192,7 +274,7 @@ def create_app(
     # token, which would otherwise be reflected verbatim into the error body.
     # Rewrite only those cases to a stable safe code; every other validation
     # error keeps FastAPI's default handling untouched.
-    idempotent_suffixes = ("/prompt-lab/proposals", "/upgrade-timeline")
+    idempotent_suffixes = ("/prompt-lab/proposals", "/upgrade-timeline", "/render-jobs", "/retry")
 
     @app.exception_handler(RequestValidationError)
     async def safe_validation_error_handler(
@@ -224,4 +306,7 @@ def create_app(
     app.include_router(editor_asset_router, prefix="/api/v1")
     app.include_router(prompt_lab_router, prefix="/api/v1")
     app.include_router(prompt_proposal_router, prefix="/api/v1")
+    app.include_router(render_job_router, prefix="/api/v1")
+    # Unversioned and unpublished: only the private renderer ever calls these.
+    app.include_router(internal_render_router)
     return app

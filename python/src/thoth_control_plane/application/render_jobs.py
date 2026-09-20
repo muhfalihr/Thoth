@@ -421,6 +421,18 @@ class RenderJobService:
                 await self._renderer.cancel(render_job_id=render_job_id)
         return updated
 
+    # --- private reads ----------------------------------------------------
+
+    async def bundle(self, render_job_id: str) -> bytes:
+        """Return the staged bundle for the job the renderer says it is running."""
+        jobs = self._require_enabled()
+        job = await jobs.get_internal(render_job_id=render_job_id)
+        if job is None:
+            raise RenderJobNotFound()
+        if job.artifacts_cleaned_at is not None or self._artifacts is None:
+            raise ArtifactUnavailable()
+        return self._artifacts.read_bundle(job.render_job_id)
+
     # --- events -----------------------------------------------------------
 
     async def ingest_event(self, render_job_id: str, event: RenderJobEvent) -> RenderJob:

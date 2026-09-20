@@ -40,6 +40,8 @@ _LOCATOR_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _CHUNK_BYTES = 1024 * 1024
 _OUTPUT_NAME = "output.mp4"
+#: A bundle is one document revision and its staged names; far below this.
+_MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 
 
 def _valid_identifier(value: str) -> str:
@@ -158,6 +160,15 @@ class LocalArtifactRoot:
         job = _valid_identifier(workspace.render_job_id)
         _atomic_write(self._contained("work", job, workspace.bundle_name), bundle_json)
         return workspace.bundle_name
+
+    def read_bundle(self, render_job_id: str) -> bytes:
+        job = _valid_identifier(render_job_id)
+        target = self._contained("work", job, JobWorkspace(render_job_id=job).bundle_name)
+        if _is_link(target):
+            raise ArtifactPathInvalid()
+        if not target.is_file() or target.stat().st_size > _MAX_BUNDLE_BYTES:
+            raise ArtifactUnavailable()
+        return target.read_bytes()
 
     def verify_temporary_output(self, render_job_id: str, expected: RenderOutputFacts) -> Path:
         job = _valid_identifier(render_job_id)

@@ -173,6 +173,9 @@ class ArtifactRoot(Protocol):
     def write_bundle(self, workspace: JobWorkspace, bundle_json: bytes) -> str:
         """Write the immutable bundle and return its relative name."""
 
+    def read_bundle(self, render_job_id: str) -> bytes:
+        """Read back one job's staged bundle, the only input the renderer gets."""
+
     def verify_temporary_output(self, render_job_id: str, expected: RenderOutputFacts) -> Path:
         """Confirm the temporary render is a regular file matching its facts."""
 
