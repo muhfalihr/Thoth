@@ -1,11 +1,12 @@
-import { AbsoluteFill, Audio, Sequence, Video } from "remotion";
-import type { ReactNode } from "react";
+import { AbsoluteFill, Audio, Img, Sequence, Video } from "remotion";
+import type { CSSProperties, ReactNode } from "react";
 
 import type { EditDocumentV2 } from "@/api/control-plane";
 import { visibleLanes } from "./timeline_domain";
 import { safePreviewSource } from "./preview";
 
 type TimelineClip = NonNullable<EditDocumentV2["clips"]>[number];
+type AssetKind = NonNullable<EditDocumentV2["asset_refs"]>[number]["kind"];
 type OverlayClip = Extract<TimelineClip, { kind: "overlay" }>;
 type AudioClip = Extract<TimelineClip, { kind: "audio" }>;
 
@@ -87,6 +88,9 @@ export function AdvancedTimelineComposition({
   previewSources = {},
   onPreviewUnavailable,
 }: Props) {
+  // Whether a clip is a still or a movie comes only from the document's own
+  // validated asset reference, never from a preview URL or its suffix.
+  const kinds = new Map((document.asset_refs ?? []).map((ref) => [ref.asset_id, ref.kind]));
   return (
     <AbsoluteFill className="bg-zinc-950 text-white">
       {/* Lanes are editor rows, so a hidden track still has one; the preview drops it. */}
@@ -102,7 +106,7 @@ export function AdvancedTimelineComposition({
                 from={clip.from_frame}
                 durationInFrames={clip.duration_in_frames}
               >
-                {renderClip(clip, track.muted === true, previewSources, onPreviewUnavailable)}
+                {renderClip(clip, track.muted === true, kinds, previewSources, onPreviewUnavailable)}
               </Sequence>
             )),
         )}
@@ -113,6 +117,7 @@ export function AdvancedTimelineComposition({
 function renderClip(
   clip: TimelineClip,
   muted: boolean,
+  kinds: Map<string, AssetKind>,
   sources: PreviewSources,
   onPreviewUnavailable?: (assetId: string) => void,
 ): ReactNode {
@@ -149,10 +154,22 @@ function renderClip(
       );
     }
     case "video": {
+      const kind = kinds.get(clip.asset_id);
+      if (kind !== "video" && kind !== "image") {
+        return <PreviewUnavailable label="Video preview unavailable" />;
+      }
       const source = resolve(clip.asset_id, sources, onPreviewUnavailable);
       if (!source) return <PreviewUnavailable label="Video preview unavailable" />;
       const crop = clip.crop ?? FULL_CROP;
       const position = clip.position ?? NO_POSITION;
+      const media: CSSProperties = {
+        position: "absolute",
+        width: percent(1 / span(crop.width)),
+        height: percent(1 / span(crop.height)),
+        left: percent(-crop.left / span(crop.width)),
+        top: percent(-crop.top / span(crop.height)),
+        objectFit: clip.fit,
+      };
       return (
         // The frame clips the crop and carries the placement; the media itself
         // is enlarged and offset so the kept region fills that frame.
@@ -163,19 +180,12 @@ function renderClip(
             transform: `translate(${position.x}px, ${position.y}px) scale(${position.scale})`,
           }}
         >
-          <Video
-            src={source}
-            startFrom={clip.source_from_frame}
-            muted={muted}
-            style={{
-              position: "absolute",
-              width: percent(1 / span(crop.width)),
-              height: percent(1 / span(crop.height)),
-              left: percent(-crop.left / span(crop.width)),
-              top: percent(-crop.top / span(crop.height)),
-              objectFit: clip.fit,
-            }}
-          />
+          {/* A still has no source timeline, so only a movie carries a trim. */}
+          {kind === "image" ? (
+            <Img src={source} style={media} />
+          ) : (
+            <Video src={source} startFrom={clip.source_from_frame} muted={muted} style={media} />
+          )}
         </AbsoluteFill>
       );
     }

@@ -18,6 +18,13 @@ type Props = {
   onPreviewSource: (assetId: string, previewUrl: string) => void;
 };
 
+/** Pages may overlap, so one asset keeps one row: first seen, newest projection. */
+function mergeById(current: EditorAsset[], page: EditorAsset[]): EditorAsset[] {
+  const merged = new Map(current.map((asset) => [asset.asset_id, asset]));
+  for (const asset of page) merged.set(asset.asset_id, asset);
+  return [...merged.values()];
+}
+
 const action =
   "rounded border border-border px-2 py-0.5 text-[0.7rem] transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40";
 
@@ -45,7 +52,7 @@ export function AssetLibrary({
       .listEditorAssets(projectId, from, ASSET_PAGE_LIMIT)
       .then((page) => {
         if (generation !== generationRef.current) return;
-        setAssets((current) => (from ? [...current, ...page.assets] : page.assets));
+        setAssets((current) => (from ? mergeById(current, page.assets) : page.assets));
         setCursor(page.next_cursor ?? null);
         setFailed(false);
         callbacks.current.onAssets(page.assets, !from);

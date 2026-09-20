@@ -376,3 +376,39 @@ test("an unregistered caption style falls back instead of taking the raw string"
   expect(cue.className).not.toContain("url(");
   expect(cue.getAttribute("style")).toBeNull();
 });
+
+const STILL_SOURCE = "/api/v1/projects/project_001/editor-assets/asset_still/preview";
+
+test("an image asset renders through Img and a video asset through Video", () => {
+  render(
+    <AdvancedTimelineComposition
+      document={typedTimelineDocument()}
+      previewSources={{ ...TYPED_SOURCES, asset_still: STILL_SOURCE }}
+    />,
+  );
+
+  const image = screen.getByTestId("img");
+  expect(image.getAttribute("src")).toBe(STILL_SOURCE);
+  // A still has no source timeline, so it never carries a trim.
+  expect(image.getAttribute("startFrom")).toBeNull();
+  expect(image.style.objectFit).toBe("contain");
+  expect(screen.getAllByTestId("video")).toHaveLength(2);
+});
+
+test("a visual clip whose asset reference is missing or not visual stays unavailable", () => {
+  const document = typedTimelineDocument();
+  document.asset_refs = document.asset_refs!.filter((ref) => ref.asset_id !== "asset_still");
+  const sources = { ...TYPED_SOURCES, asset_still: STILL_SOURCE };
+  render(<AdvancedTimelineComposition document={document} previewSources={sources} />);
+  expect(screen.queryByTestId("img")).toBeNull();
+  expect(screen.getAllByTestId("preview-unavailable")).toHaveLength(1);
+
+  cleanup();
+  const mismatched = typedTimelineDocument();
+  mismatched.asset_refs = mismatched.asset_refs!.map((ref) =>
+    ref.asset_id === "asset_still" ? { ...ref, kind: "audio" as const } : ref,
+  );
+  render(<AdvancedTimelineComposition document={mismatched} previewSources={sources} />);
+  expect(screen.queryByTestId("img")).toBeNull();
+  expect(screen.getAllByTestId("preview-unavailable")).toHaveLength(1);
+});

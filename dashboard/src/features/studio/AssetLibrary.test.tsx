@@ -127,3 +127,34 @@ test("explains an unavailable library and retries on request", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Retry loading assets" }));
   await waitFor(() => expect(listEditorAssets).toHaveBeenCalledTimes(2));
 });
+
+test("overlapping continuation pages render one row per asset", async () => {
+  let call = 0;
+  const listEditorAssets = mock(async () =>
+    call++ === 0
+      ? page({ assets: [asset({ asset_id: "asset_a" }), asset({ asset_id: "asset_b" })] })
+      : page({
+          assets: [
+            asset({ asset_id: "asset_b", duration_in_frames: 240 }),
+            asset({ asset_id: "asset_c" }),
+          ],
+          next_cursor: null,
+        }),
+  );
+  const { added } = mount(listEditorAssets);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Load more assets" }));
+  await screen.findByText("asset_c");
+
+  expect(screen.getAllByText(/^asset_[abc]$/).map((row) => row.textContent)).toEqual([
+    "asset_a",
+    "asset_b",
+    "asset_c",
+  ]);
+  expect(screen.getAllByRole("button", { name: "Add asset_b to timeline" })).toHaveLength(1);
+  // The newest page wins for an asset both pages describe.
+  expect(screen.getByText(/240f/)).toBeDefined();
+
+  fireEvent.click(screen.getByRole("button", { name: "Add asset_b to timeline" }));
+  expect(added.map((value) => value.asset_id)).toEqual(["asset_b"]);
+});
