@@ -15,6 +15,7 @@ import {
   toEditDocumentPatch,
 } from "./editor_state";
 import { upgradedTextDocument } from "./timeline-test-fixtures";
+import { timelineIssues } from "./timeline_domain";
 
 const document = {
   schema_version: 1,
@@ -763,12 +764,27 @@ const readyVideoAsset = (): EditorAsset => ({
   duration_in_frames: 600,
 });
 
+/** The same document with its main clip off frame zero, so `timelineIssues` reports a real gap. */
+function timelineDocumentWithGap(): EditDocumentV2 {
+  const source = timelineDocument();
+  return {
+    ...source,
+    clips: source.clips?.map((clip) =>
+      clip.clip_id === "clip_main" ? { ...clip, from_frame: 30 } : clip,
+    ),
+  };
+}
+
 test("save success preserves version 2 session state and loaded assets", () => {
   const asset = readyVideoAsset();
-  let state = createEditorState(timelineDocument(), { [asset.asset_id]: asset });
+  const gapped = timelineDocumentWithGap();
+  const issueId = timelineIssues(gapped)[0]!.issue_id;
+  expect(issueId).toBe("main_track_gap:clip_main");
+
+  let state = createEditorState(gapped, { [asset.asset_id]: asset });
   state = editorReducer(state, { type: "set_editor_mode", mode: "simple" });
   state = editorReducer(state, { type: "select_clip", clipId: "clip_music" });
-  state = editorReducer(state, { type: "select_issue", issueId: "issue_001" });
+  state = editorReducer(state, { type: "select_issue", issueId });
   state = editorReducer(state, { type: "set_playhead", frame: 77 });
   state = editorReducer(state, { type: "set_playing", playing: true });
   state = editorReducer(state, { type: "set_zoom", zoom: 2 });
@@ -777,13 +793,13 @@ test("save success preserves version 2 session state and loaded assets", () => {
 
   const saved = editorReducer(state, {
     type: "save_succeeded",
-    document: { ...timelineDocument(), revision: 5 },
+    document: { ...gapped, revision: 5 },
   });
 
   expect(saved.mode).toBe("simple");
   expect(saved.selectedClipId).toBe("clip_music");
   expect(saved.selectedTrackId).toBe("track_music");
-  expect(saved.selectedIssueId).toBe("issue_001");
+  expect(saved.selectedIssueId).toBe(issueId);
   expect(saved.playheadFrame).toBe(77);
   expect(saved.playing).toBe(true);
   expect(saved.zoom).toBe(2);
@@ -792,6 +808,20 @@ test("save success preserves version 2 session state and loaded assets", () => {
   expect(saved.assets).toEqual({ [asset.asset_id]: asset });
   expect(saved.base).toMatchObject({ revision: 5 });
   expect(saved.saveStatus).toBe("saved");
+});
+
+test("save success drops a selected issue the returned revision resolved", () => {
+  const gapped = timelineDocumentWithGap();
+  const issueId = timelineIssues(gapped)[0]!.issue_id;
+  let state = createEditorState(gapped);
+  state = editorReducer(state, { type: "select_issue", issueId });
+  expect(state.selectedIssueId).toBe(issueId);
+
+  const repaired = { ...timelineDocument(), revision: 5 };
+  expect(timelineIssues(repaired)).toEqual([]);
+  const saved = editorReducer(state, { type: "save_succeeded", document: repaired });
+
+  expect(saved.selectedIssueId).toBe("");
 });
 
 test("save success drops session identities the returned document no longer holds", () => {

@@ -6,7 +6,12 @@ import type {
   EditorAsset,
 } from "@/api/control-plane";
 
-import { applyTimelineOperation, clampZoom, isTimelineDocument } from "./timeline_domain";
+import {
+  applyTimelineOperation,
+  clampZoom,
+  isTimelineDocument,
+  timelineIssues,
+} from "./timeline_domain";
 
 export type EditorSaveStatus = "saved" | "dirty" | "saving" | "failed" | "conflict" | "offline";
 
@@ -346,6 +351,8 @@ function sessionAfterSave(
   const clip = documentClips(document).find((entry) => entry.clip_id === state.selectedClipId);
   const trackExists = document.tracks.some((track) => track.track_id === state.selectedTrackId);
   const lastFrame = Math.max(document.canvas.duration_in_frames - 1, 0);
+  // An issue belongs to the revision that produced it, so a saved fix clears it.
+  const issues = isTimelineDocument(document) ? timelineIssues(document) : [];
   return {
     mode: isTimelineDocument(document) ? state.mode : saved.mode,
     selectedSceneId: document.scenes.some((scene) => scene.scene_id === state.selectedSceneId)
@@ -353,7 +360,9 @@ function sessionAfterSave(
       : saved.selectedSceneId,
     selectedTrackId: clip ? String(clip.track_id) : trackExists ? state.selectedTrackId : "",
     selectedClipId: clip ? state.selectedClipId : "",
-    selectedIssueId: state.selectedIssueId,
+    selectedIssueId: issues.some((issue) => issue.issue_id === state.selectedIssueId)
+      ? state.selectedIssueId
+      : saved.selectedIssueId,
     playheadFrame: Math.min(state.playheadFrame, lastFrame),
     playing: state.playing,
     zoom: state.zoom,
