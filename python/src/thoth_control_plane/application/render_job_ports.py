@@ -66,6 +66,27 @@ class InvalidRenderCursor(Exception):
         super().__init__("render cursor invalid")
 
 
+class RendererNotConfigured(Exception):
+    """Raised when no private renderer is configured, so render is unavailable."""
+
+    def __init__(self) -> None:
+        super().__init__("renderer not configured")
+
+
+class RendererUnavailable(Exception):
+    """Raised when the private renderer cannot be reached or failed internally."""
+
+    def __init__(self) -> None:
+        super().__init__("renderer unavailable")
+
+
+class RendererRejected(Exception):
+    """Raised when the private renderer refused a dispatch it understood."""
+
+    def __init__(self) -> None:
+        super().__init__("renderer rejected the dispatch")
+
+
 class ArtifactPathInvalid(Exception):
     """Raised when an identity or location cannot address a safe artifact path."""
 
@@ -148,6 +169,20 @@ class ArtifactRoot(Protocol):
 
     def cleanup(self, render_job_id: str) -> None:
         """Delete only this job's files, keeping its bounded safe records."""
+
+
+class RendererGateway(Protocol):
+    """The only way the application reaches the private renderer.
+
+    Both calls are idempotent, carry identity alone, and never report transport
+    detail: the service sees one of the fixed renderer failures above.
+    """
+
+    async def start(self, *, render_job_id: str, dispatch_id: str) -> None:
+        """Ask the renderer to begin exactly one execution for this job."""
+
+    async def cancel(self, *, render_job_id: str) -> None:
+        """Ask the renderer to abort the execution it owns for this job."""
 
 
 class RenderJobRepository(Protocol):

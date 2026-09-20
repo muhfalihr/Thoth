@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     )
     THOTH_PROMPT_PROVIDER_CATALOG: tuple[PromptProviderRuntimeDefinition, ...] = ()
     THOTH_PROMPT_PROVIDER_SECRETS: dict[SafeIdentifier, SecretStr] = Field(default_factory=dict)
+    THOTH_RENDERER_INTERNAL_URL: AnyHttpUrl | None = None
+    THOTH_RENDERER_INTERNAL_CREDENTIAL: SecretStr | None = None
+    THOTH_RENDER_MAX_SECONDS: Annotated[int, Field(ge=60, le=7200)] = 900
+    THOTH_RENDERER_VERSION: str = "remotion-4.0.523"
+    THOTH_RENDER_PRESET_ID: Literal["standard_vertical_mp4_v1"] = "standard_vertical_mp4_v1"
 
     def __init__(self, **values: object) -> None:
         """Load settings, then reject an incomplete gateway pair without retaining inputs."""
@@ -95,6 +100,15 @@ class Settings(BaseSettings):
             raise SettingsValidationError(
                 "editor preview base URL must be a same-origin relative path"
             )
+        has_renderer_url = self.THOTH_RENDERER_INTERNAL_URL is not None
+        has_renderer_credential = bool(
+            self.THOTH_RENDERER_INTERNAL_CREDENTIAL is not None
+            and self.THOTH_RENDERER_INTERNAL_CREDENTIAL.get_secret_value().strip()
+        )
+        if has_renderer_url != has_renderer_credential:
+            raise SettingsValidationError(
+                "renderer internal URL and credential must be configured together"
+            )
         provider_ids: set[str] = set()
         for provider in self.THOTH_PROMPT_PROVIDER_CATALOG:
             if provider.provider_id in provider_ids:
@@ -117,6 +131,14 @@ class Settings(BaseSettings):
     def legacy_bridge_enabled(self) -> bool:
         """Whether the validated legacy observation bridge can be constructed."""
         return self.THOTH_LEGACY_API_BASE_URL is not None and self.THOTH_LEGACY_API_KEY is not None
+
+    @property
+    def renderer_enabled(self) -> bool:
+        """Whether a private renderer is fully configured; absence only degrades."""
+        return (
+            self.THOTH_RENDERER_INTERNAL_URL is not None
+            and self.THOTH_RENDERER_INTERNAL_CREDENTIAL is not None
+        )
 
     @property
     def source_investigation_activity_mode(self) -> SourceActivityMode:
