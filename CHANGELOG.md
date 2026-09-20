@@ -2,6 +2,65 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-20 — Creator Studio D1 advanced timeline third review corrections
+
+Closed the third independent Codex NO-GO review of D1 by executing
+`docs/superpowers/plans/2026-09-20-creator-studio-advanced-timeline-third-review-corrections.md`
+from product baseline `df25cfa` on `codex/stage1-container-ci`, offline and
+test-first, as two product commits plus this documentation commit. History was
+not rewritten and no operator-owned file was touched.
+
+- `660a799` a successful save keeps `selectedIssueId` only while the returned
+  revision still produces that exact issue; a revision that resolves it clears
+  the selection. The reducer tests now select an identifier `timelineIssues`
+  actually returns (`main_track_gap:clip_main`) instead of an invented one, and
+  cover both the surviving and the resolved case (AC22).
+- `c20b406` `typedTimelineDocument()` carries a contiguous scene from frame
+  zero that names exactly one existing clip, and `clip_a` points back through
+  `scene_id`, so the shared preview fixture is a complete domain document. A
+  focused test owns those invariants, and the exact JSON the TypeScript
+  function emits — not a duplicated Python payload — is accepted by
+  `EditDocumentV2.model_validate` (AC23).
+
+The second-correction entry below now maps AC18 to the normalized position
+projection, AC19 to the committed Player lifecycle, AC20 to the frozen scope
+and contracts, and AC21 to the verification record, and its obsolete
+`scenes: []` contradiction is resolved (AC24).
+
+No dependency, package, parser, schema bridge, migration, API route, operation
+kind, service, renderer, or upload path was added. `git diff --exit-code
+df25cfa..HEAD` over `python/src/thoth_control_plane/domain`,
+`python/src/thoth_control_plane/migrations`, `python/openapi.json`,
+`dashboard/src/api/generated/control-plane.ts`, `Cargo.toml`, `Cargo.lock`,
+`scout/package.json`, and `scout/bun.lock` is clean, and exporting the OpenAPI
+document and regenerating the TypeScript contract twice left
+`git diff --exit-code` clean both times (AC25).
+
+Verification (all offline, no push, no deployment, no live request):
+`uv sync --frozen --all-groups --extra acquisition` audited 70 packages;
+`pytest -m "not live"` 1212 passed, 31 skipped, 3 deselected, 29 warnings;
+deployment suite 261 passed, 29 skipped; `ruff check` and
+`ruff format --check` clean (140 files); `bun test` 356 passed, 0 failed,
+across 29 files on three consecutive runs; `bun run lint` exit 0 with the same
+4 pre-existing warnings (`badge.tsx`, `button.tsx`, `Discovery.tsx`,
+`PromptProposalPanel.tsx`, none in a file this round touched); `bun run build`
+clean apart from the pre-existing chunk-size notice; `build_cuda.bat` exit 0 on
+a freshly written 16-line log with no error or warning (no Rust source
+changed); `cargo test --bin thoth` exit 0 with 0 tests; scout
+`bun install --frozen-lockfile` no changes, `test:acquisition` exit 0 across 68
+files, `test:runtime` 126 passed, 0 failed; `docker compose config --quiet`
+exit 0 through WSL because Docker is not available natively on this machine;
+`git diff --check` clean; and the 3016-byte runtime fixture passed
+`EditDocumentV2.model_validate` with exit 0 through a temporary file that was
+removed afterwards.
+
+Still not performed and still not authorized: push, pull request, tag, release,
+image publication, deployment, migration against a running database, real
+secret or asset access, live provider or Scout request, parity or controlled
+fallback work, Stage 1 evidence mutation, Issue #5 update, acceptance or soak
+activation, D2, and render-queue work. The next gate is an independent Codex
+re-review of these local commits.
+
 ## 2026-09-20 — Creator Studio D1 advanced timeline second review corrections
 
 Closed the second independent Codex NO-GO review of D1 by executing
@@ -33,15 +92,14 @@ not rewritten and no operator-owned file was touched.
 - `bc55a56` `position.x` and `position.y` are projected as canvas fractions, so
   the stored range `-1..1` becomes `translate(-100%..100%)` instead of pixels.
   The impossible `{x: 40, y: -20}` preview fixture is replaced with the valid
-  `{x: 0.25, y: -0.5, scale: 1.5}`; the typed fixture was exported and
-  re-validated against `EditDocumentV2`, which now rejects nothing in its
-  positions (AC18-AC19).
+  `{x: 0.25, y: -0.5, scale: 1.5}`, a position `EditDocumentV2` accepts
+  (AC18).
 - `2df9577` the timeline owns the Player instance React actually committed:
   `StudioPreview` publishes it through a callback ref, the Studio keeps it in
   state, and `usePlayerTimeline` binds its `frameupdate`, `seeked`, `play`, and
   `pause` listeners to that instance. Replacing the Player moves every listener
   to the new instance and silences the old one, seek/play/pause reach the
-  current instance, and unmount detaches everything (AC20).
+  current instance, and unmount detaches everything (AC19).
 
 No dependency, package, migration, API route, operation kind, service, state
 library, renderer, or upload path was added; `Img` already ships with the
@@ -50,9 +108,9 @@ installed `remotion` package. `git diff --exit-code c105074..HEAD` over
 `python/openapi.json`, `dashboard/src/api/generated/control-plane.ts`,
 `Cargo.toml`, `Cargo.lock`, `scout/package.json`, and `scout/bun.lock` is
 clean, and regenerating the OpenAPI document and TypeScript contract twice left
-`git diff --exit-code` clean both times (AC21).
+`git diff --exit-code` clean both times (AC20).
 
-Verification (all offline, no push, no deployment, no live request):
+Verification (all offline, no push, no deployment, no live request, AC21):
 `uv sync --frozen --all-groups --extra acquisition` audited 70 packages;
 `pytest -m "not live"` 1212 passed, 31 skipped, 3 deselected, 29 warnings;
 deployment suite 261 passed, 29 skipped; `ruff check` and
@@ -78,10 +136,11 @@ ref-object hook signature, then the test harnesses were rewired to the
 committed-instance signature for GREEN, so the assertions — not the wiring —
 carry the evidence; `renderTimelineStudio` now flushes one render after the
 preview publishes its player, because attachment is one commit later by design;
-`TimelineInspector.test.tsx` tracked the corrected position fixture; and the
-typed preview fixture still declares `scenes: []`, which `EditDocumentV2`
-rejects. That last defect predates this baseline, is outside the seven
-authorized outcomes, and was left untouched rather than silently widened.
+and `TimelineInspector.test.tsx` tracked the corrected position fixture. The
+typed preview fixture still declared `scenes: []` when this round ended, a
+defect that predated this baseline and sat outside its seven authorized
+outcomes; it was reported rather than silently widened, and the third
+correction above closes it.
 
 Still not performed and still not authorized: push, pull request, tag, release,
 image publication, deployment, migration against a running database, real
