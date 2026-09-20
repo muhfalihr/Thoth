@@ -2,6 +2,94 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-20 — Creator Studio D1 advanced timeline second review corrections
+
+Closed the second independent Codex NO-GO review of D1 by executing
+`docs/superpowers/plans/2026-09-20-creator-studio-advanced-timeline-second-review-corrections.md`
+from product baseline `c105074` on `codex/stage1-container-ci`, offline and
+test-first, as five product commits plus this documentation commit. History was
+not rewritten and no operator-owned file was touched.
+
+- `577a572` a successful save adopts the returned revision without discarding
+  the open session: mode, scene, track, clip and issue selection, playhead,
+  playback, zoom, snapping, and ripple survive, and loaded asset metadata is
+  carried into the new state, so an asset listed in the library stays addable
+  after an unrelated edit saves. Identities the returned document no longer
+  holds are dropped, and a version 1 revision still falls back to Simple mode
+  (AC13-AC14).
+- `a4cb440` upgrade eligibility is restricted to a settled version 1 document —
+  saved, online, no preview, no conflict, and no pending or in-flight operation
+  — and while the request runs the heading, body, ownership, duration, Undo,
+  and Redo controls are visibly disabled, while read-only selection stays
+  available (AC15).
+- `08fb18b` overlapping continuation pages render one row per `asset_id`,
+  first-seen order with the newest safe projection, matching the reducer's
+  cumulative asset map; and a validated image asset renders through Remotion
+  `Img` while a video asset renders through `Video`. The primitive is chosen
+  only from the document's own `asset_refs` entry, never from a URL suffix or
+  MIME guess, a clip whose reference is missing or not visual falls back to the
+  unavailable placeholder, and `source_from_frame` stays video-only
+  (AC16-AC17).
+- `bc55a56` `position.x` and `position.y` are projected as canvas fractions, so
+  the stored range `-1..1` becomes `translate(-100%..100%)` instead of pixels.
+  The impossible `{x: 40, y: -20}` preview fixture is replaced with the valid
+  `{x: 0.25, y: -0.5, scale: 1.5}`; the typed fixture was exported and
+  re-validated against `EditDocumentV2`, which now rejects nothing in its
+  positions (AC18-AC19).
+- `2df9577` the timeline owns the Player instance React actually committed:
+  `StudioPreview` publishes it through a callback ref, the Studio keeps it in
+  state, and `usePlayerTimeline` binds its `frameupdate`, `seeked`, `play`, and
+  `pause` listeners to that instance. Replacing the Player moves every listener
+  to the new instance and silences the old one, seek/play/pause reach the
+  current instance, and unmount detaches everything (AC20).
+
+No dependency, package, migration, API route, operation kind, service, state
+library, renderer, or upload path was added; `Img` already ships with the
+installed `remotion` package. `git diff --exit-code c105074..HEAD` over
+`python/src/thoth_control_plane/domain`, `python/src/thoth_control_plane/migrations`,
+`python/openapi.json`, `dashboard/src/api/generated/control-plane.ts`,
+`Cargo.toml`, `Cargo.lock`, `scout/package.json`, and `scout/bun.lock` is
+clean, and regenerating the OpenAPI document and TypeScript contract twice left
+`git diff --exit-code` clean both times (AC21).
+
+Verification (all offline, no push, no deployment, no live request):
+`uv sync --frozen --all-groups --extra acquisition` audited 70 packages;
+`pytest -m "not live"` 1212 passed, 31 skipped, 3 deselected, 29 warnings;
+deployment suite 261 passed, 29 skipped; `ruff check` and
+`ruff format --check` clean (140 files); `bun test` 353 passed, 0 failed,
+across 28 files on three consecutive runs; `bun run lint` 4 pre-existing
+warnings only (`button.tsx`, `badge.tsx`, `Discovery.tsx`,
+`PromptProposalPanel.tsx`, none in a file this round touched); `bun run build`
+clean apart from the pre-existing chunk-size notice; `build_cuda.bat` exit 0
+against a freshly written log with no error or warning (no Rust source changed,
+so Cargo relinked nothing and `thoth.exe` kept its earlier timestamp);
+`cargo test --bin thoth` exit 0 with 0 tests; scout
+`bun install --frozen-lockfile` no changes, `test:acquisition` all suites ok,
+`test:runtime` 126 passed, 0 failed; `docker compose config --quiet` exit 0
+through WSL because Docker is not available natively on this machine;
+`git diff --check` clean; `graphify update .` rebuilt 16374 nodes with its
+output still ignored. Searches over the generated TypeScript and
+`dashboard/src` found no artifact locator, signing key, or capability value in
+a document or log path, and no `dangerouslySetInnerHTML`, `eval`,
+`new Function`, or `file://` anywhere in the dashboard sources.
+
+Disclosed honestly: the Task 5 RED was observed against the previous
+ref-object hook signature, then the test harnesses were rewired to the
+committed-instance signature for GREEN, so the assertions — not the wiring —
+carry the evidence; `renderTimelineStudio` now flushes one render after the
+preview publishes its player, because attachment is one commit later by design;
+`TimelineInspector.test.tsx` tracked the corrected position fixture; and the
+typed preview fixture still declares `scenes: []`, which `EditDocumentV2`
+rejects. That last defect predates this baseline, is outside the seven
+authorized outcomes, and was left untouched rather than silently widened.
+
+Still not performed and still not authorized: push, pull request, tag, release,
+image publication, deployment, migration against a running database, real
+secret or asset access, live provider or Scout request, parity or controlled
+fallback work, Stage 1 evidence mutation, Issue #5 update, acceptance or soak
+activation, D2, and render-queue work. The next gate is an independent Codex
+re-review of these local commits.
+
 ## 2026-09-20 — Creator Studio D1 advanced timeline review corrections
 
 Closed the independent Codex NO-GO review of D1 by executing
