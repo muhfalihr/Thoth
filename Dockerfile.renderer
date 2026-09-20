@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1.7
+
+# The isolated Remotion renderer.
+#
+# This image holds a browser, an encoder, and one composition. It is given no
+# database client, no Python, no Docker socket, and no credential of its own, so
+# the only thing it can reach is the artifact root it shares with the control
+# plane and the private control-plane route it reports to.
+
+FROM oven/bun:1.3.14 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts \
+    THOTH_RENDERER_PORT=8080 \
+    THOTH_RENDERER_VERSION=remotion-4.0.523 \
+    HOME=/home/thoth
+
+# Chrome Headless Shell's own shared libraries, the fonts a vertical text story
+# needs, and the ffprobe this service measures every finished render with.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        ffmpeg \
+        fonts-liberation \
+        fonts-noto-color-emoji \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libgbm1 \
+        libnss3 \
+        libpango-1.0-0 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2 \
+        tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 thoth \
+    && useradd --uid 10001 --gid 10001 --create-home \
+        --home-dir /home/thoth --shell /usr/sbin/nologin thoth \
+    && mkdir -p /opt/thoth/renderer /opt/thoth/packages /var/lib/thoth/artifacts \
+    && chown -R thoth:thoth /opt/thoth /var/lib/thoth /home/thoth
+
+WORKDIR /opt/thoth/renderer
+
+# Remotion caches its browser beside the nearest package.json, so the install
+# and the download both have to happen from this directory.
+COPY --chown=thoth:thoth renderer/package.json renderer/bun.lock /opt/thoth/renderer/
+RUN bun install --frozen-lockfile --production
+
+COPY --chown=thoth:thoth packages/remotion-composition/ /opt/thoth/packages/remotion-composition/
+COPY --chown=thoth:thoth renderer/src/ /opt/thoth/renderer/src/
+COPY --chown=thoth:thoth renderer/tsconfig.json /opt/thoth/renderer/
+
+# Fetch the pinned browser now so a render never reaches the network.
+RUN bun --eval "await import('@remotion/renderer').then((m) => m.ensureBrowser())" \
+    && chown -R thoth:thoth /opt/thoth/renderer/node_modules
+
+EXPOSE 8080
+
+USER thoth
+
+# Prove the image can render before it is ever dispatched to, and prove it was
+# not handed a capability it has no business holding.
+RUN test -w /var/lib/thoth/artifacts \
+    && test -x /usr/bin/ffprobe \
+    && /usr/bin/ffprobe -version >/dev/null 2>&1 \
+    && test -d /opt/thoth/renderer/node_modules/.remotion \
+    && test -r /opt/thoth/packages/remotion-composition/src/register.tsx \
+    && bun --eval "await import('/opt/thoth/renderer/src/server.ts')" \
+    && bun --eval "const { loadRendererConfig } = await import('/opt/thoth/renderer/src/config.ts'); \
+        const c = loadRendererConfig({ \
+            THOTH_RENDERER_INTERNAL_CREDENTIAL: 'x'.repeat(32), \
+            THOTH_RENDERER_CONTROL_PLANE_URL: 'http://api:8000', \
+            THOTH_CONTROL_PLANE_ARTIFACT_ROOT: process.env.THOTH_CONTROL_PLANE_ARTIFACT_ROOT }); \
+        if (!(await Bun.file(c.compositionEntryPoint).exists())) { throw new Error(c.compositionEntryPoint); }" \
+    && test -z "$THOTH_EDITOR_DATABASE_URL" \
+    && test -z "$THOTH_CONTROL_PLANE_API_KEY" \
+    && test -z "$THOTH_PROMPT_PROVIDER_SECRETS" \
+    && test -z "$DOCKER_HOST" \
+    && test ! -e /var/run/docker.sock \
+    && test ! -x /usr/bin/python3 \
+    && test ! -x /usr/bin/psql
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bun", "run", "/opt/thoth/renderer/src/server.ts"]

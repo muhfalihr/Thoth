@@ -56,6 +56,23 @@ test("accepts only same-origin editor-asset preview paths", () => {
   }
 });
 
+test("accepts the server render's own staged static path and nothing beside it", () => {
+  expect(safePreviewSource("/public/asset_1.mp4")).toBe("/public/asset_1.mp4");
+
+  for (const hostile of [
+    "/public/",
+    "/public/../secret.mp4",
+    "/public/nested/asset.mp4",
+    "/public/asset.mp4?token=secret",
+    "/publicity/asset.mp4",
+    "public/asset.mp4",
+    "//public/asset.mp4",
+    "/public/.hidden",
+  ]) {
+    expect(safePreviewSource(hostile)).toBeUndefined();
+  }
+});
+
 test("a version 2 document is not mistaken for a version 1 text story", () => {
   const timeline = { ...document, schema_version: 2 } as unknown as EditDocumentV2;
   expect(() => getPlayerConfig(timeline)).not.toThrow();
