@@ -229,7 +229,15 @@ export function typedTimelineDocument(): EditDocumentV2 {
     revision: 1,
     canvas: { width: 1080, height: 1920, fps: 30, duration_in_frames: 600 },
     template: { template_id: "vertical_text_story", version: 1 },
-    scenes: [],
+    scenes: [
+      {
+        scene_id: "scene_001",
+        role: "source",
+        start_frame: 0,
+        duration_in_frames: 600,
+        clip_ids: ["clip_a"],
+      },
+    ],
     asset_refs: [
       {
         asset_id: "asset_video",
@@ -264,6 +272,7 @@ export function typedTimelineDocument(): EditDocumentV2 {
         kind: "video",
         clip_id: "clip_a",
         track_id: "track_main",
+        scene_id: "scene_001",
         asset_id: "asset_video",
         from_frame: 0,
         duration_in_frames: 60,
