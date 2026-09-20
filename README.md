@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/muhfalihr/Thoth/releases"><img src="https://img.shields.io/badge/version-0.1.0-f97316?style=flat-square" alt="Version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Proprietary-blue?style=flat-square" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/rust-1.85+-orange?style=flat-square&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/node-24+-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js">
   <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
@@ -176,5 +176,4 @@ Python 3.11–3.13 + uv/FastAPI/Temporal/Ruff (`python/` control plane) · React
 
 ## License
 
-Copyright (c) 2026 Thoth. **All Rights Reserved.**
-Proprietary software. Unauthorized use is strictly prohibited.
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

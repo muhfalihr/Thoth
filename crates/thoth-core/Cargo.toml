@@ -1,6 +1,7 @@
 [package]
 name        = "thoth-core"
 version.workspace = true
+license.workspace = true
 edition     = "2024"
 description = "Thoth core library — pipeline logic and shared types"
 

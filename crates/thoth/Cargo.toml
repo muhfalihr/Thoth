@@ -1,6 +1,7 @@
 [package]
 name        = "thoth"
 version.workspace = true
+license.workspace = true
 edition     = "2024"
 description = "Thoth CLI + pipeline worker (spawned by thoth-server)"
 
