@@ -288,7 +288,7 @@ export function typedTimelineDocument(): EditDocumentV2 {
         locked: false,
         fit: "contain",
         crop: { left: 0.1, top: 0.2, width: 0.5, height: 0.6 },
-        position: { x: 40, y: -20, scale: 1.5 },
+        position: { x: 0.25, y: -0.5, scale: 1.5 },
       },
       {
         kind: "overlay",

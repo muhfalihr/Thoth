@@ -293,7 +293,7 @@ test("fit, crop, and position shape how a video fills the canvas", () => {
     "0%",
     "0%",
   ]);
-  expect(frames[0]!.style.transform).toBe("translate(0px, 0px) scale(1)");
+  expect(frames[0]!.style.transform).toBe("translate(0%, 0%) scale(1)");
 
   // A half-wide, 60%-tall crop has to enlarge the frame and shift it back.
   expect(shaped!.style.objectFit).toBe("contain");
@@ -304,7 +304,18 @@ test("fit, crop, and position shape how a video fills the canvas", () => {
     "-33.3333%",
   ]);
   expect(frames[1]!.style.overflow).toBe("hidden");
-  expect(frames[1]!.style.transform).toBe("translate(40px, -20px) scale(1.5)");
+  // Offsets are canvas fractions, so a quarter right and half up reads as a percentage.
+  expect(frames[1]!.style.transform).toBe("translate(25%, -50%) scale(1.5)");
+});
+
+test("offsets at the edge of the stored range span the whole canvas", () => {
+  const document = typedTimelineDocument();
+  const clip = document.clips![1] as { position: { x: number; y: number; scale: number } };
+  clip.position = { x: -1, y: 1, scale: 4 };
+  render(<AdvancedTimelineComposition document={document} previewSources={TYPED_SOURCES} />);
+  expect(screen.getAllByTestId("clip-frame")[1]!.style.transform).toBe(
+    "translate(-100%, 100%) scale(4)",
+  );
 });
 
 test("fade in and fade out bound the volume at start, middle, and end", () => {

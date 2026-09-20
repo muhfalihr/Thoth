@@ -177,7 +177,8 @@ function renderClip(
           data-testid="clip-frame"
           style={{
             overflow: "hidden",
-            transform: `translate(${position.x}px, ${position.y}px) scale(${position.scale})`,
+            // Offsets are canvas fractions, not pixels, so they project as percentages.
+            transform: `translate(${percent(position.x)}, ${percent(position.y)}) scale(${position.scale})`,
           }}
         >
           {/* A still has no source timeline, so only a movie carries a trim. */}

@@ -137,7 +137,7 @@ test("shows the newly selected clip's values without remounting", () => {
   expect((screen.getByLabelText("End frame") as HTMLInputElement).value).toBe("210");
   expect((screen.getByLabelText("Fit") as HTMLInputElement).value).toBe("contain");
   expect((screen.getByLabelText("Crop") as HTMLInputElement).value).toBe("0.1, 0.2, 0.5, 0.6");
-  expect((screen.getByLabelText("Position") as HTMLInputElement).value).toBe("40, -20 ×1.5");
+  expect((screen.getByLabelText("Position") as HTMLInputElement).value).toBe("0.25, -0.5 ×1.5");
 });
 
 test("emits an edit against the clip that is selected now", () => {
