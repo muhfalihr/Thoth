@@ -8,7 +8,12 @@ import type {
   EditorAsset,
 } from "@/api/control-plane";
 import type { EditorAction } from "./editor_state";
-import { createEditorState, editorReducer, toEditDocumentPatch } from "./editor_state";
+import {
+  canStartUpgrade,
+  createEditorState,
+  editorReducer,
+  toEditDocumentPatch,
+} from "./editor_state";
 import { upgradedTextDocument } from "./timeline-test-fixtures";
 
 const document = {
@@ -827,4 +832,18 @@ test("save success of a version 1 document stays in simple mode", () => {
 
   expect(saved.mode).toBe("simple");
   expect(saved.pendingOperations).toEqual([]);
+});
+
+test("upgrade is offered only for a settled version 1 document", () => {
+  expect(canStartUpgrade(createEditorState(document))).toBe(true);
+  // A version 2 draft has nothing left to upgrade.
+  expect(canStartUpgrade(createEditorState(timelineDocument()))).toBe(false);
+
+  const previewing = editorReducer(createEditorState(timelineDocument()), {
+    type: "preview_timeline_operation",
+    operation: moveMusic,
+  });
+  expect(previewing.preview).toBeDefined();
+  expect(canStartUpgrade(previewing)).toBe(false);
+  expect(editorReducer(previewing, { type: "upgrade_started" })).toEqual(previewing);
 });

@@ -119,6 +119,8 @@ export function createEditorState(
 /** Upgrade replaces the whole document, so it may only start from settled, online state. */
 export function canStartUpgrade(state: EditorState): boolean {
   return (
+    !isTimelineDocument(state.draft) &&
+    !state.preview &&
     state.upgradeStatus !== "running" &&
     state.saveStatus === "saved" &&
     !state.isOffline &&

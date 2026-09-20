@@ -442,3 +442,50 @@ test("keeps the version 1 draft editable after an upgrade conflict", async () =>
   fireEvent.change(heading, { target: { value: "Still local" } });
   expect(heading.value).toBe("Still local");
 });
+
+test("disables document-mutating controls while an upgrade request runs", async () => {
+  let reject: (reason: Error) => void = () => {};
+  const upgradeEditDocument = mock(
+    () =>
+      new Promise<{ kind: "saved"; document: EditDocument }>((_resolve, fail) => {
+        reject = fail;
+      }),
+  );
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        ...advancedClient,
+        getEditDocument: mock(async () => editDocument),
+        patchEditDocument: mock(async () => ({ kind: "saved" as const, document: editDocument })),
+        upgradeEditDocument,
+      }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = (await screen.findByLabelText("Heading")) as HTMLInputElement;
+  const body = screen.getByLabelText("Body") as HTMLTextAreaElement;
+  const ownership = screen.getByLabelText("Ownership") as HTMLSelectElement;
+  const duration = screen.getByLabelText("Duration (frames)") as HTMLInputElement;
+  const undo = screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement;
+
+  fireEvent.click(screen.getByRole("button", { name: "Enable advanced timeline" }));
+
+  expect(heading.disabled).toBe(true);
+  expect(body.disabled).toBe(true);
+  expect(ownership.disabled).toBe(true);
+  expect(duration.disabled).toBe(true);
+  expect(undo.disabled).toBe(true);
+  // Reading the document stays possible: selection never mutates it.
+  expect((screen.getByLabelText("Scene board") as HTMLElement).hidden).toBe(false);
+
+  await act(async () => {
+    reject(new Error("upgrade unavailable"));
+  });
+
+  expect((screen.getByLabelText("Heading") as HTMLInputElement).disabled).toBe(false);
+  expect((screen.getByLabelText("Ownership") as HTMLSelectElement).disabled).toBe(false);
+});

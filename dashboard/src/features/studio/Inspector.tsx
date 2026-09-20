@@ -13,12 +13,21 @@ type Props = {
   onTextChange: (clipId: string, field: "heading" | "body", value: string) => void;
   onOwnershipChange: (clipId: string, ownership: Ownership) => void;
   onDurationChange: (sceneId: string, durationInFrames: number) => void;
+  /** True while another request owns the document, such as a running upgrade. */
+  disabled?: boolean;
 };
 
 const fieldClass =
   "mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
-export function Inspector({ scene, clip, onTextChange, onOwnershipChange, onDurationChange }: Props) {
+export function Inspector({
+  scene,
+  clip,
+  onTextChange,
+  onOwnershipChange,
+  onDurationChange,
+  disabled = false,
+}: Props) {
   const headingId = useId();
   const headingErrorId = useId();
   const bodyId = useId();
@@ -41,6 +50,7 @@ export function Inspector({ scene, clip, onTextChange, onOwnershipChange, onDura
               value={clip.heading}
               maxLength={300}
               required
+              disabled={disabled}
               aria-invalid={headingInvalid}
               aria-describedby={headingInvalid ? headingErrorId : undefined}
               onChange={(event) => onTextChange(clip.clip_id, "heading", event.target.value)}
@@ -58,6 +68,7 @@ export function Inspector({ scene, clip, onTextChange, onOwnershipChange, onDura
               className={`${fieldClass} min-h-28 resize-y`}
               value={clip.body}
               maxLength={2_000}
+              disabled={disabled}
               onChange={(event) => onTextChange(clip.clip_id, "body", event.target.value)}
             />
           </div>
@@ -67,6 +78,7 @@ export function Inspector({ scene, clip, onTextChange, onOwnershipChange, onDura
               id={ownershipId}
               className={fieldClass}
               value={clip.ownership}
+              disabled={disabled}
               onChange={(event) => onOwnershipChange(clip.clip_id, event.target.value as Ownership)}
             >
               <option value="ai_managed">AI managed</option>
@@ -83,6 +95,7 @@ export function Inspector({ scene, clip, onTextChange, onOwnershipChange, onDura
               step={1}
               className={fieldClass}
               value={scene.duration_in_frames}
+              disabled={disabled}
               onChange={(event) => {
                 const value = event.target.valueAsNumber;
                 if (Number.isInteger(value) && value > 0) onDurationChange(scene.scene_id, value);

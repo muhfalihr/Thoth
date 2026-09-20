@@ -72,6 +72,8 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   }, []);
   const { base, draft, pendingOperations, saveStatus } = state;
   const backDisabled = saveStatus !== "saved";
+  // An upgrade replaces the document, so nothing may edit it until it settles.
+  const upgrading = state.upgradeStatus === "running";
   const workstationStyle = {
     "--scene-board-width": `${sceneBoardWidth}rem`,
     "--inspector-width": `${inspectorWidth}rem`,
@@ -184,7 +186,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         <button
           type="button"
           className={toolbarButton}
-          disabled={!state.history.length || state.inFlightOperationIds.length > 0}
+          disabled={!state.history.length || state.inFlightOperationIds.length > 0 || upgrading}
           onClick={() => dispatch({ type: "undo" })}
         >
           Undo
@@ -192,7 +194,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         <button
           type="button"
           className={toolbarButton}
-          disabled={!state.future.length || state.inFlightOperationIds.length > 0}
+          disabled={!state.future.length || state.inFlightOperationIds.length > 0 || upgrading}
           onClick={() => dispatch({ type: "redo" })}
         >
           Redo
@@ -406,6 +408,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             <Inspector
               scene={selectedScene}
               clip={selectedClip}
+              disabled={upgrading}
               onTextChange={(clipId, field, value) =>
                 dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
               }
