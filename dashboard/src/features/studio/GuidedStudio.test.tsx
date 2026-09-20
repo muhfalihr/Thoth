@@ -2,7 +2,7 @@
 
 import { afterEach, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { RefObject } from "react";
+import { useEffect } from "react";
 import userEvent from "@testing-library/user-event";
 import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
 import { createC2ClientFixtureBase } from "./prompt-proposal-test-fixtures";
@@ -15,12 +15,16 @@ let previewPlayer: FakePlayer | null = null;
 mock.module("./StudioPreview", () => ({
   StudioPreview: ({
     document,
-    playerRef,
+    onPlayer,
   }: {
     document: EditDocument;
-    playerRef?: RefObject<PlayerTimelineRef | null>;
+    onPlayer?: (player: PlayerTimelineRef | null) => void;
   }) => {
-    if (playerRef) playerRef.current = previewPlayer;
+    // Published after commit, the way the real Player hands over its instance.
+    useEffect(() => {
+      onPlayer?.(previewPlayer);
+      return () => onPlayer?.(null);
+    }, [onPlayer]);
     return <div aria-label="Draft preview">{document.clips?.[0]?.kind}</div>;
   },
 }));
@@ -525,6 +529,8 @@ async function renderTimelineStudio(
     />,
   );
   await screen.findByLabelText("Timeline");
+  // The preview publishes its player after commit, so let that render settle.
+  await act(async () => {});
   return { view, patchEditDocument };
 }
 

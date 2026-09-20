@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 /** The slice of Remotion's PlayerRef the timeline actually drives. */
 export type PlayerTimelineRef = {
@@ -17,12 +17,12 @@ type FrameEvent = { detail?: { frame?: number } };
 /**
  * Keep the timeline and the Player in step.
  *
- * Every listener is attached once and removed again when the player changes or
- * the view unmounts, so a swapped composition can never keep feeding frames
- * into a stale callback.
+ * The caller passes the Player that React actually committed, so replacing the
+ * Player re-runs this effect: listeners follow the live instance instead of
+ * feeding frames into one that is already gone.
  */
 export function usePlayerTimeline(
-  playerRef: RefObject<PlayerTimelineRef | null>,
+  player: PlayerTimelineRef | null,
   onFrameChange: (frame: number) => void,
   onPlayingChange?: (playing: boolean) => void,
 ) {
@@ -31,11 +31,7 @@ export function usePlayerTimeline(
   const handlers = useRef({ onFrameChange, onPlayingChange });
   handlers.current = { onFrameChange, onPlayingChange };
 
-  // Read during render only as a change signal; the effect uses the committed ref.
-  const attached = playerRef.current;
-
   useEffect(() => {
-    const player = playerRef.current;
     if (!player) return;
 
     const frame = (event: unknown) =>
@@ -54,14 +50,11 @@ export function usePlayerTimeline(
     return () => {
       for (const [type, listener] of listeners) player.removeEventListener(type, listener);
     };
-  }, [attached, playerRef]);
+  }, [player]);
 
-  const seekTo = useCallback(
-    (frame: number) => playerRef.current?.seekTo(frame),
-    [playerRef],
-  );
-  const play = useCallback(() => playerRef.current?.play(), [playerRef]);
-  const pause = useCallback(() => playerRef.current?.pause(), [playerRef]);
+  const seekTo = useCallback((frame: number) => player?.seekTo(frame), [player]);
+  const play = useCallback(() => player?.play(), [player]);
+  const pause = useCallback(() => player?.pause(), [player]);
 
   return { seekTo, play, pause };
 }

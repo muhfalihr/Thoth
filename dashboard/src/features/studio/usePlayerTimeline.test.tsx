@@ -2,7 +2,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { act, cleanup, render } from "@testing-library/react";
-import { useRef } from "react";
+import { useEffect, useState } from "react";
 
 import { FakePlayer } from "./timeline-test-fixtures";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
@@ -18,9 +18,10 @@ type HarnessProps = {
 let controls: ReturnType<typeof usePlayerTimeline> | undefined;
 
 function Harness({ player, onFrameChange, onPlayingChange }: HarnessProps) {
-  const ref = useRef<PlayerTimelineRef | null>(player);
-  ref.current = player;
-  controls = usePlayerTimeline(ref, onFrameChange, onPlayingChange);
+  // The player arrives after commit, never from this render body.
+  const [attached, setAttached] = useState<PlayerTimelineRef | null>(null);
+  useEffect(() => setAttached(player), [player]);
+  controls = usePlayerTimeline(attached, onFrameChange, onPlayingChange);
   return <div />;
 }
 
@@ -97,4 +98,60 @@ test("a missing player is inert rather than a crash", () => {
   render(<Harness player={null} onFrameChange={() => {}} />);
   expect(() => controls?.seekTo(10)).not.toThrow();
   expect(() => controls?.play()).not.toThrow();
+});
+
+/**
+ * A child that publishes its player during commit and can swap it on its own,
+ * the way a remounted `<Player>` does without re-rendering its owner.
+ */
+let swapPlayer: (() => void) | undefined;
+
+function SwappingPlayer({
+  players,
+  publish,
+}: {
+  players: FakePlayer[];
+  publish: (player: PlayerTimelineRef | null) => void;
+}) {
+  const [index, setIndex] = useState(0);
+  swapPlayer = () => setIndex(1);
+  return <div key={index} ref={(node) => publish(node ? players[index]! : null)} />;
+}
+
+function SwapHarness({
+  players,
+  onFrameChange,
+}: {
+  players: FakePlayer[];
+  onFrameChange: (frame: number) => void;
+}) {
+  const [attached, setAttached] = useState<PlayerTimelineRef | null>(null);
+  controls = usePlayerTimeline(attached, onFrameChange);
+  return <SwappingPlayer players={players} publish={setAttached} />;
+}
+
+test("a player replaced at commit takes over every listener", () => {
+  const first = new FakePlayer();
+  const second = new FakePlayer();
+  const frames: number[] = [];
+  const { unmount } = render(
+    <SwapHarness players={[first, second]} onFrameChange={(frame) => frames.push(frame)} />,
+  );
+  expect(first.listenerCount).toBe(4);
+
+  act(() => swapPlayer?.());
+  expect(first.listenerCount).toBe(0);
+  expect(second.listenerCount).toBe(4);
+
+  act(() => first.emit("frameupdate", { detail: { frame: 99 } }));
+  expect(frames).toEqual([]);
+  act(() => second.emit("frameupdate", { detail: { frame: 5 } }));
+  expect(frames).toEqual([5]);
+
+  act(() => controls?.seekTo(30));
+  expect(second.seeks).toEqual([30]);
+  expect(first.seeks).toEqual([]);
+
+  unmount();
+  expect(second.listenerCount).toBe(0);
 });

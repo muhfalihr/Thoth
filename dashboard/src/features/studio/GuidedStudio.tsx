@@ -59,9 +59,10 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const [previewSources, setPreviewSources] = useState<PreviewSources>({});
   const upgradeReasonId = useId();
   const modeGroupId = useId();
-  const playerRef = useRef<PlayerTimelineRef | null>(null);
+  // The Player lives in state, so replacing it re-binds the timeline listeners.
+  const [attachedPlayer, setAttachedPlayer] = useState<PlayerTimelineRef | null>(null);
   const player = usePlayerTimeline(
-    playerRef,
+    attachedPlayer,
     (frame) => dispatch({ type: "set_playhead", frame }),
     (playing) => dispatch({ type: "set_playing", playing }),
   );
@@ -366,7 +367,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           <main className="flex min-h-[28rem] min-w-0 flex-col gap-3 bg-black/40 p-4 lg:min-h-0">
             <StudioPreview
               document={state.draft}
-              playerRef={playerRef}
+              onPlayer={setAttachedPlayer}
               embedded
               previewSources={previewSources}
               onPreviewUnavailable={(assetId) =>

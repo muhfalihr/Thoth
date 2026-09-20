@@ -1,5 +1,5 @@
 import { Player } from "@remotion/player";
-import { useEffect, useState, type ComponentProps, type RefObject } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 
 import type { ControlPlaneClient, EditDocument } from "@/api/control-plane";
 import type { PreviewSources } from "./AdvancedTimelineComposition";
@@ -15,7 +15,8 @@ type Props = {
   onBack?: () => void;
   /** Same-origin preview paths, kept out of the document so they never persist. */
   previewSources?: PreviewSources;
-  playerRef?: RefObject<PlayerTimelineRef | null>;
+  /** Receives the Player React commits, and null when it goes away. */
+  onPlayer?: (player: PlayerTimelineRef | null) => void;
   onPreviewUnavailable?: (assetId: string) => void;
 };
 
@@ -27,7 +28,7 @@ export function StudioPreview({
   documentId,
   onBack,
   previewSources,
-  playerRef,
+  onPlayer,
   onPreviewUnavailable,
 }: Props) {
   const [loadedDocument, setLoadedDocument] = useState<EditDocument | null>(null);
@@ -51,8 +52,8 @@ export function StudioPreview({
   const currentDocument = document ?? loadedDocument;
 
   // Remotion types the Player ref by its own PlayerRef; this view only drives the
-  // timeline subset of it.
-  const ref = playerRef as unknown as ComponentProps<typeof Player>["ref"];
+  // timeline subset of it. A callback ref reports the instance React committed.
+  const ref = onPlayer as unknown as ComponentProps<typeof Player>["ref"];
 
   const preview = currentDocument ? (
     <div className="min-h-0 flex-1 overflow-auto rounded border border-border bg-black p-4">
