@@ -7,6 +7,14 @@
  * malformed bundle can neither widen a render nor describe itself in a log.
  */
 
+// The timeline module alone, so validating a bundle never drags React and
+// Remotion into this service's process.
+import { hasAudibleContent } from "@thoth/remotion-composition/timeline";
+import type { EditDocumentV2 } from "@thoth/remotion-composition/timeline";
+
+import type { ExpectedOutput } from "./artifact-root";
+import { isEditDocumentV2 } from "./document-schema";
+
 export class RenderBundleInvalid extends Error {
   constructor() {
     super("render bundle invalid");
@@ -16,9 +24,12 @@ export class RenderBundleInvalid extends Error {
 
 /** Identical to the control plane's `OpaqueId`: one safe segment, never a path. */
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
+/** The control plane's `ProjectId`, which also admits a stored UUID. */
+const PROJECT_ID =
+  /^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 /** One staged copy inside the job workspace, addressed by its workspace name. */
 const STAGED_NAME = /^assets\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const CHECKSUM = /^sha256:[0-9a-f]{64}$/;
+const CHECKSUM = /^sha256:[0-9a-fA-F]{64}$/;
 
 const TRUSTED_TEMPLATE_ID = "vertical_text_story";
 const TRUSTED_TEMPLATE_VERSION = 1;
@@ -32,6 +43,8 @@ const MIN_DIMENSION = 16;
 const MAX_FPS = 240;
 /** Two hours at 30fps: far above any Creator Studio document, still bounded. */
 const MAX_DURATION_IN_FRAMES = 216_000;
+/** The control plane's own `RENDER_ASSET_MAX_BYTES`, restated, not configured. */
+const MAX_ASSET_BYTES = 1024 * 1024 * 1024;
 
 export type RenderBundleAsset = {
   readonly asset_id: string;
@@ -130,30 +143,79 @@ function asset(value: unknown): RenderBundleAsset {
   return Object.freeze({
     asset_id: identifier(raw.asset_id),
     relative_name: raw.relative_name,
-    size_bytes: bounded(raw.size_bytes, 0, Number.MAX_SAFE_INTEGER),
+    size_bytes: bounded(raw.size_bytes, 1, MAX_ASSET_BYTES),
     checksum: raw.checksum,
   });
 }
 
 /**
- * The document itself stays the control plane's contract; only the facts this
- * service acts on are re-checked, so the two sides cannot disagree about what
- * frame geometry a render was authorized to produce.
+ * The document is validated against the control plane's own published schema,
+ * then re-bound to the bundle carrying it, so the two sides cannot disagree
+ * about which revision a render was authorized to produce.
  */
-function canvasOf(document: Record<string, unknown>): Record<string, unknown> {
-  literal(document.schema_version, 2);
+function documentOf(raw: Record<string, unknown>): Record<string, unknown> {
+  const document = record(raw.document);
+  if (!isEditDocumentV2(document)) {
+    throw new RenderBundleInvalid();
+  }
   const template = record(document.template);
   literal(template.template_id, TRUSTED_TEMPLATE_ID);
   literal(template.version, TRUSTED_TEMPLATE_VERSION);
-  return record(document.canvas);
+  if (
+    document.project_id !== raw.project_id ||
+    document.document_id !== raw.document_id ||
+    document.revision !== raw.document_revision
+  ) {
+    throw new RenderBundleInvalid();
+  }
+  return document;
 }
 
-export function parseRenderBundle(value: unknown): RenderBundle {
+/** Exactly the assets the document's clips play, one staged copy each. */
+function bindAssets(
+  document: Record<string, unknown>,
+  assets: readonly RenderBundleAsset[],
+): void {
+  const played = new Set(
+    ((document.clips ?? []) as readonly Record<string, unknown>[])
+      .map((clip) => clip.asset_id)
+      .filter((assetId): assetId is string => typeof assetId === "string"),
+  );
+  const staged = new Set(assets.map((entry) => entry.asset_id));
+  const names = new Set(assets.map((entry) => entry.relative_name));
+  if (staged.size !== assets.length || names.size !== assets.length || staged.size !== played.size) {
+    throw new RenderBundleInvalid();
+  }
+  for (const assetId of played) {
+    if (!staged.has(assetId)) {
+      throw new RenderBundleInvalid();
+    }
+  }
+}
+
+/** What the dispatch this bundle answers said it was for. */
+export type BundleIdentity = {
+  readonly renderJobId: string;
+  readonly dispatchId: string;
+  readonly rendererVersion: string;
+};
+
+export function parseRenderBundle(value: unknown, expected: BundleIdentity): RenderBundle {
   const raw = record(value);
   exactly(raw, BUNDLE_FIELDS);
 
-  const document = record(raw.document);
-  const canvas = canvasOf(document);
+  // A bundle that is not this dispatch's, or not this build's, is refused
+  // before anything is prepared, let alone rendered.
+  if (
+    raw.render_job_id !== expected.renderJobId ||
+    raw.dispatch_id !== expected.dispatchId ||
+    raw.renderer_version !== expected.rendererVersion
+  ) {
+    throw new RenderBundleInvalid();
+  }
+
+  const document = documentOf(raw);
+  const canvas = record(document.canvas);
   const width = bounded(raw.width, MIN_DIMENSION, MAX_DIMENSION);
   const height = bounded(raw.height, MIN_DIMENSION, MAX_DIMENSION);
   const fps = bounded(raw.fps, 1, MAX_FPS);
@@ -170,14 +232,17 @@ export function parseRenderBundle(value: unknown): RenderBundle {
   if (!Array.isArray(raw.assets) || raw.assets.length > MAX_ASSETS) {
     throw new RenderBundleInvalid();
   }
-  if (typeof raw.renderer_version !== "string" || raw.renderer_version.length > 64) {
+  const assets = Object.freeze(raw.assets.map(asset));
+  bindAssets(document, assets);
+
+  if (typeof raw.project_id !== "string" || !PROJECT_ID.test(raw.project_id)) {
     throw new RenderBundleInvalid();
   }
 
   return Object.freeze({
     bundle_version: literal(raw.bundle_version, BUNDLE_VERSION),
     render_job_id: identifier(raw.render_job_id),
-    project_id: identifier(raw.project_id),
+    project_id: raw.project_id,
     document_id: identifier(raw.document_id),
     document_revision: bounded(raw.document_revision, 1, Number.MAX_SAFE_INTEGER),
     dispatch_id: identifier(raw.dispatch_id),
@@ -185,12 +250,28 @@ export function parseRenderBundle(value: unknown): RenderBundle {
     template_id: literal(raw.template_id, TRUSTED_TEMPLATE_ID),
     template_version: literal(raw.template_version, TRUSTED_TEMPLATE_VERSION),
     preset_id: literal(raw.preset_id, TRUSTED_PRESET_ID),
-    renderer_version: raw.renderer_version,
+    renderer_version: expected.rendererVersion,
     composition_id: literal(raw.composition_id, TRUSTED_COMPOSITION_ID),
     width,
     height,
     fps,
     duration_in_frames: durationInFrames,
-    assets: Object.freeze(raw.assets.map(asset)),
+    assets,
+  });
+}
+
+/**
+ * What a finished render of this bundle must look like.
+ *
+ * Audio is decided by the same helper the composition itself uses, so the
+ * expectation cannot disagree with what the browser is about to draw.
+ */
+export function expectedOutputOf(bundle: RenderBundle): ExpectedOutput {
+  return Object.freeze({
+    width: bundle.width,
+    height: bundle.height,
+    fps: bundle.fps,
+    durationInFrames: bundle.duration_in_frames,
+    hasAudio: hasAudibleContent(bundle.document as unknown as EditDocumentV2),
   });
 }

@@ -1,145 +1,194 @@
 import { describe, expect, test } from "bun:test";
 
+import {
+  FIXTURE_IDENTITY as EXPECTED,
+  testBundle as bundle,
+  testDocument as document,
+  testStagedAsset as stagedAsset,
+} from "./bundle-test-fixtures";
 import { RenderBundleInvalid, parseRenderBundle } from "./contracts";
 
-function bundle(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    bundle_version: 1,
-    render_job_id: "rj_001",
-    project_id: "project_001",
-    document_id: "doc_001",
-    document_revision: 3,
-    dispatch_id: "dsp_001",
-    document: {
-      schema_version: 2,
-      document_id: "doc_001",
-      project_id: "project_001",
-      revision: 3,
-      canvas: { width: 1080, height: 1920, fps: 30, duration_in_frames: 300 },
-      template: { template_id: "vertical_text_story", version: 1 },
-      scenes: [],
-      tracks: [],
-    },
-    template_id: "vertical_text_story",
-    template_version: 1,
-    preset_id: "standard_vertical_mp4_v1",
-    renderer_version: "remotion-4.0.523",
-    composition_id: "advanced_timeline_v1",
-    width: 1080,
-    height: 1920,
-    fps: 30,
-    duration_in_frames: 300,
-    assets: [],
-    ...overrides,
-  };
+function rejects(overrides: Record<string, unknown>): void {
+  expect(() => parseRenderBundle(bundle(overrides), EXPECTED)).toThrow(RenderBundleInvalid);
 }
 
 describe("parseRenderBundle", () => {
   test("accepts the one bundle shape the control plane writes", () => {
-    const parsed = parseRenderBundle(bundle());
+    const parsed = parseRenderBundle(bundle(), EXPECTED);
     expect(parsed.render_job_id).toBe("rj_001");
     expect(parsed.composition_id).toBe("advanced_timeline_v1");
-    expect(parsed.assets).toEqual([]);
+    expect(parsed.assets).toHaveLength(1);
   });
 
   test("rejects an unknown top-level field instead of ignoring it", () => {
-    expect(() => parseRenderBundle(bundle({ output_path: "/tmp/x.mp4" }))).toThrow(
-      RenderBundleInvalid,
-    );
+    rejects({ output_path: "/tmp/x.mp4" });
   });
 
   test("rejects an unknown asset field instead of ignoring it", () => {
-    const assets = [
-      {
-        asset_id: "asset_1",
-        relative_name: "assets/asset_1.mp4",
-        size_bytes: 10,
-        checksum: `sha256:${"a".repeat(64)}`,
-        source_path: "/var/lib/other.mp4",
-      },
-    ];
-    expect(() => parseRenderBundle(bundle({ assets }))).toThrow(RenderBundleInvalid);
+    rejects({ assets: [stagedAsset({ source_path: "/var/lib/other.mp4" })] });
   });
 
   test("rejects a bundle version, template, preset, or composition it does not trust", () => {
-    expect(() => parseRenderBundle(bundle({ bundle_version: 2 }))).toThrow(RenderBundleInvalid);
-    expect(() => parseRenderBundle(bundle({ template_id: "other_template" }))).toThrow(
-      RenderBundleInvalid,
-    );
-    expect(() => parseRenderBundle(bundle({ template_version: 2 }))).toThrow(RenderBundleInvalid);
-    expect(() => parseRenderBundle(bundle({ preset_id: "custom_preset" }))).toThrow(
-      RenderBundleInvalid,
-    );
-    expect(() => parseRenderBundle(bundle({ composition_id: "other_composition" }))).toThrow(
-      RenderBundleInvalid,
-    );
+    rejects({ bundle_version: 2 });
+    rejects({ template_id: "other_template" });
+    rejects({ template_version: 2 });
+    rejects({ preset_id: "custom_preset" });
+    rejects({ composition_id: "other_composition" });
   });
 
   test("rejects frame geometry outside the bounds the preset renders", () => {
-    expect(() => parseRenderBundle(bundle({ width: 0 }))).toThrow(RenderBundleInvalid);
-    expect(() => parseRenderBundle(bundle({ height: 100_000 }))).toThrow(RenderBundleInvalid);
-    expect(() => parseRenderBundle(bundle({ fps: 0 }))).toThrow(RenderBundleInvalid);
-    expect(() => parseRenderBundle(bundle({ fps: 1000 }))).toThrow(RenderBundleInvalid);
-    expect(() => parseRenderBundle(bundle({ duration_in_frames: 0 }))).toThrow(RenderBundleInvalid);
-    expect(() => parseRenderBundle(bundle({ duration_in_frames: 10_000_000 }))).toThrow(
-      RenderBundleInvalid,
-    );
-    expect(() => parseRenderBundle(bundle({ width: 1080.5 }))).toThrow(RenderBundleInvalid);
+    for (const geometry of [
+      { width: 0 },
+      { height: 100_000 },
+      { fps: 0 },
+      { fps: 1000 },
+      { duration_in_frames: 0 },
+      { duration_in_frames: 10_000_000 },
+      { width: 1080.5 },
+    ]) {
+      rejects(geometry);
+    }
   });
 
   test("rejects geometry that contradicts the document canvas it claims to render", () => {
-    expect(() => parseRenderBundle(bundle({ width: 720 }))).toThrow(RenderBundleInvalid);
+    rejects({ width: 720 });
   });
 
   test("rejects an identity that is not a single safe segment", () => {
-    expect(() => parseRenderBundle(bundle({ render_job_id: "../escape" }))).toThrow(
-      RenderBundleInvalid,
+    rejects({ render_job_id: "../escape" });
+    rejects({ dispatch_id: "dsp/001" });
+  });
+
+  test("accepts the UUID form of a project identity the control plane also allows", () => {
+    const uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    const parsed = parseRenderBundle(
+      bundle({ project_id: uuid, document: document({ project_id: uuid }) }),
+      EXPECTED,
     );
-    expect(() => parseRenderBundle(bundle({ dispatch_id: "dsp/001" }))).toThrow(RenderBundleInvalid);
+    expect(parsed.project_id).toBe(uuid);
   });
 
   test("rejects a staged asset name that is not a contained workspace name", () => {
-    const named = (relative_name: string) => [
-      {
-        asset_id: "asset_1",
-        relative_name,
-        size_bytes: 10,
-        checksum: `sha256:${"a".repeat(64)}`,
-      },
-    ];
-    expect(() => parseRenderBundle(bundle({ assets: named("../../etc/passwd") }))).toThrow(
-      RenderBundleInvalid,
-    );
-    expect(() => parseRenderBundle(bundle({ assets: named("/etc/passwd") }))).toThrow(
-      RenderBundleInvalid,
-    );
-    expect(() => parseRenderBundle(bundle({ assets: named("assets\\win.mp4") }))).toThrow(
-      RenderBundleInvalid,
-    );
-    expect(parseRenderBundle(bundle({ assets: named("assets/a.mp4") })).assets[0]?.asset_id).toBe(
-      "asset_1",
-    );
+    for (const relative_name of ["../../etc/passwd", "/etc/passwd", "assets\\win.mp4"]) {
+      rejects({ assets: [stagedAsset({ relative_name })] });
+    }
+    expect(
+      parseRenderBundle(bundle({ assets: [stagedAsset({ relative_name: "assets/a.mp4" })] }), EXPECTED)
+        .assets[0]?.asset_id,
+    ).toBe("asset_1");
   });
 
-  test("rejects a checksum that is not a sha256 digest", () => {
-    const assets = [
-      {
-        asset_id: "asset_1",
-        relative_name: "assets/asset_1.mp4",
-        size_bytes: 10,
-        checksum: "md5:abc",
-      },
-    ];
-    expect(() => parseRenderBundle(bundle({ assets }))).toThrow(RenderBundleInvalid);
+  test("rejects a checksum that is not a sha256 digest, in either case", () => {
+    rejects({ assets: [stagedAsset({ checksum: "md5:abc" })] });
+    rejects({ assets: [stagedAsset({ checksum: `sha256:${"a".repeat(63)}` })] });
+    expect(
+      parseRenderBundle(
+        bundle({ assets: [stagedAsset({ checksum: `sha256:${"A".repeat(64)}` })] }),
+        EXPECTED,
+      ).assets[0]?.checksum,
+    ).toBe(`sha256:${"A".repeat(64)}`);
   });
 
   test("never repeats the offending value in the failure it raises", () => {
     try {
-      parseRenderBundle(bundle({ render_job_id: "/var/secret/path" }));
+      parseRenderBundle(bundle({ render_job_id: "/var/secret/path" }), EXPECTED);
       throw new Error("expected a rejection");
     } catch (error) {
       expect(error).toBeInstanceOf(RenderBundleInvalid);
       expect(String(error)).not.toContain("/var/secret/path");
     }
+  });
+});
+
+describe("the bundle's binding to the dispatch that asked for it", () => {
+  test("rejects a bundle built for another job, dispatch, or renderer build", () => {
+    rejects({ render_job_id: "rj_002" });
+    rejects({ dispatch_id: "dsp_002" });
+    rejects({ renderer_version: "remotion-4.0.400" });
+  });
+
+  test("rejects a renderer version that is blank or unsupported", () => {
+    for (const renderer_version of ["", "   ", "latest", 1, null]) {
+      rejects({ renderer_version });
+    }
+  });
+
+  test("rejects a document whose own identity contradicts the bundle", () => {
+    rejects({ document: document({ project_id: "project_002" }) });
+    rejects({ document: document({ document_id: "doc_002" }) });
+    rejects({ document: document({ revision: 4 }) });
+  });
+});
+
+describe("the document the control plane published, revalidated here", () => {
+  test("rejects a document with no scenes, no tracks, or an unknown field", () => {
+    rejects({ document: document({ scenes: [] }) });
+    rejects({ document: document({ tracks: [] }) });
+    rejects({ document: document({ render_hint: "fast" }) });
+  });
+
+  test("rejects a malformed track, clip, or asset reference", () => {
+    rejects({ document: document({ tracks: [{ track_id: "track_main" }] }) });
+    rejects({
+      document: document({
+        clips: [{ kind: "video", clip_id: "clip_main", track_id: "track_main" }],
+      }),
+    });
+    rejects({ document: document({ clips: [{ kind: "hologram", clip_id: "clip_main" }] }) });
+    rejects({ document: document({ asset_refs: [{ asset_id: "asset_1" }] }) });
+  });
+
+  test("rejects document values outside the bounds the control plane enforces", () => {
+    rejects({ document: document({ revision: 0 }) });
+    rejects({
+      document: document({
+        canvas: { width: 720, height: 1280, fps: 30, duration_in_frames: 300 },
+      }),
+      width: 720,
+      height: 1280,
+    });
+    rejects({
+      document: document({
+        scenes: [
+          {
+            scene_id: "scene_001",
+            role: "chorus",
+            start_frame: 0,
+            duration_in_frames: 300,
+            clip_ids: ["clip_main"],
+          },
+        ],
+      }),
+    });
+  });
+});
+
+describe("the staged assets one render is allowed to read", () => {
+  /** The same per-asset ceiling the control plane enforces when it stages. */
+  const GIBIBYTE = 1024 * 1024 * 1024;
+
+  test("rejects an empty or oversized asset", () => {
+    rejects({ assets: [stagedAsset({ size_bytes: 0 })] });
+    rejects({ assets: [stagedAsset({ size_bytes: GIBIBYTE + 1 })] });
+    rejects({ assets: [stagedAsset({ size_bytes: Number.MAX_SAFE_INTEGER })] });
+    expect(
+      parseRenderBundle(bundle({ assets: [stagedAsset({ size_bytes: GIBIBYTE })] }), EXPECTED)
+        .assets[0]?.size_bytes,
+    ).toBe(GIBIBYTE);
+  });
+
+  test("rejects a duplicate asset identity or a duplicate staged name", () => {
+    rejects({
+      assets: [stagedAsset(), stagedAsset({ relative_name: "assets/other.mp4" })],
+    });
+    rejects({ assets: [stagedAsset(), stagedAsset({ asset_id: "asset_2" })] });
+  });
+
+  test("requires exactly the assets the document's clips actually play", () => {
+    // The control plane stages one copy per referenced clip asset, so anything
+    // else means the bundle and the document disagree about what is rendered.
+    rejects({ assets: [] });
+    rejects({ assets: [stagedAsset({ asset_id: "asset_9" })] });
+    rejects({ assets: [stagedAsset(), stagedAsset({ asset_id: "asset_9", relative_name: "assets/nine.mp4" })] });
   });
 });

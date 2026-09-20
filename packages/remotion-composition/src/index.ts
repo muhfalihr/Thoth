@@ -8,6 +8,7 @@
 export { AdvancedTimelineComposition, type PreviewSources } from "./AdvancedTimelineComposition";
 export { safePreviewSource } from "./media";
 export {
+  hasAudibleContent,
   visibleLanes,
   type AssetKind,
   type EditDocumentV2,

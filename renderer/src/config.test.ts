@@ -54,6 +54,15 @@ describe("loadRendererConfig", () => {
     }
   });
 
+  test("offers no way to point the renderer at another composition", () => {
+    const config = loadRendererConfig({
+      ...COMPLETE,
+      THOTH_RENDERER_COMPOSITION_ENTRY: "/tmp/attacker/register.tsx",
+    });
+    expect(JSON.stringify(config)).not.toContain("attacker");
+    expect(Object.keys(config)).not.toContain("compositionEntryPoint");
+  });
+
   test("never reads a database, creator, provider, or registry credential", () => {
     const config = loadRendererConfig({
       ...COMPLETE,

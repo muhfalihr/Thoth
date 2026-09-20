@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "schema": "bun run scripts/extract-document-schema.ts"
   },
   "dependencies": {
     "@remotion/bundler": "4.0.523",
     "@remotion/renderer": "4.0.523",
+    "ajv": "8.20.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "remotion": "4.0.523"

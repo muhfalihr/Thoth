@@ -63,6 +63,12 @@ const COMPOSITION_SOURCE = resolve(import.meta.dir, "../../packages/remotion-com
 const SERVICE_MODULES = resolve(import.meta.dir, "../node_modules");
 
 /**
+ * The only composition this image can render, resolved from the repository it
+ * was built from. No setting, bundle field, or request can point elsewhere.
+ */
+export const COMPOSITION_ENTRY_POINT = resolve(COMPOSITION_SOURCE, "register.tsx");
+
+/**
  * The shared composition ships source only, so the bundler must be told where
  * it lives and where this service's single copy of React and Remotion is.
  */
@@ -91,7 +97,7 @@ export function createRemotionEngine(): RenderEngine {
       const { renderMedia, selectComposition } = await import("@remotion/renderer");
 
       const serveUrl = await bundle({
-        entryPoint: request.entryPoint,
+        entryPoint: COMPOSITION_ENTRY_POINT,
         outDir: request.outDir,
         publicDir: request.publicDir,
         // An absolute public path keeps `staticFile()` on one origin, which is

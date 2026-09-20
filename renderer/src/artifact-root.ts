@@ -47,6 +47,7 @@ export type MediaProbe = {
   readonly fps: number;
   readonly durationSeconds: number;
   readonly hasAudio: boolean;
+  readonly audioCodec: string | null;
 };
 
 /** The bounded media facts the control plane persists and publishes. */
@@ -67,7 +68,12 @@ export type ExpectedOutput = {
   readonly height: number;
   readonly fps: number;
   readonly durationInFrames: number;
+  /** Whether the trusted composition actually produces sound for this document. */
+  readonly hasAudio: boolean;
 };
+
+/** The one audio codec the standard vertical MP4 preset emits. */
+const AUDIO_CODEC = "aac";
 
 export type ProbeMedia = (path: string) => Promise<MediaProbe>;
 
@@ -185,6 +191,14 @@ export class RendererArtifactRoot {
     ) {
       throw new ArtifactUnavailable();
     }
+    // A document with audible content must arrive as AAC, and one without must
+    // carry no audio track at all: a silent track is as wrong as a missing one.
+    if (probe.hasAudio !== expected.hasAudio) {
+      throw new ArtifactUnavailable();
+    }
+    if (expected.hasAudio && probe.audioCodec !== AUDIO_CODEC) {
+      throw new ArtifactUnavailable();
+    }
 
     return {
       media_type: "video/mp4",
@@ -260,6 +274,7 @@ export const probeWithFfprobe: ProbeMedia = async (path: string) => {
 
   const streams = parsed.streams ?? [];
   const video = streams.find((stream) => stream.codec_type === "video");
+  const audio = streams.find((stream) => stream.codec_type === "audio");
   if (!video || video.width === undefined || video.height === undefined) {
     throw new ArtifactUnavailable();
   }
@@ -276,6 +291,7 @@ export const probeWithFfprobe: ProbeMedia = async (path: string) => {
     height: video.height,
     fps: numerator / denominator,
     durationSeconds: Number(parsed.format?.duration ?? "0"),
-    hasAudio: streams.some((stream) => stream.codec_type === "audio"),
+    hasAudio: audio !== undefined,
+    audioCodec: audio?.codec_name ?? null,
   };
 };

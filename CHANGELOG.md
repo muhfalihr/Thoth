@@ -2,6 +2,96 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Isolated Remotion renderer review corrections (E1 Task 10)
+
+The independent Codex review of Task 10 (`fb9c795`) returned NO-GO on seven
+findings: Start was not idempotent after a terminal outcome; the bundle was
+accepted without revalidating the published document or its binding to the
+dispatch and the build; a per-asset ceiling of `Number.MAX_SAFE_INTEGER`; a
+composition entry point that could be pointed elsewhere by an environment
+setting; an unauthenticated `/health`; an expected output that never asserted
+the audio contract; and cleanup and publication failures swallowed in silence.
+Corrected offline and test-first from that baseline on `codex/stage1-container-ci`,
+as one commit. History was not rewritten and no operator-owned file was touched.
+
+- Start is idempotent per `(render_job_id, dispatch_id)`. A repeat of the active
+  identity is accepted and ignored; a repeat of an identity that already
+  completed, failed, or was cancelled fetches no bundle, launches no browser,
+  emits no second lifecycle event, and leaves the recorded result alone. The
+  memory is a bounded set of the last 64 settled identities — no queue, no
+  persistence, no scheduler — so a new identity still takes the released slot
+  and a different dispatch for the same job is never mistaken for a replay.
+- The bundle is revalidated against the control plane's own published contract.
+  `renderer/scripts/extract-document-schema.ts` derives a self-contained JSON
+  Schema for `EditDocumentV2` from `python/openapi.json` into
+  `renderer/src/generated/edit-document.schema.json`, and `document-schema.ts`
+  compiles it with Ajv. There is no second handwritten document type, and a
+  drift test fails if the checked-in schema stops matching the OpenAPI document.
+  `ajv@8.20.0` is pinned in `renderer/package.json` and `renderer/bun.lock`
+  rather than borrowed as an undeclared transitive dependency.
+- The authoritative binding is restored and widened: `render_job_id`,
+  `dispatch_id`, and `renderer_version` must equal what the Start request and
+  this build say, and the document's own `project_id`, `document_id`, and
+  `revision` must equal the bundle's. Every rejection is `render_bundle_invalid`,
+  raised before any engine call and before any temporary file exists.
+- Assets are bounded by the control plane's own `RENDER_ASSET_MAX_BYTES`
+  (1 GiB, `python/src/thoth_control_plane/api/app.py:77`), restated as a
+  constant and not as a new setting. Zero, oversized, duplicate-ID, duplicate-
+  name, missing, resized, and checksum-mismatched assets are refused before the
+  browser launches, and the staged set must equal exactly the assets the
+  document's clips play (`render_bundles.py:103`).
+- `THOTH_RENDERER_COMPOSITION_ENTRY` is gone. `COMPOSITION_ENTRY_POINT` is a
+  constant resolved from the repository the image was built from, and the image
+  build now proves both that the setting has no effect and that the constant is
+  the repository composition that exists on disk.
+- Every route, `/health` included, proves the shared internal credential first.
+  Absent, malformed, wrong-length, and wrong-value credentials all receive the
+  same fixed `renderer_unauthorized` reply. Compose wiring is Task 13's.
+- Audio is verified, not assumed. `hasAudibleContent` lives with the trusted
+  composition in `packages/remotion-composition/src/timeline.ts` and applies the
+  composition's own visibility, mute, volume, and `has_audio` rules, so the
+  traversal is not duplicated between dashboard and renderer. Finalization now
+  requires H.264 video, no audio track when nothing is audible, and an AAC track
+  when something is.
+- Degradation is visible. A terminal event that cannot be published and a
+  temporary output that cannot be removed each emit one fixed identifier
+  (`render_event_publish_failed`, `render_temporary_output_cleanup_failed`)
+  through an injectable sink — never an exception, path, credential, command
+  line, or process output.
+
+Two latent contract mismatches found while writing the tests, both fixed: a
+`project_id` may be a stored UUID, and a `sha256:` checksum may use uppercase
+hex. The renderer rejected both, the control plane accepts both.
+
+Two image defects the corrective exposed, both present at the baseline and both
+fixed here: `bun install` ran as root against the service user's `HOME`, leaving
+`/home/thoth/.bun` root-owned so the service user could not transpile a single
+file (`bun is unable to write files to tempdir: AccessDenied`); and importing
+`@thoth/remotion-composition` by its package root pulled React and Remotion into
+the validating process from a directory tree that cannot resolve them. The image
+now hands `HOME` back to the service user, and the renderer imports only
+`@thoth/remotion-composition/timeline`, which carries no runtime dependency.
+`Dockerfile.renderer` builds `thoth-remotion-renderer:e1-corrective` (exit 0);
+the baseline Dockerfile was rebuilt unmodified to confirm it failed identically
+before the corrective.
+
+No queue, broker, retry scheduler, or waiting job exists; no configurable
+composition path remains; the renderer holds no database URL, creator key,
+provider secret, or Docker socket; no raw error, path, process stream, or secret
+is emitted; and no Task 11 file or behaviour was added.
+
+Verification, all offline: `bun --cwd=renderer test` 82 pass / 0 fail across 8
+files; `bun x tsc -p tsconfig.json --noEmit` from `renderer/` exit 0;
+`bun --cwd=dashboard test` 361 pass / 0 fail across 29 files;
+`bun --cwd=dashboard run lint` exit 0 (four pre-existing warnings);
+`bun --cwd=dashboard run build` exit 0;
+`docker build -f Dockerfile.renderer -t thoth-remotion-renderer:e1-corrective .`
+exit 0; `build_cuda.bat` exit 0 (Rust untouched, nothing to recompile);
+`cargo test --bin thoth` exit 0; `git diff --check` clean.
+
+Deviation (carried from Task 9): the root `bun.lock` and `package.json` are
+gitignored, so `renderer/bun.lock` is the lockfile this task stages.
+
 ## 2026-09-20 — Creator Studio D1 advanced timeline third review corrections
 
 Closed the third independent Codex NO-GO review of D1 by executing

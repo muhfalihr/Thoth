@@ -7,8 +7,6 @@
  * variable cannot widen what a render can reach.
  */
 
-import { resolve } from "node:path";
-
 export class RendererConfigInvalid extends Error {
   constructor(setting: string) {
     super(`renderer setting invalid: ${setting}`);
@@ -23,7 +21,6 @@ export type RendererConfig = {
   readonly artifactRoot: string;
   readonly rendererVersion: string;
   readonly deadlineSeconds: number;
-  readonly compositionEntryPoint: string;
 };
 
 export type Environment = Record<string, string | undefined>;
@@ -34,12 +31,6 @@ const DEFAULT_RENDERER_VERSION = "remotion-4.0.523";
 const MIN_DEADLINE_SECONDS = 60;
 const MAX_DEADLINE_SECONDS = 7200;
 const MIN_CREDENTIAL_LENGTH = 16;
-
-/** The one composition entry point, beside this service unless told otherwise. */
-const DEFAULT_ENTRY_POINT = resolve(
-  import.meta.dir,
-  "../../packages/remotion-composition/src/register.tsx",
-);
 
 /**
  * The artifact root is a POSIX absolute path inside this Linux container, not a
@@ -121,7 +112,5 @@ export function loadRendererConfig(environment: Environment): RendererConfig {
       MIN_DEADLINE_SECONDS,
       MAX_DEADLINE_SECONDS,
     ),
-    compositionEntryPoint:
-      environment.THOTH_RENDERER_COMPOSITION_ENTRY?.trim() || DEFAULT_ENTRY_POINT,
   });
 }

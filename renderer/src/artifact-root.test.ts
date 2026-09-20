@@ -11,7 +11,10 @@ import {
   type MediaProbe,
 } from "./artifact-root";
 
-const EXPECTED = { width: 1080, height: 1920, fps: 30, durationInFrames: 300 };
+const EXPECTED = { width: 1080, height: 1920, fps: 30, durationInFrames: 300, hasAudio: false };
+/** What the same render looks like when the document really does have sound. */
+const EXPECTED_AUDIBLE = { ...EXPECTED, hasAudio: true };
+const AAC = { hasAudio: true, audioCodec: "aac" };
 
 const PROBE: MediaProbe = {
   container: "mp4",
@@ -21,6 +24,7 @@ const PROBE: MediaProbe = {
   fps: 30,
   durationSeconds: 10,
   hasAudio: false,
+  audioCodec: null,
 };
 
 let root: string;
@@ -164,6 +168,30 @@ describe("RendererArtifactRoot", () => {
     for (const contradiction of contradictions) {
       await expect(
         artifacts({ ...PROBE, ...contradiction }).verifyTemporaryOutput("rj_001", EXPECTED),
+      ).rejects.toBeInstanceOf(ArtifactUnavailable);
+    }
+  });
+
+  test("requires an AAC track exactly when the document has audible content", async () => {
+    writeTemporaryOutput("rj_001", "rendered-bytes");
+
+    const audible = await artifacts({ ...PROBE, ...AAC }).verifyTemporaryOutput(
+      "rj_001",
+      EXPECTED_AUDIBLE,
+    );
+    expect(audible.has_audio).toBe(true);
+
+    const contradictions: [Partial<MediaProbe>, typeof EXPECTED][] = [
+      // Audible content, but the encoder wrote no audio or the wrong codec.
+      [{}, EXPECTED_AUDIBLE],
+      [{ hasAudio: true, audioCodec: "mp3" }, EXPECTED_AUDIBLE],
+      [{ hasAudio: true, audioCodec: null }, EXPECTED_AUDIBLE],
+      // Nothing audible, yet the file carries a track anyway.
+      [AAC, EXPECTED],
+    ];
+    for (const [contradiction, expected] of contradictions) {
+      await expect(
+        artifacts({ ...PROBE, ...contradiction }).verifyTemporaryOutput("rj_001", expected),
       ).rejects.toBeInstanceOf(ArtifactUnavailable);
     }
   });

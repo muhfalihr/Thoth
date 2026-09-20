@@ -57,8 +57,10 @@ COPY --chown=thoth:thoth renderer/src/ /opt/thoth/renderer/src/
 COPY --chown=thoth:thoth renderer/tsconfig.json /opt/thoth/renderer/
 
 # Fetch the pinned browser now so a render never reaches the network.
+# The installs above ran as root against this HOME, so hand its caches back or
+# the service user cannot transpile a single file.
 RUN bun --eval "await import('@remotion/renderer').then((m) => m.ensureBrowser())" \
-    && chown -R thoth:thoth /opt/thoth/renderer/node_modules
+    && chown -R thoth:thoth /opt/thoth/renderer/node_modules /home/thoth
 
 EXPOSE 8080
 
@@ -76,8 +78,13 @@ RUN test -w /var/lib/thoth/artifacts \
         const c = loadRendererConfig({ \
             THOTH_RENDERER_INTERNAL_CREDENTIAL: 'x'.repeat(32), \
             THOTH_RENDERER_CONTROL_PLANE_URL: 'http://api:8000', \
-            THOTH_CONTROL_PLANE_ARTIFACT_ROOT: process.env.THOTH_CONTROL_PLANE_ARTIFACT_ROOT }); \
-        if (!(await Bun.file(c.compositionEntryPoint).exists())) { throw new Error(c.compositionEntryPoint); }" \
+            THOTH_CONTROL_PLANE_ARTIFACT_ROOT: process.env.THOTH_CONTROL_PLANE_ARTIFACT_ROOT, \
+            THOTH_RENDERER_COMPOSITION_ENTRY: '/tmp/untrusted/register.tsx' }); \
+        if (JSON.stringify(c).includes('untrusted')) { throw new Error('composition entry is configurable'); }" \
+    && bun --eval "const { COMPOSITION_ENTRY_POINT } = await import('/opt/thoth/renderer/src/remotion-adapter.ts'); \
+        if (COMPOSITION_ENTRY_POINT !== '/opt/thoth/packages/remotion-composition/src/register.tsx') { \
+            throw new Error('composition entry is not the repository composition'); } \
+        if (!(await Bun.file(COMPOSITION_ENTRY_POINT).exists())) { throw new Error('composition entry missing'); }" \
     && test -z "$THOTH_EDITOR_DATABASE_URL" \
     && test -z "$THOTH_CONTROL_PLANE_API_KEY" \
     && test -z "$THOTH_PROMPT_PROVIDER_SECRETS" \

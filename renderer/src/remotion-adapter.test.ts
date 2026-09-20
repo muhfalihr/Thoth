@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { safePreviewSource } from "@thoth/remotion-composition/media";
 
+import { FIXTURE_IDENTITY, testBundle } from "./bundle-test-fixtures";
 import { parseRenderBundle } from "./contracts";
 import {
   RENDER_PRESET,
@@ -11,41 +12,7 @@ import {
 } from "./remotion-adapter";
 
 function bundleWithAssets(): ReturnType<typeof parseRenderBundle> {
-  return parseRenderBundle({
-    bundle_version: 1,
-    render_job_id: "rj_001",
-    project_id: "project_001",
-    document_id: "doc_001",
-    document_revision: 3,
-    dispatch_id: "dsp_001",
-    document: {
-      schema_version: 2,
-      document_id: "doc_001",
-      project_id: "project_001",
-      revision: 3,
-      canvas: { width: 1080, height: 1920, fps: 30, duration_in_frames: 300 },
-      template: { template_id: "vertical_text_story", version: 1 },
-      scenes: [],
-      tracks: [],
-    },
-    template_id: "vertical_text_story",
-    template_version: 1,
-    preset_id: "standard_vertical_mp4_v1",
-    renderer_version: "remotion-4.0.523",
-    composition_id: "advanced_timeline_v1",
-    width: 1080,
-    height: 1920,
-    fps: 30,
-    duration_in_frames: 300,
-    assets: [
-      {
-        asset_id: "asset_1",
-        relative_name: "assets/asset_1.mp4",
-        size_bytes: 7,
-        checksum: `sha256:${"a".repeat(64)}`,
-      },
-    ],
-  });
+  return parseRenderBundle(testBundle(), FIXTURE_IDENTITY);
 }
 
 describe("the server render adapter", () => {

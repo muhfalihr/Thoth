@@ -17,7 +17,7 @@ import { ArtifactPathInvalid, ArtifactUnavailable, RendererArtifactRoot, probeWi
 import type { RendererConfig } from "./config";
 import { loadRendererConfig } from "./config";
 import type { RenderBundleAsset } from "./contracts";
-import { parseRenderBundle } from "./contracts";
+import { expectedOutputOf, parseRenderBundle } from "./contracts";
 import { ControlPlaneClient } from "./control-plane-client";
 import { compositionInputProps, createRemotionEngine } from "./remotion-adapter";
 
@@ -49,7 +49,6 @@ export type RenderEvent = {
 };
 
 export type EngineRequest = {
-  readonly entryPoint: string;
   readonly outDir: string;
   readonly publicDir: string;
   readonly outputPath: string;
@@ -79,12 +78,21 @@ export type ArtifactPort = {
   verifyTemporaryOutput(renderJobId: string, expected: ExpectedOutput): Promise<OutputFacts>;
 };
 
+/**
+ * Degradation this service survives but should still be seen. Each is a fixed
+ * identifier: the original exception, its path, and its output stay here.
+ */
+export type RendererWarning =
+  | "render_event_publish_failed"
+  | "render_temporary_output_cleanup_failed";
+
 export type ExecutionDeps = {
   readonly config: RendererConfig;
   readonly client: ControlPlanePort;
   readonly artifacts: ArtifactPort;
   readonly engine: RenderEngine;
   readonly now: () => Date;
+  readonly warn: (code: RendererWarning) => void;
 };
 
 export type ActiveRender = { readonly render_job_id: string; readonly dispatch_id: string };
@@ -110,6 +118,14 @@ export class RendererBusy extends Error {
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 /** Report a step, not every frame: progress is a signal, not a stream. */
 const PROGRESS_STEP = 10;
+/**
+ * How many finished dispatches this service still recognizes as replays.
+ *
+ * A redelivered start must not render twice, but remembering every identity
+ * forever would be the backlog this design refuses to hold, so the oldest is
+ * forgotten and simply renders again.
+ */
+const SETTLED_MEMORY = 64;
 
 type AbortReason = "cancel" | "deadline";
 type Stage = "preparing" | "rendering" | "finalizing";
@@ -119,6 +135,17 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
   let running: Promise<void> | null = null;
   let controller: AbortController | null = null;
   let reason: AbortReason | null = null;
+  const settled = new Set<string>();
+
+  function remember(renderJobId: string, dispatchId: string): void {
+    settled.add(`${renderJobId}\u0000${dispatchId}`);
+    for (const oldest of settled) {
+      if (settled.size <= SETTLED_MEMORY) {
+        break;
+      }
+      settled.delete(oldest);
+    }
+  }
 
   async function execute(renderJobId: string, dispatchId: string): Promise<void> {
     let sequence = 0;
@@ -143,32 +170,25 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
         occurred_at: deps.now().toISOString(),
         ...extra,
       };
-      try {
-        await deps.client.publishEvent(event);
-      } catch {
-        // The control plane's own deadline closes a job it stops hearing about;
-        // a report that cannot be delivered is not worth failing the render for.
-      }
+      // The control plane's own deadline closes a job it stops hearing about,
+      // so an undeliverable report is warned about rather than raised.
+      await safely(deps, "render_event_publish_failed", () => deps.client.publishEvent(event));
     };
 
     try {
       await publish("preparing");
 
-      const bundle = parseRenderBundle(await deps.client.fetchBundle(renderJobId));
-      // The control plane already binds each bundle to its job and dispatch;
-      // this only refuses to spend a render on a document it did not ask for.
-      if (bundle.render_job_id !== renderJobId) {
-        throw new ArtifactPathInvalid();
-      }
+      // The bundle must be this job's, this dispatch's, and this build's, or
+      // nothing is prepared, no browser is launched, and no output is written.
+      const bundle = parseRenderBundle(await deps.client.fetchBundle(renderJobId), {
+        renderJobId,
+        dispatchId,
+        rendererVersion: deps.config.rendererVersion,
+      });
       await deps.artifacts.prepare(renderJobId);
       await deps.artifacts.verifyStagedAssets(renderJobId, bundle.assets);
 
-      const expected: ExpectedOutput = {
-        width: bundle.width,
-        height: bundle.height,
-        fps: bundle.fps,
-        durationInFrames: bundle.duration_in_frames,
-      };
+      const expected = expectedOutputOf(bundle);
 
       stage = "rendering";
       reported = 0;
@@ -179,7 +199,6 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
         throw new Error("render aborted");
       }
       await deps.engine.render({
-        entryPoint: deps.config.compositionEntryPoint,
         outDir: deps.artifacts.bundleDirectory(renderJobId),
         publicDir: deps.artifacts.assetsDirectory(renderJobId),
         outputPath: deps.artifacts.temporaryOutput(renderJobId),
@@ -209,20 +228,26 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
 
       terminal = true;
       sequence += 1;
-      await deps.client.publishEvent({
-        render_job_id: renderJobId,
-        dispatch_id: dispatchId,
-        sequence,
-        status: "completed",
-        output,
-        occurred_at: deps.now().toISOString(),
-      });
+      // The render itself succeeded; losing the report degrades visibility, not
+      // the result, so it is warned about rather than turned into a failure.
+      await safely(deps, "render_event_publish_failed", () =>
+        deps.client.publishEvent({
+          render_job_id: renderJobId,
+          dispatch_id: dispatchId,
+          sequence,
+          status: "completed",
+          output,
+          occurred_at: deps.now().toISOString(),
+        }),
+      );
     } catch (error) {
       const closing = closingEvent(stage, error, reason);
       terminal = true;
       sequence += 1;
-      await safely(() => deps.artifacts.removeTemporaryOutput(renderJobId));
-      await safely(() =>
+      await safely(deps, "render_temporary_output_cleanup_failed", () =>
+        deps.artifacts.removeTemporaryOutput(renderJobId),
+      );
+      await safely(deps, "render_event_publish_failed", () =>
         deps.client.publishEvent({
           render_job_id: renderJobId,
           dispatch_id: dispatchId,
@@ -240,12 +265,16 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
       if (!IDENTIFIER.test(renderJobId) || !IDENTIFIER.test(dispatchId)) {
         throw new RendererBusy();
       }
+      // A redelivered start of a dispatch this service already settled is the
+      // same request, whether it is still running or long since terminal.
+      if (active?.render_job_id === renderJobId && active.dispatch_id === dispatchId) {
+        return;
+      }
+      if (settled.has(`${renderJobId}\u0000${dispatchId}`)) {
+        return;
+      }
+      // Any other identity is refused outright rather than parked.
       if (active) {
-        // A repeated dispatch of the running render is the same request; any
-        // other identity is refused rather than remembered.
-        if (active.render_job_id === renderJobId && active.dispatch_id === dispatchId) {
-          return;
-        }
         throw new RendererBusy();
       }
 
@@ -262,6 +291,7 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
           await execute(renderJobId, dispatchId);
         } finally {
           clearTimeout(deadline);
+          remember(renderJobId, dispatchId);
           active = null;
           controller = null;
           running = null;
@@ -311,11 +341,25 @@ function closingEvent(
   };
 }
 
-async function safely(action: () => Promise<unknown>): Promise<void> {
+/**
+ * Run a step the render survives without, and say so when it did not work.
+ *
+ * Only the fixed identifier escapes: the caught value never reaches the sink,
+ * so a path, a credential, or a process stream cannot ride out inside it.
+ */
+async function safely(
+  deps: ExecutionDeps,
+  code: RendererWarning,
+  action: () => Promise<unknown>,
+): Promise<void> {
   try {
     await action();
   } catch {
-    // Closing a render must not fail on the way out.
+    try {
+      deps.warn(code);
+    } catch {
+      // A sink that throws must not take the render down with it.
+    }
   }
 }
 
@@ -348,14 +392,16 @@ export function createFetchHandler(
 ): (request: Request) => Promise<Response> {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/health") {
-      return json(200, { status: "ok" });
-    }
-
+    // Every route, health included, proves it is the control plane first, and
+    // every rejection is the same fixed reply whatever was wrong with it.
     const header = request.headers.get("Authorization");
     const presented = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
     if (!credentialMatches(credential, presented)) {
       return json(401, { code: "renderer_unauthorized" });
+    }
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      return json(200, { status: "ok" });
     }
 
     const route = request.method === "POST" ? DISPATCH_ROUTE.exec(url.pathname) : null;
@@ -418,6 +464,8 @@ if (import.meta.main) {
     artifacts: new RendererArtifactRoot(config.artifactRoot, { probe: probeWithFfprobe }),
     engine: createRemotionEngine(),
     now: () => new Date(),
+    // One bounded identifier on the container's own stream, and nothing else.
+    warn: (code) => console.warn(`renderer_degraded ${code}`),
   });
 
   Bun.serve({

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { ArtifactUnavailable } from "./artifact-root";
 import type { RendererConfig } from "./config";
+import { testBundle } from "./bundle-test-fixtures";
 import { RenderBundleInvalid } from "./contracts";
 import {
   type EngineRequest,
@@ -20,36 +21,6 @@ const CONFIG: RendererConfig = {
   artifactRoot: "/srv/artifacts",
   rendererVersion: "remotion-4.0.523",
   deadlineSeconds: 900,
-  compositionEntryPoint: "/app/packages/remotion-composition/src/register.tsx",
-};
-
-const BUNDLE = {
-  bundle_version: 1,
-  render_job_id: "rj_001",
-  project_id: "project_001",
-  document_id: "doc_001",
-  document_revision: 3,
-  dispatch_id: "dsp_001",
-  document: {
-    schema_version: 2,
-    document_id: "doc_001",
-    project_id: "project_001",
-    revision: 3,
-    canvas: { width: 1080, height: 1920, fps: 30, duration_in_frames: 300 },
-    template: { template_id: "vertical_text_story", version: 1 },
-    scenes: [],
-    tracks: [],
-  },
-  template_id: "vertical_text_story",
-  template_version: 1,
-  preset_id: "standard_vertical_mp4_v1",
-  renderer_version: "remotion-4.0.523",
-  composition_id: "advanced_timeline_v1",
-  width: 1080,
-  height: 1920,
-  fps: 30,
-  duration_in_frames: 300,
-  assets: [],
 };
 
 const FACTS = {
@@ -72,6 +43,8 @@ function harness(
     bundleError?: Error;
     assetError?: Error;
     outputError?: Error;
+    publishError?: Error;
+    removeError?: Error;
     render?: (request: EngineRequest) => Promise<void>;
     config?: Partial<RendererConfig>;
   } = {},
@@ -79,6 +52,10 @@ function harness(
   const events: RenderEvent[] = [];
   const removed: string[] = [];
   const requests: EngineRequest[] = [];
+  const fetches: string[] = [];
+  const warnings: string[] = [];
+  /** The dispatch the control plane currently has this job bound to. */
+  let bound = "dsp_001";
   let release = () => {};
   const finished = new Promise<void>((resolve) => {
     release = resolve;
@@ -92,15 +69,22 @@ function harness(
   const execution = createExecution({
     config: { ...CONFIG, ...options.config },
     now: () => new Date("2026-09-20T10:00:00.000Z"),
+    warn: (code: string) => {
+      warnings.push(code);
+    },
     client: {
       fetchBundle: async (renderJobId: string) => {
+        fetches.push(renderJobId);
         if (options.bundleError) {
           throw options.bundleError;
         }
         // The control plane serves each bundle from the job's own route.
-        return options.bundle ?? { ...BUNDLE, render_job_id: renderJobId };
+        return options.bundle ?? testBundle({ render_job_id: renderJobId, dispatch_id: bound });
       },
       publishEvent: async (event: RenderEvent) => {
+        if (options.publishError) {
+          throw options.publishError;
+        }
         events.push(event);
       },
     },
@@ -115,6 +99,9 @@ function harness(
       bundleDirectory: (job: string) => `/srv/artifacts/temp/${job}/bundle`,
       temporaryOutput: (job: string) => `/srv/artifacts/temp/${job}/output.mp4`,
       removeTemporaryOutput: async (job: string) => {
+        if (options.removeError) {
+          throw options.removeError;
+        }
         removed.push(job);
       },
       verifyTemporaryOutput: async () => {
@@ -135,10 +122,24 @@ function harness(
     },
   });
 
-  return { events, removed, requests, execution, finished, release, started };
+  return {
+    events,
+    removed,
+    requests,
+    fetches,
+    warnings,
+    execution,
+    finished,
+    release,
+    started,
+    bindTo: (dispatchId: string) => {
+      bound = dispatchId;
+    },
+  };
 }
 
 async function run(subject: Harness, job = "rj_001", dispatch = "dsp_001"): Promise<void> {
+  subject.bindTo(dispatch);
   await subject.execution.start(job, dispatch);
   await subject.execution.whenIdle();
 }
@@ -180,12 +181,15 @@ describe("the one-slot renderer execution", () => {
     expect(request.outputPath).toBe("/srv/artifacts/temp/rj_001/output.mp4");
     expect(request.publicDir).toBe("/srv/artifacts/work/rj_001/assets");
     expect(request.outDir).toBe("/srv/artifacts/temp/rj_001/bundle");
-    expect(request.entryPoint).toBe(CONFIG.compositionEntryPoint);
+    // The entry point is the repository's own composition, not a dispatch input.
+    expect(Object.keys(request)).not.toContain("entryPoint");
     expect(request.expected).toEqual({
       width: 1080,
       height: 1920,
       fps: 30,
       durationInFrames: 300,
+      // The fixture plays a video asset that carries audio.
+      hasAudio: true,
     });
   });
 
@@ -331,6 +335,96 @@ describe("the one-slot renderer execution", () => {
     await subject.execution.whenIdle();
   });
 
+  test("a repeated start of a terminal dispatch renders nothing a second time", async () => {
+    for (const closed of [
+      harness(),
+      harness({ bundleError: new RenderBundleInvalid() }),
+      harness({ render: async () => { throw new Error("chrome crashed"); } }),
+    ]) {
+      await run(closed);
+      const settled = [...closed.events];
+      const rendered = closed.requests.length;
+
+      await closed.execution.start("rj_001", "dsp_001");
+      await closed.execution.whenIdle();
+
+      expect(closed.fetches).toEqual(["rj_001"]);
+      expect(closed.requests).toHaveLength(rendered);
+      expect(closed.events).toEqual(settled);
+      expect(closed.execution.status().active).toBeNull();
+    }
+  });
+
+  test("a replayed cancelled dispatch is not started again", async () => {
+    const subject = harness({
+      render: async (request) => {
+        await new Promise<void>((resolve) => {
+          request.signal.addEventListener("abort", () => resolve());
+        });
+        throw new Error("render cancelled");
+      },
+    });
+
+    await subject.execution.start("rj_001", "dsp_001");
+    await subject.started;
+    await subject.execution.cancel("rj_001");
+    await subject.execution.whenIdle();
+    const settled = [...subject.events];
+
+    await subject.execution.start("rj_001", "dsp_001");
+    await subject.execution.whenIdle();
+
+    expect(subject.requests).toHaveLength(1);
+    expect(subject.events).toEqual(settled);
+  });
+
+  test("a new identity still takes the slot a terminal render released", async () => {
+    const subject = harness();
+    await run(subject);
+
+    // Another job, and another dispatch of the same job, are both genuinely new.
+    await run(subject, "rj_002", "dsp_002");
+    await run(subject, "rj_001", "dsp_002");
+
+    expect(subject.fetches).toEqual(["rj_001", "rj_002", "rj_001"]);
+    expect(subject.requests).toHaveLength(3);
+  });
+
+  test("the memory of terminal dispatches is bounded, not a growing ledger", async () => {
+    const subject = harness();
+    for (let index = 0; index < 200; index += 1) {
+      await run(subject, `rj_${index}`, `dsp_${index}`);
+    }
+    // The oldest identity has aged out, so it renders again rather than
+    // being served from an unbounded record of everything ever dispatched.
+    await run(subject, "rj_0", "dsp_0");
+    expect(subject.requests).toHaveLength(201);
+  });
+
+  test("a publication that cannot be delivered is reported as a bounded warning", async () => {
+    const subject = harness({ publishError: new Error("POST http://api:8000 failed: ECONNREFUSED") });
+    await run(subject);
+
+    expect(subject.warnings.length).toBeGreaterThan(0);
+    expect(new Set(subject.warnings)).toEqual(new Set(["render_event_publish_failed"]));
+    expect(JSON.stringify(subject.warnings)).not.toContain("ECONNREFUSED");
+    expect(JSON.stringify(subject.warnings)).not.toContain("api:8000");
+  });
+
+  test("a cleanup that fails is reported without the path or the exception", async () => {
+    const subject = harness({
+      bundleError: new RenderBundleInvalid(),
+      removeError: new Error("EACCES: unlink '/srv/artifacts/temp/rj_001/output.mp4'"),
+    });
+    await run(subject);
+
+    expect(subject.warnings).toContain("render_temporary_output_cleanup_failed");
+    expect(JSON.stringify(subject.warnings)).not.toContain("/srv/artifacts");
+    expect(JSON.stringify(subject.warnings)).not.toContain("EACCES");
+    // Degradation stays visible without changing what the job reports.
+    expect(statuses(subject).at(-1)).toBe("failed");
+  });
+
   test("cancelling an unknown or finished job changes nothing", async () => {
     const subject = harness();
     await subject.execution.cancel("rj_404");
@@ -379,6 +473,31 @@ describe("the private dispatch surface", () => {
       expect(await response.json()).toEqual({ code: "renderer_unauthorized" });
     }
     expect(subject.requests).toHaveLength(0);
+  });
+
+  test("requires the internal credential for the health route too", async () => {
+    const handle = handlerFor(harness());
+    const probe = (init: RequestInit) =>
+      handle(new Request("http://renderer:8080/health", { method: "GET", ...init }));
+
+    const authorized = await probe({ headers: { Authorization: `Bearer ${CREDENTIAL}` } });
+    expect(authorized.status).toBe(200);
+    expect(await authorized.json()).toEqual({ status: "ok" });
+
+    const refused = [
+      {},
+      { headers: { Authorization: "Bearer " } },
+      { headers: { Authorization: CREDENTIAL } },
+      { headers: { Authorization: "Bearer x" } },
+      { headers: { Authorization: `Bearer ${CREDENTIAL}x` } },
+      { headers: { Authorization: `Bearer ${"x".repeat(4096)}` } },
+    ];
+    for (const init of refused) {
+      const response = await probe(init);
+      expect(response.status).toBe(401);
+      // One fixed body, so no reply hints at the credential's length or content.
+      expect(await response.text()).toBe(JSON.stringify({ code: "renderer_unauthorized" }));
+    }
   });
 
   test("starts one job and reports the busy slot to a second caller", async () => {
