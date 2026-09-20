@@ -114,6 +114,9 @@ class ArtifactRoot(Protocol):
     def prepare(self, render_job_id: str) -> JobWorkspace:
         """Create this job's workspace and temporary directory."""
 
+    def resolve_source(self, relative_location: str) -> Path:
+        """Resolve one stored asset locator, so no caller ever joins a path."""
+
     def stage_asset(
         self,
         workspace: JobWorkspace,

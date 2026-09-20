@@ -22,3 +22,9 @@ class EditorAssetRepository(Protocol):
     async def get_ready_record(
         self, *, project_id: str, asset_id: str
     ) -> EditorAssetRecord | None: ...
+
+    async def get_ready_records(
+        self, *, project_id: str, asset_ids: tuple[str, ...]
+    ) -> tuple[EditorAssetRecord, ...]:
+        """Read one bounded batch of ready records, in the requested order."""
+        ...

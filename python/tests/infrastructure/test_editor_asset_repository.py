@@ -244,3 +244,65 @@ async def test_connection_failures_never_leak_the_database_url(
         await PostgresEditorAssetRepository("postgresql://redacted").list_ready(
             project_id="project_001", limit=10, cursor=None
         )
+
+
+@pytest.mark.asyncio
+async def test_get_ready_records_reads_one_project_scoped_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = Cursor(rows=[record_row(), record_row(asset_id="asset_music", kind="audio")])
+    repository = patched(monkeypatch, cursor)
+
+    records = await repository.get_ready_records(
+        project_id="project_001", asset_ids=("asset_main", "asset_music")
+    )
+
+    assert [record.asset.asset_id for record in records] == ["asset_main", "asset_music"]
+    assert records[0].artifact_location == "project_001/asset_main.mp4"
+    assert len(cursor.calls) == 1
+    query, params = cursor.calls[0]
+    assert "validation_state = 'ready'" in query
+    assert "%s" in query
+    assert params[0] == "project_001"
+    assert list(params[1]) == ["asset_main", "asset_music"]
+
+
+@pytest.mark.asyncio
+async def test_get_ready_records_returns_nothing_for_an_empty_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = Cursor(rows=[record_row()])
+    repository = patched(monkeypatch, cursor)
+
+    assert await repository.get_ready_records(project_id="project_001", asset_ids=()) == ()
+    assert cursor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_ready_records_refuses_a_traversing_locator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = Cursor(rows=[record_row(artifact_location="../../etc/passwd")])
+
+    with pytest.raises(EditorAssetPersistenceError, match=r"^editor asset unavailable$"):
+        await patched(monkeypatch, cursor).get_ready_records(
+            project_id="project_001", asset_ids=("asset_main",)
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_ready_records_never_leaks_the_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(_: str) -> Connection:
+        raise RuntimeError("postgresql://secret.example/thoth")
+
+    monkeypatch.setattr(
+        "thoth_control_plane.infrastructure.editor_asset_repository.AsyncConnection.connect",
+        broken,
+    )
+
+    with pytest.raises(EditorAssetPersistenceError, match=r"^editor asset unavailable$"):
+        await PostgresEditorAssetRepository("postgresql://redacted").get_ready_records(
+            project_id="project_001", asset_ids=("asset_main",)
+        )

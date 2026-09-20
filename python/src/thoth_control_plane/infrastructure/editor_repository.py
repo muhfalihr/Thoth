@@ -98,6 +98,26 @@ class PostgresEditDocumentRepository:
         except Exception as error:
             raise EditDocumentPersistenceError() from error
 
+    async def get_revision(
+        self, *, project_id: str, document_id: str, revision: int
+    ) -> EditDocument | None:
+        try:
+            connection = await AsyncConnection.connect(self._database_url)
+            async with connection:
+                cursor = connection.cursor()
+                await cursor.execute(
+                    """
+                    SELECT document_json
+                    FROM edit_document_revisions
+                    WHERE project_id = %s AND document_id = %s AND revision = %s
+                    """,
+                    (project_id, document_id, revision),
+                )
+                row = await cursor.fetchone()
+                return DOCUMENT_ADAPTER.validate_python(row[0]) if row else None
+        except Exception as error:
+            raise EditDocumentPersistenceError() from error
+
     async def apply_operations(
         self,
         project_id: str,

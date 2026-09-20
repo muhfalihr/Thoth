@@ -35,6 +35,8 @@ from thoth_control_plane.domain.render_jobs import RenderOutputFacts
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,127}$")
 #: A source extension is only carried over when it is itself a safe segment.
 _SUFFIX = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
+#: One segment of a stored asset locator: no dot-segment, separator, or colon.
+_LOCATOR_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _CHUNK_BYTES = 1024 * 1024
 _OUTPUT_NAME = "output.mp4"
@@ -87,6 +89,24 @@ class LocalArtifactRoot:
         (self._contained("work", job, "assets")).mkdir(parents=True, exist_ok=True)
         (self._contained("temp", job)).mkdir(parents=True, exist_ok=True)
         return JobWorkspace(render_job_id=job)
+
+    def resolve_source(self, relative_location: str) -> Path:
+        """Resolve one stored asset locator below this root, or refuse it.
+
+        The repository already constrains what it stores, so this is the second
+        of two independent checks and the only place a locator becomes a path.
+        """
+        if not isinstance(relative_location, str) or not 0 < len(relative_location) <= 512:
+            raise ArtifactPathInvalid()
+        segments = relative_location.split("/")
+        if any(not _LOCATOR_SEGMENT.match(segment) for segment in segments):
+            raise ArtifactPathInvalid()
+        target = self._contained(*segments)
+        if _is_link(target):
+            raise ArtifactPathInvalid()
+        if not target.is_file():
+            raise ArtifactUnavailable()
+        return target
 
     def stage_asset(
         self,

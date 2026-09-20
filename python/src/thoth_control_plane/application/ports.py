@@ -110,6 +110,12 @@ class EditDocumentRepository(Protocol):
 
     async def get_latest(self, *, project_id: str, document_id: str) -> EditDocument | None: ...
 
+    async def get_revision(
+        self, *, project_id: str, document_id: str, revision: int
+    ) -> EditDocument | None:
+        """Read exactly one saved revision, never falling back to the latest."""
+        ...
+
     async def upgrade_to_timeline(
         self,
         *,

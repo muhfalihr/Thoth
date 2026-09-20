@@ -617,3 +617,69 @@ async def test_upgrade_conflicts_when_the_document_is_already_version_two(
         )
 
     assert all("INSERT INTO" not in query for query, _ in cursor.calls)
+
+
+@pytest.mark.asyncio
+async def test_get_revision_reads_exactly_the_requested_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = Cursor(row=(document().model_dump(mode="json"),))
+
+    async def connect(_: str) -> Connection:
+        return Connection(cursor)
+
+    monkeypatch.setattr(
+        "thoth_control_plane.infrastructure.editor_repository.AsyncConnection.connect",
+        connect,
+    )
+
+    result = await PostgresEditDocumentRepository("postgresql://redacted").get_revision(
+        project_id="project_001", document_id="edoc_abc123", revision=1
+    )
+
+    assert result == document()
+    query, params = cursor.calls[0]
+    assert "revision = %s" in query
+    assert "ORDER BY" not in query
+    assert params == ("project_001", "edoc_abc123", 1)
+
+
+@pytest.mark.asyncio
+async def test_get_revision_returns_none_when_no_row_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = Cursor(row=None)
+
+    async def connect(_: str) -> Connection:
+        return Connection(cursor)
+
+    monkeypatch.setattr(
+        "thoth_control_plane.infrastructure.editor_repository.AsyncConnection.connect",
+        connect,
+    )
+
+    result = await PostgresEditDocumentRepository("postgresql://redacted").get_revision(
+        project_id="project_999", document_id="edoc_abc123", revision=7
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_revision_never_leaks_the_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(_: str) -> Connection:
+        raise RuntimeError("postgresql://secret.example/thoth")
+
+    monkeypatch.setattr(
+        "thoth_control_plane.infrastructure.editor_repository.AsyncConnection.connect",
+        broken,
+    )
+
+    with pytest.raises(
+        EditDocumentPersistenceError, match=r"^edit document persistence unavailable$"
+    ):
+        await PostgresEditDocumentRepository("postgresql://redacted").get_revision(
+            project_id="project_001", document_id="edoc_abc123", revision=1
+        )

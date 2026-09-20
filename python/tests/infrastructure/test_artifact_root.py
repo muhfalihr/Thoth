@@ -409,3 +409,48 @@ def test_a_linked_job_directory_is_never_followed(tmp_path: Path) -> None:
     with pytest.raises(ArtifactPathInvalid):
         root.cleanup(JOB)
     assert (outside / "output.mp4").exists()
+
+
+def test_resolve_source_finds_a_stored_asset_below_the_root(tmp_path: Path) -> None:
+    stored = tmp_path / "project_001" / "assets"
+    stored.mkdir(parents=True)
+    (stored / "asset_main.mp4").write_bytes(b"media")
+
+    resolved = LocalArtifactRoot(tmp_path).resolve_source("project_001/assets/asset_main.mp4")
+
+    assert resolved.read_bytes() == b"media"
+    assert resolved.resolve().is_relative_to(tmp_path.resolve())
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "../outside.mp4",
+        "project_001/../../outside.mp4",
+        "/etc/passwd",
+        "C:\\Windows\\win.ini",
+        "project_001\\asset.mp4",
+        "http://example.test/a.mp4",
+        "project_001//asset.mp4",
+        "project_001/.hidden/asset.mp4",
+        "",
+        "a" * 513,
+    ],
+)
+def test_resolve_source_refuses_anything_that_is_not_a_contained_locator(
+    tmp_path: Path, locator: str
+) -> None:
+    with pytest.raises(ArtifactPathInvalid):
+        LocalArtifactRoot(tmp_path).resolve_source(locator)
+
+
+def test_resolve_source_reports_a_missing_asset_without_a_path(tmp_path: Path) -> None:
+    with pytest.raises(ArtifactUnavailable, match=r"^render artifact unavailable$"):
+        LocalArtifactRoot(tmp_path).resolve_source("project_001/asset_main.mp4")
+
+
+def test_resolve_source_refuses_a_directory(tmp_path: Path) -> None:
+    (tmp_path / "project_001").mkdir()
+
+    with pytest.raises(ArtifactUnavailable):
+        LocalArtifactRoot(tmp_path).resolve_source("project_001")

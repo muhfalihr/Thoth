@@ -98,3 +98,39 @@ class PostgresEditorAssetRepository:
                 )
         except Exception as error:
             raise EditorAssetPersistenceError() from error
+
+    async def get_ready_records(
+        self, *, project_id: str, asset_ids: tuple[str, ...]
+    ) -> tuple[EditorAssetRecord, ...]:
+        if not asset_ids:
+            return ()
+        wanted = list(asset_ids[:ASSET_PAGE_LIMIT_MAX])
+        try:
+            connection = await AsyncConnection.connect(self._database_url)
+            async with connection:
+                database_cursor = connection.cursor()
+                await database_cursor.execute(
+                    f"""
+                    SELECT {PUBLIC_COLUMNS}, artifact_location, provenance
+                    FROM editor_assets
+                    WHERE project_id = %s
+                      AND asset_id = ANY(%s)
+                      AND validation_state = 'ready'
+                    LIMIT %s
+                    """,
+                    (project_id, wanted, len(wanted)),
+                )
+                rows = await database_cursor.fetchall()
+                records = {
+                    row[0]: EditorAssetRecord(
+                        asset=_asset(row),
+                        artifact_location=row[-2],
+                        provenance=row[-1],
+                    )
+                    for row in rows
+                }
+        except Exception as error:
+            raise EditorAssetPersistenceError() from error
+        # Answer in the caller's order and stay silent about anything missing:
+        # the caller decides what an absent asset means.
+        return tuple(records[asset_id] for asset_id in wanted if asset_id in records)
