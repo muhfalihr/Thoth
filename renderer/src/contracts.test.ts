@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 
 import {
   FIXTURE_IDENTITY as EXPECTED,
@@ -78,15 +79,20 @@ describe("parseRenderBundle", () => {
     ).toBe("asset_1");
   });
 
-  test("rejects a checksum that is not a sha256 digest, in either case", () => {
+  test("accepts only the one lowercase sha256 the staging check can match", () => {
     rejects({ assets: [stagedAsset({ checksum: "md5:abc" })] });
     rejects({ assets: [stagedAsset({ checksum: `sha256:${"a".repeat(63)}` })] });
+    // The control plane writes hexdigest() and its staging check compares the
+    // two strings, so an uppercase digest names a file that can never verify.
+    rejects({ assets: [stagedAsset({ checksum: `sha256:${"A".repeat(64)}` })] });
+
+    const digest = createHash("sha256").update("payload").digest("hex");
     expect(
       parseRenderBundle(
-        bundle({ assets: [stagedAsset({ checksum: `sha256:${"A".repeat(64)}` })] }),
+        bundle({ assets: [stagedAsset({ checksum: `sha256:${digest}` })] }),
         EXPECTED,
       ).assets[0]?.checksum,
-    ).toBe(`sha256:${"A".repeat(64)}`);
+    ).toBe(`sha256:${digest}`);
   });
 
   test("never repeats the offending value in the failure it raises", () => {

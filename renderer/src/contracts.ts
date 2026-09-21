@@ -29,7 +29,8 @@ const PROJECT_ID =
   /^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
 /** One staged copy inside the job workspace, addressed by its workspace name. */
 const STAGED_NAME = /^assets\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const CHECKSUM = /^sha256:[0-9a-fA-F]{64}$/;
+/** The control plane's one canonical digest: lowercase hex, never a variant. */
+const CHECKSUM = /^sha256:[0-9a-f]{64}$/;
 
 const TRUSTED_TEMPLATE_ID = "vertical_text_story";
 const TRUSTED_TEMPLATE_VERSION = 1;

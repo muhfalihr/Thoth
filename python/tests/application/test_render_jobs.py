@@ -22,6 +22,7 @@ from thoth_control_plane.application.render_job_ports import (
     RendererNotConfigured,
     RendererUnavailable,
     RenderIdempotencyConflict,
+    RenderJobNotActive,
     RenderJobNotCancellable,
     RenderJobNotCleanable,
     RenderJobNotFound,
@@ -129,6 +130,7 @@ class Artifacts:
     def __init__(self, *, publish_error: Exception | None = None) -> None:
         self.publish_error = publish_error
         self.stage_error: Exception | None = None
+        self.bundles: dict[str, bytes] = {}
         self.published: list[str] = []
         self.cleaned: list[str] = []
         self.downloads: list[str] = []
@@ -158,7 +160,11 @@ class Artifacts:
         )
 
     def write_bundle(self, workspace: JobWorkspace, bundle_json: bytes) -> str:
+        self.bundles[workspace.render_job_id] = bundle_json
         return workspace.bundle_name
+
+    def read_bundle(self, render_job_id: str) -> bytes:
+        return self.bundles[render_job_id]
 
     def publish(
         self,
@@ -603,6 +609,43 @@ def test_a_history_request_is_bounded_on_both_sides() -> None:
         ListRenderJobsRequest(limit=0)
     with pytest.raises(ValueError):
         ListRenderJobsRequest(limit=51)
+
+
+# --- bundle ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_active_job_can_read_the_bundle_it_was_dispatched() -> None:
+    service = build_service()
+    job = await create_one(service)
+
+    assert await service.bundle(job.render_job_id)
+
+    await service.ingest_event(job.render_job_id, event(job, "rendering", 1))
+    assert await service.bundle(job.render_job_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish", [complete, fail])
+async def test_a_terminal_job_never_hands_its_bundle_back(finish: Any) -> None:
+    """A renderer that restarted and replayed an old start gets nothing to run."""
+    service = build_service()
+    job = await create_one(service)
+    await finish(service, job)
+
+    with pytest.raises(RenderJobNotActive):
+        await service.bundle(job.render_job_id)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_job_never_hands_its_bundle_back() -> None:
+    service = build_service()
+    job = await create_one(service)
+    await service.cancel(PROJECT, job.render_job_id)
+    await service.ingest_event(job.render_job_id, event(job, "cancelled", 1))
+
+    with pytest.raises(RenderJobNotActive):
+        await service.bundle(job.render_job_id)
 
 
 # --- cancel ---------------------------------------------------------------

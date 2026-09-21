@@ -2,6 +2,61 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Renderer replay contract (E1 Task 10, second review)
+
+The second independent Codex review of Task 10 accepted the first corrective
+(`7418404`) but returned NO-GO on three findings: the settled-identity memory
+was bounded, so a replayed Start could render a terminal job again; the
+credential comparison padded both sides to whichever was longer, making the
+compared width a function of the values; and the renderer accepted uppercase
+`sha256:` hex the control plane's staging check can never match. Corrected
+offline and test-first on `codex/stage1-container-ci`, as one commit. History
+was not rewritten and no operator-owned file was touched.
+
+- The settled-identity set is a replay ledger, permanently. `SETTLED_MEMORY`
+  and its eviction loop are gone, so no dispatch identity is ever forgotten
+  and no completed, failed, or cancelled render can run a second time. It is
+  still one in-process set of short strings — no broker, scheduler, backlog,
+  or renderer database — and a genuinely new identity still takes the released
+  slot while a new dispatch for the same job is never read as a replay.
+- A restarted renderer, which remembers nothing, is answered by the control
+  plane instead. `RenderJobService.bundle` now serves only `preparing`,
+  `rendering`, and `finalizing` jobs; a terminal job raises the new
+  `RenderJobNotActive` and the private route answers a fixed
+  `409 render_job_not_active`. An old Start replayed across a restart therefore
+  fetches no bundle, reaches no engine, and writes no output.
+- The internal credential is compared at one fixed width: SHA-256 of the
+  expected value against SHA-256 of the presented value, `timingSafeEqual` over
+  two 32-byte digests. Missing and malformed authorization behave as before,
+  every rejection is still the fixed `renderer_unauthorized`, and neither value
+  is logged or echoed.
+- `sha256:` checksums are the control plane's one canonical form, lowercase hex.
+  The first corrective had widened the renderer to accept uppercase to match the
+  Python pattern; the staging check compares `f"sha256:{hexdigest()}"` by value
+  (`artifact_root.py:145`), so an uppercase digest named a file that could never
+  verify. The renderer now rejects it at parse time, with no normalization and
+  no second accepted representation.
+
+No queue, broker, retry scheduler, or waiting job exists; the renderer holds no
+database URL, creator key, provider secret, or Docker socket; no raw error,
+path, process stream, or secret is emitted; and no Task 11 file or behaviour was
+added. Verification, all offline: the targeted suites
+`python/tests/application/test_render_jobs.py` and
+`python/tests/api/test_internal_render_jobs.py` 77 passed; `pytest -m "not live"`
+1565 passed / 32 skipped / 3 deselected; `ruff check` and `ruff format --check`
+over `python/src python/tests` exit 0 (157 files already formatted);
+`bun --cwd=renderer test` 83 pass / 0 fail across 8 files;
+`bun x tsc -p tsconfig.json --noEmit` from `renderer/` exit 0;
+`bun --cwd=dashboard test` 361 pass / 0 fail across 29 files;
+`docker build -f Dockerfile.renderer -t thoth-remotion-renderer:e1-corrective-2 .`
+exit 0; `build_cuda.bat` exit 0 (Rust untouched, `thoth.exe` unchanged);
+`cargo test --bin thoth` exit 0; `git diff --check` clean; `graphify update .`
+17946 nodes / 38195 edges.
+
+Drift preserved untouched: operator commit `bab60e3` (GNU GPL v3.0 licence) sits
+between the Task 10 baseline and this corrective and was neither amended nor
+included.
+
 ## 2026-09-21 — Isolated Remotion renderer review corrections (E1 Task 10)
 
 The independent Codex review of Task 10 (`fb9c795`) returned NO-GO on seven

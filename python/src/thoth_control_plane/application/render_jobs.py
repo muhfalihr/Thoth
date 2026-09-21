@@ -45,6 +45,7 @@ from thoth_control_plane.application.render_job_ports import (
     RendererRejected,
     RendererUnavailable,
     RenderIdempotencyConflict,
+    RenderJobNotActive,
     RenderJobNotCancellable,
     RenderJobNotCleanable,
     RenderJobNotFound,
@@ -53,6 +54,7 @@ from thoth_control_plane.application.render_job_ports import (
 )
 from thoth_control_plane.domain.models import OpaqueId, StrictModel
 from thoth_control_plane.domain.render_jobs import (
+    ACTIVE_RENDER_STATUSES,
     TERMINAL_RENDER_STATUSES,
     RenderCapability,
     RenderFailureCode,
@@ -429,6 +431,12 @@ class RenderJobService:
         job = await jobs.get_internal(render_job_id=render_job_id)
         if job is None:
             raise RenderJobNotFound()
+        # The bundle is the only thing that lets a render begin, so a job that
+        # already completed, failed, or was cancelled must not be able to hand
+        # one out again, not even to a renderer that restarted and replayed an
+        # old start it no longer remembers settling.
+        if job.status not in ACTIVE_RENDER_STATUSES:
+            raise RenderJobNotActive()
         if job.artifacts_cleaned_at is not None or self._artifacts is None:
             raise ArtifactUnavailable()
         return self._artifacts.read_bundle(job.render_job_id)

@@ -17,6 +17,7 @@ import pytest
 from thoth_control_plane.api import create_app, dependencies
 from thoth_control_plane.application.render_job_ports import (
     ArtifactUnavailable,
+    RenderJobNotActive,
     RenderJobNotFound,
     RenderPersistenceError,
 )
@@ -181,6 +182,9 @@ async def test_the_renderer_reads_the_immutable_bundle_it_was_dispatched(gateway
     [
         (RenderJobNotFound(), 404, "render_job_not_found"),
         (ArtifactUnavailable(), 404, "render_bundle_unavailable"),
+        # A job that already finished is not a missing one: a replayed start
+        # must be told the job is over, never handed its bundle again.
+        (RenderJobNotActive(), 409, "render_job_not_active"),
         (RenderPersistenceError(), 503, "render_unavailable"),
     ],
 )

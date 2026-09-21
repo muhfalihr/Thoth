@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { ArtifactUnavailable } from "./artifact-root";
 import type { RendererConfig } from "./config";
 import { testBundle } from "./bundle-test-fixtures";
+import { ControlPlaneUnavailable } from "./control-plane-client";
 import { RenderBundleInvalid } from "./contracts";
 import {
   type EngineRequest,
@@ -390,15 +391,38 @@ describe("the one-slot renderer execution", () => {
     expect(subject.requests).toHaveLength(3);
   });
 
-  test("the memory of terminal dispatches is bounded, not a growing ledger", async () => {
+  test("no identity is ever forgotten, however many dispatches followed it", async () => {
     const subject = harness();
     for (let index = 0; index < 200; index += 1) {
       await run(subject, `rj_${index}`, `dsp_${index}`);
     }
-    // The oldest identity has aged out, so it renders again rather than
-    // being served from an unbounded record of everything ever dispatched.
-    await run(subject, "rj_0", "dsp_0");
-    expect(subject.requests).toHaveLength(201);
+    const settled = [...subject.events];
+
+    // The very first identity, long past any window, is still a replay.
+    subject.bindTo("dsp_0");
+    await subject.execution.start("rj_0", "dsp_0");
+    await subject.execution.whenIdle();
+
+    expect(subject.fetches).toHaveLength(200);
+    expect(subject.requests).toHaveLength(200);
+    expect(subject.events).toEqual(settled);
+    expect(subject.execution.status().active).toBeNull();
+  });
+
+  test("a start the control plane no longer considers active never reaches the engine", async () => {
+    // A restarted renderer remembers nothing, so the authority is the control
+    // plane: it refuses the bundle of a job that already finished.
+    const restarted = harness({ bundleError: new ControlPlaneUnavailable() });
+
+    await restarted.execution.start("rj_001", "dsp_001");
+    await restarted.execution.whenIdle();
+
+    expect(restarted.requests).toHaveLength(0);
+    expect(restarted.removed).toContain("rj_001");
+    expect(restarted.events.at(-1)).toMatchObject({
+      status: "failed",
+      failure_code: "render_bundle_invalid",
+    });
   });
 
   test("a publication that cannot be delivered is reported as a bounded warning", async () => {
@@ -448,14 +472,21 @@ describe("the private dispatch surface", () => {
     return createFetchHandler(subject.execution, CREDENTIAL);
   }
 
-  test("compares the internal credential without leaking its length or content", async () => {
+  test("compares the internal credential at one fixed width, whatever is presented", async () => {
     expect(credentialMatches(CREDENTIAL, CREDENTIAL)).toBe(true);
-    expect(credentialMatches(CREDENTIAL, `${CREDENTIAL}x`)).toBe(false);
+    // Far shorter, exactly as long, and far longer than the real credential.
+    expect(credentialMatches(CREDENTIAL, "x")).toBe(false);
     expect(credentialMatches(CREDENTIAL, "internal-credential-valuX")).toBe(false);
+    expect(credentialMatches(CREDENTIAL, "x".repeat(1_000_000))).toBe(false);
     expect(credentialMatches(CREDENTIAL, null)).toBe(false);
 
+    // The compared width must be the digest size alone. Padding both sides to
+    // whichever happened to be longer makes the work a caller can observe a
+    // function of the credential's own length.
     const source = await Bun.file(new URL("./server.ts", import.meta.url)).text();
     expect(source).toContain("timingSafeEqual");
+    expect(source).toContain('createHash("sha256")');
+    expect(source).not.toContain("Buffer.concat");
   });
 
   test("refuses every request that does not carry the internal credential", async () => {

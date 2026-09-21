@@ -87,6 +87,13 @@ class RendererRejected(Exception):
         super().__init__("renderer rejected the dispatch")
 
 
+class RenderJobNotActive(Exception):
+    """Raised when a renderer asks for the input of a job that already finished."""
+
+    def __init__(self) -> None:
+        super().__init__("render job not active")
+
+
 class RenderJobNotCancellable(Exception):
     """Raised when a cancel would reopen a render job that already finished."""
 

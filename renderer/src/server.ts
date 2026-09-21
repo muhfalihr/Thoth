@@ -10,7 +10,7 @@
  * message never leaves this module, in an event or in a response.
  */
 
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 import type { ExpectedOutput, OutputFacts } from "./artifact-root";
 import { ArtifactPathInvalid, ArtifactUnavailable, RendererArtifactRoot, probeWithFfprobe } from "./artifact-root";
@@ -118,15 +118,6 @@ export class RendererBusy extends Error {
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 /** Report a step, not every frame: progress is a signal, not a stream. */
 const PROGRESS_STEP = 10;
-/**
- * How many finished dispatches this service still recognizes as replays.
- *
- * A redelivered start must not render twice, but remembering every identity
- * forever would be the backlog this design refuses to hold, so the oldest is
- * forgotten and simply renders again.
- */
-const SETTLED_MEMORY = 64;
-
 type AbortReason = "cancel" | "deadline";
 type Stage = "preparing" | "rendering" | "finalizing";
 
@@ -135,16 +126,19 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
   let running: Promise<void> | null = null;
   let controller: AbortController | null = null;
   let reason: AbortReason | null = null;
+  /**
+   * Every dispatch identity this process has already settled.
+   *
+   * This is a replay ledger, not a queue: nothing is ever dequeued, and a
+   * forgotten identity would mean a completed, failed, or cancelled render
+   * running a second time. It holds one short string per finished dispatch,
+   * and a process that outlives that is answered by the control plane, which
+   * refuses to hand a terminal job its bundle at all.
+   */
   const settled = new Set<string>();
 
   function remember(renderJobId: string, dispatchId: string): void {
     settled.add(`${renderJobId}\u0000${dispatchId}`);
-    for (const oldest of settled) {
-      if (settled.size <= SETTLED_MEMORY) {
-        break;
-      }
-      settled.delete(oldest);
-    }
   }
 
   async function execute(renderJobId: string, dispatchId: string): Promise<void> {
@@ -368,13 +362,14 @@ export function credentialMatches(expected: string, provided: string | null): bo
   if (provided === null) {
     return false;
   }
-  const left = Buffer.from(expected, "utf8");
-  const right = Buffer.from(provided, "utf8");
-  // timingSafeEqual needs equal lengths, so compare a fixed-width digest of
-  // each side's bytes instead of branching on the length itself.
-  const width = Math.max(left.length, right.length);
-  const padded = (value: Buffer): Buffer => Buffer.concat([value], width);
-  return timingSafeEqual(padded(left), padded(right)) && left.length === right.length;
+  // Both sides become one 32-byte SHA-256 digest, so the compared width is
+  // always the same however short or long a caller's header is, and neither
+  // value is ever branched on, echoed, or logged.
+  return timingSafeEqual(digest(expected), digest(provided));
+}
+
+function digest(value: string): Buffer {
+  return createHash("sha256").update(value, "utf8").digest();
 }
 
 const DISPATCH_ROUTE = /^\/internal\/render-jobs\/([^/]+)\/(start|cancel)$/;
