@@ -56,6 +56,15 @@ const COMPLETED = job({
   },
 } as Partial<RenderJob>);
 
+const FAILED = job({
+  render_job_id: "rj_failed",
+  status: "failed",
+  started_at: "2026-09-21T10:01:00Z",
+  finished_at: "2026-09-21T10:04:00Z",
+  failure_code: "render_engine_failed",
+  retry_of_job_id: "rj_earlier",
+} as Partial<RenderJob>);
+
 const SAVED: RenderEditorFacts = { saveStatus: "saved", online: true, documentValid: true };
 
 /** A state that has already loaded its capability and one page of history. */
@@ -374,15 +383,33 @@ describe("the render job lifecycle", () => {
     expect(silent.history[0].progress_percent).toBe(80);
   });
 
-  test("a forward transition may drop progress the new status does not carry", () => {
+  test("progress crosses an allowed forward transition", () => {
     const state = loaded([rendering]);
-    const forward = renderJobReducer(state, {
+    const forward = (progress?: number): RenderJob =>
+      renderJobReducer(state, {
+        type: "job_refreshed",
+        generation: state.generation,
+        job: job({ status: "finalizing", progress_percent: progress } as Partial<RenderJob>),
+      }).history[0];
+
+    // The status moves on; the ground the render already made does not move back.
+    expect(forward(20).progress_percent).toBe(80);
+    expect(forward(undefined).progress_percent).toBe(80);
+    expect(forward(90).progress_percent).toBe(90);
+    expect(forward(90).status).toBe("finalizing");
+  });
+
+  test("a terminal snapshot that omits progress keeps what finalizing reached", () => {
+    const state = loaded([
+      job({ status: "finalizing", progress_percent: 80 } as Partial<RenderJob>),
+    ]);
+    const done = renderJobReducer(state, {
       type: "job_refreshed",
       generation: state.generation,
-      job: job({ status: "finalizing" }),
+      job: { ...COMPLETED, render_job_id: "rj_001" } as RenderJob,
     });
-    expect(forward.history[0].status).toBe("finalizing");
-    expect(forward.history[0].progress_percent).toBeUndefined();
+    expect(done.history[0].status).toBe("completed");
+    expect(done.history[0].progress_percent).toBe(80);
   });
 
   test("a terminal status is final", () => {
@@ -412,6 +439,75 @@ describe("the render job lifecycle", () => {
     });
     expect(cleaned.history[0].artifacts_cleaned_at).toBe("2026-09-21T11:00:00Z");
     expect(canCleanup(cleaned.history[0])).toBe(false);
+  });
+});
+
+describe("a finished render is a fact", () => {
+  const CLEANED = { ...COMPLETED, artifacts_cleaned_at: "2026-09-21T11:00:00Z" } as RenderJob;
+
+  test("a stale snapshot cannot un-clean a cleaned render", () => {
+    const state = loaded([CLEANED]);
+    const stale = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: COMPLETED,
+    });
+
+    expect(stale.history[0].artifacts_cleaned_at).toBe("2026-09-21T11:00:00Z");
+    expect(canDownload(stale.history[0])).toBe(false);
+    expect(canCleanup(stale.history[0])).toBe(false);
+  });
+
+  test("a stale completed snapshot cannot replace the published output facts", () => {
+    const state = loaded([COMPLETED]);
+    const stale = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: job({ render_job_id: "rj_done", status: "completed" } as Partial<RenderJob>),
+    });
+
+    expect(stale.history[0]).toEqual(COMPLETED);
+  });
+
+  test("a stale failed snapshot cannot replace how the render ended or where it came from", () => {
+    const state = loaded([FAILED]);
+    const stale = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: job({ render_job_id: "rj_failed", status: "failed" } as Partial<RenderJob>),
+    });
+
+    expect(stale.history[0]).toEqual(FAILED);
+  });
+
+  test("an uncleaned terminal record still accepts the cleanup that just happened", () => {
+    const state = loaded([FAILED]);
+    const cleaned = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: { ...FAILED, artifacts_cleaned_at: "2026-09-21T11:00:00Z" } as RenderJob,
+    });
+
+    expect(cleaned.history[0].artifacts_cleaned_at).toBe("2026-09-21T11:00:00Z");
+    expect(canCleanup(cleaned.history[0])).toBe(false);
+  });
+
+  test("a stale active snapshot cannot take back a cancel request", () => {
+    const requested = job({
+      status: "rendering",
+      progress_percent: 80,
+      started_at: "2026-09-21T10:01:00Z",
+      cancel_requested_at: "2026-09-21T10:03:00Z",
+    } as Partial<RenderJob>);
+    const stale = renderJobReducer(loaded([requested]), {
+      type: "job_refreshed",
+      generation: 1,
+      job: job({ status: "rendering" }),
+    });
+
+    expect(stale.history[0].cancel_requested_at).toBe("2026-09-21T10:03:00Z");
+    expect(stale.history[0].started_at).toBe("2026-09-21T10:01:00Z");
+    expect(canCancel(stale.history[0])).toBe(false);
   });
 });
 

@@ -2,6 +2,75 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Render snapshots made monotonic (E1 Task 11, second review round)
+
+The Codex re-review of Task 11 left two reconciliation findings: progress was
+monotonic only inside one status, so an allowed forward transition took the
+incoming record whole and let a stale or silent report erase the ground a
+render had already made; and a same-terminal refresh replaced the known record
+outright, so a snapshot read before a cleanup could un-clean a finished render
+and re-enable Download and Cleanup. Both are corrected offline and test-first
+on `codex/stage1-container-ci`, as one commit, touching only the pure state
+module and its tests.
+
+- RED first, deterministically. The focused run against the reviewed code was
+  `32 pass / 6 fail`: `progress crosses an allowed forward transition`
+  (expected `80`, received `20`), `a terminal snapshot that omits progress
+  keeps what finalizing reached` (expected `80`, received `undefined`), `a
+  stale snapshot cannot un-clean a cleaned render` (expected
+  `2026-09-21T11:00:00Z`, received `undefined`), `a stale completed snapshot
+  cannot replace the published output facts` (the merged record was missing
+  `finished_at` and the whole `output` block), `a stale failed snapshot cannot
+  replace how the render ended or where it came from` (missing `failure_code`,
+  `finished_at`, `started_at`, and `retry_of_job_id`), and `a stale active
+  snapshot cannot take back a cancel request` (expected
+  `2026-09-21T10:03:00Z`, received `undefined`).
+- Finding 1, progress is monotonic across the lifecycle, not just inside a
+  status. `reconcile()` now follows the control plane's own
+  `_monotonic_progress()` on every accepted refresh, forward transitions
+  included: a lower report is ignored, a silent report keeps what is known, a
+  higher report advances, and the status still moves. So `rendering(80)` seeing
+  `finalizing(20)` stays at 80, seeing `finalizing(undefined)` stays at 80, and
+  seeing `finalizing(90)` advances to 90; a `completed` snapshot that carries
+  no progress keeps the 80 `finalizing` reached. The previous test asserting
+  that a forward transition may drop progress contradicted the authoritative
+  domain and was corrected rather than preserved.
+- Finding 2, a finished render is a fact. A refresh whose status differs from a
+  terminal one is still refused outright, because the lifecycle offers a
+  terminal status no edge. A refresh at the same terminal status no longer
+  replaces the record: output facts, `finished_at`, `failure_code`,
+  `started_at`, and retry lineage stand as the render finished them, and the
+  single legitimate update — `artifacts_cleaned_at` moving from absent to a
+  timestamp — is the only thing that lands. A stale snapshot whose cleanup
+  stamp is absent is read as an older view, not as a revert, so
+  `canDownload()` and `canCleanup()` cannot be turned back on. An unfinished
+  render still accepts newer public fields on a same-status or allowed forward
+  refresh, but the stamps the lifecycle sets once — `started_at` and
+  `cancel_requested_at` — are carried forward, so a snapshot read before a
+  cancel request cannot take it back and re-offer Cancel.
+- No new state exists to make this work: no client timestamp, no sequence
+  number, no private field, and no shadow copy of the record. The merge reads
+  only fields the public `RenderJobView` already exposes. Lifecycle edges,
+  generated contracts, client methods, error handling, and idempotency
+  behaviour are untouched.
+
+Verification, all offline and fresh: the focused state suite 38 pass / 0 fail
+on three consecutive runs with identical counts; the two focused suites
+together 78 pass / 0 fail; `bun x tsc -b --force` exit 0; full
+`bun --cwd=dashboard test` 411 pass / 0 fail across 30 files;
+`bun --cwd=dashboard run lint` exit 0 with the same four pre-existing warnings
+and none in Task 11 files; `bun --cwd=dashboard run build` exit 0;
+`git diff --exit-code 18a8639 -- dashboard/src/api/generated/control-plane.ts`
+clean, so the generated contract is byte-identical; `build_cuda.bat` exit 0
+with `thoth.exe` unchanged at 2026-08-31 20:26 because no Rust source changed;
+`cargo test --bin thoth` ok; `git diff --check` clean.
+
+Limitations, unchanged and deliberate: this is still state only. Nothing polls,
+dispatches, or issues a request in the product, and no panel or `GuidedStudio`
+wiring exists — Task 12 owns the UI and the recovery I/O. No live request, real
+asset, credential, or provider was used.
+
+
 ## 2026-09-21 — Render client and state contracts made structural (E1 Task 11, review round)
 
 The Codex review of Task 11 raised four findings: the reducer accepted

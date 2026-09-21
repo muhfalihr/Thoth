@@ -110,20 +110,35 @@ function monotonicProgress(known: RenderProgress, reported: RenderProgress): Ren
 }
 
 /**
- * Merge a refreshed record into what is already known, or refuse it outright:
- * a terminal job is final, an active job only moves the way the lifecycle
- * allows, and a same-status update keeps the highest progress seen. A forward
- * transition is taken whole, so a status that carries no progress clears it.
+ * Merge a refreshed record into what is already known, or refuse it outright.
+ *
+ * A finished render is a fact: the record stands as it finished, and the one
+ * thing that may still happen to it is cleanup. An unfinished render moves only
+ * the way the lifecycle allows, and nothing it has already reached — its
+ * progress or a stamp the lifecycle sets once — can be taken back by a snapshot
+ * that was read before it happened.
  */
 function reconcile(known: RenderJob | undefined, incoming: RenderJob): RenderJob | null {
   if (!known) return incoming;
-  if (known.status !== incoming.status) {
-    return ALLOWED_TRANSITIONS[known.status].includes(incoming.status) ? incoming : null;
+  if (
+    known.status !== incoming.status &&
+    !ALLOWED_TRANSITIONS[known.status].includes(incoming.status)
+  ) {
+    return null;
   }
-  const progress = monotonicProgress(known.progress_percent, incoming.progress_percent);
-  return progress === incoming.progress_percent
-    ? incoming
-    : { ...incoming, progress_percent: progress };
+  if (!isActive(known)) {
+    // Same terminal status: output, failure, and timing are settled, so only a
+    // first cleanup stamp is news. A missing one is a stale read, not a revert.
+    return known.artifacts_cleaned_at || !incoming.artifacts_cleaned_at
+      ? known
+      : { ...known, artifacts_cleaned_at: incoming.artifacts_cleaned_at };
+  }
+  return {
+    ...incoming,
+    progress_percent: monotonicProgress(known.progress_percent, incoming.progress_percent),
+    started_at: incoming.started_at ?? known.started_at,
+    cancel_requested_at: incoming.cancel_requested_at ?? known.cancel_requested_at,
+  };
 }
 
 /** Newest first, one record per job, and bounded. Later records win a tie. */
