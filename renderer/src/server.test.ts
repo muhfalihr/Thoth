@@ -40,6 +40,9 @@ type Harness = ReturnType<typeof harness>;
 
 function harness(
   options: {
+    /** The claims a restarted renderer inherits from the process before it. */
+    claims?: Set<string>;
+    claimError?: Error;
     bundle?: unknown;
     bundleError?: Error;
     assetError?: Error;
@@ -55,6 +58,9 @@ function harness(
   const requests: EngineRequest[] = [];
   const fetches: string[] = [];
   const warnings: string[] = [];
+  // The artifact root outlives any one renderer process, so the claims a test
+  // hands in are the ones already on disk when this execution is created.
+  const claims = options.claims ?? new Set<string>();
   /** The dispatch the control plane currently has this job bound to. */
   let bound = "dsp_001";
   let release = () => {};
@@ -90,6 +96,17 @@ function harness(
       },
     },
     artifacts: {
+      claimDispatch: async (job: string, dispatch: string) => {
+        if (options.claimError) {
+          throw options.claimError;
+        }
+        const key = `${job}\u0000${dispatch}`;
+        if (claims.has(key)) {
+          return "replay" as const;
+        }
+        claims.add(key);
+        return "claimed" as const;
+      },
       prepare: async () => {},
       verifyStagedAssets: async () => {
         if (options.assetError) {
@@ -392,20 +409,83 @@ describe("the one-slot renderer execution", () => {
   });
 
   test("no identity is ever forgotten, however many dispatches followed it", async () => {
-    const subject = harness();
+    const claims = new Set<string>();
+    const subject = harness({ claims });
     for (let index = 0; index < 200; index += 1) {
       await run(subject, `rj_${index}`, `dsp_${index}`);
     }
     const settled = [...subject.events];
 
-    // The very first identity, long past any window, is still a replay.
+    // The very first identity, long past any window, is still a replay, and
+    // is still one after the process that claimed it is gone.
     subject.bindTo("dsp_0");
     await subject.execution.start("rj_0", "dsp_0");
     await subject.execution.whenIdle();
 
+    const restarted = harness({ claims });
+    restarted.bindTo("dsp_0");
+    await restarted.execution.start("rj_0", "dsp_0");
+    await restarted.execution.whenIdle();
+
     expect(subject.fetches).toHaveLength(200);
     expect(subject.requests).toHaveLength(200);
     expect(subject.events).toEqual(settled);
+    expect(restarted.fetches).toHaveLength(0);
+    expect(restarted.requests).toHaveLength(0);
+    expect(restarted.execution.status().active).toBeNull();
+  });
+
+  test("a dispatch settled before a restart is never rendered a second time", async () => {
+    // The artifact root is the only thing that outlives a renderer process, so
+    // the claims it holds are all a restarted one has to go on.
+    const claims = new Set<string>();
+    const before = harness({
+      claims,
+      publishError: new Error("POST http://api:8000/events failed: ECONNREFUSED"),
+    });
+
+    await run(before, "rj_001", "dsp_001");
+
+    // The render really ran, and not one lifecycle report got through, so the
+    // control plane still believes this job is active and would serve it again.
+    expect(before.requests).toHaveLength(1);
+    expect(before.events).toHaveLength(0);
+    expect(before.warnings).toContain("render_event_publish_failed");
+
+    const after = harness({ claims });
+    await after.execution.start("rj_001", "dsp_001");
+    await after.execution.whenIdle();
+
+    expect(after.fetches).toHaveLength(0);
+    expect(after.requests).toHaveLength(0);
+    expect(after.events).toHaveLength(0);
+    expect(after.removed).toHaveLength(0);
+    expect(after.execution.status().active).toBeNull();
+  });
+
+  test("a restarted renderer still starts a dispatch nobody claimed", async () => {
+    const claims = new Set<string>();
+    await run(harness({ claims }), "rj_001", "dsp_001");
+
+    const after = harness({ claims });
+    await run(after, "rj_001", "dsp_002");
+
+    expect(after.requests).toHaveLength(1);
+    expect(after.events.at(-1)).toMatchObject({ status: "completed", dispatch_id: "dsp_002" });
+  });
+
+  test("a claim that cannot be taken starts nothing and says nothing", async () => {
+    const subject = harness({ claimError: new ArtifactUnavailable() });
+
+    await expect(subject.execution.start("rj_001", "dsp_001")).rejects.toBeInstanceOf(
+      ArtifactUnavailable,
+    );
+    await subject.execution.whenIdle();
+
+    expect(subject.fetches).toHaveLength(0);
+    expect(subject.requests).toHaveLength(0);
+    expect(subject.events).toHaveLength(0);
+    expect(subject.removed).toHaveLength(0);
     expect(subject.execution.status().active).toBeNull();
   });
 
@@ -552,6 +632,40 @@ describe("the private dispatch surface", () => {
 
     subject.release();
     await subject.execution.whenIdle();
+  });
+
+  test("answers a start whose claim failed with a fixed code and no detail", async () => {
+    const subject = harness({ claimError: new ArtifactUnavailable() });
+    const response = await handlerFor(subject)(
+      requestTo("/internal/render-jobs/rj_001/start", {
+        body: JSON.stringify({ dispatch_id: "dsp_001" }),
+      }),
+    );
+
+    expect(response.status).toBe(422);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ code: "renderer_request_invalid" });
+    expect(body).not.toContain("/srv/artifacts");
+    expect(body).not.toContain("claim");
+    expect(subject.requests).toHaveLength(0);
+  });
+
+  test("a replayed start is accepted without being run again", async () => {
+    const claims = new Set<string>();
+    await run(harness({ claims }), "rj_001", "dsp_001");
+
+    const after = harness({ claims });
+    const response = await handlerFor(after)(
+      requestTo("/internal/render-jobs/rj_001/start", {
+        body: JSON.stringify({ dispatch_id: "dsp_001" }),
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ accepted: true });
+    expect(after.fetches).toHaveLength(0);
+    expect(after.requests).toHaveLength(0);
+    expect(after.events).toHaveLength(0);
   });
 
   test("accepts a cancel for any identity and answers the same way twice", async () => {

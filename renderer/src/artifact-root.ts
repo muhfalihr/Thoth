@@ -5,6 +5,7 @@
  *
  *     work/<render_job_id>/assets/   staged inputs, written by the control plane
  *     temp/<render_job_id>/bundle/   this render's webpack bundle
+ *     temp/<render_job_id>/claims/   one marker per dispatch already started
  *     temp/<render_job_id>/output.mp4  this render, before it is published
  *
  * Identities become path segments only after validation, and every component of
@@ -15,7 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, open, rm, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import type { RenderBundleAsset } from "./contracts";
@@ -37,6 +38,11 @@ export class ArtifactUnavailable extends Error {
 /** Identical to the control plane's `OpaqueId`: one safe segment, never a path. */
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const OUTPUT_NAME = "output.mp4";
+const CLAIMS_DIRECTORY = "claims";
+const CLAIM_SUFFIX = ".claimed";
+
+/** Whether this process is the one that may run a dispatch, or a later copy. */
+export type DispatchClaim = "claimed" | "replay";
 
 /** What the container's own ffprobe reports about a finished render. */
 export type MediaProbe = {
@@ -119,6 +125,45 @@ export class RendererArtifactRoot {
 
   temporaryOutput(renderJobId: string): string {
     return this.#contained("temp", this.#identifier(renderJobId), OUTPUT_NAME);
+  }
+
+  /**
+   * Declare one dispatch started, exactly once, for as long as its files live.
+   *
+   * The marker is created exclusively, so which caller is first is decided by
+   * the filesystem and not by a read this one could lose a race against. It is
+   * an idempotency marker and nothing more: it is never read back, holds no
+   * state, and gives no dispatch a place in any order of work. Its only reader
+   * is the next attempt at the same identity, including one made by a renderer
+   * that restarted and so remembers nothing at all.
+   */
+  async claimDispatch(renderJobId: string, dispatchId: string): Promise<DispatchClaim> {
+    const job = this.#identifier(renderJobId);
+    const name = `${this.#identifier(dispatchId)}${CLAIM_SUFFIX}`;
+    const directory = this.#contained("temp", job, CLAIMS_DIRECTORY);
+    const path = this.#contained("temp", job, CLAIMS_DIRECTORY, name);
+    await this.#assertLinkFree(path);
+
+    try {
+      await mkdir(directory, { recursive: true });
+    } catch {
+      throw new ArtifactUnavailable();
+    }
+
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(path, "wx");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new ArtifactUnavailable();
+      }
+      // Something is already there. Only a plain file this service could have
+      // written counts as a claim; anything else is refused, never followed.
+      await this.#assertRegularFile(path);
+      return "replay";
+    }
+    await handle.close();
+    return "claimed";
   }
 
   /** Give this render an empty bundle directory and no output to inherit. */
@@ -227,6 +272,19 @@ export class RendererArtifactRoot {
       throw new ArtifactPathInvalid();
     }
     return candidate;
+  }
+
+  /** Refuse a node that is anything other than the plain file it should be. */
+  async #assertRegularFile(path: string): Promise<void> {
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(path);
+    } catch {
+      throw new ArtifactUnavailable();
+    }
+    if (!info.isFile()) {
+      throw new ArtifactPathInvalid();
+    }
   }
 
   /** Refuse a target reached through a link at any level below the root. */

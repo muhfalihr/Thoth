@@ -12,7 +12,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 
-import type { ExpectedOutput, OutputFacts } from "./artifact-root";
+import type { DispatchClaim, ExpectedOutput, OutputFacts } from "./artifact-root";
 import { ArtifactPathInvalid, ArtifactUnavailable, RendererArtifactRoot, probeWithFfprobe } from "./artifact-root";
 import type { RendererConfig } from "./config";
 import { loadRendererConfig } from "./config";
@@ -69,6 +69,8 @@ export type ControlPlanePort = {
 };
 
 export type ArtifactPort = {
+  /** Declare this dispatch started, or report that some process already did. */
+  claimDispatch(renderJobId: string, dispatchId: string): Promise<DispatchClaim>;
   prepare(renderJobId: string): Promise<void>;
   verifyStagedAssets(renderJobId: string, assets: readonly RenderBundleAsset[]): Promise<void>;
   assetsDirectory(renderJobId: string): string;
@@ -126,21 +128,6 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
   let running: Promise<void> | null = null;
   let controller: AbortController | null = null;
   let reason: AbortReason | null = null;
-  /**
-   * Every dispatch identity this process has already settled.
-   *
-   * This is a replay ledger, not a queue: nothing is ever dequeued, and a
-   * forgotten identity would mean a completed, failed, or cancelled render
-   * running a second time. It holds one short string per finished dispatch,
-   * and a process that outlives that is answered by the control plane, which
-   * refuses to hand a terminal job its bundle at all.
-   */
-  const settled = new Set<string>();
-
-  function remember(renderJobId: string, dispatchId: string): void {
-    settled.add(`${renderJobId}\u0000${dispatchId}`);
-  }
-
   async function execute(renderJobId: string, dispatchId: string): Promise<void> {
     let sequence = 0;
     let terminal = false;
@@ -259,12 +246,9 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
       if (!IDENTIFIER.test(renderJobId) || !IDENTIFIER.test(dispatchId)) {
         throw new RendererBusy();
       }
-      // A redelivered start of a dispatch this service already settled is the
-      // same request, whether it is still running or long since terminal.
+      // A redelivered start of the dispatch this service is running now is the
+      // same request, and is already being answered.
       if (active?.render_job_id === renderJobId && active.dispatch_id === dispatchId) {
-        return;
-      }
-      if (settled.has(`${renderJobId}\u0000${dispatchId}`)) {
         return;
       }
       // Any other identity is refused outright rather than parked.
@@ -272,7 +256,26 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
         throw new RendererBusy();
       }
 
+      // Hold the slot across the claim so no second identity can take it while
+      // the filesystem decides, and give it back untouched unless this start
+      // turns out to be the one that may run. A dispatch some process already
+      // claimed is accepted and dropped: no bundle, no engine, no event, and
+      // no output, whether that process was this one or the one before it.
       active = { render_job_id: renderJobId, dispatch_id: dispatchId };
+      let claim: DispatchClaim;
+      try {
+        claim = await deps.artifacts.claimDispatch(renderJobId, dispatchId);
+      } catch (error) {
+        active = null;
+        // A claim that cannot be taken fails closed: nothing is started, and
+        // the caller sees the artifact failure's fixed message, never a path.
+        throw error;
+      }
+      if (claim === "replay") {
+        active = null;
+        return;
+      }
+
       controller = new AbortController();
       reason = null;
       const deadline = setTimeout(() => {
@@ -285,7 +288,6 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
           await execute(renderJobId, dispatchId);
         } finally {
           clearTimeout(deadline);
-          remember(renderJobId, dispatchId);
           active = null;
           controller = null;
           running = null;

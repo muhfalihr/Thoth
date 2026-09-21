@@ -130,6 +130,95 @@ describe("RendererArtifactRoot", () => {
     ).rejects.toBeInstanceOf(ArtifactPathInvalid);
   });
 
+  test("claims a dispatch once, below the root, and replays every repeat", async () => {
+    const local = artifacts();
+    expect(await local.claimDispatch("rj_001", "dsp_001")).toBe("claimed");
+    expect(await local.claimDispatch("rj_001", "dsp_001")).toBe("replay");
+    // A different dispatch of the same job, and the same dispatch identifier
+    // under another job, are both genuinely new work.
+    expect(await local.claimDispatch("rj_001", "dsp_002")).toBe("claimed");
+    expect(await local.claimDispatch("rj_002", "dsp_001")).toBe("claimed");
+
+    expect(
+      await Bun.file(join(root, "temp", "rj_001", "claims", "dsp_001.claimed")).exists(),
+    ).toBe(true);
+  });
+
+  test("a claim outlives the process that wrote it", async () => {
+    expect(await artifacts().claimDispatch("rj_001", "dsp_001")).toBe("claimed");
+    // A restarted renderer is a new object over the same artifact root, and
+    // remembers nothing but what the filesystem kept for it.
+    expect(await artifacts().claimDispatch("rj_001", "dsp_001")).toBe("replay");
+  });
+
+  test("exactly one of two concurrent claims of one identity wins", async () => {
+    const local = artifacts();
+    const outcomes = await Promise.all(
+      Array.from({ length: 8 }, () => local.claimDispatch("rj_001", "dsp_001")),
+    );
+    expect(outcomes.filter((outcome) => outcome === "claimed")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === "replay")).toHaveLength(7);
+  });
+
+  test("refuses an identity that could leave the root, and a claim that is not a file", async () => {
+    const local = artifacts();
+    for (const identity of ["../escape", "/absolute", "rj/001", `x${String.fromCharCode(92)}y`, ""]) {
+      await expect(local.claimDispatch("rj_001", identity)).rejects.toBeInstanceOf(
+        ArtifactPathInvalid,
+      );
+      await expect(local.claimDispatch(identity, "dsp_001")).rejects.toBeInstanceOf(
+        ArtifactPathInvalid,
+      );
+    }
+
+    // A directory, and a link pointing anywhere, are both refused rather than
+    // read as somebody else's claim.
+    mkdirSync(join(root, "temp", "rj_002", "claims", "dsp_001.claimed"), { recursive: true });
+    await expect(local.claimDispatch("rj_002", "dsp_001")).rejects.toBeInstanceOf(
+      ArtifactPathInvalid,
+    );
+
+    const outside = join(root, "outside");
+    mkdirSync(outside, { recursive: true });
+    mkdirSync(join(root, "temp", "rj_003", "claims"), { recursive: true });
+    symlinkSync(outside, join(root, "temp", "rj_003", "claims", "dsp_001.claimed"), "junction");
+    await expect(local.claimDispatch("rj_003", "dsp_001")).rejects.toBeInstanceOf(
+      ArtifactPathInvalid,
+    );
+
+    // A reparse point standing in for the claims directory itself is refused
+    // before anything is created inside it.
+    mkdirSync(join(root, "temp", "rj_005"), { recursive: true });
+    symlinkSync(outside, join(root, "temp", "rj_005", "claims"), "junction");
+    await expect(local.claimDispatch("rj_005", "dsp_001")).rejects.toBeInstanceOf(
+      ArtifactPathInvalid,
+    );
+  });
+
+  test("a claim that cannot be written fails closed with nothing to leak", async () => {
+    const local = artifacts();
+    // The claims directory cannot be created because a file already occupies
+    // the job's temp directory, so no dispatch may be declared started.
+    mkdirSync(join(root, "temp"), { recursive: true });
+    writeFileSync(join(root, "temp", "rj_004"), "not a directory");
+
+    const failure = await local.claimDispatch("rj_004", "dsp_001").catch((error) => error);
+    expect(failure).toBeInstanceOf(ArtifactUnavailable);
+    expect(String(failure)).not.toContain(root);
+    expect(String(failure)).not.toContain("ENOTDIR");
+  });
+
+  test("preparing a render and clearing its output both leave the claim alone", async () => {
+    const local = artifacts();
+    expect(await local.claimDispatch("rj_001", "dsp_001")).toBe("claimed");
+    writeTemporaryOutput("rj_001", "partial");
+
+    await local.prepare("rj_001");
+    await local.removeTemporaryOutput("rj_001");
+
+    expect(await local.claimDispatch("rj_001", "dsp_001")).toBe("replay");
+  });
+
   test("removes a partial output and stays quiet when there is nothing to remove", async () => {
     const local = artifacts();
     writeTemporaryOutput("rj_001", "partial");

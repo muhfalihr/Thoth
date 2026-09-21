@@ -2,6 +2,56 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Durable renderer dispatch claims (E1 Task 10, third review)
+
+The third independent Codex review of Task 10 found the replay protection from
+`33d52a4` still process-local. When terminal event publication fails the control
+plane never leaves the active state, so a renderer that restarted with an empty
+in-process ledger could fetch the still-active bundle for a dispatch it had
+already rendered and render it a second time. Corrected offline and test-first
+on `codex/stage1-container-ci`, as one commit. History was not rewritten and no
+operator-owned file was touched.
+
+- A dispatch is claimed on disk before anything else happens.
+  `RendererArtifactRoot.claimDispatch` creates
+  `temp/<render_job_id>/claims/<dispatch_id>.claimed` with `open(path, "wx")`,
+  so which caller is first is decided by the filesystem rather than by a
+  check-then-write the loser could race. It answers `"claimed"` or `"replay"`,
+  and `start` takes it before the bundle fetch, the browser, and the first
+  lifecycle event.
+- The in-process settled `Set` is gone. Replay protection is now exactly the
+  claim, which outlives the process that wrote it, so an identical Start after
+  a restart is accepted and dropped: no bundle fetched, no engine call, no
+  event published, no output touched.
+- The path is constructed and validated by the artifact root alone. Traversal,
+  alternate separators, and unsafe identities are refused before any I/O; a
+  reparse point anywhere along the path, a claim that is not a regular file, and
+  a claims directory that cannot be created all fail closed, the first two as
+  `ArtifactPathInvalid` and the last as `ArtifactUnavailable`. No filename,
+  path, or raw filesystem error reaches an event, a response, or a warning.
+- The marker carries no state and is never read back. It is an idempotency
+  marker, not a queue, backlog, scheduler, retry system, or renderer database,
+  and it is bounded by the control plane's own cleanup, which already removes
+  `temp/<render_job_id>` once a job is terminal. `prepare()` clears the bundle
+  directory and the stale output and leaves the claims alone.
+- The control-plane terminal bundle refusal from `33d52a4`
+  (`RenderJobNotActive`, `409 render_job_not_active`) is untouched and remains
+  the second line of defence.
+
+Verification, all offline: `bun --cwd=renderer test` 94 pass / 0 fail across 8
+files; `bun x tsc -p tsconfig.json --noEmit` from `renderer/` exit 0; the
+targeted Python suites 77 passed; `pytest -m "not live"` 1565 passed / 32
+skipped / 3 deselected; `ruff check` and `ruff format --check` over
+`python/src python/tests` exit 0 (157 files already formatted);
+`bun --cwd=dashboard test` 361 pass / 0 fail across 29 files;
+`docker build -f Dockerfile.renderer -t thoth-remotion-renderer:e1-corrective-3 .`
+exit 0; `build_cuda.bat` exit 0 (Rust untouched, `thoth.exe` unchanged);
+`cargo test --bin thoth` exit 0; `git diff --check` clean; `graphify update .`
+17963 nodes / 38217 edges.
+
+Drift preserved untouched: operator commit `bab60e3` (GNU GPL v3.0 licence) was
+neither amended nor included.
+
 ## 2026-09-21 — Renderer replay contract (E1 Task 10, second review)
 
 The second independent Codex review of Task 10 accepted the first corrective
