@@ -212,7 +212,7 @@ describe("the one-slot renderer execution", () => {
 
     expect(subject.requests).toHaveLength(1);
     const request = subject.requests[0]!;
-    expect(request.compositionId).toBe("advanced_timeline_v1");
+    expect(request.compositionId).toBe("advanced-timeline-v1");
     expect(request.outputPath).toBe("/srv/artifacts/temp/rj_001/output.mp4");
     expect(request.publicDir).toBe("/srv/artifacts/work/rj_001/assets");
     expect(request.outDir).toBe("/srv/artifacts/temp/rj_001/bundle");

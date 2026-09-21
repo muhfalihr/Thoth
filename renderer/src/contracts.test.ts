@@ -17,7 +17,7 @@ describe("parseRenderBundle", () => {
   test("accepts the one bundle shape the control plane writes", () => {
     const parsed = parseRenderBundle(bundle(), EXPECTED);
     expect(parsed.render_job_id).toBe("rj_001");
-    expect(parsed.composition_id).toBe("advanced_timeline_v1");
+    expect(parsed.composition_id).toBe("advanced-timeline-v1");
     expect(parsed.assets).toHaveLength(1);
   });
 

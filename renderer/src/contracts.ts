@@ -35,7 +35,7 @@ const CHECKSUM = /^sha256:[0-9a-f]{64}$/;
 const TRUSTED_TEMPLATE_ID = "vertical_text_story";
 const TRUSTED_TEMPLATE_VERSION = 1;
 const TRUSTED_PRESET_ID = "standard_vertical_mp4_v1";
-const TRUSTED_COMPOSITION_ID = "advanced_timeline_v1";
+const TRUSTED_COMPOSITION_ID = "advanced-timeline-v1";
 const BUNDLE_VERSION = 1;
 
 const MAX_ASSETS = 200;
@@ -66,7 +66,7 @@ export type RenderBundle = {
   readonly template_version: 1;
   readonly preset_id: "standard_vertical_mp4_v1";
   readonly renderer_version: string;
-  readonly composition_id: "advanced_timeline_v1";
+  readonly composition_id: "advanced-timeline-v1";
   readonly width: number;
   readonly height: number;
   readonly fps: number;

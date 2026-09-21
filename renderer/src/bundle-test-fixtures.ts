@@ -95,7 +95,7 @@ export function testBundle(overrides: Fields = {}): Fields {
     template_version: 1,
     preset_id: "standard_vertical_mp4_v1",
     renderer_version: FIXTURE_IDENTITY.rendererVersion,
-    composition_id: "advanced_timeline_v1",
+    composition_id: "advanced-timeline-v1",
     width: 1080,
     height: 1920,
     fps: 30,

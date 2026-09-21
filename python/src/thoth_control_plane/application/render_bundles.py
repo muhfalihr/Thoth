@@ -22,7 +22,7 @@ from thoth_control_plane.domain.editor_assets import EditorAssetRecord
 from thoth_control_plane.domain.models import Checksum, OpaqueId, ProjectId, StrictModel
 
 #: The one composition both the browser preview and the server render mount.
-TRUSTED_COMPOSITION_ID = "advanced_timeline_v1"
+TRUSTED_COMPOSITION_ID = "advanced-timeline-v1"
 
 #: The one template a render is trusted to draw, matching the D1 document.
 TRUSTED_TEMPLATE_ID = "vertical_text_story"
@@ -80,7 +80,7 @@ class RenderBundleV1(StrictModel):
     template_version: Literal[1]
     preset_id: Literal["standard_vertical_mp4_v1"]
     renderer_version: str
-    composition_id: Literal["advanced_timeline_v1"]
+    composition_id: Literal["advanced-timeline-v1"]
     width: int = Field(gt=0)
     height: int = Field(gt=0)
     fps: int = Field(gt=0)

@@ -18,4 +18,4 @@ export {
 } from "./timeline";
 
 /** The only composition ID the renderer will accept. */
-export const COMPOSITION_ID = "advanced_timeline_v1";
+export const COMPOSITION_ID = "advanced-timeline-v1";

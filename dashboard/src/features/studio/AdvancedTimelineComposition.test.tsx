@@ -208,13 +208,22 @@ function documentV2(): EditDocumentV2 {
 const SOURCES = { asset_video: "/api/v1/projects/project_001/editor-assets/asset_video/preview" };
 
 test("the browser preview and the server registration share one component and one ID", () => {
-  expect(COMPOSITION_ID).toBe("advanced_timeline_v1");
+  expect(COMPOSITION_ID).toBe("advanced-timeline-v1");
   expect(previewComposition(documentV2()).component).toBe(AdvancedTimelineComposition);
 
   render(<RenderRoot />);
   expect(registrations).toHaveLength(1);
   expect(registrations[0]!.id).toBe(COMPOSITION_ID);
   expect(registrations[0]!.component).toBe(AdvancedTimelineComposition);
+});
+
+// Remotion validates this at registration, inside the bundle, where the only
+// thing that escapes is a fixed failure code. An ID it refuses therefore fails
+// every render with no diagnosis attached, so it is checked here instead.
+const REMOTION_ALLOWS = /^[a-zA-Z0-9-一-鿿]+$/;
+
+test("the shared composition ID is one Remotion agrees to register", () => {
+  expect(COMPOSITION_ID).toMatch(REMOTION_ALLOWS);
 });
 
 test("the registered composition takes its timing from the document, not from a default", () => {
