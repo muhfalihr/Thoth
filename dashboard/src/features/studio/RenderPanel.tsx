@@ -222,20 +222,22 @@ function RenderSurface({
         client.getRenderCapability(projectId),
         client.listRenderJobs(projectId),
       ]);
+      // A superseded load answers for a context that has already moved on, so
+      // it reaches the surface through nothing at all - not the history, not
+      // the error, and not the selection, which the reducer does not guard.
+      if (generation !== generationRef.current) return;
       // A page without records is an empty history, not a broken panel.
       const jobs = page.jobs ?? [];
       dispatch({ type: "loaded", generation, capability, jobs });
       // A reload lands on a render already running: the control plane names it,
-      // so the panel resumes that one instead of inventing a rule of its own.
+      // so the panel resumes that one instead of inventing a rule of its own,
+      // and it outranks a terminal render the person happened to be reading.
       const activeId = capability.active_render_job_id;
-      if (
-        activeId &&
-        stateRef.current.selectedJobId === null &&
-        jobs.some((entry) => entry.render_job_id === activeId)
-      ) {
+      if (activeId && jobs.some((entry) => entry.render_job_id === activeId)) {
         dispatch({ type: "job_selected", renderJobId: activeId });
       }
     } catch (error) {
+      if (generation !== generationRef.current) return;
       dispatch({ type: "load_failed", generation, code: codeOf(error) });
     }
   }, [client, projectId]);
@@ -487,6 +489,9 @@ function RenderSurface({
   };
 
   const startCleanup = (renderJobId: string) => {
+    // Offline or already busy, the request would never leave: the confirmation
+    // stays up with its warning instead of closing on nothing.
+    if (offlineRef.current || inFlightRef.current || stateRef.current.mutation !== null) return;
     setConfirmCleanup(null);
     void runPlain("cleanup", () => client.cleanupRenderArtifacts(projectId, renderJobId));
   };
@@ -654,6 +659,7 @@ function RenderSurface({
             <button
               type="button"
               className={actionButton}
+              disabled={state.mutation !== null || offline}
               onClick={() => startCleanup(confirmCleanup)}
             >
               Delete files

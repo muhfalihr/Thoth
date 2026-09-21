@@ -1037,6 +1037,35 @@ describe("acting while offline", () => {
     expect(client.downloadRenderOutput).toHaveBeenCalledTimes(0);
     expect(client.cleanupRenderArtifacts).toHaveBeenCalledTimes(0);
   });
+
+  test("a cleanup confirmation already open is disarmed by going offline", async () => {
+    const client = makeClient([COMPLETED]);
+    panel(client);
+    await settle();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T09:00:00Z/ }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete render files" }));
+    expect(screen.getByRole("group", { name: "Delete render files" })).toBeTruthy();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    const destroy = screen.getByRole("button", { name: "Delete files" });
+    expect(destroy).toHaveProperty("disabled", true);
+
+    // Forced past the disabled attribute, the handler refuses and the
+    // confirmation stays up with its warning rather than closing on a request
+    // that never left.
+    destroy.removeAttribute("disabled");
+    await act(async () => {
+      fireEvent.click(destroy);
+    });
+
+    expect(client.cleanupRenderArtifacts).toHaveBeenCalledTimes(0);
+    const confirmation = screen.getByRole("group", { name: "Delete render files" });
+    expect(confirmation.textContent).toContain("cannot be undone");
+  });
 });
 
 describe("document validation", () => {
@@ -1114,6 +1143,145 @@ describe("recovering an active render", () => {
       jest.advanceTimersByTime(10_000);
     });
     expect(client.getRenderJob).toHaveBeenCalledTimes(0);
+  });
+
+  test("a terminal history with no authoritative active render starts no poll", async () => {
+    jest.useFakeTimers();
+    const client = makeClient([COMPLETED], {
+      getRenderCapability: mock(async () => ({ ...AVAILABLE, active_render_job_id: null })),
+    });
+    panel(client);
+    await settle();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T09:00:00Z/ }));
+    });
+
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+    });
+    expect(client.getRenderJob).toHaveBeenCalledTimes(0);
+    expect(screen.getByLabelText("Current render").textContent).toContain("Completed");
+  });
+
+  test("an authoritative active render takes over a terminal selection", async () => {
+    jest.useFakeTimers();
+    const active = job({
+      render_job_id: "rj_active",
+      status: "rendering",
+      created_at: "2026-09-21T11:00:00Z",
+      progress_percent: 20,
+    } as Partial<RenderJob>);
+    let activeId: string | null = null;
+    const client = makeClient([COMPLETED, active], {
+      getRenderCapability: mock(async () => ({ ...AVAILABLE, active_render_job_id: activeId })),
+    });
+    panel(client);
+    await settle();
+
+    // The person parks on a finished render before the control plane reports
+    // that another one is running.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T09:00:00Z/ }));
+    });
+    expect(screen.getByLabelText("Current render").textContent).toContain("Completed");
+
+    // The control plane now names a render that was already in the history.
+    activeId = "rj_active";
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+
+    expect(screen.getByLabelText("Current render").textContent).toContain("Rendering");
+    expect(
+      screen
+        .getByRole("button", { name: /Render started 2026-09-21T11:00:00Z/ })
+        .getAttribute("aria-current"),
+    ).toBe("true");
+
+    await act(async () => {
+      jest.advanceTimersByTime(1_500);
+    });
+    expect(client.getRenderJob).toHaveBeenCalledWith("project_001", "rj_active");
+  });
+
+  test("a superseded load hands over neither selection nor polling", async () => {
+    jest.useFakeTimers();
+    const newer = job({
+      render_job_id: "rj_newer",
+      status: "rendering",
+      created_at: "2026-09-21T11:00:00Z",
+    } as Partial<RenderJob>);
+    const older = job({
+      render_job_id: "rj_older",
+      status: "rendering",
+      created_at: "2026-09-21T07:00:00Z",
+    } as Partial<RenderJob>);
+    const caps: Array<(value: RenderCapability) => void> = [];
+    const pages: Array<(value: RenderJobPage) => void> = [];
+    const client = makeClient([], {
+      getRenderCapability: mock(
+        () =>
+          new Promise<RenderCapability>((resolve) => {
+            caps.push(resolve);
+          }),
+      ),
+      listRenderJobs: mock(
+        () =>
+          new Promise<RenderJobPage>((resolve) => {
+            pages.push(resolve);
+          }),
+      ),
+    });
+    panel(client);
+    await settle();
+
+    // A reconnect starts a second load for the same context while the first
+    // one is still outstanding.
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+    expect(caps).toHaveLength(2);
+
+    const busy = (id: string) => ({
+      ...AVAILABLE,
+      available: false,
+      reason: "render_busy" as const,
+      active_render_job_id: id,
+    });
+
+    // The newer response lands first and names the render actually running.
+    await act(async () => {
+      caps[1](busy("rj_newer"));
+      pages[1](page([newer]));
+    });
+    await settle();
+
+    // The superseded response lands afterwards, naming a different one.
+    await act(async () => {
+      caps[0](busy("rj_older"));
+      pages[0](page([older]));
+    });
+    await settle();
+
+    expect(
+      screen
+        .getByRole("button", { name: /Render started 2026-09-21T11:00:00Z/ })
+        .getAttribute("aria-current"),
+    ).toBe("true");
+    expect(screen.queryByRole("button", { name: /Render started 2026-09-21T07:00:00Z/ })).toBeNull();
+
+    await act(async () => {
+      jest.advanceTimersByTime(1_500);
+    });
+    expect(calls(client.getRenderJob).map((entry) => entry[1])).toEqual(["rj_newer"]);
   });
 });
 

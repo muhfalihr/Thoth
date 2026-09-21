@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 - Creator Studio render panel reload recovery finished (E1 Task 12 final correction)
+
+Two gaps the corrective round left open are closed, offline and test-first, on
+`codex/stage1-container-ci`. Only the render panel and its tests changed.
+
+- A superseded load reaches the surface through nothing at all. The reducer
+  already refused a stale `loaded` and `load_failed`, but selection was not
+  guarded, so a load answering for a context the panel had moved past could
+  still hand the surface its own active render. Every load now checks its own
+  generation before it dispatches anything. Two loads for the same context,
+  the newer landing first, leave the newer render selected and polled and the
+  older one neither selected nor present.
+- The render the control plane names outranks the one being read. When
+  capability names an active render that authoritative history contains, the
+  panel selects it even if a terminal render was selected first, and the
+  existing bounded poll resumes on it. Nothing is invented when capability
+  names no active render, and a terminal-only history still starts no poll.
+  Bounded newest-first history and monotonic progress are untouched.
+- An open Cleanup confirmation is disarmed by losing the connection. "Delete
+  files" is disabled while offline or while a mutation is running, and
+  `startCleanup` refuses on its own before it closes the confirmation, so a
+  forced activation makes no client call and leaves the confirmation up with
+  its "cannot be undone" warning intact. Reconnecting re-enables it through
+  ordinary authoritative recovery, not a special case.
+
+Verification, all offline: focused RenderPanel and GuidedStudio suites 79 pass /
+0 fail on three consecutive runs; full dashboard suite 466 pass / 0 fail across
+31 files; `tsc -b --force` exit 0; lint exit 0 with four pre-existing warnings,
+none in the changed file; production build exit 0; `build_cuda.bat` exit 0 with
+a clean log; `cargo test --bin thoth` ok; `git diff --check` clean. No Rust,
+generated contract, migration, Python, renderer, Scout, Compose, or dependency
+file changed, and `bab60e3` remains an untouched ancestor.
+
 ## 2026-09-21 - Creator Studio render panel recovery gaps closed (E1 Task 12 corrective round)
 
 The review of Task 12 found eight gaps in the panel that state alone could not
