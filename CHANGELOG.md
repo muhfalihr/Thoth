@@ -2,6 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Creator Studio render client and render job state (E1 Task 11)
+
+Task 11 of the revision-bound render job plan models the browser half of the
+render surface: a thin typed client over the eight public render routes and a
+pure `RenderJobState` module that owns render lifecycle facts only. No panel,
+no `GuidedStudio` change, and no Python, renderer, or deployment file was
+touched. Implemented offline and test-first on `codex/stage1-container-ci`.
+
+- RED first. With the tests written and no implementation present,
+  `bun --cwd=dashboard test src/api/control-plane.test.ts
+  src/features/studio/render_job_state.test.ts` reported `0 pass / 2 fail / 2
+  errors`: `SyntaxError: Export named 'RenderRequestError' not found in module
+  .../control-plane.ts` and `error: Cannot find module './render_job_state'`.
+- The client exposes `getRenderCapability`, `createRenderJob`,
+  `listRenderJobs`, `getRenderJob`, `cancelRenderJob`, `retryRenderJob`,
+  `downloadRenderOutput`, and `cleanupRenderArtifacts`, all through the
+  existing `doFetch`/`headers` plumbing and the project-scoped public routes.
+- One idempotency key per attempt, supplied by the caller. Create and retry
+  send exactly one `Idempotency-Key` header and never generate one
+  themselves, so replaying an attempt reaches the control plane as the same
+  request rather than as a new one.
+- Errors are fixed codes. `renderCall` reads `{ detail: { code } }` and
+  believes only the fourteen codes the render routes are allowed to answer
+  with; every other body, including an HTML traceback, collapses to
+  `render_request_failed`. A server message, path, or exception text can
+  therefore never reach a browser log through `RenderRequestError`.
+- The download returns a `Blob` from the authenticated control-plane route and
+  returns no pathname, artifact location, renderer address, or dispatch
+  identity with it.
+- `render_job_state.ts` is a separate pure module, never merged into editor
+  draft state. It owns capability, a bounded newest-first history, the
+  selected job, the current mutation and its attempt key, a load generation,
+  offline state, and one safe error code — eight fields and nothing else.
+- Ordering and staleness are structural. History is deduplicated by
+  `render_job_id`, sorted newest-first with the identity as tiebreaker, and
+  bounded by `RENDER_HISTORY_LIMIT`; any response whose generation is not the
+  current one is dropped; a terminal job is never regressed to an active
+  status by a late refresh; progress is only ever what the server reported.
+- `renderGate(editorFacts, state)` answers with one safe reason from
+  `offline`, `saving`, `conflict`, `dirty`, `document_invalid`,
+  `renderer_unavailable`, `render_busy`, and `mutation_in_progress`, and
+  `canCancel`, `canRetry`, `canDownload`, and `canCleanup` gate the per-job
+  actions from the public fields alone.
+
+Verification, all offline: regenerating the types twice produced a byte
+identical file (sha256 `7343e5fb…d98d2` before and after the second run), so
+the generated contract is stable and the added surface is the seven public
+render routes and five public schemas only. Focused tests 54 pass / 0 fail,
+three consecutive runs with identical counts; `bun --cwd=dashboard test` 387
+pass / 0 fail across 30 files; `bun --cwd=dashboard run lint` exit 0 with four
+pre-existing warnings, none in Task 11 files; `bun --cwd=dashboard run build`
+succeeded. A grep of the generated types, the client, and the state module for
+`dispatch_id`, `internal/render-jobs`, `artifact_root`, `output_relative_path`,
+`renderer_url`, `credential`, `/srv/`, and `C:\` matched only three untouched
+pre-existing lines: the preview capability cookie's `credentials: "include"`
+fetch option and one generated doc comment stating that a projection carries no
+credentials. `build_cuda.bat` exit 0 (no Rust source changed, so Cargo relinked
+nothing), `cargo test --bin thoth` ok with 0 tests, `git diff --check` clean.
+
+Limitations, deliberate: this task ships no UI. Nothing polls, nothing
+dispatches, and no request is issued anywhere in the product yet — the client
+is called only by its tests, and the reducer is driven only by its tests. The
+offline behaviour modelled here is state only: `went_offline` pauses the gate
+and `went_online` restores it, but retrying or resuming an in-flight attempt
+after a reconnect belongs to the panel in a later task. No live request, real
+asset, credential, or provider was used.
+
 ## 2026-09-21 — Renderer cancellation during the dispatch claim (E1 Task 10, fourth review)
 
 The fourth independent Codex review of Task 10 found a lost-cancel race left by

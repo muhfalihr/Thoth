@@ -61,6 +61,43 @@ export function isPromptStageId(value: string): value is PromptStageId {
 export type ApplyPromptProposalPayload = components["schemas"]["ApplyPromptProposalRequest"];
 export type PromptProposalApplyResultResource =
   components["schemas"]["PromptProposalApplyResult"];
+export type RenderCapability = components["schemas"]["RenderCapability"];
+export type RenderJob = components["schemas"]["RenderJobView"];
+export type RenderJobPage = components["schemas"]["RenderJobPageView"];
+export type RenderOutput = components["schemas"]["RenderOutputView"];
+export type CreateRenderJobPayload = components["schemas"]["CreateRenderJobRequest"];
+export type RenderJobStatus = RenderJob["status"];
+
+/** Every fixed code the public render surface is allowed to answer with. */
+const RENDER_ERROR_CODES = new Set([
+  "render_job_not_found",
+  "render_busy",
+  "idempotency_conflict",
+  "render_job_not_active",
+  "render_job_not_cancellable",
+  "render_job_not_retryable",
+  "render_job_not_cleanable",
+  "render_preparation_failed",
+  "render_output_unavailable",
+  "invalid_render_cursor",
+  "render_document_invalid",
+  "renderer_not_configured",
+  "render_dispatch_failed",
+  "render_unavailable",
+]);
+
+/** Why a render request failed, as a fixed code the UI may show verbatim. */
+export class RenderRequestError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    // The code is the entire message, so a driver string, a traceback, or a
+    // local path can never reach a browser log through this error.
+    super(`Render request failed (${code})`);
+    this.name = "RenderRequestError";
+    this.code = code;
+  }
+}
 
 export type ControlPlaneClient = {
   listStylePresets: () => Promise<StylePreset[]>;
@@ -145,6 +182,22 @@ export type ControlPlaneClient = {
     request: ApplyPromptProposalPayload,
   ) => Promise<PromptProposalApplyResultResource>;
   rejectPromptProposal: (projectId: string, proposalId: string) => Promise<PromptProposalResource>;
+  getRenderCapability: (projectId: string) => Promise<RenderCapability>;
+  createRenderJob: (
+    projectId: string,
+    idempotencyKey: string,
+    request: CreateRenderJobPayload,
+  ) => Promise<RenderJob>;
+  listRenderJobs: (projectId: string, cursor?: string, limit?: number) => Promise<RenderJobPage>;
+  getRenderJob: (projectId: string, renderJobId: string) => Promise<RenderJob>;
+  cancelRenderJob: (projectId: string, renderJobId: string) => Promise<RenderJob>;
+  retryRenderJob: (
+    projectId: string,
+    renderJobId: string,
+    idempotencyKey: string,
+  ) => Promise<RenderJob>;
+  downloadRenderOutput: (projectId: string, renderJobId: string) => Promise<Blob>;
+  cleanupRenderArtifacts: (projectId: string, renderJobId: string) => Promise<RenderJob>;
 };
 
 type ClientOptions = { baseUrl?: string; apiKey?: string; fetch?: typeof fetch };
@@ -220,6 +273,26 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
     if (!response.ok) throw new Error(`Control plane request failed (${response.status})`);
     return { kind: "saved", document: (await response.json()) as EditDocument };
   }
+
+  // Render failures answer `{ detail: { code } }`. Only an allowlisted code is
+  // believed; every other body, however it is shaped, becomes one fixed code.
+  async function renderCall(path: string, init: RequestInit = {}): Promise<Response> {
+    const response = await doFetch(`${baseUrl}${path}`, { ...init, headers: headers(init.headers) });
+    if (response.ok) return response;
+    const body = (await response.json().catch(() => null)) as { detail?: { code?: unknown } } | null;
+    const code = body?.detail?.code;
+    throw new RenderRequestError(
+      typeof code === "string" && RENDER_ERROR_CODES.has(code) ? code : "render_request_failed",
+    );
+  }
+
+  const renderJson = async <T>(path: string, init?: RequestInit): Promise<T> =>
+    (await renderCall(path, init)).json() as Promise<T>;
+
+  const rendersPath = (projectId: string) =>
+    `/api/v1/projects/${encodeURIComponent(projectId)}/render-jobs`;
+  const renderJobPath = (projectId: string, renderJobId: string) =>
+    `${rendersPath(projectId)}/${encodeURIComponent(renderJobId)}`;
 
   const client: ControlPlaneClient = {
     listStylePresets: () => request<StylePreset[]>("/api/v1/style-presets"),
@@ -372,6 +445,40 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
         `/api/v1/projects/${encodeURIComponent(projectId)}/prompt-lab/proposals/${encodeURIComponent(proposalId)}/reject`,
         { method: "POST" },
       ),
+    getRenderCapability: (projectId) =>
+      renderJson<RenderCapability>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/render-capability`,
+      ),
+    // The key belongs to one attempt and is supplied by the caller, so a replay
+    // of that attempt reaches the control plane as the very same request.
+    createRenderJob: (projectId, idempotencyKey, request) =>
+      renderJson<RenderJob>(rendersPath(projectId), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(request),
+      }),
+    listRenderJobs: (projectId, cursor, limit = 20) => {
+      const query = new URLSearchParams({ limit: String(Math.min(Math.max(limit, 1), 50)) });
+      if (cursor) query.set("cursor", cursor);
+      return renderJson<RenderJobPage>(`${rendersPath(projectId)}?${query.toString()}`);
+    },
+    getRenderJob: (projectId, renderJobId) =>
+      renderJson<RenderJob>(renderJobPath(projectId, renderJobId)),
+    cancelRenderJob: (projectId, renderJobId) =>
+      renderJson<RenderJob>(`${renderJobPath(projectId, renderJobId)}/cancel`, { method: "POST" }),
+    retryRenderJob: (projectId, renderJobId, idempotencyKey) =>
+      renderJson<RenderJob>(`${renderJobPath(projectId, renderJobId)}/retry`, {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+      }),
+    // The bytes arrive through the authenticated control-plane route; no local
+    // name, storage locator, or renderer address is returned with them.
+    downloadRenderOutput: async (projectId, renderJobId) =>
+      (await renderCall(`${renderJobPath(projectId, renderJobId)}/output`)).blob(),
+    cleanupRenderArtifacts: (projectId, renderJobId) =>
+      renderJson<RenderJob>(`${renderJobPath(projectId, renderJobId)}/artifacts`, {
+        method: "DELETE",
+      }),
     streamWorkflow(workflowId, onSnapshot, lastEventId) {
       let active = true;
       let cursor = lastEventId;

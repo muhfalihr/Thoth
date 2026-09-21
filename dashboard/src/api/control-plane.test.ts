@@ -13,6 +13,10 @@ import {
   type PromptModelPreference,
   type PromptStageDefinition,
   type PromptTemplateRevision,
+  type RenderCapability,
+  type RenderJob,
+  type RenderJobPage,
+  RenderRequestError,
   type ResolvedPromptDraft,
   type SaveProjectPromptBindingRequest,
   type SavePromptTemplateRequest,
@@ -647,4 +651,150 @@ test("no preview capability value reaches a document payload", async () => {
   const issued = await client.createEditorPreviewCapability("project_001", "asset_001");
   expect(Object.keys(issued)).toEqual(["preview_url", "expires_at"]);
   expect(JSON.stringify(issued)).not.toContain("token");
+});
+
+const RENDER_JOB = {
+  render_job_id: "rj_002",
+  project_id: "project_001",
+  document_id: "edoc_001",
+  document_revision: 7,
+  status: "preparing",
+  template_id: "vertical_story",
+  template_version: "1",
+  preset_id: "standard_vertical_mp4_v1",
+  renderer_version: "remotion-4.0.523",
+  created_at: "2026-09-21T10:00:00Z",
+} as unknown as RenderJob;
+
+function renderClient(calls: RecordedCall[], respond: () => Response) {
+  return createControlPlaneClient({ baseUrl: "", apiKey: "secret", fetch: recordingFetch(calls, respond) });
+}
+
+test("reads render capability from the project's own route", async () => {
+  const capability = {
+    available: true,
+    preset_id: "standard_vertical_mp4_v1",
+    renderer_version: "remotion-4.0.523",
+  } satisfies RenderCapability;
+  const calls: RecordedCall[] = [];
+  const client = renderClient(calls, () => new Response(JSON.stringify(capability), { status: 200 }));
+
+  await expect(client.getRenderCapability("project / one")).resolves.toEqual(capability);
+  expect(calls[0]).toMatchObject({ url: "/api/v1/projects/project%20%2F%20one/render-capability" });
+  expect(new Headers(calls[0].init?.headers).get("Authorization")).toBe("Bearer secret");
+});
+
+test("creates a render job with the caller's idempotency key and revision only", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(calls, () => new Response(JSON.stringify(RENDER_JOB), { status: 201 }));
+
+  await expect(
+    client.createRenderJob("project_001", "attempt_001", { document_id: "edoc_001", document_revision: 7 }),
+  ).resolves.toEqual(RENDER_JOB);
+  expect(calls[0]).toMatchObject({
+    url: "/api/v1/projects/project_001/render-jobs",
+    init: { method: "POST" },
+  });
+  expect(new Headers(calls[0].init?.headers).get("Idempotency-Key")).toBe("attempt_001");
+  expect(calls[0].init?.body).toBe(
+    JSON.stringify({ document_id: "edoc_001", document_revision: 7 }),
+  );
+});
+
+test("replaying one create attempt never regenerates its idempotency key", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(calls, () => new Response(JSON.stringify(RENDER_JOB), { status: 201 }));
+  const attempt = { document_id: "edoc_001", document_revision: 7 } as const;
+
+  await client.createRenderJob("project_001", "attempt_001", attempt);
+  await client.createRenderJob("project_001", "attempt_001", attempt);
+
+  const keys = calls.map((call) => new Headers(call.init?.headers).get("Idempotency-Key"));
+  expect(keys).toEqual(["attempt_001", "attempt_001"]);
+});
+
+test("lists one bounded newest-first page of render jobs", async () => {
+  const page = { jobs: [RENDER_JOB], next_cursor: null } as unknown as RenderJobPage;
+  const calls: RecordedCall[] = [];
+  const client = renderClient(calls, () => new Response(JSON.stringify(page), { status: 200 }));
+
+  await expect(client.listRenderJobs("project_001", "cursor / one", 500)).resolves.toEqual(page);
+  expect(calls[0].url).toBe(
+    "/api/v1/projects/project_001/render-jobs?limit=50&cursor=cursor+%2F+one",
+  );
+});
+
+test("reads, cancels, retries, and cleans one render job through its own routes", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(calls, () => new Response(JSON.stringify(RENDER_JOB), { status: 200 }));
+
+  await expect(client.getRenderJob("project_001", "rj / 002")).resolves.toEqual(RENDER_JOB);
+  await client.cancelRenderJob("project_001", "rj_002");
+  await client.retryRenderJob("project_001", "rj_002", "attempt_002");
+  await client.cleanupRenderArtifacts("project_001", "rj_002");
+
+  expect(calls.map((call) => `${call.init?.method ?? "GET"} ${call.url}`)).toEqual([
+    "GET /api/v1/projects/project_001/render-jobs/rj%20%2F%20002",
+    "POST /api/v1/projects/project_001/render-jobs/rj_002/cancel",
+    "POST /api/v1/projects/project_001/render-jobs/rj_002/retry",
+    "DELETE /api/v1/projects/project_001/render-jobs/rj_002/artifacts",
+  ]);
+  expect(new Headers(calls[2].init?.headers).get("Idempotency-Key")).toBe("attempt_002");
+  // Cancel, retry, and cleanup name the job in the path and send nothing else.
+  expect(calls.slice(1).every((call) => call.init?.body === undefined)).toBe(true);
+});
+
+test("downloads the finished render as a Blob and returns no locator", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(
+    calls,
+    () =>
+      new Response(new Blob(["rendered-bytes"], { type: "video/mp4" }), {
+        status: 200,
+        headers: { "Content-Type": "video/mp4" },
+      }),
+  );
+
+  const blob = await client.downloadRenderOutput("project_001", "rj_002");
+  expect(blob).toBeInstanceOf(Blob);
+  expect(blob.type).toBe("video/mp4");
+  expect(calls[0].url).toBe("/api/v1/projects/project_001/render-jobs/rj_002/output");
+  expect(new Headers(calls[0].init?.headers).get("Authorization")).toBe("Bearer secret");
+});
+
+test("a render failure surfaces its fixed code and never the server's own words", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(
+    calls,
+    () =>
+      new Response(
+        JSON.stringify({
+          detail: { code: "render_busy", message: "C:/srv/artifacts/temp/rj_001 is locked" },
+        }),
+        { status: 409 },
+      ),
+  );
+
+  const failure = await client
+    .createRenderJob("project_001", "attempt_001", { document_id: "edoc_001", document_revision: 7 })
+    .catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(RenderRequestError);
+  expect((failure as RenderRequestError).code).toBe("render_busy");
+  expect(String(failure)).not.toContain("/srv/");
+  expect(String(failure)).not.toContain("locked");
+});
+
+test("an unrecognised render failure body becomes one fixed generic code", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(
+    calls,
+    () => new Response("<html>Traceback (most recent call last): C:/srv/artifacts</html>", { status: 500 }),
+  );
+
+  const failure = await client.getRenderJob("project_001", "rj_002").catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(RenderRequestError);
+  expect((failure as RenderRequestError).code).toBe("render_request_failed");
+  expect(String(failure)).not.toContain("Traceback");
+  expect(String(failure)).not.toContain("/srv/");
 });

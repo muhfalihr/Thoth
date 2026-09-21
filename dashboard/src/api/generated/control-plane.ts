@@ -330,6 +330,144 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/render-capability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Render Capability
+         * @description Report whether this installation can start a render for this project now.
+         */
+        get: operations["read_render_capability_api_v1_projects__project_id__render_capability_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/render-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Render Jobs */
+        get: operations["list_render_jobs_api_v1_projects__project_id__render_jobs_get"];
+        put?: never;
+        /**
+         * Create Render Job
+         * @description Start exactly one render of one saved revision, or report why not.
+         */
+        post: operations["create_render_job_api_v1_projects__project_id__render_jobs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/render-jobs/{render_job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Render Job */
+        get: operations["read_render_job_api_v1_projects__project_id__render_jobs__render_job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/render-jobs/{render_job_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cleanup Render Artifacts
+         * @description Delete one terminal job's files by hand, keeping its audit row.
+         */
+        delete: operations["cleanup_render_artifacts_api_v1_projects__project_id__render_jobs__render_job_id__artifacts_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/render-jobs/{render_job_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Render Job
+         * @description Record one cancel request; the renderer answers through its own events.
+         */
+        post: operations["cancel_render_job_api_v1_projects__project_id__render_jobs__render_job_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/render-jobs/{render_job_id}/output": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Render Output
+         * @description Stream the one published render, never a redirect to where it lives.
+         */
+        get: operations["download_render_output_api_v1_projects__project_id__render_jobs__render_job_id__output_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/render-jobs/{render_job_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Render Job
+         * @description Start a new job for the same revision; the finished one stays finished.
+         */
+        post: operations["retry_render_job_api_v1_projects__project_id__render_jobs__render_job_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/prompt-providers": {
         parameters: {
             query?: never;
@@ -763,6 +901,16 @@ export interface components {
             target_language?: string | null;
             /** Target Layer */
             target_layer?: ("template" | "project_override") | null;
+        };
+        /**
+         * CreateRenderJobRequest
+         * @description A render request naming one exact saved revision and nothing else.
+         */
+        CreateRenderJobRequest: {
+            /** Document Id */
+            document_id: string;
+            /** Document Revision */
+            document_revision: number;
         };
         /** Crop */
         Crop: {
@@ -1281,6 +1429,119 @@ export interface components {
             operation_id: string;
             /** Track Id */
             track_id: string;
+        };
+        /**
+         * RenderCapability
+         * @description Whether this installation can start a render right now, and why not.
+         */
+        RenderCapability: {
+            /** Active Render Job Id */
+            active_render_job_id?: string | null;
+            /** Available */
+            available: boolean;
+            /**
+             * Preset Id
+             * @constant
+             */
+            preset_id: "standard_vertical_mp4_v1";
+            /** Reason */
+            reason?: ("renderer_not_configured" | "render_busy") | null;
+            /** Renderer Version */
+            renderer_version: string;
+        };
+        /**
+         * RenderJobPageView
+         * @description One bounded newest-first page of a project's render history.
+         */
+        RenderJobPageView: {
+            /**
+             * Jobs
+             * @default []
+             */
+            jobs: components["schemas"]["RenderJobView"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /**
+         * RenderJobView
+         * @description The only render-job shape a browser ever sees.
+         */
+        RenderJobView: {
+            /** Artifacts Cleaned At */
+            artifacts_cleaned_at?: string | null;
+            /** Cancel Requested At */
+            cancel_requested_at?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Document Id */
+            document_id: string;
+            /** Document Revision */
+            document_revision: number;
+            /** Failure Code */
+            failure_code?: ("render_asset_unavailable" | "render_bundle_invalid" | "render_deadline_exceeded" | "render_dispatch_failed" | "render_engine_failed" | "render_output_invalid" | "render_storage_failed" | "renderer_unavailable") | null;
+            /** Finished At */
+            finished_at?: string | null;
+            output?: components["schemas"]["RenderOutputView"] | null;
+            /**
+             * Preset Id
+             * @constant
+             */
+            preset_id: "standard_vertical_mp4_v1";
+            /** Progress Percent */
+            progress_percent?: number | null;
+            /** Project Id */
+            project_id: string;
+            /** Render Job Id */
+            render_job_id: string;
+            /** Renderer Version */
+            renderer_version: string;
+            /** Retry Of Job Id */
+            retry_of_job_id?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "preparing" | "rendering" | "finalizing" | "completed" | "failed" | "cancelled";
+            /**
+             * Template Id
+             * @constant
+             */
+            template_id: "vertical_text_story";
+            /**
+             * Template Version
+             * @constant
+             */
+            template_version: 1;
+        };
+        /**
+         * RenderOutputView
+         * @description What a finished render is, with no locator and no encoder knob.
+         */
+        RenderOutputView: {
+            /** Checksum */
+            checksum: string;
+            /** Duration Seconds */
+            duration_seconds: number;
+            /** Fps */
+            fps: number;
+            /** Has Audio */
+            has_audio: boolean;
+            /** Height */
+            height: number;
+            /**
+             * Media Type
+             * @constant
+             */
+            media_type: "video/mp4";
+            /** Size Bytes */
+            size_bytes: number;
+            /** Width */
+            width: number;
         };
         /** ReorderTrack */
         ReorderTrack: {
@@ -2902,6 +3163,284 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PromptTemplateRevision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_render_capability_api_v1_projects__project_id__render_capability_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderCapability"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_render_jobs_api_v1_projects__project_id__render_jobs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobPageView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_render_job_api_v1_projects__project_id__render_jobs_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRenderJobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_render_job_api_v1_projects__project_id__render_jobs__render_job_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                render_job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cleanup_render_artifacts_api_v1_projects__project_id__render_jobs__render_job_id__artifacts_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                render_job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_render_job_api_v1_projects__project_id__render_jobs__render_job_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                render_job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_render_output_api_v1_projects__project_id__render_jobs__render_job_id__output_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                render_job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "video/mp4": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_render_job_api_v1_projects__project_id__render_jobs__render_job_id__retry_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                render_job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderJobView"];
                 };
             };
             /** @description Validation Error */
