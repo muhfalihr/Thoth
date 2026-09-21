@@ -775,3 +775,144 @@ test("keeps a loaded asset addable after an earlier asset edit saves", async () 
     asset_id: "asset_second",
   });
 });
+
+/** The render half of the control plane, as Studio degrades without it. */
+function renderClientFixture() {
+  const capability = {
+    available: true,
+    preset_id: "standard_vertical_mp4_v1" as const,
+    renderer_version: "remotion-4.0.523",
+  };
+  return {
+    getRenderCapability: mock(async () => capability),
+    createRenderJob: mock(async () => ({
+      render_job_id: "rj_001",
+      project_id: "project_001",
+      document_id: "document_001",
+      document_revision: 2,
+      status: "preparing" as const,
+      template_id: "vertical_text_story" as const,
+      template_version: 1 as const,
+      preset_id: "standard_vertical_mp4_v1" as const,
+      renderer_version: "remotion-4.0.523",
+      created_at: "2026-09-21T10:00:00Z",
+    })),
+    listRenderJobs: mock(async () => ({ jobs: [], next_cursor: null })),
+    getRenderJob: mock(async () => { throw new Error("no job"); }),
+    cancelRenderJob: mock(async () => { throw new Error("no job"); }),
+    retryRenderJob: mock(async () => { throw new Error("no job"); }),
+    downloadRenderOutput: mock(async () => new Blob([])),
+    cleanupRenderArtifacts: mock(async () => { throw new Error("no job"); }),
+  };
+}
+
+test("offers render controls only where the control plane supports rendering", async () => {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const base = {
+    ...promptClientBase,
+    getEditDocument: mock(async () => document),
+    patchEditDocument: mock(async () => ({ kind: "saved" as const, document })),
+  };
+
+  const { unmount } = render(
+    <GuidedStudio client={base} projectId="project_001" documentId="document_001" onBack={() => {}} />,
+  );
+  expect(await screen.findByLabelText("Heading")).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Render video" })).toBeNull();
+  unmount();
+
+  render(
+    <GuidedStudio
+      client={{ ...base, ...renderClientFixture() }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  expect(await screen.findByRole("button", { name: "Render video" })).toBeDefined();
+  // The editor, Prompt Lab tab, and preview are untouched by the new surface.
+  expect(screen.getByLabelText("Heading")).toBeDefined();
+  expect(screen.getByRole("tab", { name: "Prompt Lab" })).toBeDefined();
+  expect(screen.getByLabelText("Draft preview")).toBeDefined();
+});
+
+test("an unsaved draft cannot be rendered and says so", async () => {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const client = {
+    ...promptClientBase,
+    ...renderClientFixture(),
+    getEditDocument: mock(async () => document),
+    patchEditDocument: mock(() => new Promise<never>(() => {})),
+  };
+
+  render(
+    <GuidedStudio client={client} projectId="project_001" documentId="document_001" onBack={() => {}} />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  const button = await screen.findByRole("button", { name: "Render video" });
+  expect(button).toHaveProperty("disabled", false);
+
+  fireEvent.change(heading, { target: { value: "Edited heading" } });
+
+  await waitFor(() => expect(button).toHaveProperty("disabled", true));
+  const reason = button.getAttribute("aria-describedby");
+  expect(window.document.getElementById(reason as string)?.textContent).toBe(
+    "Save your changes before rendering.",
+  );
+  expect(client.createRenderJob).toHaveBeenCalledTimes(0);
+});
+
+test("a saved revision is what gets rendered, and the draft never leaves the editor", async () => {
+  let resolveSave: (value: { kind: "saved"; document: EditDocument }) => void = () => {};
+  const patchEditDocument = mock(
+    () => new Promise<{ kind: "saved"; document: EditDocument }>((resolve) => { resolveSave = resolve; }),
+  );
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const client = {
+    ...promptClientBase,
+    ...renderClientFixture(),
+    getEditDocument: mock(async () => document),
+    patchEditDocument,
+  };
+  const { container } = render(
+    <GuidedStudio client={client} projectId="project_001" documentId="document_001" onBack={() => {}} />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  expect(client.listRenderJobs).toHaveBeenCalledTimes(1);
+
+  jest.useFakeTimers();
+  try {
+    fireEvent.change(heading, { target: { value: "Edited heading" } });
+    act(() => jest.advanceTimersByTime(500));
+    await act(async () => {
+      resolveSave({
+        kind: "saved",
+        document: {
+          ...document,
+          revision: 2,
+          clips: [{ ...document.clips[0], heading: "Edited heading", ownership: "user_edited" as const }],
+        },
+      });
+    });
+  } finally {
+    jest.useRealTimers();
+  }
+
+  // A new saved revision is a new render generation: the panel re-reads.
+  await waitFor(() => expect(client.listRenderJobs).toHaveBeenCalledTimes(2));
+
+  fireEvent.click(screen.getByRole("button", { name: "Render video" }));
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.textContent).not.toContain("Edited heading");
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Start render" }));
+  });
+
+  expect(client.createRenderJob).toHaveBeenCalledWith("project_001", expect.any(String), {
+    document_id: "document_001",
+    document_revision: 2,
+  });
+  // The draft still belongs to the editor alone.
+  expect((screen.getByLabelText("Heading") as HTMLInputElement).value).toBe("Edited heading");
+  expect(container.textContent).not.toContain("Original heading");
+});

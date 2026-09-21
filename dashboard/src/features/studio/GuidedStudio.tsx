@@ -15,6 +15,7 @@ import {
 import { Inspector } from "./Inspector";
 import { IssuesPanel } from "./IssuesPanel";
 import { PromptLab, type PromptLabClient } from "./PromptLab";
+import { RenderPanel, type RenderPanelClient } from "./RenderPanel";
 import { SceneBoard } from "./SceneBoard";
 import { Timeline } from "./Timeline";
 import { TimelineInspector } from "./TimelineInspector";
@@ -29,7 +30,17 @@ type Props = {
     Partial<
       Pick<
         ControlPlaneClient,
-        "upgradeEditDocument" | "listEditorAssets" | "createEditorPreviewCapability"
+        | "upgradeEditDocument"
+        | "listEditorAssets"
+        | "createEditorPreviewCapability"
+        | "getRenderCapability"
+        | "createRenderJob"
+        | "listRenderJobs"
+        | "getRenderJob"
+        | "cancelRenderJob"
+        | "retryRenderJob"
+        | "downloadRenderOutput"
+        | "cleanupRenderArtifacts"
       >
     >;
   projectId: string;
@@ -127,6 +138,51 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         ? { listEditorAssets, createEditorPreviewCapability }
         : undefined,
     [listEditorAssets, createEditorPreviewCapability],
+  );
+
+  const {
+    getRenderCapability,
+    createRenderJob,
+    listRenderJobs,
+    getRenderJob,
+    cancelRenderJob,
+    retryRenderJob,
+    downloadRenderOutput,
+    cleanupRenderArtifacts,
+  } = client;
+  // Rendering appears only where the whole render API is present, and the slice
+  // is stable so the panel does not reload on every keystroke in the draft.
+  const renderClient = useMemo<RenderPanelClient | undefined>(
+    () =>
+      getRenderCapability &&
+      createRenderJob &&
+      listRenderJobs &&
+      getRenderJob &&
+      cancelRenderJob &&
+      retryRenderJob &&
+      downloadRenderOutput &&
+      cleanupRenderArtifacts
+        ? {
+            getRenderCapability,
+            createRenderJob,
+            listRenderJobs,
+            getRenderJob,
+            cancelRenderJob,
+            retryRenderJob,
+            downloadRenderOutput,
+            cleanupRenderArtifacts,
+          }
+        : undefined,
+    [
+      getRenderCapability,
+      createRenderJob,
+      listRenderJobs,
+      getRenderJob,
+      cancelRenderJob,
+      retryRenderJob,
+      downloadRenderOutput,
+      cleanupRenderArtifacts,
+    ],
   );
 
   const addAsset = (asset: EditorAsset) => {
@@ -422,6 +478,23 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             />
           )}
         </div>
+        {renderClient ? (
+          <RenderPanel
+            client={renderClient}
+            projectId={projectId}
+            documentId={documentId}
+            // The saved revision, never the draft: an unsaved or conflicted
+            // document cannot be rendered, and the panel's gate explains why.
+            documentRevision={base.revision}
+            templateId="vertical_text_story"
+            templateVersion={1}
+            facts={{
+              saveStatus,
+              online: !state.isOffline,
+              documentValid: hasValidText(draft),
+            }}
+          />
+        ) : null}
       </div>
 
       <div

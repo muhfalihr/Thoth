@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Creator Studio render controls (E1 Task 12)
+
+Task 11 left the render lifecycle as pure state with nothing to drive it. The
+Studio now carries a `RenderPanel` that turns that state into a surface: it
+asks the control plane what rendering can do, starts a render against one
+saved revision, follows it while it runs, and offers Cancel, Retry, Download,
+and Cleanup exactly when the domain says they are available. Written offline
+and test-first on `codex/stage1-container-ci`, as one commit, touching only the
+panel, its tests, and the `GuidedStudio` wiring.
+
+- RED first, deterministically. The new component suite was `24 pass / 1 fail /
+  1 error` against the missing module (`Cannot find module './RenderPanel'`)
+  before a line of the panel existed; the 31 tests it now holds cover the eight
+  areas the plan names — first load, the render gate, confirmation, idempotency,
+  polling, race protection, the job actions, and display.
+- The gate is one decision, not two. The button's disabled state, the reason
+  shown beside it, and the click guard all read the same `renderGate()` result,
+  so a dirty, saving, conflicted, invalid, offline, unavailable, busy, or
+  already-mutating editor cannot start a render and always says which one it is.
+- An attempt owns its key. One `crypto.randomUUID()` is minted per user attempt
+  in the component — never in the reducer and never in the API client. Replaying
+  an attempt that went ambiguous offline reuses the original key, so the control
+  plane answers the same request; a fresh explicit retry gets a fresh key.
+- Polling is bounded and honest. One request is in flight at a time, the next
+  tick is scheduled only after the previous settles, a terminal status stops the
+  loop, going offline pauses it and coming back online resumes with a reload.
+  There is no recursive uncontrolled timer chain, and timers plus the
+  `online`/`offline` listeners are removed on unmount.
+- Late answers cannot land. A single generation ref moves with every load,
+  offline event, and document or revision change, and every response is
+  discarded unless the generation it was issued under is still current.
+- Nothing private reaches the DOM. No renderer URL, internal route, artifact
+  path, credential, or raw exception is rendered: errors are fixed codes mapped
+  to fixed sentences, the download names its own `render-<id>.mp4` and revokes
+  the object URL afterwards, and the confirmation shows only immutable facts.
+- The editor is untouched. Render state lives in the panel's own reducer, never
+  in `editorReducer`; the panel receives the saved document id, the saved
+  revision, and three editor facts, so it has no draft to mutate or reseed, and
+  a saved revision is what gets rendered.
+
+Verification, all offline and fresh: the two focused suites `58 pass / 0 fail`
+on three consecutive runs with identical counts; full `bun --cwd=dashboard test`
+`445 pass / 0 fail` across 31 files, up from the 411 baseline; `bun x tsc -b
+--force` exit 0; `bun --cwd=dashboard run lint` exit 0 with the same four
+pre-existing warnings and none in Task 12 files; `bun --cwd=dashboard run build`
+exit 0; `git diff --exit-code 7da6146` against the generated contract, the API
+client, and `render_job_state.ts` with its tests all clean, so Task 11 stands
+byte-identical; `build_cuda.bat` exit 0 with `thoth.exe` unchanged at
+2026-08-31 20:26 because no Rust source changed; `cargo test --bin thoth` ok;
+`git diff --check` clean.
+
+Limitations, deliberate: every run was offline against a fake control plane. No
+live request, real asset, credential, provider, or renderer was touched, so the
+panel has never met a real job; recovery after a lost connection is exercised
+only through simulated `offline`/`online` events. Operator commit `bab60e3`
+(GNU GPL v3.0 licence) is preserved byte-for-byte and excluded from this commit.
+
 ## 2026-09-21 — Render snapshots made monotonic (E1 Task 11, second review round)
 
 The Codex re-review of Task 11 left two reconciliation findings: progress was
