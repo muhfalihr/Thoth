@@ -325,6 +325,7 @@ def test_editor_preview_signing_key_reaches_the_api_only() -> None:
         "temporal-ui",
         "legacy-cdp",
         "worker",
+        "remotion-renderer",
     ):
         assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" not in _service_block(compose, service)
     assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY=replace-with-local-secret" in env_example
@@ -347,4 +348,165 @@ def test_editor_preview_adds_no_service_port_or_mount() -> None:
         "  legacy-cdp:",
         "  api:",
         "  worker:",
+        "  remotion-renderer:",
     ]
+
+
+#: Everything ``renderer/src/config.ts`` reads, and therefore everything Compose
+#: is allowed to hand the renderer. A name outside this set is either ignored by
+#: the service or a capability it has no business holding.
+RENDERER_ENVIRONMENT = {
+    "THOTH_RENDERER_CONTROL_PLANE_URL",
+    "THOTH_RENDERER_INTERNAL_CREDENTIAL",
+    "THOTH_CONTROL_PLANE_ARTIFACT_ROOT",
+    "THOTH_RENDERER_PORT",
+    "THOTH_RENDERER_VERSION",
+}
+
+
+def _environment_names(block: str) -> set[str]:
+    environment = re.search(
+        r"(?ms)^    environment:\n(?P<body>.*?)(?=^    [a-z_]+:|\Z)",
+        block,
+    )
+    assert environment is not None, "service declares no environment"
+    return set(re.findall(r"(?m)^      ([A-Z][A-Z0-9_]*):", environment.group("body")))
+
+
+def test_renderer_runs_unprivileged_on_a_digest_and_the_private_network_only() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    renderer = _service_block(compose, "remotion-renderer")
+
+    assert "${THOTH_RENDERER_IMAGE:?set digest-qualified THOTH_RENDERER_IMAGE}" in renderer
+    assert 'user: "10001:10001"' in renderer
+    assert "networks: [stage1-private]" in renderer
+    # A render is a browser and an encoder: nothing about it needs a host port,
+    # the daemon that started it, or a relaxed sandbox.
+    assert "ports:" not in renderer
+    assert "docker.sock" not in renderer
+    assert "privileged" not in renderer
+    assert "seccomp" not in renderer
+    assert "cap_add" not in renderer
+
+
+def test_renderer_receives_its_supported_settings_and_nothing_else() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    renderer = _service_block(compose, "remotion-renderer")
+
+    assert "THOTH_RENDERER_CONTROL_PLANE_URL: http://api:8000" in renderer
+    assert (
+        "THOTH_RENDERER_INTERNAL_CREDENTIAL: "
+        "${THOTH_RENDERER_INTERNAL_CREDENTIAL:?set THOTH_RENDERER_INTERNAL_CREDENTIAL}" in renderer
+    )
+    assert "THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts" in renderer
+    assert _environment_names(renderer) == RENDERER_ENVIRONMENT
+
+
+def test_renderer_holds_no_database_provider_or_creator_capability() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    renderer = _service_block(compose, "remotion-renderer")
+
+    for forbidden in (
+        "THOTH_EDITOR_DATABASE_URL",
+        "THOTH_CONTROL_PLANE_API_KEY",
+        "THOTH_EDITOR_PREVIEW_SIGNING_KEY",
+        "THOTH_PROMPT_PROVIDER_CATALOG",
+        "THOTH_PROMPT_PROVIDER_SECRETS",
+        "THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE",
+        "THOTH_CDP",
+        "THOTH_TEMPORAL_TARGET",
+        "THOTH_TEMPORAL_NAMESPACE",
+        "POSTGRES_PASSWORD",
+        "AMQP",
+        "REDIS",
+    ):
+        assert forbidden not in renderer
+
+
+def test_renderer_shares_the_one_canonical_artifact_root_and_no_second_output() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    renderer = _service_block(compose, "remotion-renderer")
+    api = _service_block(compose, "api")
+
+    mount = (
+        "    volumes:\n"
+        "      - type: bind\n"
+        "        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts\n"
+        "        target: /var/lib/thoth/artifacts\n"
+    )
+    assert mount in api
+    assert mount in renderer
+    assert renderer.count("target:") == 1
+    assert renderer.count("/browser-profile") == 0
+
+
+def test_renderer_health_uses_the_authenticated_health_endpoint_it_already_serves() -> None:
+    """``/health`` is Bearer-authenticated like every other renderer route.
+
+    An unauthenticated probe would have to be a second health API, and the whole
+    point of this service is that it answers nothing it cannot attribute.
+    """
+    compose = _repo_text("compose.stage1.local.yml")
+    renderer = _service_block(compose, "remotion-renderer")
+
+    assert "healthcheck:" in renderer
+    assert "http://127.0.0.1:8080/health" in renderer
+    assert "Bearer" in renderer
+    assert "THOTH_RENDERER_INTERNAL_CREDENTIAL" in renderer
+    assert "/healthz" not in renderer
+    assert "/readyz" not in renderer
+
+
+def test_control_plane_dispatches_over_private_dns_and_the_worker_never_can() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    api = _service_block(compose, "api")
+    worker = _service_block(compose, "worker")
+
+    assert "THOTH_RENDERER_INTERNAL_URL: http://remotion-renderer:8080" in api
+    assert (
+        "THOTH_RENDERER_INTERNAL_CREDENTIAL: "
+        "${THOTH_RENDERER_INTERNAL_CREDENTIAL:?set THOTH_RENDERER_INTERNAL_CREDENTIAL}" in api
+    )
+    assert "127.0.0.1:8080" not in api
+    assert "localhost" not in api
+    # The renderer is dispatched to by the control plane alone.
+    assert "THOTH_RENDERER_INTERNAL_URL" not in worker
+    assert "THOTH_RENDERER_INTERNAL_CREDENTIAL" not in worker
+
+
+def test_pinned_renderer_version_is_declared_once_on_each_side() -> None:
+    compose = _repo_text("compose.stage1.local.yml")
+    api = _service_block(compose, "api")
+    renderer = _service_block(compose, "remotion-renderer")
+
+    pinned = "THOTH_RENDERER_VERSION: ${THOTH_RENDERER_VERSION:-remotion-4.0.523}"
+    assert api.count(pinned) == 1
+    assert renderer.count(pinned) == 1
+
+
+def test_api_startup_never_waits_on_the_renderer() -> None:
+    """A renderer that cannot start must cost the installation its renders, not its API.
+
+    Compose ``depends_on`` would make an unhealthy renderer block the control
+    plane, and the control plane already degrades to an unavailable gateway when
+    the renderer settings are absent.
+    """
+    compose = _repo_text("compose.stage1.local.yml")
+    api = _service_block(compose, "api")
+    settings = _repo_text("python/src/thoth_control_plane/config.py")
+
+    depends = re.search(r"(?ms)^    depends_on:\n(?P<body>.*?)(?=^    [a-z_]+:|\Z)", api)
+    assert depends is not None
+    assert "remotion-renderer" not in depends.group("body")
+    assert "THOTH_RENDERER_INTERNAL_URL: AnyHttpUrl | None = None" in settings
+    assert "THOTH_RENDERER_INTERNAL_CREDENTIAL: SecretStr | None = None" in settings
+
+
+def test_renderer_inputs_are_placeholders_in_the_example_environment() -> None:
+    env_example = _env_file()
+
+    assert (
+        "THOTH_RENDERER_IMAGE=ghcr.io/muhfalihr/thoth-remotion-renderer@sha256:" + "0" * 64
+        in env_example
+    )
+    assert "THOTH_RENDERER_INTERNAL_CREDENTIAL=replace-with-local-secret" in env_example

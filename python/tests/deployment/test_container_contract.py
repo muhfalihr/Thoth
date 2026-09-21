@@ -149,6 +149,131 @@ def test_container_workflow_pins_gates_tags_platform_and_digest_summary() -> Non
     assert "secrets." not in workflow
 
 
+#: The renderer is a second image from a second Dockerfile, so it gets a second
+#: repository. One repository holding two unrelated runtimes would make a digest
+#: ambiguous about which one it names.
+RENDERER_REGISTRY = "ghcr.io/muhfalihr/thoth-remotion-renderer"
+
+
+def test_container_workflow_publishes_the_renderer_as_its_own_image() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    publication = workflow.split("  publish-image:", 1)[1].split("  stack-smoke:", 1)[0]
+
+    assert f"RENDERER_REGISTRY_IMAGE: {RENDERER_REGISTRY}" in workflow
+    # The existing application image keeps its repository and its identity.
+    assert "REGISTRY_IMAGE: ghcr.io/muhfalihr/thoth\n" in workflow
+    assert "file: Dockerfile.renderer" in publication
+    assert "images: ${{ env.RENDERER_REGISTRY_IMAGE }}" in publication
+    assert "org.opencontainers.image.revision=${{ github.sha }}" in publication
+    assert publication.count("push: true") == 2
+    assert publication.count("provenance: mode=max") == 2
+    assert publication.count("sbom: true") == 2
+
+
+def test_container_workflow_exposes_each_published_digest_separately() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    outputs = workflow.split("    outputs:\n", 1)[1].split("    steps:", 1)[0]
+
+    assert "digest: ${{ steps.build.outputs.digest }}" in outputs
+    assert "renderer_digest: ${{ steps.renderer-build.outputs.digest }}" in outputs
+    summary = workflow.split("Record immutable release identity", 1)[1]
+    assert "RENDERER_IMAGE_DIGEST: ${{ steps.renderer-build.outputs.digest }}" in summary
+    assert "${RENDERER_REGISTRY_IMAGE}" in summary
+
+
+def test_container_workflow_validates_both_candidate_images_without_publishing() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    validation = workflow.split("  validate-image:", 1)[1].split("  publish-image:", 1)[0]
+
+    assert "RENDERER_CANDIDATE_IMAGE: thoth-remotion-renderer:pr-${{ github.sha }}" in validation
+    assert "file: Dockerfile.renderer" in validation
+    assert validation.count("push: false") == 2
+    assert validation.count("load: true") == 2
+    assert "packages: write" not in validation
+    assert (
+        'bash docker/test-renderer-offline.sh "${CANDIDATE_IMAGE}" '
+        '"${RENDERER_CANDIDATE_IMAGE}"' in validation
+    )
+
+
+def test_container_workflow_smokes_the_render_stack_on_published_digests() -> None:
+    """A published pair is the only identity a deployment can actually pull."""
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    smoke = workflow.split("  stack-smoke:", 1)[1]
+
+    assert (
+        "THOTH_RENDERER_IMAGE_REF: "
+        f"{RENDERER_REGISTRY}@${{{{ needs.publish-image.outputs.renderer_digest }}}}" in smoke
+    )
+    assert (
+        'bash docker/test-renderer-offline.sh "${THOTH_IMAGE_REF}" '
+        '"${THOTH_RENDERER_IMAGE_REF}"' in smoke
+    )
+    # The shared Compose file now requires both renderer inputs, so the throwaway
+    # environment has to carry them or nothing in this job starts at all.
+    assert 'echo "THOTH_RENDERER_IMAGE=${THOTH_RENDERER_IMAGE_REF}"' in smoke
+    assert 'echo "THOTH_RENDERER_INTERNAL_CREDENTIAL=$(openssl rand -hex 24)"' in smoke
+
+
+def test_container_workflow_never_prints_a_generated_credential() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    generated = [line for line in workflow.splitlines() if "openssl rand" in line]
+
+    assert generated
+    for line in generated:
+        # Every generated value goes straight into the ignored throwaway file.
+        assert line.strip().startswith('echo "THOTH_')
+    assert "> stage1.ci.env" in workflow
+    assert "cat stage1.ci.env" not in workflow
+
+
+def test_renderer_smoke_is_a_two_image_self_cleaning_harness() -> None:
+    """The harness owns exactly what it created and nothing that was already there."""
+    script = _repo_text("docker/test-renderer-offline.sh")
+
+    assert "set -euo pipefail" in script
+    assert "umask 077" in script
+    assert "usage: docker/test-renderer-offline.sh IMAGE RENDERER_IMAGE" in script
+    assert '[ "$#" -ne 2 ]' in script
+    assert "mktemp -d" in script
+    assert "trap teardown EXIT INT TERM" in script
+    # Broad cleanup would take the operator's own stack with it.
+    assert "system prune" not in script
+    assert "docker rm -f" not in script
+    assert "docker network prune" not in script
+    assert "docker volume prune" not in script
+    assert "down -v" not in script
+
+
+def test_renderer_smoke_proves_the_properties_a_render_stack_must_hold() -> None:
+    script = _repo_text("docker/test-renderer-offline.sh")
+    required = {
+        "renderer_runs_unprivileged=true",
+        "renderer_host_binding_absent=true",
+        "renderer_holds_no_control_plane_capability=true",
+        "render_output_is_h264_mp4=true",
+        "render_output_checksum_matches=true",
+        "render_output_inside_artifact_root=true",
+        "second_render_is_refused=true",
+        "no_waiting_row_was_created=true",
+        "cancel_leaves_no_published_output=true",
+        "deadline_fails_without_publishing=true",
+        "teardown_leaves_nothing=true",
+    }
+    assert required <= set(script.split())
+
+
+def test_renderer_smoke_reads_no_real_credential_or_asset() -> None:
+    script = _repo_text("docker/test-renderer-offline.sh")
+
+    assert ".env.stage1" not in script
+    assert "compose.stage1" not in script
+    assert "tiktok.com" not in script
+    assert "ghcr.io" not in script
+    assert "THOTH_STAGE1_DATA_ROOT" not in script
+    assert "openssl rand" in script
+
+
 def test_quality_workflow_provisions_linux_ffmpeg_for_scout() -> None:
     workflow = _repo_text(".github/workflows/container-image.yml")
     assert "Install media test dependencies" in workflow

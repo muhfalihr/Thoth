@@ -2,6 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 - A valid composition id, and the isolated render stack gated (E1 Task 13)
+
+The renderer had never produced a frame. Every render ended `failed` with
+`render_engine_failed` after about five seconds and an empty renderer log,
+because the shared composition registered itself as `advanced_timeline_v1` and
+the pinned Remotion 4.0.523 accepts only `a-z`, `A-Z`, `0-9`, `-` and CJK in a
+composition id. The underscore threw inside the bundle, where the only thing
+that escapes is a fixed failure code, so the defect was invisible from outside.
+The id is `advanced-timeline-v1` now. The old spelling was never valid, so no
+E1 render was ever produced under it and there is nothing to migrate or
+support.
+
+- Red first. A regression test at the shared composition seam asserts the
+  exported id against the character contract Remotion enforces. It failed on
+  `advanced_timeline_v1` for exactly the underscore and passes now.
+- The pinned image is the authoritative evidence, not the regex. Inside the
+  renderer container, `bundle()`, `selectComposition()` and `renderMedia()` on
+  `advanced-timeline-v1` answered `BUNDLE_OK`, `SELECT_OK 1080 1920 30` and
+  `RENDER_OK` at exit 0, where the same probe on the old id raised
+  "Composition id can only contain a-z, A-Z, 0-9, CJK characters and -".
+- The literal moved in one step across the shared composition, the renderer
+  bundle contract and its fixtures, the Python bundle contract, and their
+  tests. `register.tsx` still consumes `COMPOSITION_ID`, so there is one source
+  of truth. No generated contract changed: the id is neither browser-selectable
+  nor an API field.
+
+Task 13 then gated the isolated render stack end to end, on generated data
+only, in a throwaway Compose project under a temporary artifact root.
+
+- `/readyz` legitimately depends on the workflow backend and the control plane
+  refuses to start without one, so the harness owns a throwaway Temporal and
+  its own PostgreSQL on a private network, with no published port and a
+  generated password. Temporal is a readiness dependency here and nothing more:
+  it is not a render queue, and the single renderer slot still refuses a second
+  active render with `render_busy` instead of making it wait.
+- The harness caught its own bad assumption. A two-minute document rendered in
+  about the sixty seconds of the deadline under test, which made the deadline
+  phase a race it sometimes lost. The long document is ten minutes now and the
+  deadline fires with margin.
+
+Verification, all local and synthetic. `bash docker/test-renderer-offline.sh`
+exit 0 with every verdict true: renderer unprivileged as 10001:10001, no host
+binding, no control-plane capability; one saved revision rendered to
+`mov,mp4,m4a,3gp,3g2,mj2` carrying h264 1080x1920 at `30/1`, aac audio, 2.048 s
+against 2.0 s expected, 216269 bytes, sha256
+`33d32d5ceb82f20d1b27432832a69fa07d78a1eee282d7757ef4511c49669a32`; the output
+and every generated path below the one temporary artifact root; a concurrent
+create refused with `render_busy`; history still exactly two rows, so the
+refusal created none; a cancelled render and a deadline-closed render each
+publishing nothing and leaving no partial file; teardown leaving no container,
+network, volume, or temporary directory behind. Images rebuilt locally for the
+run: `thoth-stage1:e1-local` at `sha256:d42c352e0fc4` and
+`thoth-remotion-renderer:e1-local` at `sha256:c0f3e4c33356`.
+
+Also green: dashboard composition suite 21 pass / 0 fail; renderer contracts
+and server 53 pass / 0 fail; renderer `tsc --noEmit` exit 0;
+`test_render_bundles.py` 13 passed; deployment contracts 75 passed and the
+whole deployment suite 278 passed / 29 skipped; Ruff check and format clean
+over 157 files; `docker compose config` exit 0; `bash -n` exit 0;
+`build_cuda.bat` exit 0 with a clean log; `cargo test --bin thoth` ok;
+`git diff --check` clean.
+
+Limitations: nothing here touched a real project, asset, credential, provider,
+or published image. The stack was not deployed, the operator's running
+containers were neither restarted nor mutated, and no push, registry, or
+Stage 1 evidence operation was performed. Task 14 has not begun.
+
 ## 2026-09-21 - Creator Studio render panel reload recovery finished (E1 Task 12 final correction)
 
 Two gaps the corrective round left open are closed, offline and test-first, on
