@@ -4,8 +4,11 @@ import { afterEach, describe, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { RenderCapability, RenderJob, RenderJobPage } from "@/api/control-plane";
-import { RenderPanel, type RenderPanelClient } from "./RenderPanel";
+import { RenderPanel, type RenderPanelClient, type RenderValidation } from "./RenderPanel";
 import type { RenderEditorFacts } from "./render_job_state";
+
+/** What the editor reports about itself; validity is its own summary. */
+type EditorFacts = Omit<RenderEditorFacts, "documentValid">;
 
 const AVAILABLE: RenderCapability = {
   available: true,
@@ -13,7 +16,8 @@ const AVAILABLE: RenderCapability = {
   renderer_version: "remotion-4.0.523",
 };
 
-const SAVED: RenderEditorFacts = { saveStatus: "saved", online: true, documentValid: true };
+const SAVED: EditorFacts = { saveStatus: "saved", online: true };
+const VALID: RenderValidation = { textValid: true, blockingIssues: 0 };
 
 function job(overrides: Partial<RenderJob> = {}): RenderJob {
   return {
@@ -97,7 +101,12 @@ function makeClient(
   };
 }
 
-function panel(client: RenderPanelClient, facts: RenderEditorFacts = SAVED, revision = 7) {
+function panel(
+  client: RenderPanelClient,
+  facts: EditorFacts = SAVED,
+  revision = 7,
+  validation: RenderValidation = VALID,
+) {
   return render(
     <RenderPanel
       client={client}
@@ -107,6 +116,7 @@ function panel(client: RenderPanelClient, facts: RenderEditorFacts = SAVED, revi
       templateId="vertical_text_story"
       templateVersion={1}
       facts={facts}
+      validation={validation}
     />,
   );
 }
@@ -201,33 +211,37 @@ describe("loading the render surface", () => {
 });
 
 describe("the render gate", () => {
-  const blocked: Array<[string, RenderEditorFacts, string]> = [
-    ["a dirty draft", { ...SAVED, saveStatus: "dirty" }, "Save your changes before rendering."],
+  const blocked: Array<[string, EditorFacts, string, RenderValidation]> = [
+    ["a dirty draft", { ...SAVED, saveStatus: "dirty" }, "Save your changes before rendering.", VALID],
     [
       "a save in progress",
       { ...SAVED, saveStatus: "saving" },
       "Rendering starts once your changes finish saving.",
+      VALID,
     ],
     [
       "a revision conflict",
       { ...SAVED, saveStatus: "conflict" },
       "A newer version exists. Resolve it before rendering.",
+      VALID,
     ],
     [
-      "an invalid document",
-      { ...SAVED, documentValid: false },
+      "invalid text",
+      SAVED,
       "Fix the issues in your document before rendering.",
+      { textValid: false, blockingIssues: 0 },
     ],
     [
       "being offline",
       { ...SAVED, online: false },
       "You are offline. Rendering resumes when the connection returns.",
+      VALID,
     ],
   ];
 
-  for (const [name, facts, copy] of blocked) {
+  for (const [name, facts, copy, validation] of blocked) {
     test(`${name} disables Render and says why`, async () => {
-      panel(makeClient(), facts);
+      panel(makeClient(), facts, 7, validation);
       await settle();
 
       const button = screen.getByRole("button", { name: "Render video" });
@@ -279,9 +293,9 @@ describe("the render gate", () => {
     const { rerender } = panel(client);
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Render video" }));
-    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(screen.getByRole("group", { name: "Render this version?" })).toBeDefined();
 
-    // The draft goes dirty while the dialog is open: confirming must not render it.
+    // The draft goes dirty while the confirmation is open: confirming must not render it.
     rerender(
       <RenderPanel
         client={client}
@@ -291,6 +305,7 @@ describe("the render gate", () => {
         templateId="vertical_text_story"
         templateVersion={1}
         facts={{ ...SAVED, saveStatus: "dirty" }}
+        validation={VALID}
       />,
     );
     await act(async () => {
@@ -308,13 +323,13 @@ describe("confirming a render", () => {
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Render video" }));
 
-    const dialog = screen.getByRole("dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
-    expect(dialog.textContent).toContain("project_001");
-    expect(dialog.textContent).toContain("document_001");
-    expect(dialog.textContent).toContain("7");
-    expect(dialog.textContent).toContain("vertical_text_story");
-    expect(dialog.textContent).toContain("standard_vertical_mp4_v1");
+    const confirmation = screen.getByRole("group", { name: "Render this version?" });
+    expect(confirmation.getAttribute("aria-modal")).toBeNull();
+    expect(confirmation.textContent).toContain("project_001");
+    expect(confirmation.textContent).toContain("document_001");
+    expect(confirmation.textContent).toContain("7");
+    expect(confirmation.textContent).toContain("vertical_text_story");
+    expect(confirmation.textContent).toContain("standard_vertical_mp4_v1");
     expect(client.createRenderJob).toHaveBeenCalledTimes(0);
     expect(container.textContent).not.toContain("Original heading");
   });
@@ -362,10 +377,13 @@ describe("confirming a render", () => {
         templateId="vertical_text_story"
         templateVersion={1}
         facts={SAVED}
+        validation={VALID}
       />,
     );
 
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("group", { name: "Render this version?" })).toBeNull(),
+    );
     expect(client.createRenderJob).toHaveBeenCalledTimes(0);
   });
 });
@@ -564,6 +582,7 @@ describe("async race protection", () => {
         templateId="vertical_text_story"
         templateVersion={1}
         facts={SAVED}
+        validation={VALID}
       />,
     );
     await act(async () => {
@@ -595,6 +614,7 @@ describe("async race protection", () => {
         templateId="vertical_text_story"
         templateVersion={1}
         facts={SAVED}
+        validation={VALID}
       />,
     );
     await act(async () => {
@@ -676,7 +696,9 @@ describe("acting on a render", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Delete render files" }));
-    expect(screen.getByRole("dialog").textContent).toContain("cannot be undone");
+    expect(screen.getByRole("group", { name: "Delete render files" }).textContent).toContain(
+      "cannot be undone",
+    );
     expect(client.cleanupRenderArtifacts).toHaveBeenCalledTimes(0);
 
     await act(async () => {
@@ -772,5 +794,360 @@ describe("what the panel shows", () => {
       "The render did not finish.",
     );
     expect(container.textContent).not.toContain("something_new_from_the_future");
+  });
+});
+
+describe("replacing the render context", () => {
+  test("an attempt started on one document cannot reach another", async () => {
+    const rejects: Array<(reason: Error) => void> = [];
+    const client = makeClient([], {
+      createRenderJob: mock(
+        () =>
+          new Promise<RenderJob>((_resolve, reject) => {
+            rejects.push(reject);
+          }),
+      ),
+    });
+    const { rerender } = panel(client);
+    await startRender();
+    expect(calls(client.createRenderJob)).toHaveLength(1);
+
+    rerender(
+      <RenderPanel
+        client={client}
+        projectId="project_002"
+        documentId="document_002"
+        documentRevision={1}
+        templateId="vertical_text_story"
+        templateVersion={1}
+        facts={SAVED}
+        validation={VALID}
+      />,
+    );
+    await settle();
+
+    // The replacement owes the old attempt nothing: it can render immediately.
+    expect(screen.getByRole("button", { name: "Render video" })).toHaveProperty("disabled", false);
+
+    await act(async () => {
+      rejects[0](new Error("network"));
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+
+    // Nothing the replaced document owned was replayed through the new project.
+    expect(calls(client.createRenderJob)).toHaveLength(1);
+    expect(calls(client.createRenderJob)[0][0]).toBe("project_001");
+    // Every read after the switch belongs to the project now on screen.
+    expect(calls(client.listRenderJobs).slice(1).map((call) => call[0])).not.toContain(
+      "project_001",
+    );
+  });
+
+  test("a new template version replaces the surface it confirmed", async () => {
+    const client = makeClient();
+    const { rerender } = panel(client);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Render video" }));
+    expect(screen.getByRole("group", { name: "Render this version?" })).toBeDefined();
+
+    rerender(
+      <RenderPanel
+        client={client}
+        projectId="project_001"
+        documentId="document_001"
+        documentRevision={7}
+        templateId="vertical_text_story"
+        templateVersion={2 as RenderJob["template_version"]}
+        facts={SAVED}
+        validation={VALID}
+      />,
+    );
+    await settle();
+
+    expect(screen.queryByRole("group", { name: "Render this version?" })).toBeNull();
+    expect(client.listRenderJobs).toHaveBeenCalledTimes(2);
+    expect(client.createRenderJob).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe("recovering after a reconnect", () => {
+  test("reconnecting mid-request owes one replay under the original key", async () => {
+    const rejects: Array<(reason: Error) => void> = [];
+    const client = makeClient([], {
+      createRenderJob: mock(
+        () =>
+          new Promise<RenderJob>((_resolve, reject) => {
+            rejects.push(reject);
+          }),
+      ),
+    });
+    panel(client);
+    await startRender();
+    const firstKey = calls(client.createRenderJob)[0][1] as string;
+
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    // The line returns while the ambiguous request is still outstanding.
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    expect(calls(client.createRenderJob)).toHaveLength(1);
+
+    await act(async () => {
+      rejects[0](new Error("network"));
+    });
+    await settle();
+
+    expect(calls(client.createRenderJob)).toHaveLength(2);
+    expect(calls(client.createRenderJob)[1][1]).toBe(firstKey);
+
+    // Exactly one recovery, not a loop.
+    await settle();
+    await settle();
+    expect(calls(client.createRenderJob)).toHaveLength(2);
+  });
+});
+
+describe("settling a mutation", () => {
+  test("a failed create re-reads authoritative state and still says why", async () => {
+    const client = makeClient([], {
+      createRenderJob: mock(async () => {
+        throw { code: "render_busy" };
+      }),
+    });
+    panel(client);
+    await startRender();
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "A render is already running. Try again when it finishes.",
+    );
+    expect(client.listRenderJobs).toHaveBeenCalledTimes(2);
+    expect(client.getRenderCapability).toHaveBeenCalledTimes(2);
+  });
+
+  test("a failed cleanup re-reads authoritative state", async () => {
+    const client = makeClient([COMPLETED], {
+      cleanupRenderArtifacts: mock(async () => {
+        throw { code: "render_job_not_cleanable" };
+      }),
+    });
+    panel(client);
+    await settle();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T09:00:00Z/ }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete render files" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Delete files" }));
+    });
+    await settle();
+
+    expect(screen.getByRole("alert").textContent).toBe("Those render files cannot be deleted.");
+    expect(client.listRenderJobs).toHaveBeenCalledTimes(2);
+  });
+
+  test("an outcome that settles offline defers its refresh to the reconnect", async () => {
+    const resolvers: Array<(value: RenderJob) => void> = [];
+    const client = makeClient([], {
+      createRenderJob: mock(
+        () =>
+          new Promise<RenderJob>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      ),
+    });
+    panel(client);
+    await startRender();
+    expect(client.listRenderJobs).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    await act(async () => {
+      resolvers[0](job());
+    });
+    await settle();
+
+    // Nothing is re-read while the line is down.
+    expect(client.listRenderJobs).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await settle();
+
+    expect(client.listRenderJobs).toHaveBeenCalledTimes(2);
+    expect(calls(client.createRenderJob)).toHaveLength(1);
+  });
+});
+
+describe("acting while offline", () => {
+  test("Cancel is unavailable offline and refuses a forced activation", async () => {
+    const client = makeClient();
+    panel(client);
+    await startRender();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+    });
+    const cancel = screen.getByRole("button", { name: "Cancel render" });
+    expect(cancel).toHaveProperty("disabled", true);
+
+    // Forced past the disabled attribute, the handler still refuses.
+    cancel.removeAttribute("disabled");
+    await act(async () => {
+      fireEvent.click(cancel);
+    });
+    expect(client.cancelRenderJob).toHaveBeenCalledTimes(0);
+  });
+
+  test("Download and Cleanup are unavailable offline and call nothing", async () => {
+    const client = makeClient([COMPLETED]);
+    panel(client);
+    await settle();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T09:00:00Z/ }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("offline"));
+    });
+
+    const download = screen.getByRole("button", { name: "Download video" });
+    const cleanup = screen.getByRole("button", { name: "Delete render files" });
+    expect(download).toHaveProperty("disabled", true);
+    expect(cleanup).toHaveProperty("disabled", true);
+
+    download.removeAttribute("disabled");
+    cleanup.removeAttribute("disabled");
+    await act(async () => {
+      fireEvent.click(download);
+      fireEvent.click(cleanup);
+    });
+    const confirmed = screen.queryByRole("button", { name: "Delete files" });
+    if (confirmed) {
+      await act(async () => {
+        fireEvent.click(confirmed);
+      });
+    }
+
+    expect(client.downloadRenderOutput).toHaveBeenCalledTimes(0);
+    expect(client.cleanupRenderArtifacts).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe("document validation", () => {
+  test("a blocking timeline issue stops a render whose text is valid", async () => {
+    const client = makeClient();
+    panel(client, SAVED, 7, { textValid: true, blockingIssues: 2 });
+    await settle();
+
+    const button = screen.getByRole("button", { name: "Render video" });
+    expect(button).toHaveProperty("disabled", true);
+    const reason = button.getAttribute("aria-describedby");
+    expect(window.document.getElementById(reason as string)?.textContent).toBe(
+      "Fix 2 timeline issues before rendering.",
+    );
+    fireEvent.click(button);
+    expect(client.createRenderJob).toHaveBeenCalledTimes(0);
+  });
+
+  test("one issue is named in the singular", async () => {
+    panel(makeClient(), SAVED, 7, { textValid: true, blockingIssues: 1 });
+    await settle();
+
+    const reason = screen
+      .getByRole("button", { name: "Render video" })
+      .getAttribute("aria-describedby");
+    expect(window.document.getElementById(reason as string)?.textContent).toBe(
+      "Fix 1 timeline issue before rendering.",
+    );
+  });
+
+  test("valid text with no blocking issue still renders", async () => {
+    const client = makeClient();
+    panel(client, SAVED, 7, { textValid: true, blockingIssues: 0 });
+    await startRender();
+
+    expect(client.createRenderJob).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("recovering an active render", () => {
+  test("the active render capability names is selected and polled again", async () => {
+    jest.useFakeTimers();
+    const active = job({
+      render_job_id: "rj_active",
+      status: "rendering",
+      created_at: "2026-09-21T11:00:00Z",
+      progress_percent: 20,
+    } as Partial<RenderJob>);
+    const client = makeClient([COMPLETED, active], {
+      getRenderCapability: mock(async () => ({
+        ...AVAILABLE,
+        available: false,
+        reason: "render_busy" as const,
+        active_render_job_id: "rj_active",
+      })),
+    });
+    panel(client);
+    await settle();
+
+    expect(screen.getByLabelText("Current render").textContent).toContain("Rendering");
+
+    await act(async () => {
+      jest.advanceTimersByTime(1_500);
+    });
+    expect(client.getRenderJob).toHaveBeenCalledWith("project_001", "rj_active");
+  });
+
+  test("a history with nothing active starts no poll", async () => {
+    jest.useFakeTimers();
+    const client = makeClient([COMPLETED]);
+    panel(client);
+    await settle();
+
+    await act(async () => {
+      jest.advanceTimersByTime(10_000);
+    });
+    expect(client.getRenderJob).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe("confirmation semantics", () => {
+  test("the create confirmation is labelled and operable without claiming modality", async () => {
+    const { container } = panel(makeClient());
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Render video" }));
+
+    const confirmation = screen.getByRole("group", { name: "Render this version?" });
+    expect(container.querySelector("[aria-modal]")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    const start = screen.getByRole("button", { name: "Start render" });
+    expect(confirmation.contains(start)).toBe(true);
+    start.focus();
+    expect(window.document.activeElement).toBe(start);
+  });
+
+  test("the destructive cleanup confirmation uses the same honest semantics", async () => {
+    const { container } = panel(makeClient([COMPLETED]));
+    await settle();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T09:00:00Z/ }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete render files" }));
+
+    const confirmation = screen.getByRole("group", { name: "Delete render files" });
+    expect(container.querySelector("[aria-modal]")).toBeNull();
+    expect(confirmation.textContent).toContain("cannot be undone");
+
+    const destroy = screen.getByRole("button", { name: "Delete files" });
+    expect(confirmation.contains(destroy)).toBe(true);
+    destroy.focus();
+    expect(window.document.activeElement).toBe(destroy);
   });
 });

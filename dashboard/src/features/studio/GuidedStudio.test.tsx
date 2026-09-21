@@ -902,8 +902,8 @@ test("a saved revision is what gets rendered, and the draft never leaves the edi
   await waitFor(() => expect(client.listRenderJobs).toHaveBeenCalledTimes(2));
 
   fireEvent.click(screen.getByRole("button", { name: "Render video" }));
-  const dialog = screen.getByRole("dialog");
-  expect(dialog.textContent).not.toContain("Edited heading");
+  const confirmation = screen.getByRole("group", { name: "Render this version?" });
+  expect(confirmation.textContent).not.toContain("Edited heading");
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Start render" }));
   });
@@ -915,4 +915,62 @@ test("a saved revision is what gets rendered, and the draft never leaves the edi
   // The draft still belongs to the editor alone.
   expect((screen.getByLabelText("Heading") as HTMLInputElement).value).toBe("Edited heading");
   expect(container.textContent).not.toContain("Original heading");
+});
+
+test("the render confirmation names the template the saved document carries", async () => {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  // A template identity neither Studio nor the panel is allowed to assume.
+  const future = {
+    ...document,
+    template: { template_id: "future_template", version: 3 },
+  } as unknown as EditDocument;
+  const client = {
+    ...promptClientBase,
+    ...renderClientFixture(),
+    getEditDocument: mock(async () => future),
+    patchEditDocument: mock(async () => ({ kind: "saved" as const, document: future })),
+  };
+
+  render(
+    <GuidedStudio client={client} projectId="project_001" documentId="document_001" onBack={() => {}} />,
+  );
+  const button = await screen.findByRole("button", { name: "Render video" });
+  await waitFor(() => expect(button).toHaveProperty("disabled", false));
+  fireEvent.click(button);
+
+  const confirmation = screen.getByRole("group", { name: "Render this version?" });
+  expect(confirmation.textContent).toContain("future_template");
+  expect(confirmation.textContent).toContain("3");
+  expect(confirmation.textContent).not.toContain("vertical_text_story");
+});
+
+test("a blocking timeline issue stops a render whose text is valid", async () => {
+  const { GuidedStudio } = await import("./GuidedStudio");
+  const { timelineDocument } = await import("./timeline-test-fixtures");
+  const gapped = timelineDocument();
+  // The main track no longer starts at zero: one structural issue, text untouched.
+  gapped.clips![0]!.from_frame = 10;
+  const client = {
+    ...promptClientBase,
+    ...renderClientFixture(),
+    getEditDocument: mock(async () => gapped as EditDocument),
+    patchEditDocument: mock(async () => ({ kind: "saved" as const, document: gapped as EditDocument })),
+    listEditorAssets: mock(async () => ({ assets: [], next_cursor: null })),
+    createEditorPreviewCapability: mock(async () => ({
+      preview_url: "/api/v1/projects/project_001/editor-assets/asset_video/preview",
+      expires_at: "2026-09-20T00:00:00Z",
+    })),
+  };
+
+  render(
+    <GuidedStudio client={client} projectId="project_001" documentId="document_002" onBack={() => {}} />,
+  );
+  const button = await screen.findByRole("button", { name: "Render video" });
+
+  expect(button).toHaveProperty("disabled", true);
+  const reason = button.getAttribute("aria-describedby");
+  expect(window.document.getElementById(reason as string)?.textContent).toBe(
+    "Fix 1 timeline issue before rendering.",
+  );
+  expect(client.createRenderJob).toHaveBeenCalledTimes(0);
 });

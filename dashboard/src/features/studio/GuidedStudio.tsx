@@ -19,7 +19,11 @@ import { RenderPanel, type RenderPanelClient } from "./RenderPanel";
 import { SceneBoard } from "./SceneBoard";
 import { Timeline } from "./Timeline";
 import { TimelineInspector } from "./TimelineInspector";
-import { createAddClipFromAssetOperation, isTimelineDocument } from "./timeline_domain";
+import {
+  createAddClipFromAssetOperation,
+  isTimelineDocument,
+  timelineIssues,
+} from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
 
@@ -486,12 +490,15 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             // The saved revision, never the draft: an unsaved or conflicted
             // document cannot be rendered, and the panel's gate explains why.
             documentRevision={base.revision}
-            templateId="vertical_text_story"
-            templateVersion={1}
-            facts={{
-              saveStatus,
-              online: !state.isOffline,
-              documentValid: hasValidText(draft),
+            // The template the saved document carries, not one the UI assumes.
+            templateId={base.template.template_id}
+            templateVersion={base.template.version}
+            facts={{ saveStatus, online: !state.isOffline }}
+            // The saved revision is what a render reads, so its text and its
+            // structure are what decide whether it can be rendered at all.
+            validation={{
+              textValid: hasValidText(base),
+              blockingIssues: isTimelineDocument(base) ? timelineIssues(base).length : 0,
             }}
           />
         ) : null}

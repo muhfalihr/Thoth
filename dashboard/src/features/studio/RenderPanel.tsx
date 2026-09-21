@@ -38,6 +38,17 @@ export type RenderPanelClient = Pick<
 type RenderUnavailableReason = NonNullable<RenderCapability["reason"]>;
 type RenderFailureCode = NonNullable<RenderJob["failure_code"]>;
 
+/**
+ * What the editor knows about whether the saved version can be rendered: the
+ * text rules and the structural timeline rules, each reported by the domain
+ * validator that owns it. The panel derives validity, so a caller cannot claim
+ * a document is renderable and blocked at the same time.
+ */
+export type RenderValidation = {
+  textValid: boolean;
+  blockingIssues: number;
+};
+
 type Props = {
   client: RenderPanelClient;
   projectId: string;
@@ -46,7 +57,8 @@ type Props = {
   documentRevision: number;
   templateId: RenderJob["template_id"];
   templateVersion: RenderJob["template_version"];
-  facts: RenderEditorFacts;
+  facts: Omit<RenderEditorFacts, "documentValid">;
+  validation: RenderValidation;
 };
 
 const POLL_INTERVAL_MS = 1_500;
@@ -140,6 +152,7 @@ type RenderAttempt =
 
 /** The facts a render is confirmed against, frozen when the dialog opens. */
 type RenderConfirmation = {
+  projectId: string;
   documentId: string;
   documentRevision: number;
   templateId: string;
@@ -150,7 +163,23 @@ type RenderConfirmation = {
 const actionButton =
   "rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40";
 
-export function RenderPanel({
+/**
+ * The render context is one identity, not five props: a different project,
+ * document, revision, or template is a different render surface. Keying the
+ * panel on it replaces the whole surface, so no confirmation, selection,
+ * attempt, timer, or listener can outlive the context that owns it.
+ */
+export function RenderPanel(props: Props) {
+  const { projectId, documentId, documentRevision, templateId, templateVersion } = props;
+  return (
+    <RenderSurface
+      key={`${projectId}|${documentId}|${documentRevision}|${templateId}|${templateVersion}`}
+      {...props}
+    />
+  );
+}
+
+function RenderSurface({
   client,
   projectId,
   documentId,
@@ -158,6 +187,7 @@ export function RenderPanel({
   templateId,
   templateVersion,
   facts,
+  validation,
 }: Props) {
   const [state, dispatch] = useReducer(renderJobReducer, undefined, createRenderJobState);
   const [confirmCreate, setConfirmCreate] = useState<RenderConfirmation | null>(null);
@@ -174,6 +204,15 @@ export function RenderPanel({
   const attemptRef = useRef<RenderAttempt | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+  // Read by handlers that must answer for themselves rather than trust a
+  // rendered attribute, and by the settlement path, which runs between renders.
+  const offlineRef = useRef(!facts.online);
+  offlineRef.current = state.isOffline || !facts.online;
+  // At most one recovery is owed at a time: a reconnect during a request waits
+  // for that request to settle instead of starting a second one.
+  const recoveryOwedRef = useRef(false);
+  const aliveRef = useRef(true);
+  const recoverRef = useRef<() => Promise<void>>(async () => {});
 
   const load = useCallback(async () => {
     dispatch({ type: "load_started" });
@@ -184,79 +223,147 @@ export function RenderPanel({
         client.listRenderJobs(projectId),
       ]);
       // A page without records is an empty history, not a broken panel.
-      dispatch({ type: "loaded", generation, capability, jobs: page.jobs ?? [] });
+      const jobs = page.jobs ?? [];
+      dispatch({ type: "loaded", generation, capability, jobs });
+      // A reload lands on a render already running: the control plane names it,
+      // so the panel resumes that one instead of inventing a rule of its own.
+      const activeId = capability.active_render_job_id;
+      if (
+        activeId &&
+        stateRef.current.selectedJobId === null &&
+        jobs.some((entry) => entry.render_job_id === activeId)
+      ) {
+        dispatch({ type: "job_selected", renderJobId: activeId });
+      }
     } catch (error) {
       dispatch({ type: "load_failed", generation, code: codeOf(error) });
     }
   }, [client, projectId]);
 
+  /**
+   * Land the outcome of a mutation. Every outcome ends in authoritative state
+   * while the panel is online; offline, exactly one refresh or replay is owed
+   * to the reconnect instead, and an attempt still unaccounted for stays whole
+   * so the replay can reuse its original key.
+   */
+  const land = useCallback(
+    async (outcome: { ok: true; job?: RenderJob } | { ok: false; code: unknown }) => {
+      if (!aliveRef.current) return;
+      const owed = recoveryOwedRef.current;
+      if (outcome.ok) {
+        dispatch({
+          type: "mutation_succeeded",
+          generation: generationRef.current,
+          job: outcome.job,
+        });
+      } else if (offlineRef.current || owed) {
+        recoveryOwedRef.current = true;
+        return;
+      } else {
+        // Re-read first: a reload clears the last error, so the reason a person
+        // needs is dispatched afterwards, under the generation the reload left.
+        await load();
+        if (!aliveRef.current) return;
+        dispatch({
+          type: "mutation_failed",
+          generation: generationRef.current,
+          code: outcome.code,
+        });
+        return;
+      }
+      if (offlineRef.current || owed) {
+        recoveryOwedRef.current = true;
+        return;
+      }
+      await load();
+    },
+    [load],
+  );
+
   /** Run a create or retry under a key the caller owns, then re-read the truth. */
   const runAttempt = useCallback(
     async (attempt: RenderAttempt, attemptKey: string) => {
-      if (inFlightRef.current) return;
+      if (inFlightRef.current || offlineRef.current) return;
       inFlightRef.current = true;
-      const generation = generationRef.current;
       try {
         const job =
           attempt.kind === "create"
             ? await client.createRenderJob(projectId, attemptKey, attempt.request)
             : await client.retryRenderJob(projectId, attempt.renderJobId, attemptKey);
-        dispatch({ type: "mutation_succeeded", generation, job });
-        if (generation === generationRef.current) await load();
+        await land({ ok: true, job });
       } catch (error) {
-        dispatch({ type: "mutation_failed", generation, code: codeOf(error) });
+        await land({ ok: false, code: codeOf(error) });
       } finally {
         inFlightRef.current = false;
       }
+      await recoverRef.current();
     },
-    [client, projectId, load],
+    [client, projectId, land],
   );
 
   /** Run a mutation the server identifies by the job alone. */
   const runPlain = useCallback(
     async (mutation: "cancel" | "download" | "cleanup", work: () => Promise<RenderJob | void>) => {
       if (inFlightRef.current || stateRef.current.mutation !== null) return;
+      // Offline is refused here, not only by a disabled attribute a synthetic
+      // event can ignore: no request leaves this panel without a connection.
+      if (offlineRef.current) return;
       inFlightRef.current = true;
       dispatch({ type: "mutation_started", mutation });
-      const generation = generationRef.current;
       try {
         const job = await work();
-        dispatch({ type: "mutation_succeeded", generation, job: job ?? undefined });
-        if (generation === generationRef.current) await load();
+        await land({ ok: true, job: job ?? undefined });
       } catch (error) {
-        dispatch({ type: "mutation_failed", generation, code: codeOf(error) });
+        await land({ ok: false, code: codeOf(error) });
       } finally {
         inFlightRef.current = false;
       }
+      await recoverRef.current();
     },
-    [load],
+    [land],
   );
 
-  // A different document or revision is a different render surface: pending
-  // confirmations and selections belong to the old one and are dropped.
+  /**
+   * Execute the one recovery that is owed, once nothing is in flight and the
+   * connection is back: replay the attempt still unaccounted for under its own
+   * key, or re-read authoritative state. The flag is cleared first, so a
+   * recovery that fails becomes an ordinary failure rather than a retry loop.
+   */
+  const recover = useCallback(async () => {
+    if (!aliveRef.current || !recoveryOwedRef.current) return;
+    if (inFlightRef.current || offlineRef.current) return;
+    recoveryOwedRef.current = false;
+    const { mutation, attemptKey } = stateRef.current;
+    const attempt = attemptRef.current;
+    if (mutation !== null && attemptKey !== null && attempt !== null) {
+      await runAttempt(attempt, attemptKey);
+    } else {
+      await load();
+    }
+  }, [load, runAttempt]);
+  recoverRef.current = recover;
+
   useEffect(() => {
-    setConfirmCreate(null);
-    setConfirmCleanup(null);
-    dispatch({ type: "job_selected", renderJobId: null });
     void load();
-  }, [load, documentId, documentRevision]);
+  }, [load]);
 
   useEffect(() => {
     const goOffline = () => {
+      offlineRef.current = true;
       generationRef.current += 1;
+      // Whatever was in flight settles into an unknown, so one recovery is owed.
+      if (inFlightRef.current || stateRef.current.mutation !== null) {
+        recoveryOwedRef.current = true;
+      }
       dispatch({ type: "went_offline" });
     };
     const goOnline = () => {
+      offlineRef.current = false;
       dispatch({ type: "went_online" });
-      const { mutation, attemptKey } = stateRef.current;
-      const attempt = attemptRef.current;
-      // An attempt that may or may not have reached the server is replayed under
-      // its original key; anything else recovers by re-reading the truth.
-      if (mutation !== null && attemptKey !== null && attempt !== null) {
-        void runAttempt(attempt, attemptKey);
-      } else {
-        void load();
-      }
+      // A reconnect always owes one action; while a request is still outstanding
+      // it waits for that request to settle instead of starting a second one.
+      recoveryOwedRef.current = true;
+      void recoverRef.current();
     };
     window.addEventListener("offline", goOffline);
     window.addEventListener("online", goOnline);
@@ -264,15 +371,16 @@ export function RenderPanel({
       window.removeEventListener("offline", goOffline);
       window.removeEventListener("online", goOnline);
     };
-  }, [load, runAttempt]);
+  }, []);
 
   // Nothing here survives unmount: the last callbacks are answered by nobody.
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
       generationRef.current += 1;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const selected = selectedRenderJob(state);
   const pollJobId = selected && RUNNING_STATUSES.has(selected.status) ? selected.render_job_id : null;
@@ -303,11 +411,25 @@ export function RenderPanel({
     };
   }, [client, projectId, pollJobId, paused]);
 
-  const gate = renderGate(facts, state);
+  const blockingIssues = validation.blockingIssues;
+  const gate = renderGate(
+    { ...facts, documentValid: validation.textValid && blockingIssues === 0 },
+    state,
+  );
+  // A structural problem is nameable, so the guidance says how many stand in
+  // the way instead of repeating the generic invalid-document sentence.
+  const gateText =
+    gate.reason === "document_invalid" && blockingIssues > 0
+      ? `Fix ${blockingIssues} timeline issue${blockingIssues === 1 ? "" : "s"} before rendering.`
+      : gate.reason
+        ? gateCopy[gate.reason]
+        : null;
+  const offline = state.isOffline || !facts.online;
 
   const openConfirm = () => {
     if (!gate.allowed || state.capability === null) return;
     setConfirmCreate({
+      projectId,
       documentId,
       documentRevision,
       templateId,
@@ -376,14 +498,14 @@ export function RenderPanel({
           type="button"
           className={actionButton}
           disabled={!gate.allowed}
-          aria-describedby={gate.reason ? gateReasonId : undefined}
+          aria-describedby={gateText !== null ? gateReasonId : undefined}
           onClick={openConfirm}
         >
           Render video
         </button>
-        {gate.reason ? (
+        {gateText !== null ? (
           <span id={gateReasonId} className="sr-only">
-            {gateCopy[gate.reason]}
+            {gateText}
           </span>
         ) : null}
         {state.capability === null ? (
@@ -419,7 +541,7 @@ export function RenderPanel({
               <button
                 type="button"
                 className={actionButton}
-                disabled={state.mutation !== null}
+                disabled={state.mutation !== null || offline}
                 onClick={() => startCancel(selected)}
               >
                 Cancel render
@@ -439,7 +561,7 @@ export function RenderPanel({
               <button
                 type="button"
                 className={actionButton}
-                disabled={state.mutation !== null}
+                disabled={state.mutation !== null || offline}
                 onClick={() => startDownload(selected)}
               >
                 Download video
@@ -449,8 +571,11 @@ export function RenderPanel({
               <button
                 type="button"
                 className={actionButton}
-                disabled={state.mutation !== null}
-                onClick={() => setConfirmCleanup(selected.render_job_id)}
+                disabled={state.mutation !== null || offline}
+                onClick={() => {
+                  if (offlineRef.current) return;
+                  setConfirmCleanup(selected.render_job_id);
+                }}
               >
                 Delete render files
               </button>
@@ -479,8 +604,7 @@ export function RenderPanel({
 
       {confirmCreate ? (
         <div
-          role="dialog"
-          aria-modal="true"
+          role="group"
           aria-labelledby={confirmTitleId}
           className="flex flex-col gap-2 rounded-md border border-border bg-card p-3 text-sm"
         >
@@ -489,7 +613,7 @@ export function RenderPanel({
           </h3>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 text-xs text-muted-foreground">
             <dt>Project</dt>
-            <dd className="font-mono">{projectId}</dd>
+            <dd className="font-mono">{confirmCreate.projectId}</dd>
             <dt>Document</dt>
             <dd className="font-mono">{confirmCreate.documentId}</dd>
             <dt>Revision</dt>
@@ -521,8 +645,7 @@ export function RenderPanel({
 
       {confirmCleanup !== null ? (
         <div
-          role="dialog"
-          aria-modal="true"
+          role="group"
           aria-label="Delete render files"
           className="flex flex-col gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm"
         >

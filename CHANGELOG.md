@@ -2,6 +2,60 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 - Creator Studio render panel recovery gaps closed (E1 Task 12 corrective round)
+
+The review of Task 12 found eight gaps in the panel that state alone could not
+answer for. All eight are closed offline and test-first on
+`codex/stage1-container-ci`, as one commit, touching only `RenderPanel`,
+`GuidedStudio`, and their tests. The Task 11 state module is unchanged: every
+correction belonged to the surface, not the reducer.
+
+- The render context is one identity. Project, document, revision, template ID,
+  and template version key the panel, so replacing any of them replaces the
+  whole surface: confirmations, selection, mutation, attempt key, attempt,
+  queued recovery, timers, and listeners go with the context that owned them.
+  A confirmation now also freezes the project it was confirmed against, so a
+  document-A attempt cannot be replayed through project B.
+- A reconnect owes exactly one action. One request is still in flight at a time;
+  a reconnect arriving mid-request records a single pending recovery and waits
+  for that request to settle. It then replays an attempt still unaccounted for
+  under its original idempotency key - never a new one - or reloads
+  authoritative state. The flag is cleared before the recovery runs, so a
+  failing recovery becomes an ordinary failure instead of a retry loop.
+- Every outcome ends in authoritative state. A failed create, retry, cancel,
+  download, or cleanup now re-reads capability and history before the reason is
+  shown, so the panel stops trusting a mutation response it already doubts.
+  When the connection is down, the refresh or replay is deferred to the
+  reconnect rather than dropped.
+- Offline actions are refused, not merely dimmed. Cancel, Download, and Cleanup
+  are disabled offline and their handlers reject an offline invocation on their
+  own, so a synthetic activation that ignores the attribute still reaches no
+  client call. The fixed-code error copy and the one-in-flight rule stand.
+- Render validity is the document's whole truth. The panel takes the text
+  verdict and the count of blocking timeline issues from the domain validators
+  Studio already owns - `hasValidText()` and `timelineIssues()` - and derives
+  validity itself, so valid text with a structural problem is not renderable and
+  the guidance names how many issues stand in the way.
+- The saved template is read, not assumed. `GuidedStudio` passes
+  `base.template.template_id` and `base.template.version`; no default template
+  identity is hardcoded anywhere in the render path.
+- A reload resumes the render already running. When capability names an active
+  render that the authoritative history contains, the panel selects it and
+  bounded polling continues; a terminal history still starts no poll.
+- The confirmations are honest about what they are. `role="dialog"` with
+  `aria-modal="true"` claimed a modality the panel never implemented and no
+  dialog primitive exists in this repository, so both the Create and the
+  destructive Cleanup confirmations are now labelled `role="group"` with
+  keyboard-operable native buttons. No dependency was added.
+
+Verification, all offline: focused RenderPanel and GuidedStudio suites 75 pass /
+0 fail on three consecutive runs; full dashboard suite 462 pass / 0 fail across
+31 files; `tsc -b --force` exit 0; lint exit 0 with four pre-existing warnings,
+none in the changed files; production build exit 0; `cargo test --bin thoth` ok;
+`git diff --check` clean. No Rust, generated contract, migration, Python,
+renderer, Scout, Compose, or dependency file changed, and `bab60e3` remains an
+untouched ancestor.
+
 ## 2026-09-21 — Creator Studio render controls (E1 Task 12)
 
 Task 11 left the render lifecycle as pure state with nothing to drive it. The
