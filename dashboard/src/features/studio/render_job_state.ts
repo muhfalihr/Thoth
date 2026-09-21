@@ -1,13 +1,35 @@
-import type { RenderCapability, RenderJob } from "@/api/control-plane";
+import {
+  asRenderErrorCode,
+  type RenderCapability,
+  type RenderErrorCode,
+  type RenderJob,
+  type RenderJobStatus,
+} from "@/api/control-plane";
 
 import type { EditorSaveStatus } from "./editor_state";
 
 /** How much render history the dashboard keeps, newest first. */
 export const RENDER_HISTORY_LIMIT = 20;
 
-const ACTIVE_STATUSES: readonly string[] = ["preparing", "rendering", "finalizing"];
+/**
+ * The lifecycle the control plane itself enforces, mirrored edge for edge and
+ * keyed by the generated status union: a contract change breaks the build here
+ * instead of quietly admitting an impossible transition.
+ */
+const ALLOWED_TRANSITIONS: Record<RenderJobStatus, readonly RenderJobStatus[]> = {
+  preparing: ["rendering", "failed", "cancelled"],
+  rendering: ["finalizing", "failed", "cancelled"],
+  finalizing: ["completed", "failed", "cancelled"],
+  completed: [],
+  failed: [],
+  cancelled: [],
+};
 
-export type RenderMutation = "create" | "cancel" | "retry" | "download" | "cleanup";
+/** A create or retry, the only mutations that own an idempotency key. */
+export type RenderAttemptMutation = "create" | "retry";
+/** A mutation the server identifies by the job alone, with no attempt of its own. */
+export type RenderPlainMutation = "cancel" | "download" | "cleanup";
+export type RenderMutation = RenderAttemptMutation | RenderPlainMutation;
 
 export type RenderGateReason =
   | "offline"
@@ -36,7 +58,7 @@ export type RenderJobState = {
   generation: number;
   isOffline: boolean;
   /** A fixed code only; no message, path, or exception ever lands here. */
-  lastError: string | null;
+  lastError: RenderErrorCode | null;
   /** The idempotency key of the create or retry attempt currently in flight. */
   attemptKey: string | null;
 };
@@ -44,12 +66,15 @@ export type RenderJobState = {
 export type RenderJobAction =
   | { type: "load_started" }
   | { type: "loaded"; generation: number; capability: RenderCapability; jobs: RenderJob[] }
-  | { type: "load_failed"; generation: number; code: string }
+  | { type: "load_failed"; generation: number; code: unknown }
   | { type: "job_selected"; renderJobId: string | null }
   | { type: "job_refreshed"; generation: number; job: RenderJob }
-  | { type: "mutation_started"; mutation: RenderMutation; attemptKey?: string }
+  // An attempt is unusable without its key, and the other mutations have none
+  // to give, so neither mistake is expressible.
+  | { type: "mutation_started"; mutation: RenderAttemptMutation; attemptKey: string }
+  | { type: "mutation_started"; mutation: RenderPlainMutation; attemptKey?: never }
   | { type: "mutation_succeeded"; generation: number; job?: RenderJob }
-  | { type: "mutation_failed"; generation: number; code: string }
+  | { type: "mutation_failed"; generation: number; code: unknown }
   | { type: "went_offline" }
   | { type: "went_online" };
 
@@ -66,8 +91,39 @@ export function createRenderJobState(): RenderJobState {
   };
 }
 
+/** A job is active exactly as long as the lifecycle still offers it an edge. */
 function isActive(job: RenderJob): boolean {
-  return ACTIVE_STATUSES.includes(job.status);
+  return ALLOWED_TRANSITIONS[job.status].length > 0;
+}
+
+function isAttempt(mutation: RenderMutation): mutation is RenderAttemptMutation {
+  return mutation === "create" || mutation === "retry";
+}
+
+type RenderProgress = RenderJob["progress_percent"];
+
+/** Progress only ever rises, and a silent report never erases what is known. */
+function monotonicProgress(known: RenderProgress, reported: RenderProgress): RenderProgress {
+  if (reported === undefined || reported === null) return known;
+  if (known === undefined || known === null) return reported;
+  return Math.max(known, reported);
+}
+
+/**
+ * Merge a refreshed record into what is already known, or refuse it outright:
+ * a terminal job is final, an active job only moves the way the lifecycle
+ * allows, and a same-status update keeps the highest progress seen. A forward
+ * transition is taken whole, so a status that carries no progress clears it.
+ */
+function reconcile(known: RenderJob | undefined, incoming: RenderJob): RenderJob | null {
+  if (!known) return incoming;
+  if (known.status !== incoming.status) {
+    return ALLOWED_TRANSITIONS[known.status].includes(incoming.status) ? incoming : null;
+  }
+  const progress = monotonicProgress(known.progress_percent, incoming.progress_percent);
+  return progress === incoming.progress_percent
+    ? incoming
+    : { ...incoming, progress_percent: progress };
 }
 
 /** Newest first, one record per job, and bounded. Later records win a tie. */
@@ -85,9 +141,8 @@ function bounded(jobs: RenderJob[]): RenderJob[] {
 
 function recordJob(history: RenderJob[], job: RenderJob): RenderJob[] {
   const known = history.find((entry) => entry.render_job_id === job.render_job_id);
-  // A terminal job is final, so a late active report cannot reopen it.
-  if (known && !isActive(known) && isActive(job)) return history;
-  return bounded([...history, job]);
+  const merged = reconcile(known, job);
+  return merged === null ? history : bounded([...history, merged]);
 }
 
 export function selectedRenderJob(state: RenderJobState): RenderJob | null {
@@ -147,23 +202,24 @@ export function renderJobReducer(
         lastError: null,
       };
     case "load_failed":
-      return action.generation === state.generation ? { ...state, lastError: action.code } : state;
+      return action.generation === state.generation
+        ? { ...state, lastError: asRenderErrorCode(action.code) }
+        : state;
     case "job_selected":
       return { ...state, selectedJobId: action.renderJobId };
     case "job_refreshed":
       return action.generation === state.generation
         ? { ...state, history: recordJob(state.history, action.job) }
         : state;
-    case "mutation_started":
+    case "mutation_started": {
       // A second press replays the attempt already in flight: the original key
       // stays, so the control plane keeps answering the same request.
       if (state.mutation !== null) return state;
-      return {
-        ...state,
-        mutation: action.mutation,
-        attemptKey: action.attemptKey ?? null,
-        lastError: null,
-      };
+      const attemptKey = action.attemptKey?.trim() || null;
+      // An attempt that cannot be replayed under its own key never starts.
+      if (isAttempt(action.mutation) && attemptKey === null) return state;
+      return { ...state, mutation: action.mutation, attemptKey, lastError: null };
+    }
     case "mutation_succeeded":
       if (action.generation !== state.generation) return state;
       return {
@@ -176,9 +232,26 @@ export function renderJobReducer(
       };
     case "mutation_failed":
       if (action.generation !== state.generation) return state;
-      return { ...state, mutation: null, attemptKey: null, lastError: action.code };
-    case "went_offline":
-      return { ...state, isOffline: true };
+      return {
+        ...state,
+        mutation: null,
+        attemptKey: null,
+        lastError: asRenderErrorCode(action.code),
+      };
+    case "went_offline": {
+      // Whatever is in flight may or may not have reached the server, so the
+      // generation moves and every pending callback is answered by nobody.
+      const ambiguous = state.mutation !== null && isAttempt(state.mutation);
+      return {
+        ...state,
+        isOffline: true,
+        generation: state.generation + 1,
+        // A create or retry keeps its attempt whole, so recovery replays the
+        // very same key instead of minting a second one.
+        mutation: ambiguous ? state.mutation : null,
+        attemptKey: ambiguous ? state.attemptKey : null,
+      };
+    }
     case "went_online":
       return { ...state, isOffline: false };
     default:

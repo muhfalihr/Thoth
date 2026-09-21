@@ -2,6 +2,88 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Render client and state contracts made structural (E1 Task 11, review round)
+
+The Codex review of Task 11 raised four findings: the reducer accepted
+impossible lifecycle moves, going offline left in-flight responses able to
+overwrite recovered state, the idempotency key was optional in the action
+shape, and the safe-error guarantee was a runtime allowlist over `string`
+rather than a type. All four are corrected offline and test-first on
+`codex/stage1-container-ci`, as one commit, without touching Python, the
+OpenAPI document, the renderer, or the generated contract.
+
+- RED first, deterministically. The focused run against the reviewed code was
+  `24 pass / 9 fail`: `an active status never moves backwards` (received
+  `preparing`), `progress never decreases inside one status` (received `20`),
+  `an update without progress does not erase what is already known` (received
+  `undefined`), `a terminal status is final` (received `failed`), `every
+  response still in flight is invalidated`, `a read-only mutation is simply
+  released` (received `download`), `an attempt without a real key never
+  starts`, `a raw failure value becomes one fixed code`, and the whole client
+  suite failing to load on `Export named 'asRenderErrorCode' not found`. The
+  type-level cases failed in the same round: `Unused '@ts-expect-error'
+  directive` twice, proving a keyless create and a keyed cancel were both
+  expressible, and `Type 'Error' is not assignable to type 'string'` on the
+  failure action.
+- Finding 1, one lifecycle and only one. `ALLOWED_TRANSITIONS` mirrors the
+  control plane's own `ALLOWED_TRANSITIONS` edge for edge and is typed
+  `Record<RenderJobStatus, readonly RenderJobStatus[]>`, so a contract change
+  breaks the build instead of admitting an impossible move. The separate
+  `ACTIVE_STATUSES` list is gone: a job is active exactly while the lifecycle
+  still offers it an edge, which is the second definition the finding warned
+  about, removed rather than retyped. A refreshed record is now reconciled: a
+  terminal status is final, an active status only moves forward, progress rises
+  monotonically inside one status, a silent report never erases a known
+  progress, and an allowed forward transition is taken whole so a status that
+  carries no progress clears it. A terminal job still accepts a same-status
+  update, which is what records `artifacts_cleaned_at` after a cleanup.
+- Finding 2, offline invalidates the generation. `went_offline` increments the
+  generation, so every load, refresh, and mutation callback still in flight is
+  answered by nobody and cannot overwrite capability, history, the selected
+  job, or the safe error. An ambiguous create or retry is kept whole with its
+  original key, because it may already have reached the server and recovery
+  must replay the same attempt rather than mint a second one; a cancel,
+  download, or cleanup is simply released. `went_online` remains a state
+  transition and nothing more — Task 12 owns the recovery I/O.
+- Finding 3, the key is required by construction. `mutation_started` is now two
+  action shapes: a create or retry carries a `string` attemptKey, and a cancel,
+  download, or cleanup declares `attemptKey?: never`. A keyless attempt and a
+  keyed plain mutation are both unrepresentable, proven by two
+  `@ts-expect-error` assertions that the compiler would flag as unused if the
+  contract loosened. At runtime an attempt whose key is blank never starts, a
+  second start while one is in flight remains a no-op that preserves the
+  original key, and settling or failing the current generation clears the
+  attempt exactly once. Neither the client nor the reducer generates a key.
+- Finding 4, one finite error domain. `RenderErrorCode` is the union of the
+  fourteen server codes plus `render_request_failed`; `RenderRequestError.code`
+  and `RenderJobState.lastError` are that union rather than `string`, and
+  `asRenderErrorCode` normalises any runtime value to it. Failure actions take
+  `unknown` and are normalised on the way in, so a raw `Error`, a driver
+  string, or a path cannot be persisted. A transport rejection, a body that
+  cannot be decoded, and a download whose bytes cannot be read all become
+  `render_request_failed` with the reader's own words discarded. The existing
+  HTTP-body sanitisation tests are unchanged and still pass.
+
+Verification, all offline and fresh: focused tests 72 pass / 0 fail on three
+consecutive runs with identical counts; `bun x tsc -b --force` exit 0, which is
+what proves the type-level assertions; `bun --cwd=dashboard test` 405 pass / 0
+fail across 30 files; `bun --cwd=dashboard run lint` exit 0 with the same four
+pre-existing warnings and none in Task 11 files; `bun --cwd=dashboard run
+build` exit 0. The generated contract was regenerated twice and stayed
+byte-identical to the committed file (sha256 `7343e5fb…d98d2` three times over,
+`git diff --exit-code` clean), so no OpenAPI drift was introduced. The
+private-data grep matched only the same three untouched pre-existing lines —
+the preview capability cookie's `credentials: "include"` and one generated doc
+comment about carrying no credentials — and zero added lines.
+`build_cuda.bat` exit 0 with `thoth.exe` unchanged at 2026-08-31 20:26 because
+no Rust source changed; `cargo test --bin thoth` ok; `git diff --check` clean.
+
+Limitations, unchanged and deliberate: this is still state and client only.
+Nothing polls, dispatches, or issues a request in the product; the offline path
+models invalidation and attempt preservation but performs no reconnect, no
+replay, and no recovery I/O. No live request, real asset, credential, or
+provider was used.
+
 ## 2026-09-21 — Creator Studio render client and render job state (E1 Task 11)
 
 Task 11 of the revision-bound render job plan models the browser half of the

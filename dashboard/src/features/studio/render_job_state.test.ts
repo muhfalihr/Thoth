@@ -14,6 +14,7 @@ import {
   renderJobReducer,
   selectedRenderJob,
   type RenderEditorFacts,
+  type RenderJobAction,
   type RenderJobState,
 } from "./render_job_state";
 
@@ -325,4 +326,246 @@ test("no private route, path, credential, or renderer address enters render stat
     expect(serialised).not.toContain(forbidden);
   }
   expect(Object.keys(state.history[0]).sort()).toEqual(Object.keys(COMPLETED).sort());
+});
+
+describe("the render job lifecycle", () => {
+  const rendering = job({ status: "rendering", progress_percent: 80 } as Partial<RenderJob>);
+
+  test("an active status never moves backwards", () => {
+    const state = loaded([rendering]);
+
+    const backwards = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: job({ status: "preparing" }),
+    });
+    expect(backwards.history[0].status).toBe("rendering");
+
+    const finalizing = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: job({ status: "finalizing" }),
+    });
+    const regressed = renderJobReducer(finalizing, {
+      type: "job_refreshed",
+      generation: finalizing.generation,
+      job: job({ status: "rendering" }),
+    });
+    expect(regressed.history[0].status).toBe("finalizing");
+  });
+
+  test("progress never decreases inside one status", () => {
+    const state = loaded([rendering]);
+    const lower = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: job({ status: "rendering", progress_percent: 20 } as Partial<RenderJob>),
+    });
+    expect(lower.history[0].progress_percent).toBe(80);
+  });
+
+  test("an update without progress does not erase what is already known", () => {
+    const state = loaded([rendering]);
+    const silent = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: job({ status: "rendering" }),
+    });
+    expect(silent.history[0].progress_percent).toBe(80);
+  });
+
+  test("a forward transition may drop progress the new status does not carry", () => {
+    const state = loaded([rendering]);
+    const forward = renderJobReducer(state, {
+      type: "job_refreshed",
+      generation: state.generation,
+      job: job({ status: "finalizing" }),
+    });
+    expect(forward.history[0].status).toBe("finalizing");
+    expect(forward.history[0].progress_percent).toBeUndefined();
+  });
+
+  test("a terminal status is final", () => {
+    const completed = loaded([job({ status: "completed" } as Partial<RenderJob>)]);
+    const toFailed = renderJobReducer(completed, {
+      type: "job_refreshed",
+      generation: completed.generation,
+      job: job({ status: "failed", failure_code: "render_engine_failed" } as Partial<RenderJob>),
+    });
+    expect(toFailed.history[0].status).toBe("completed");
+
+    const failed = loaded([job({ status: "failed" } as Partial<RenderJob>)]);
+    const toCancelled = renderJobReducer(failed, {
+      type: "job_refreshed",
+      generation: failed.generation,
+      job: job({ status: "cancelled" }),
+    });
+    expect(toCancelled.history[0].status).toBe("failed");
+  });
+
+  test("a terminal job still records the cleanup it just accepted", () => {
+    const completed = loaded([COMPLETED]);
+    const cleaned = renderJobReducer(completed, {
+      type: "job_refreshed",
+      generation: completed.generation,
+      job: { ...COMPLETED, artifacts_cleaned_at: "2026-09-21T11:00:00Z" } as RenderJob,
+    });
+    expect(cleaned.history[0].artifacts_cleaned_at).toBe("2026-09-21T11:00:00Z");
+    expect(canCleanup(cleaned.history[0])).toBe(false);
+  });
+});
+
+describe("going offline", () => {
+  /** A state with one create attempt and one load already in flight. */
+  function inFlight(): RenderJobState {
+    return renderJobReducer(loaded([job()]), {
+      type: "mutation_started",
+      mutation: "create",
+      attemptKey: "attempt_001",
+    });
+  }
+
+  test("every response still in flight is invalidated", () => {
+    const before = inFlight();
+    const offline = renderJobReducer(before, { type: "went_offline" });
+
+    const stale = renderJobReducer(offline, {
+      type: "loaded",
+      generation: before.generation,
+      capability: { ...AVAILABLE, renderer_version: "remotion-0.0.1" },
+      jobs: [job({ render_job_id: "rj_stale" })],
+    });
+    expect(stale.capability).toEqual(AVAILABLE);
+    expect(stale.history.map((entry) => entry.render_job_id)).toEqual(["rj_001"]);
+
+    const staleRefresh = renderJobReducer(offline, {
+      type: "job_refreshed",
+      generation: before.generation,
+      job: job({ status: "completed" } as Partial<RenderJob>),
+    });
+    expect(staleRefresh.history[0].status).toBe("preparing");
+
+    const staleSuccess = renderJobReducer(offline, {
+      type: "mutation_succeeded",
+      generation: before.generation,
+      job: job({ render_job_id: "rj_ghost" }),
+    });
+    expect(staleSuccess.history.map((entry) => entry.render_job_id)).toEqual(["rj_001"]);
+    expect(staleSuccess.selectedJobId).toBeNull();
+    expect(staleSuccess.mutation).toBe("create");
+
+    const staleFailure = renderJobReducer(offline, {
+      type: "mutation_failed",
+      generation: before.generation,
+      code: "render_busy",
+    });
+    expect(staleFailure.lastError).toBeNull();
+    expect(staleFailure.attemptKey).toBe("attempt_001");
+  });
+
+  test("an ambiguous attempt survives with its original key", () => {
+    const offline = renderJobReducer(inFlight(), { type: "went_offline" });
+    expect(offline.mutation).toBe("create");
+    expect(offline.attemptKey).toBe("attempt_001");
+  });
+
+  test("a read-only mutation is simply released", () => {
+    const downloading = renderJobReducer(loaded([COMPLETED]), {
+      type: "mutation_started",
+      mutation: "download",
+    });
+    const offline = renderJobReducer(downloading, { type: "went_offline" });
+    expect(offline.mutation).toBeNull();
+    expect(offline.attemptKey).toBeNull();
+  });
+
+  test("coming back online is a state change and nothing more", () => {
+    const offline = renderJobReducer(inFlight(), { type: "went_offline" });
+    const online = renderJobReducer(offline, { type: "went_online" });
+    expect(online.isOffline).toBe(false);
+    expect(online.generation).toBe(offline.generation);
+    expect(online.mutation).toBe("create");
+    expect(online.attemptKey).toBe("attempt_001");
+    expect(online.history).toEqual(offline.history);
+  });
+});
+
+describe("the mutation attempt contract", () => {
+  test("the action shape requires a key for create and forbids one elsewhere", () => {
+    const create: RenderJobAction = {
+      type: "mutation_started",
+      mutation: "create",
+      attemptKey: "attempt_001",
+    };
+    // @ts-expect-error a create attempt without its idempotency key is not expressible
+    const keyless: RenderJobAction = { type: "mutation_started", mutation: "create" };
+    const cancel: RenderJobAction = {
+      type: "mutation_started",
+      mutation: "cancel",
+      // @ts-expect-error a cancel owns no attempt and therefore no key
+      attemptKey: "attempt_001",
+    };
+    expect([create, keyless, cancel]).toHaveLength(3);
+  });
+
+  test("an attempt without a real key never starts", () => {
+    const state = loaded([]);
+    const empty = renderJobReducer(state, {
+      type: "mutation_started",
+      mutation: "retry",
+      attemptKey: "   ",
+    });
+    expect(empty).toBe(state);
+  });
+
+  test("a settled attempt is cleared exactly once", () => {
+    const started = renderJobReducer(loaded([]), {
+      type: "mutation_started",
+      mutation: "create",
+      attemptKey: "attempt_001",
+    });
+    const settled = renderJobReducer(started, {
+      type: "mutation_succeeded",
+      generation: started.generation,
+      job: job(),
+    });
+    const again = renderJobReducer(settled, {
+      type: "mutation_succeeded",
+      generation: settled.generation,
+      job: job(),
+    });
+
+    expect(settled.mutation).toBeNull();
+    expect(settled.attemptKey).toBeNull();
+    expect(again.mutation).toBeNull();
+    expect(again.attemptKey).toBeNull();
+  });
+});
+
+describe("the safe error contract", () => {
+  test("a raw failure value becomes one fixed code", () => {
+    const state = loaded([]);
+    const started = renderJobReducer(state, { type: "mutation_started", mutation: "cancel" });
+
+    const raw = renderJobReducer(started, {
+      type: "mutation_failed",
+      generation: started.generation,
+      code: new Error("EACCES C:/srv/artifacts/rj_001 at https://renderer.internal:9000"),
+    });
+    expect(raw.lastError).toBe("render_request_failed");
+
+    const loadRaw = renderJobReducer(state, {
+      type: "load_failed",
+      generation: state.generation,
+      code: "connect ECONNREFUSED C:/srv/proxy.pem",
+    });
+    expect(loadRaw.lastError).toBe("render_request_failed");
+
+    const known = renderJobReducer(state, {
+      type: "load_failed",
+      generation: state.generation,
+      code: "render_unavailable",
+    });
+    expect(known.lastError).toBe("render_unavailable");
+  });
 });

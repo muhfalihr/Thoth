@@ -3,6 +3,7 @@
 import { afterEach, expect, mock, test } from "bun:test";
 
 import {
+  asRenderErrorCode,
   createControlPlaneClient,
   type EditDocument,
   type EditDocumentPatch,
@@ -14,6 +15,7 @@ import {
   type PromptStageDefinition,
   type PromptTemplateRevision,
   type RenderCapability,
+  type RenderErrorCode,
   type RenderJob,
   type RenderJobPage,
   RenderRequestError,
@@ -797,4 +799,65 @@ test("an unrecognised render failure body becomes one fixed generic code", async
   expect((failure as RenderRequestError).code).toBe("render_request_failed");
   expect(String(failure)).not.toContain("Traceback");
   expect(String(failure)).not.toContain("/srv/");
+});
+
+test("a transport failure never repeats the browser's own words", async () => {
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: mock(async () => {
+      throw new Error(
+        "connect ECONNREFUSED https://renderer.internal:9000 via C:/srv/proxy.pem (token=abc)",
+      );
+    }) as unknown as typeof fetch,
+  });
+
+  const failure = await client.getRenderCapability("project_001").catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(RenderRequestError);
+  expect((failure as RenderRequestError).code).toBe("render_request_failed");
+  expect(String(failure)).not.toContain("renderer.internal");
+  expect(String(failure)).not.toContain("C:/srv/");
+  expect(String(failure)).not.toContain("token=abc");
+});
+
+test("a body that cannot be decoded does not leak the decoder's exception", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(calls, () => new Response("{ this is not json", { status: 200 }));
+
+  const failure = await client.getRenderJob("project_001", "rj_002").catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(RenderRequestError);
+  expect((failure as RenderRequestError).code).toBe("render_request_failed");
+  expect(String(failure)).not.toContain("JSON");
+});
+
+test("a download whose bytes cannot be read stays a fixed code", async () => {
+  const unreadable = {
+    ok: true,
+    status: 200,
+    blob: () => Promise.reject(new Error("read of C:/srv/artifacts/rj_002/output.mp4 failed")),
+  } as unknown as Response;
+  const client = createControlPlaneClient({
+    baseUrl: "",
+    apiKey: "secret",
+    fetch: mock(async () => unreadable) as unknown as typeof fetch,
+  });
+
+  const failure = await client
+    .downloadRenderOutput("project_001", "rj_002")
+    .catch((error: unknown) => error);
+
+  expect(failure).toBeInstanceOf(RenderRequestError);
+  expect((failure as RenderRequestError).code).toBe("render_request_failed");
+  expect(String(failure)).not.toContain("C:/srv/");
+});
+
+test("only the fixed render codes are representable", () => {
+  const code: RenderErrorCode = "render_busy";
+  expect(new RenderRequestError(code).code).toBe("render_busy");
+  expect(asRenderErrorCode("render_output_unavailable")).toBe("render_output_unavailable");
+  expect(asRenderErrorCode("ENOENT C:/srv/artifacts")).toBe("render_request_failed");
+  expect(asRenderErrorCode(new Error("boom"))).toBe("render_request_failed");
+  expect(asRenderErrorCode(undefined)).toBe("render_request_failed");
 });

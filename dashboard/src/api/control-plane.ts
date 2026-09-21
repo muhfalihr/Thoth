@@ -68,8 +68,12 @@ export type RenderOutput = components["schemas"]["RenderOutputView"];
 export type CreateRenderJobPayload = components["schemas"]["CreateRenderJobRequest"];
 export type RenderJobStatus = RenderJob["status"];
 
-/** Every fixed code the public render surface is allowed to answer with. */
-const RENDER_ERROR_CODES = new Set([
+/**
+ * Every fixed code a render request may end with: the server's own safe codes
+ * plus one generic fallback. Nothing outside this finite set is representable,
+ * so no message, path, or exception can become a render error later on.
+ */
+const RENDER_ERROR_CODES = [
   "render_job_not_found",
   "render_busy",
   "idempotency_conflict",
@@ -84,13 +88,25 @@ const RENDER_ERROR_CODES = new Set([
   "renderer_not_configured",
   "render_dispatch_failed",
   "render_unavailable",
-]);
+  "render_request_failed",
+] as const;
+
+export type RenderErrorCode = (typeof RENDER_ERROR_CODES)[number];
+
+const KNOWN_RENDER_ERROR_CODES: ReadonlySet<string> = new Set(RENDER_ERROR_CODES);
+
+/** Narrow any runtime value to a fixed code, defaulting to the generic one. */
+export function asRenderErrorCode(value: unknown): RenderErrorCode {
+  return typeof value === "string" && KNOWN_RENDER_ERROR_CODES.has(value)
+    ? (value as RenderErrorCode)
+    : "render_request_failed";
+}
 
 /** Why a render request failed, as a fixed code the UI may show verbatim. */
 export class RenderRequestError extends Error {
-  readonly code: string;
+  readonly code: RenderErrorCode;
 
-  constructor(code: string) {
+  constructor(code: RenderErrorCode) {
     // The code is the entire message, so a driver string, a traceback, or a
     // local path can never reach a browser log through this error.
     super(`Render request failed (${code})`);
@@ -277,17 +293,32 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
   // Render failures answer `{ detail: { code } }`. Only an allowlisted code is
   // believed; every other body, however it is shaped, becomes one fixed code.
   async function renderCall(path: string, init: RequestInit = {}): Promise<Response> {
-    const response = await doFetch(`${baseUrl}${path}`, { ...init, headers: headers(init.headers) });
+    let response: Response;
+    try {
+      response = await doFetch(`${baseUrl}${path}`, { ...init, headers: headers(init.headers) });
+    } catch {
+      // A transport error's own words can name a proxy, a certificate path, or
+      // a token, so the render surface says only that the request did not land.
+      throw new RenderRequestError("render_request_failed");
+    }
     if (response.ok) return response;
     const body = (await response.json().catch(() => null)) as { detail?: { code?: unknown } } | null;
-    const code = body?.detail?.code;
-    throw new RenderRequestError(
-      typeof code === "string" && RENDER_ERROR_CODES.has(code) ? code : "render_request_failed",
-    );
+    throw new RenderRequestError(asRenderErrorCode(body?.detail?.code));
   }
 
-  const renderJson = async <T>(path: string, init?: RequestInit): Promise<T> =>
-    (await renderCall(path, init)).json() as Promise<T>;
+  /** Read a render response body without letting the reader's error escape. */
+  async function renderBody<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch {
+      throw new RenderRequestError("render_request_failed");
+    }
+  }
+
+  const renderJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const response = await renderCall(path, init);
+    return renderBody(() => response.json() as Promise<T>);
+  };
 
   const rendersPath = (projectId: string) =>
     `/api/v1/projects/${encodeURIComponent(projectId)}/render-jobs`;
@@ -473,8 +504,10 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
       }),
     // The bytes arrive through the authenticated control-plane route; no local
     // name, storage locator, or renderer address is returned with them.
-    downloadRenderOutput: async (projectId, renderJobId) =>
-      (await renderCall(`${renderJobPath(projectId, renderJobId)}/output`)).blob(),
+    downloadRenderOutput: async (projectId, renderJobId) => {
+      const response = await renderCall(`${renderJobPath(projectId, renderJobId)}/output`);
+      return renderBody(() => response.blob());
+    },
     cleanupRenderArtifacts: (projectId, renderJobId) =>
       renderJson<RenderJob>(`${renderJobPath(projectId, renderJobId)}/artifacts`, {
         method: "DELETE",
