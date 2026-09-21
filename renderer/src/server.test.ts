@@ -43,6 +43,8 @@ function harness(
     /** The claims a restarted renderer inherits from the process before it. */
     claims?: Set<string>;
     claimError?: Error;
+    /** Holds claimDispatch open so a test can act while the claim is pending. */
+    pauseClaim?: boolean;
     bundle?: unknown;
     bundleError?: Error;
     assetError?: Error;
@@ -72,6 +74,15 @@ function harness(
   const started = new Promise<void>((resolve) => {
     begin = resolve;
   });
+  let enterClaim = () => {};
+  /** Resolves once claimDispatch has actually been entered, never before. */
+  const claiming = new Promise<void>((resolve) => {
+    enterClaim = resolve;
+  });
+  let releaseClaim = () => {};
+  const claimReleased = new Promise<void>((resolve) => {
+    releaseClaim = resolve;
+  });
 
   const execution = createExecution({
     config: { ...CONFIG, ...options.config },
@@ -97,6 +108,10 @@ function harness(
     },
     artifacts: {
       claimDispatch: async (job: string, dispatch: string) => {
+        enterClaim();
+        if (options.pauseClaim) {
+          await claimReleased;
+        }
         if (options.claimError) {
           throw options.claimError;
         }
@@ -150,6 +165,8 @@ function harness(
     finished,
     release,
     started,
+    claiming,
+    releaseClaim,
     bindTo: (dispatchId: string) => {
       bound = dispatchId;
     },
@@ -282,6 +299,34 @@ describe("the one-slot renderer execution", () => {
     expect(statuses(subject).at(-1)).toBe("cancelled");
     expect(subject.events.at(-1)!.failure_code).toBeUndefined();
     expect(subject.removed).toContain("rj_001");
+  });
+
+  test("a cancellation that arrives while the dispatch is being claimed is not lost", async () => {
+    const subject = harness({ pauseClaim: true });
+
+    const starting = subject.execution.start("rj_001", "dsp_001");
+    // The claim is genuinely in flight: no sleep, no guess about scheduling.
+    await subject.claiming;
+    await subject.execution.cancel("rj_001");
+    subject.releaseClaim();
+    await starting;
+    await subject.execution.whenIdle();
+
+    // Nothing was fetched and no browser was ever asked to render.
+    expect(subject.fetches).toEqual([]);
+    expect(subject.requests).toEqual([]);
+    expect(statuses(subject)).not.toContain("completed");
+    for (const event of subject.events) {
+      expect(event.status).toBe("cancelled");
+      expect(event.failure_code).toBeUndefined();
+    }
+    expect(JSON.stringify(subject.events)).not.toContain("/srv/artifacts");
+    expect(subject.execution.status().active).toBeNull();
+
+    // The dispatch stays consumed, so the cancelled identity cannot run later.
+    await run(subject);
+    expect(subject.fetches).toEqual([]);
+    expect(subject.requests).toEqual([]);
   });
 
   test("the hard deadline aborts the render and reports the deadline code", async () => {

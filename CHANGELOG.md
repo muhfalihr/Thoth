@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-21 — Renderer cancellation during the dispatch claim (E1 Task 10, fourth review)
+
+The fourth independent Codex review of Task 10 found a lost-cancel race left by
+the durable claim in `06528fa`. `start()` took the slot before awaiting
+`claimDispatch()` but created the `AbortController` only after it, so a cancel
+arriving while the claim was pending set `reason = "cancel"` against a `null`
+controller; `start()` then built a fresh controller, reset `reason` to `null`,
+and rendered the job the control plane had already cancelled. Corrected offline
+and test-first on `codex/stage1-container-ci`, as one commit. History was not
+rewritten and no operator-owned file was touched.
+
+- RED first, deterministically. The server harness gained a `pauseClaim` option
+  whose artifact fake resolves a `claiming` barrier on entry and then waits on
+  an explicit deferred promise — no sleeps and no timing guesses. Against
+  `06528fa` the new test failed exactly as predicted at
+  `expect(subject.fetches).toEqual([])`, receiving `["rj_001"]`: the bundle was
+  fetched after the cancellation.
+- The slot is cancellable from the moment it is taken. The `AbortController`
+  and the `reason` reset now happen before the claim is awaited, so `cancel()`
+  aborts a real controller and the cancellation survives the claim instead of
+  being overwritten by it.
+- Cancellation is refused work, not just an aborted render. `execute()` calls
+  `signal.throwIfAborted()` as its first act, so a cancellation known before
+  the render begins produces no bundle fetch and no browser start, and closes
+  through the existing terminal path as `cancelled` with no failure code, no
+  path, and no raw exception. No terminal-event logic was duplicated.
+- The render deadline still begins where a render may begin. The timer is
+  armed after the claim succeeds, so waiting on the filesystem never consumes
+  the render's own deadline.
+- Slot state is released once, in one place. A small `abandon()` clears
+  `active`, `controller`, and `reason` for both the claim-failure and replay
+  exits, and the durable claim itself is left in place: a cancelled dispatch
+  stays consumed and cannot become runnable again.
+
+Verification, all offline: `bun --cwd=renderer test src/server.test.ts` 33 pass
+/ 0 fail (32 pass / 1 fail before the fix); `bun --cwd=renderer test` 95 pass /
+0 fail across 8 files; `bun x tsc -p tsconfig.json --noEmit` from `renderer/`
+exit 0; `pytest python/tests/application/test_render_jobs.py
+python/tests/api/test_internal_render_jobs.py -q` 77 passed;
+`docker build -f Dockerfile.renderer -t thoth-remotion-renderer:e1-cancel-corrective .`
+exit 0; `build_cuda.bat` exit 0 (Rust untouched, `thoth.exe` unchanged);
+`cargo test --bin thoth` exit 0; `git diff --check` clean.
+
+Drift preserved untouched: operator commit `bab60e3` (GNU GPL v3.0 licence) was
+neither amended nor included.
+
 ## 2026-09-21 — Durable renderer dispatch claims (E1 Task 10, third review)
 
 The third independent Codex review of Task 10 found the replay protection from

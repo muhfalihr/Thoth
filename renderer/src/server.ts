@@ -128,6 +128,7 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
   let running: Promise<void> | null = null;
   let controller: AbortController | null = null;
   let reason: AbortReason | null = null;
+
   async function execute(renderJobId: string, dispatchId: string): Promise<void> {
     let sequence = 0;
     let terminal = false;
@@ -157,6 +158,9 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
     };
 
     try {
+      // A cancellation that landed while the dispatch was still being claimed
+      // is already final: nothing is fetched and no browser is ever launched.
+      signal.throwIfAborted();
       await publish("preparing");
 
       // The bundle must be this job's, this dispatch's, and this build's, or
@@ -262,22 +266,32 @@ export function createExecution(deps: ExecutionDeps): RendererExecution {
       // claimed is accepted and dropped: no bundle, no engine, no event, and
       // no output, whether that process was this one or the one before it.
       active = { render_job_id: renderJobId, dispatch_id: dispatchId };
+      // The slot is cancellable from the moment it is taken, so a cancel that
+      // arrives while the filesystem is still deciding is observed, not lost.
+      controller = new AbortController();
+      reason = null;
+      const abandon = (): void => {
+        active = null;
+        controller = null;
+        reason = null;
+      };
+
       let claim: DispatchClaim;
       try {
         claim = await deps.artifacts.claimDispatch(renderJobId, dispatchId);
       } catch (error) {
-        active = null;
+        abandon();
         // A claim that cannot be taken fails closed: nothing is started, and
         // the caller sees the artifact failure's fixed message, never a path.
         throw error;
       }
       if (claim === "replay") {
-        active = null;
+        abandon();
         return;
       }
 
-      controller = new AbortController();
-      reason = null;
+      // The deadline is the render's own, so it starts once a render may begin
+      // and is never spent waiting for the claim.
       const deadline = setTimeout(() => {
         reason = "deadline";
         controller?.abort();
