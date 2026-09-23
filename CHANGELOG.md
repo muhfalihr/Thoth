@@ -8,10 +8,14 @@ Task 14 runs no new product behaviour. It re-derives, from a clean worktree,
 every claim the twenty-five commits of this feature have made, and writes down
 what was actually observed.
 
-Baseline `20e7aa14bad82cccfc6ef6b751b5c48e2c7c6461`, final
-`68987fe4ddb75a5e5240af345c7bd6a6d212d297`, branch `codex/stage1-container-ci`,
-26 commits ahead of `origin/codex/stage1-container-ci` and 0 behind, worktree
-clean before and after every gate. The 25 feature commits, oldest first:
+Baseline `20e7aa14bad82cccfc6ef6b751b5c48e2c7c6461`, verified feature HEAD
+`68987fe4ddb75a5e5240af345c7bd6a6d212d297`, branch `codex/stage1-container-ci`.
+Every gate below ran against that feature HEAD, with the tree 26 commits ahead
+of `origin/codex/stage1-container-ci` and 0 behind and the worktree clean before
+and after each one. `68987fe` is the last product commit of this feature, not
+the final repository HEAD: this audit entry is committed on top of it, and the
+corrective entry noted at the end of this section on top of that. The 25
+feature commits, oldest first:
 `4f76617` plan, `586ce45` domain, `c48a0ee` schema, `e437701` repository,
 `f717996` artifact paths, `c1a7a18` bundles, `d6898e4` private gateway,
 `41c4475` lifecycle, `871e64c` public and private APIs, `d407017` shared
@@ -30,8 +34,14 @@ Scope and security, re-derived from `git diff 20e7aa1...HEAD` across 97 files
   RabbitMQ, Kafka, Redis, SQS, pika, dramatiq, and arq across every render
   module, the renderer source, `Dockerfile.renderer`, and the render overlay
   returns nothing. `python/pyproject.toml`, `python/uv.lock`, and
-  `dashboard/package.json` are byte-identical to the baseline, so the feature
-  added no dependency at all.
+  `dashboard/package.json` are byte-identical to the baseline, so no dependency
+  was added to the existing Python or dashboard packages. The feature did add
+  two manifests of its own, deliberately. `renderer/package.json` pins what the
+  isolated renderer needs: `@remotion/bundler` and `@remotion/renderer` 4.0.523,
+  `remotion` 4.0.523, `react` and `react-dom` 19.2.7, and `ajv` 8.20.0.
+  `packages/remotion-composition/package.json` declares `react` ^19.2.7 and
+  `remotion` 4.0.523 as peer dependencies of the shared composition. Both files
+  are new, and neither adds anything to the control plane or the dashboard.
 - One output root. `THOTH_CONTROL_PLANE_ARTIFACT_ROOT` is the only artifact
   setting and `LocalArtifactRoot` is constructed exactly once, in `app.py`.
 - Nothing private reaches the public contract. The internal router is built
@@ -195,6 +205,15 @@ operator stack occurred, no migration ran against an operator database, and no
 Stage 1 evidence, observation, aggregate, or Issue #5 was touched. No parity,
 controlled fallback, acceptance, or soak operation ran, and no later render
 phase was begun.
+
+Corrected on 2026-09-23 by the documentation-only commit that follows this
+entry. Two claims above were rewritten in place: the dependency claim, which
+said the feature added no dependency at all when it in fact added the two
+manifests named above, and the HEAD wording, which named `68987fe` as final
+without saying it is the final feature commit rather than the final repository
+HEAD. No gate was rerun and no new evidence is claimed; every count, hash, and
+verdict in this entry is the original observation. The append-only correction
+of the earlier `c0f3e4c...` renderer image id stands as written.
 
 ## 2026-09-23 - Rendering became opt-in, and two smoke verdicts stopped overstating (E1 Task 13 corrective)
 
