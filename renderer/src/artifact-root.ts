@@ -16,10 +16,11 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, open, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rename, rm, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import type { RenderBundleAsset } from "./contracts";
+import { removeStagedFile, writeStagedFile } from "./staged-file";
 
 export class ArtifactPathInvalid extends Error {
   constructor() {
@@ -325,10 +326,10 @@ export class RendererArtifactRoot {
         const staging = `${report}.tmp`;
         await this.#assertLinkFree(report);
         try {
-          await writeFile(staging, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+          await writeStagedFile(staging, `${JSON.stringify(value, null, 2)}\n`, 0o600);
           await rename(staging, report);
         } catch {
-          await rm(staging, { force: true });
+          await removeStagedFile(staging);
           throw new ArtifactUnavailable();
         }
       },

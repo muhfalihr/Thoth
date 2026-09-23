@@ -315,6 +315,28 @@ async function assetsOf(
   return Object.freeze(assets);
 }
 
+/** One frame's two approved surfaces, as whole-file digests. */
+export type GoldenAddressFrame = {
+  readonly frame: number;
+  readonly preview: string;
+  readonly render: string;
+};
+
+/**
+ * The name a golden set has: the digest of its own frames.
+ *
+ * Promotion names a set with this and loading recomputes it, so an approved set
+ * is authenticated by the same calculation that created it rather than by two
+ * descriptions of one rule.
+ */
+export function goldenSetAddress(frames: readonly GoldenAddressFrame[]): string {
+  const hash = createHash("sha256");
+  for (const frame of frames) {
+    hash.update(`${frame.frame} ${frame.preview} ${frame.render}\n`);
+  }
+  return `sha256-${hash.digest("hex")}`;
+}
+
 /**
  * The approved golden set, if one has been promoted.
  *
@@ -348,15 +370,43 @@ async function goldensOf(
     throw new ReleaseCapsuleInvalid();
   }
   const golden: GoldenFrame[] = [];
+  const declared = new Set<string>();
+  const addressed: GoldenAddressFrame[] = [];
   for (const [index, entry] of raw.entries()) {
     const value = record(entry);
     exactly(value, MANIFEST_FRAME_FIELDS);
     literal(value.frame, frames[index]);
     const preview = matching(value.preview, PLAIN_NAME);
     const render = matching(value.render, PLAIN_NAME);
-    await assertRegularFile(directory, join(setDirectory, preview));
-    await assertRegularFile(directory, join(setDirectory, render));
+    const previewPath = join(setDirectory, preview);
+    const renderPath = join(setDirectory, render);
+    await assertRegularFile(directory, previewPath);
+    await assertRegularFile(directory, renderPath);
+    declared.add(preview);
+    declared.add(render);
+    addressed.push({
+      frame: frames[index]!,
+      preview: await digestOf(previewPath),
+      render: await digestOf(renderPath),
+    });
     golden.push(Object.freeze({ frame: frames[index]!, preview, render }));
+  }
+
+  // A set is named by the pixels in it, so the name is recomputed from what is
+  // actually there and from nothing else beside it. Anything that disagrees is
+  // refused rather than repaired: a comparison against pixels nobody approved
+  // would pass just as quietly as one against the approved ones.
+  let present: string[];
+  try {
+    present = await readdir(setDirectory);
+  } catch {
+    throw new ReleaseCapsuleInvalid();
+  }
+  if (present.length !== declared.size || !present.every((name) => declared.has(name))) {
+    throw new ReleaseCapsuleInvalid();
+  }
+  if (goldenSetAddress(addressed) !== set) {
+    throw new ReleaseCapsuleInvalid();
   }
 
   return Object.freeze({

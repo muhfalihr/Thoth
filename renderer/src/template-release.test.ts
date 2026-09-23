@@ -12,13 +12,13 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import { RendererArtifactRoot } from "./artifact-root";
 import type { CapturedFrame } from "./release-capture";
-import { canonicalReleaseRoot } from "./release-capsule";
+import { canonicalReleaseRoot, goldenSetAddress } from "./release-capsule";
 import { ffmpegRunner, writeRgbaPng, type RunFfmpeg } from "./release-compare";
 import {
   PromotionRefused,
@@ -36,7 +36,6 @@ const real: RunFfmpeg = ffmpegRunner(FFMPEG);
 const IDENTITY = "vertical_text_story-v1";
 /** The tracked capsule's own canvas: nothing here may render at another size. */
 const CANVAS = { width: 1080, height: 1920 } as const;
-const GOLDEN_SET = `sha256-${"a1".repeat(32)}`;
 
 let workspace: string;
 let releaseRoot: string;
@@ -113,21 +112,38 @@ function captureWriting(
   };
 }
 
-async function giveGoldens(preview: Uint8Array, render: Uint8Array): Promise<void> {
-  const directory = join(capsule, "golden-sets", GOLDEN_SET);
-  await mkdir(directory, { recursive: true });
-  await writeRgbaPng(preview, CANVAS, join(directory, "frame-000000-preview.png"), real);
-  await writeRgbaPng(render, CANVAS, join(directory, "frame-000000-render.png"), real);
+function digestOf(path: string): string {
+  return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+}
+
+/**
+ * An approved set, written the way a promotion writes one: under the name its
+ * own pixels address, which is the only name loading will accept.
+ */
+async function giveGoldens(preview: Uint8Array, render: Uint8Array): Promise<string> {
+  const staging = join(workspace, "goldens");
+  await rm(staging, { recursive: true, force: true });
+  await mkdir(staging, { recursive: true });
+  await writeRgbaPng(preview, CANVAS, join(staging, PREVIEW_NAME), real);
+  await writeRgbaPng(render, CANVAS, join(staging, RENDER_NAME), real);
+
+  const set = goldenSetAddress([
+    {
+      frame: 0,
+      preview: digestOf(join(staging, PREVIEW_NAME)),
+      render: digestOf(join(staging, RENDER_NAME)),
+    },
+  ]);
+  await cp(staging, join(capsule, "golden-sets", set), { recursive: true });
   await writeFile(
     join(capsule, "golden-manifest.json"),
     JSON.stringify({
       schema_version: 1,
-      golden_set: GOLDEN_SET,
-      frames: [
-        { frame: 0, preview: "frame-000000-preview.png", render: "frame-000000-render.png" },
-      ],
+      golden_set: set,
+      frames: [{ frame: 0, preview: PREVIEW_NAME, render: RENDER_NAME }],
     }),
   );
+  return set;
 }
 
 test("an unapproved release produces a complete candidate, not a pass", async () => {
@@ -156,8 +172,8 @@ test("an unapproved release produces a complete candidate, not a pass", async ()
 
 test("goldens that decode to the same pixels pass whatever their PNG bytes are", async () => {
   const drawn = canvas(30, 60, 90);
-  await giveGoldens(drawn, drawn);
-  const golden = join(capsule, "golden-sets", GOLDEN_SET, "frame-000000-preview.png");
+  const set = await giveGoldens(drawn, drawn);
+  const golden = join(capsule, "golden-sets", set, PREVIEW_NAME);
   const before = readFileSync(golden);
 
   const report = await verifyRelease(IDENTITY, artifacts, {
@@ -167,7 +183,7 @@ test("goldens that decode to the same pixels pass whatever their PNG bytes are",
   });
 
   expect(report.verdict).toBe("pass");
-  expect(report.golden_set).toBe(GOLDEN_SET);
+  expect(report.golden_set).toBe(set);
   expect(report.frames[0]!.golden).toEqual({
     preview: { verdict: "pass", metrics: { max_channel_delta: 0, changed_pixels: 0, changed_ratio: 0 } },
     render: { verdict: "pass", metrics: { max_channel_delta: 0, changed_pixels: 0, changed_ratio: 0 } },
@@ -300,6 +316,8 @@ const REFERENCE = {
 } as const;
 
 const MANIFEST = "golden-manifest.json";
+/** The suffix promotion stages under, named here as a caller would see it. */
+const INCOMING = ".incoming";
 const PREVIEW_NAME = "frame-000000-preview.png";
 const RENDER_NAME = "frame-000000-render.png";
 
@@ -530,6 +548,9 @@ test("an existing set is never rewritten by a promotion", async () => {
   const report = await candidate();
   await promote(report);
   const name = manifestOf().golden_set;
+  // A second candidate of the same picture, drawn while the release is whole.
+  const repeat = await candidate();
+
   // Another picture, readable and whole, under the name this candidate
   // addresses: the case where only the set's own contents can refuse it.
   await writeRgbaPng(
@@ -540,8 +561,113 @@ test("an existing set is never rewritten by a promotion", async () => {
   );
   const before = capsuleState();
 
-  const repeat = await candidate();
   await refuses(promote(repeat), before);
+});
+
+/** A step that fails only where it was told to, and works nowhere else. */
+function failingAt(where: (path: string) => boolean) {
+  return async (path: string): Promise<void> => {
+    if (where(path)) {
+      throw new Error("the disk said no");
+    }
+  };
+}
+
+test("no failure before the manifest is published changes the release", async () => {
+  const first = await candidate();
+  await promote(first);
+  const before = capsuleState();
+  const changed = await candidate(() => nudged(canvas(30, 60, 90), 40));
+  const failing = async () => {
+    throw new Error("the disk said no");
+  };
+
+  // Every fallible step of a publication, one at a time: the golden copy, the
+  // golden file's durability barrier, the staged set, the sets directory, the
+  // staged manifest's write, the release directory, and the manifest rename.
+  const steps: Record<string, unknown>[] = [
+    { copy: failing },
+    { sync: failingAt((path) => path.endsWith(".png")) },
+    { sync: failingAt((path) => path.endsWith(`${INCOMING}`)) },
+    { sync: failingAt((path) => path.endsWith("golden-sets")) },
+    { write: failing },
+    { sync: failingAt((path) => path === capsule) },
+    {
+      // The one rename that publishes. Every other rename still happens, so
+      // the set this promotion built is whole and approved by nothing.
+      swap: async (from: string, to: string) => {
+        if (to.endsWith(MANIFEST)) {
+          throw new Error("the disk said no");
+        }
+        await rename(from, to);
+      },
+    },
+  ];
+  for (const step of steps) {
+    await refuses(promote(changed, step), before);
+  }
+
+  // And the release still verifies against the set it had all along.
+  const after = await candidate();
+  expect(after.verdict).toBe("pass");
+  expect(after.golden_set).toBe(manifestOf().golden_set);
+});
+
+test("a failure after the manifest is published leaves the new set approved", async () => {
+  const first = await candidate();
+  await promote(first);
+  const kept = manifestOf().golden_set;
+  const drawn = () => nudged(canvas(30, 60, 90), 40);
+  const changed = await candidate(drawn);
+
+  // The last durability barrier fails, after the rename that published the
+  // manifest. The set it names is already whole, so it stays whole.
+  let published = false;
+  await promote(changed, {
+    swap: async (from: string, to: string) => {
+      await rename(from, to);
+      published = published || to.endsWith(MANIFEST);
+    },
+    sync: async () => {
+      if (published) {
+        throw new Error("the disk said no");
+      }
+    },
+  });
+
+  const manifest = manifestOf();
+  expect(manifest.golden_set).not.toBe(kept);
+  expect(existsSync(join(capsule, "golden-sets", manifest.golden_set))).toBe(true);
+  const after = await candidate(drawn);
+  expect(after.verdict).toBe("pass");
+  expect(after.golden_set).toBe(manifest.golden_set);
+});
+
+test("a manifest is never published through a staging path someone else created", async () => {
+  const report = await candidate();
+  const before = capsuleState();
+  const outside = join(workspace, "outside");
+  mkdirSync(outside, { recursive: true });
+  const decoy = join(outside, "kept.json");
+  writeFileSync(decoy, "not mine to write\n");
+  const staging = join(capsule, `${MANIFEST}${INCOMING}`);
+  try {
+    symlinkSync(decoy, staging, "file");
+  } catch {
+    // A file symlink is a Windows privilege; a linked directory is the same
+    // pre-created node at the same path, and is available everywhere.
+    symlinkSync(outside, staging, "junction");
+  }
+
+  await expect(promote(report)).rejects.toBeInstanceOf(PromotionRefused);
+
+  // Nothing was written through the link, and nothing beyond it was removed.
+  expect(readFileSync(decoy, "utf8")).toBe("not mine to write\n");
+  expect(readdirSync(outside)).toEqual(["kept.json"]);
+  expect(existsSync(join(capsule, MANIFEST))).toBe(false);
+  rmSync(staging, { recursive: true, force: true });
+  expect(readFileSync(decoy, "utf8")).toBe("not mine to write\n");
+  expect(capsuleState()).toEqual(before);
 });
 
 test("a failed copy, sync, or manifest switch leaves the approved release alone", async () => {

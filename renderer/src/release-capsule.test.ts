@@ -134,7 +134,19 @@ function writeCapsule(options: {
   writeFileSync(join(directory, "assets", "video.mp4"), VIDEO);
 }
 
-function writeManifest(value: unknown, set = `sha256-${"a".repeat(64)}`): void {
+/**
+ * What the golden files below address to, computed here rather than imported,
+ * so the parser's own idea of the name is checked against an independent one.
+ */
+function goldenAddress(): string {
+  const hash = createHash("sha256");
+  for (const frame of [0, 30, 60, 89]) {
+    hash.update(`${frame} ${digest("preview")} ${digest("render")}\n`);
+  }
+  return `sha256-${hash.digest("hex")}`;
+}
+
+function writeManifest(value: unknown, set = goldenAddress()): void {
   const directory = join(root, IDENTITY);
   const setDirectory = join(directory, "golden-sets", set);
   mkdirSync(setDirectory, { recursive: true });
@@ -149,7 +161,7 @@ function writeManifest(value: unknown, set = `sha256-${"a".repeat(64)}`): void {
 function goldenManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schema_version: 1,
-    golden_set: `sha256-${"a".repeat(64)}`,
+    golden_set: goldenAddress(),
     frames: [0, 30, 60, 89].map((frame) => {
       const name = String(frame).padStart(6, "0");
       return {
@@ -376,9 +388,9 @@ describe("loadReleaseCapsule", () => {
     writeManifest(goldenManifest());
     const capsule = await load();
 
-    expect(capsule.goldens?.golden_set).toBe(`sha256-${"a".repeat(64)}`);
+    expect(capsule.goldens?.golden_set).toBe(goldenAddress());
     expect(capsule.goldens?.directory).toBe(
-      join(root, IDENTITY, "golden-sets", `sha256-${"a".repeat(64)}`),
+      join(root, IDENTITY, "golden-sets", goldenAddress()),
     );
     expect(capsule.goldens?.frames.map((entry) => entry.frame)).toEqual([0, 30, 60, 89]);
   });
@@ -421,7 +433,62 @@ describe("loadReleaseCapsule", () => {
   test("refuses a manifest whose declared golden file is missing", async () => {
     writeCapsule();
     writeManifest(goldenManifest());
-    rmSync(join(root, IDENTITY, "golden-sets", `sha256-${"a".repeat(64)}`, "frame-000030-render.png"));
+    rmSync(join(root, IDENTITY, "golden-sets", goldenAddress(), "frame-000030-render.png"));
+    await expect(load()).rejects.toBeInstanceOf(ReleaseCapsuleInvalid);
+  });
+
+  test("refuses an approved golden file that was rewritten under its own name", async () => {
+    writeCapsule();
+    writeManifest(goldenManifest());
+    writeFileSync(
+      join(root, IDENTITY, "golden-sets", goldenAddress(), "frame-000030-render.png"),
+      "render-but-not-quite",
+    );
+    await expect(load()).rejects.toBeInstanceOf(ReleaseCapsuleInvalid);
+  });
+
+  test("refuses a golden set holding a file nobody approved", async () => {
+    writeCapsule();
+    writeManifest(goldenManifest());
+    writeFileSync(
+      join(root, IDENTITY, "golden-sets", goldenAddress(), "frame-000030-extra.png"),
+      "render",
+    );
+    await expect(load()).rejects.toBeInstanceOf(ReleaseCapsuleInvalid);
+  });
+
+  test("refuses approved pixels kept under a name that is not their address", async () => {
+    writeCapsule();
+    const renamed = `sha256-${"c".repeat(64)}`;
+    writeManifest(goldenManifest({ golden_set: renamed }), renamed);
+    await expect(load()).rejects.toBeInstanceOf(ReleaseCapsuleInvalid);
+  });
+
+  test("refuses a link beside the approved golden files", async () => {
+    writeCapsule();
+    writeManifest(goldenManifest());
+    const outside = join(root, "outside");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "render.png"), "render");
+    symlinkSync(outside, join(root, IDENTITY, "golden-sets", goldenAddress(), "linked"), "junction");
+    await expect(load()).rejects.toBeInstanceOf(ReleaseCapsuleInvalid);
+  });
+
+  test("refuses an approved golden file reached through a link", async () => {
+    writeCapsule();
+    writeManifest(goldenManifest());
+    const outside = join(root, "outside");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "render.png"), "render");
+    const path = join(root, IDENTITY, "golden-sets", goldenAddress(), "frame-000030-render.png");
+    rmSync(path);
+    try {
+      symlinkSync(join(outside, "render.png"), path, "file");
+    } catch {
+      // A file symlink is a Windows privilege, not a capability this check
+      // depends on: the linked directory above walks the same guard everywhere.
+      return;
+    }
     await expect(load()).rejects.toBeInstanceOf(ReleaseCapsuleInvalid);
   });
 

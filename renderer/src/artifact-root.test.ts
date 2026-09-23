@@ -367,6 +367,29 @@ describe("createTemplateReleaseRun", () => {
     ]);
   });
 
+  test("never writes a report through a staging path someone else created", async () => {
+    const run = await artifacts().createTemplateReleaseRun(IDENTITY, "run_aaa");
+    const outside = join(root, "outside");
+    mkdirSync(outside, { recursive: true });
+    const decoy = join(outside, "kept.json");
+    writeFileSync(decoy, "not mine to write\n");
+    const staging = `${run.report}.tmp`;
+    try {
+      symlinkSync(decoy, staging, "file");
+    } catch {
+      // A file symlink is a Windows privilege. A linked directory is the same
+      // pre-created node at the same path, and is available everywhere.
+      symlinkSync(outside, staging, "junction");
+    }
+
+    await expect(run.writeReport({ verdict: "pass" })).rejects.toBeInstanceOf(ArtifactUnavailable);
+
+    // Nothing was written through the link, and nothing beyond it was removed.
+    expect(readFileSync(decoy, "utf8")).toBe("not mine to write\n");
+    expect(readdirSync(outside)).toEqual(["kept.json"]);
+    expect(existsSync(run.report)).toBe(false);
+  });
+
   test("refuses a run reached through a link", async () => {
     const outside = join(root, "outside");
     mkdirSync(outside, { recursive: true });

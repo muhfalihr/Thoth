@@ -13,7 +13,7 @@
  * machine, an environment value, or anything a failing process said.
  */
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   copyFile,
   lstat,
@@ -23,13 +23,13 @@ import {
   readdir,
   rename,
   rm,
-  writeFile,
 } from "node:fs/promises";
 import { join, sep } from "node:path";
 
 import type { RendererArtifactRoot, TemplateReleaseRun } from "./artifact-root";
 import type { CapturedFrame } from "./release-capture";
 import {
+  goldenSetAddress,
   loadReleaseCapsule,
   releaseIdentityOf,
   type ReleaseCapsule,
@@ -49,6 +49,7 @@ import {
   type PixelComparison,
   type RunFfmpeg,
 } from "./release-compare";
+import { removeStagedFile, writeStagedFile } from "./staged-file";
 
 export class ReportUnsafe extends Error {
   constructor() {
@@ -456,14 +457,15 @@ const FRAME_DIGITS = 6;
 const UNPROMOTABLE: readonly ReleaseVerdict[] = ["contract_failed", "capture_failed"];
 
 /**
- * The failure seams this design already allows: the copy, the durability
- * barrier, and the rename. Tests inject failures there because those are the
- * three steps whose partial success would be a corrupted release.
+ * The failure seams this design already allows: the copy, the write, the
+ * durability barrier, and the rename. Tests inject failures there because those
+ * are the steps whose partial success would be a corrupted release.
  */
 export type PromotionTestDeps = {
   readonly releaseRoot?: string;
   readonly environment?: Record<string, string | undefined>;
   readonly copy?: (from: string, to: string) => Promise<void>;
+  readonly write?: (path: string, contents: string) => Promise<void>;
   readonly sync?: (path: string) => Promise<void>;
   readonly swap?: (from: string, to: string) => Promise<void>;
 };
@@ -482,12 +484,21 @@ export async function promoteRelease(
   deps: PromotionTestDeps = {},
 ): Promise<void> {
   const copy = deps.copy ?? copyFile;
+  const write =
+    deps.write ?? ((path: string, contents: string) => writeStagedFile(path, contents, 0o644));
   const sync = deps.sync ?? syncPath;
   const swap = deps.swap ?? rename;
 
-  const capsule = await loadReleaseCapsule(releaseIdentityOf(identity), {
-    releaseRoot: deps.releaseRoot,
-  });
+  // A release that no longer reads as the release it was approved against is a
+  // refusal like any other: promotion changes nothing it could not revalidate.
+  let capsule: ReleaseCapsule;
+  try {
+    capsule = await loadReleaseCapsule(releaseIdentityOf(identity), {
+      releaseRoot: deps.releaseRoot,
+    });
+  } catch {
+    throw new PromotionRefused();
+  }
   const canvas = canvasOf(capsule);
   const run = await artifacts.createTemplateReleaseRun(capsule.identity, identifier(runId));
 
@@ -499,7 +510,13 @@ export async function promoteRelease(
     deps.environment ?? process.env,
   );
   const frames = await candidateFrames(report, capsule, run, canvas);
-  const set = `sha256-${addressOf(frames)}`;
+  const set = goldenSetAddress(
+    frames.map((frame) => ({
+      frame: frame.frame,
+      preview: frame.digests.preview,
+      render: frame.digests.render,
+    })),
+  );
   const sets = join(capsule.directory, GOLDEN_SETS);
   const target = join(sets, set);
 
@@ -511,11 +528,16 @@ export async function promoteRelease(
       throw new PromotionRefused();
     }
     await assertSetHolds(target, frames);
-    await approve(capsule.directory, set, frames, sync, swap, null);
+    await approve(capsule.directory, set, frames, write, sync, swap, null);
     return;
   }
 
+  // The set is finished before anything points at it: every file copied and
+  // made durable, then the directory itself, then the one rename that puts it
+  // where the manifest will name it. A failure anywhere here takes back both
+  // the staging directory and the set it may already have become.
   const staging = `${target}${INCOMING}`;
+  let created: string | null = null;
   try {
     await mkdir(sets, { recursive: true, mode: 0o755 });
     await rm(staging, { recursive: true, force: true });
@@ -529,12 +551,17 @@ export async function promoteRelease(
     }
     await sync(staging);
     await swap(staging, target);
+    created = target;
+    await sync(sets);
   } catch {
     await rm(staging, { recursive: true, force: true });
+    if (created !== null) {
+      await rm(created, { recursive: true, force: true });
+    }
     throw new PromotionRefused();
   }
 
-  await approve(capsule.directory, set, frames, sync, swap, target);
+  await approve(capsule.directory, set, frames, write, sync, swap, created);
 }
 
 /** Make one set the approved one, or leave the release with the set it had. */
@@ -542,6 +569,7 @@ async function approve(
   directory: string,
   set: string,
   frames: readonly CandidateFrame[],
+  write: (path: string, contents: string) => Promise<void>,
   sync: (path: string) => Promise<void>,
   swap: (from: string, to: string) => Promise<void>,
   created: string | null,
@@ -558,19 +586,28 @@ async function approve(
   const path = join(directory, GOLDEN_MANIFEST);
   const staging = `${path}${INCOMING}`;
 
+  // The staged manifest is written and made durable, and its directory entry
+  // with it, so that the rename below is the only step left that can fail. That
+  // rename is what publishes: before it, the release still has the manifest and
+  // the sets it started with, and after it, nothing here removes either.
   try {
-    await writeFile(staging, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o644 });
+    await write(staging, `${JSON.stringify(manifest, null, 2)}\n`);
     await sync(staging);
-    await swap(staging, path);
     await sync(directory);
+    await swap(staging, path);
   } catch {
-    await rm(staging, { force: true });
+    await removeStagedFile(staging);
     // A set nobody approved is not a set: it goes back out with the promotion.
     if (created !== null) {
       await rm(created, { recursive: true, force: true });
     }
     throw new PromotionRefused();
   }
+
+  // Published. Making the rename itself durable is worth attempting and not
+  // worth refusing over: a release this one already approved cannot be taken
+  // back by a barrier that came after it.
+  await sync(directory).catch(() => {});
 }
 
 /**
@@ -764,15 +801,6 @@ async function assertSetHolds(
       throw new PromotionRefused();
     }
   }
-}
-
-/** A set is named by what is in it, so the same pixels are always the same set. */
-function addressOf(frames: readonly CandidateFrame[]): string {
-  const hash = createHash("sha256");
-  for (const frame of frames) {
-    hash.update(`${frame.frame} ${frame.digests.preview} ${frame.digests.render}\n`);
-  }
-  return hash.digest("hex");
 }
 
 function frameName(frame: number): string {
