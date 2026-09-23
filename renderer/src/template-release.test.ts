@@ -320,7 +320,11 @@ function runDirectory(report: ReleaseReport): string {
 }
 
 function promote(report: ReleaseReport, deps: Record<string, unknown> = {}): Promise<void> {
-  return promoteRelease(IDENTITY, artifacts, report.run_id, { releaseRoot, ...deps });
+  return promoteRelease(IDENTITY, artifacts, report.run_id, {
+    releaseRoot,
+    environment: REFERENCE,
+    ...deps,
+  });
 }
 
 function rewriteReport(
@@ -437,6 +441,39 @@ test("a candidate drawn against other fixtures is refused", async () => {
     value.capsule.assets[0].sha256 = report.capsule.assets[0]!.sha256;
     value.capsule.frames = [0, 30];
   });
+  await refuses(promote(report), before);
+});
+
+test("a candidate drawn in another reference environment is refused", async () => {
+  const report = await candidate();
+  const before = capsuleState();
+
+  // Every one of these is a syntactically valid identity. None of them is the
+  // image this promotion is running in, which is the only one that may approve.
+  const elsewhere = [
+    { ...REFERENCE, THOTH_F1_IMAGE_ID: `sha256:${"33".repeat(32)}` },
+    { ...REFERENCE, THOTH_F1_BASE_DIGEST: `sha256:${"44".repeat(32)}` },
+    { ...REFERENCE, THOTH_RENDERER_VERSION: "remotion-4.0.522" },
+    { THOTH_F1_IMAGE_ID: REFERENCE.THOTH_F1_IMAGE_ID },
+    {},
+  ];
+  for (const environment of elsewhere) {
+    await refuses(promote(report, { environment }), before);
+  }
+
+  // The image that drew it still promotes it.
+  await promote(report);
+  expect(manifestOf().golden_set).toMatch(/^sha256-[0-9a-f]{64}$/);
+});
+
+test("a candidate drawn from other document bytes is refused", async () => {
+  const report = await candidate();
+  const document = join(capsule, "document.json");
+  const value = JSON.parse(readFileSync(document, "utf8"));
+  value.revision = 2;
+  writeFileSync(document, JSON.stringify(value, null, 2));
+  const before = capsuleState();
+
   await refuses(promote(report), before);
 });
 

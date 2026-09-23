@@ -127,6 +127,7 @@ export type ReleaseReport = {
   readonly capsule: {
     readonly template_id: string;
     readonly template_version: number;
+    readonly document_sha256: string;
     readonly assets: readonly { asset_id: string; file: string; sha256: string }[];
     readonly frames: readonly number[];
   };
@@ -383,11 +384,7 @@ function buildReport(
     release: capsule.identity,
     run_id: run.runId,
     verdict,
-    reference_image: Object.freeze({
-      base_digest: allowed(environment.THOTH_F1_BASE_DIGEST, DIGEST),
-      image_id: allowed(environment.THOTH_F1_IMAGE_ID, DIGEST),
-      renderer_version: allowed(environment.THOTH_RENDERER_VERSION, RENDERER_VERSION),
-    }),
+    reference_image: referenceImageOf(environment),
     composition: Object.freeze({
       composition_id: capsule.composition_id,
       width: canvas.width,
@@ -398,6 +395,7 @@ function buildReport(
     capsule: Object.freeze({
       template_id: capsule.template_id,
       template_version: capsule.template_version,
+      document_sha256: capsule.document_sha256,
       assets: capsule.assets.map((asset) =>
         Object.freeze({ asset_id: asset.asset_id, file: asset.file, sha256: asset.sha256 }),
       ),
@@ -411,6 +409,20 @@ function buildReport(
 /** An identity is reported only in the shape it is supposed to have. */
 function allowed(value: string | undefined, pattern: RegExp): string {
   return typeof value === "string" && pattern.test(value) ? value : UNKNOWN;
+}
+
+/**
+ * The identity of the image this process is running in.
+ *
+ * Verification reports it and promotion compares against it, so both sides read
+ * the same three values through the same filter and in the same order.
+ */
+function referenceImageOf(environment: Record<string, string | undefined>): ReferenceImage {
+  return Object.freeze({
+    base_digest: allowed(environment.THOTH_F1_BASE_DIGEST, DIGEST),
+    image_id: allowed(environment.THOTH_F1_IMAGE_ID, DIGEST),
+    renderer_version: allowed(environment.THOTH_RENDERER_VERSION, RENDERER_VERSION),
+  });
 }
 
 /**
@@ -450,6 +462,7 @@ const UNPROMOTABLE: readonly ReleaseVerdict[] = ["contract_failed", "capture_fai
  */
 export type PromotionTestDeps = {
   readonly releaseRoot?: string;
+  readonly environment?: Record<string, string | undefined>;
   readonly copy?: (from: string, to: string) => Promise<void>;
   readonly sync?: (path: string) => Promise<void>;
   readonly swap?: (from: string, to: string) => Promise<void>;
@@ -478,7 +491,13 @@ export async function promoteRelease(
   const canvas = canvasOf(capsule);
   const run = await artifacts.createTemplateReleaseRun(capsule.identity, identifier(runId));
 
-  const report = await candidateReport(run.report, capsule, canvas, run.runId);
+  const report = await candidateReport(
+    run.report,
+    capsule,
+    canvas,
+    run.runId,
+    deps.environment ?? process.env,
+  );
   const frames = await candidateFrames(report, capsule, run, canvas);
   const set = `sha256-${addressOf(frames)}`;
   const sets = join(capsule.directory, GOLDEN_SETS);
@@ -563,6 +582,7 @@ async function candidateReport(
   capsule: ReleaseCapsule,
   canvas: Geometry & { fps: number; duration_in_frames: number },
   runId: string,
+  environment: Record<string, string | undefined>,
 ): Promise<ReleaseReport> {
   let report: ReleaseReport;
   try {
@@ -582,13 +602,14 @@ async function candidateReport(
   if (UNPROMOTABLE.includes(report.verdict) || !VERDICT_ORDER.includes(report.verdict)) {
     throw new PromotionRefused();
   }
-  // A candidate is only evidence if it says which environment drew it.
-  const image = report.reference_image ?? ({} as ReferenceImage);
-  if (
-    !DIGEST.test(image.base_digest ?? "") ||
-    !DIGEST.test(image.image_id ?? "") ||
-    !RENDERER_VERSION.test(image.renderer_version ?? "")
-  ) {
+  // Only the image that drew a candidate may approve it. An environment that
+  // cannot name itself approves nothing, and a candidate from another image is
+  // not this image's evidence however well formed its identity is.
+  const active = referenceImageOf(environment);
+  if (Object.values(active).includes(UNKNOWN)) {
+    throw new PromotionRefused();
+  }
+  if (JSON.stringify(report.reference_image) !== JSON.stringify(active)) {
     throw new PromotionRefused();
   }
   if (
@@ -609,6 +630,7 @@ async function candidateReport(
     JSON.stringify({
       template_id: capsule.template_id,
       template_version: capsule.template_version,
+      document_sha256: capsule.document_sha256,
       assets: capsule.assets.map((asset) => ({
         asset_id: asset.asset_id,
         file: asset.file,

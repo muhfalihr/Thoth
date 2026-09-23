@@ -97,6 +97,8 @@ export type ReleaseCapsule = {
   readonly composition_id: typeof TRUSTED_COMPOSITION_ID;
   readonly directory: string;
   readonly document: Record<string, unknown>;
+  /** The exact bytes read, so a candidate can be bound to this document. */
+  readonly document_sha256: string;
   readonly assets: readonly ReleaseCapsuleAsset[];
   readonly frames: readonly number[];
   /** Null until an operator has approved a set; that is a verdict, not a fault. */
@@ -403,6 +405,7 @@ export async function loadReleaseCapsule(
     composition_id: TRUSTED_COMPOSITION_ID,
     directory,
     document,
+    document_sha256: await digestOf(documentPath),
     assets: await assetsOf(directory, raw.assets),
     frames,
     goldens: await goldensOf(directory, frames),

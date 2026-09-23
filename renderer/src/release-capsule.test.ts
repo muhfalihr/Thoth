@@ -192,6 +192,21 @@ describe("loadReleaseCapsule", () => {
     expect(capsule.goldens).toBeNull();
   });
 
+  test("carries the exact bytes of the document it read", async () => {
+    writeCapsule();
+    const capsule = await load();
+    const bytes = readFileSync(join(root, IDENTITY, "document.json"));
+
+    expect(capsule.document_sha256).toBe(
+      `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    );
+
+    // The same document with one value changed is a different capsule identity,
+    // even though every other declared fact about it is unchanged.
+    writeCapsule({ document: capsuleDocument({ revision: 2 }) });
+    expect((await load()).document_sha256).not.toBe(capsule.document_sha256);
+  });
+
   test("derives its canonical root from the repository, not from the environment", () => {
     const canonical = canonicalReleaseRoot();
     expect(canonical.endsWith(join("packages", "remotion-composition", "releases"))).toBe(true);
