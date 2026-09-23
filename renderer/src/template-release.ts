@@ -27,6 +27,7 @@ import {
 import { join, sep } from "node:path";
 
 import type { RendererArtifactRoot, TemplateReleaseRun } from "./artifact-root";
+import { superviseCapture } from "./capture-supervisor";
 import type { CapturedFrame } from "./release-capture";
 import {
   goldenSetAddress,
@@ -166,11 +167,23 @@ export type ReleaseFailureReport = {
 /** How long a capture may take before it is a capture that did not happen. */
 const CAPTURE_DEADLINE_MS = 900_000;
 
-export type CaptureFrames = (options: {
+/**
+ * A capture in flight, and the one way to get back everything it took.
+ *
+ * An abort can only ask a capture to stop; `stop()` resolves when every
+ * browser, page, server, subprocess, and temporary directory the capture
+ * acquired has actually been released, which is the only fact a gate that
+ * closes its own run is allowed to act on.
+ */
+export type CaptureSession = {
+  readonly frames: Promise<readonly CapturedFrame[]>;
+  stop(): Promise<void>;
+};
+
+export type StartCapture = (options: {
   capsule: ReleaseCapsule;
   run: TemplateReleaseRun;
-  signal: AbortSignal;
-}) => Promise<readonly CapturedFrame[]>;
+}) => CaptureSession;
 
 /**
  * Run one verification under an abort the operator can trigger.
@@ -197,7 +210,7 @@ export async function underStopSignals<T>(work: (signal: AbortSignal) => Promise
  * own build identity from.
  */
 export type VerifyDeps = {
-  readonly capture?: CaptureFrames;
+  readonly capture?: StartCapture;
   readonly ffmpeg?: RunFfmpeg;
   readonly releaseRoot?: string;
   readonly environment?: Record<string, string | undefined>;
@@ -253,8 +266,10 @@ export async function verifyRelease(
   const rows: ContactRow[] = [];
   let verdict: ReleaseVerdict = capsule.goldens === null ? "golden_missing" : "pass";
 
+  let session: CaptureSession | undefined;
   try {
-    const captured = await untilAborted(capture({ capsule, run, signal }), signal);
+    session = capture({ capsule, run });
+    const captured = await untilAborted(session.frames, signal);
     assertCaptureAnswersTheRequest(captured, capsule, run);
 
     for (const entry of captured) {
@@ -288,6 +303,15 @@ export async function verifyRelease(
     verdict = worse(verdict, failureOf(error));
   } finally {
     clearTimeout(expiry);
+    try {
+      // Nothing is reported until the capture has given everything back: a
+      // deadline or an operator's stop asks, and this is where it is answered.
+      await session?.stop();
+    } catch {
+      // A capture that cannot be given back is a capture that failed, however
+      // much of it was drawn before nobody could close it.
+      verdict = worse(verdict, "capture_failed");
+    }
   }
 
   const report = buildReport(capsule, run, canvas, verdict, frames, deps.environment);
@@ -338,11 +362,13 @@ export function assertSafeReport(report: unknown, depth = 0): void {
   throw new ReportUnsafe();
 }
 
-/** The real capture, loaded only when one is actually going to happen. */
-const defaultCapture: CaptureFrames = async (options) => {
-  const { captureReleaseFrames } = await import("./release-capture");
-  return captureReleaseFrames(options);
-};
+/**
+ * The real capture, supervised as a child process this one can end.
+ *
+ * Remotion's bundler takes no cancellation at all, so in-process there is no
+ * boundary at which a wedged setup can be made to stop; a process is one.
+ */
+const defaultCapture: StartCapture = superviseCapture;
 
 function newRunId(): string {
   return `run_${randomBytes(8).toString("hex")}`;
@@ -365,10 +391,11 @@ function failureOf(error: unknown): ReleaseVerdict {
 }
 
 /**
- * Wait for a capture, but not longer than the abort it was given.
+ * Wait for a capture, but not longer than the abort the run was given.
  *
- * Nothing here can kill a browser that stopped answering; the run does not have
- * to wait for one either, and the process this runs in is the container's own.
+ * Abandoning the wait is not abandoning the capture: this only decides that the
+ * frames will not be used, and the run still ends the capture it started before
+ * it reports anything.
  */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return Promise.race([

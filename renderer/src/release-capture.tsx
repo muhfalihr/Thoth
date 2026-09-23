@@ -117,7 +117,9 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
  */
 export async function captureReleaseFrames(options: {
   capsule: ReleaseCapsule;
-  run: TemplateReleaseRun;
+  // The two paths it writes, and nothing else a run knows: the capture happens
+  // in a child process that was handed those and never opened an artifact root.
+  run: Pick<TemplateReleaseRun, "previewFrame" | "renderFrame">;
   deps?: CaptureDeps;
   signal?: AbortSignal;
 }): Promise<readonly CapturedFrame[]> {

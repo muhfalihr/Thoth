@@ -28,6 +28,7 @@ import {
   underStopSignals,
   verifyRelease,
   type ReleaseReport,
+  type StartCapture,
 } from "./template-release";
 
 const FFMPEG =
@@ -90,10 +91,7 @@ function captureWriting(
   pixels: (surface: "preview" | "render", frame: number) => Uint8Array | null,
   order?: (frames: readonly CapturedFrame[]) => readonly CapturedFrame[],
 ) {
-  return async (options: {
-    capsule: { frames: readonly number[] };
-    run: { previewFrame(frame: number): string; renderFrame(frame: number): string };
-  }): Promise<readonly CapturedFrame[]> => {
+  return sessionOf(async (options) => {
     const captured: CapturedFrame[] = [];
     for (const frame of options.capsule.frames) {
       const preview = options.run.previewFrame(frame);
@@ -110,7 +108,22 @@ function captureWriting(
       captured.push({ frame, preview, render });
     }
     return order === undefined ? captured : order(captured);
-  };
+  });
+}
+
+/**
+ * A fake capture that owns nothing, given the shape the real one has.
+ *
+ * Every one of these settles on its own, so `stop()` has nothing left to give
+ * back; the tests that care about teardown build their own session instead.
+ */
+function sessionOf(
+  work: (options: {
+    capsule: { frames: readonly number[] };
+    run: { previewFrame(frame: number): string; renderFrame(frame: number): string };
+  }) => Promise<readonly CapturedFrame[]>,
+): StartCapture {
+  return (options) => ({ frames: work(options), stop: async (): Promise<void> => {} });
 }
 
 function digestOf(path: string): string {
@@ -241,14 +254,14 @@ test("a capture drawn at another size is a contract failure", async () => {
   const report = await verifyRelease(IDENTITY, artifacts, {
     releaseRoot,
     ffmpeg: real,
-    capture: async (options) => {
+    capture: sessionOf(async (options) => {
       const preview = options.run.previewFrame(0);
       const render = options.run.renderFrame(0);
       const small = new Uint8Array(64 * 64 * 4).fill(255);
       await writeRgbaPng(small, { width: 64, height: 64 }, preview, real);
       await writeRgbaPng(small, { width: 64, height: 64 }, render, real);
       return [{ frame: 0, preview, render }];
-    },
+    }),
   });
 
   expect(report.verdict).toBe("contract_failed");
@@ -258,7 +271,7 @@ test("a capture that cannot be decoded is a capture failure", async () => {
   const report = await verifyRelease(IDENTITY, artifacts, {
     releaseRoot,
     ffmpeg: real,
-    capture: async (options) => {
+    capture: sessionOf(async (options) => {
       const preview = options.run.previewFrame(0);
       const render = options.run.renderFrame(0);
       await writeRgbaPng(canvas(1, 2, 3), CANVAS, preview, real);
@@ -268,7 +281,7 @@ test("a capture that cannot be decoded is a capture failure", async () => {
       damaged.fill(0, 40, damaged.byteLength - 12);
       await writeFile(render, damaged);
       return [{ frame: 0, preview, render }];
-    },
+    }),
   });
 
   expect(report.verdict).toBe("capture_failed");
@@ -402,9 +415,9 @@ test("an operational failure closes the run with a capture failure", async () =>
       releaseRoot,
       ffmpeg: real,
       environment: REFERENCE,
-      capture: async () => {
+      capture: sessionOf(async () => {
         throw new Error(failure);
-      },
+      }),
     });
 
     expect(report.verdict).toBe("capture_failed");
@@ -440,10 +453,10 @@ test("a capsule nobody can load closes the run without drawing anything", async 
     releaseRoot,
     ffmpeg: real,
     environment: REFERENCE,
-    capture: async () => {
+    capture: sessionOf(async () => {
       attempted = true;
       return [];
-    },
+    }),
   });
 
   // A contract failure before the browser is a contract failure without one.
@@ -467,7 +480,7 @@ test("no failure report is ever promotable", async () => {
     releaseRoot,
     ffmpeg: real,
     environment: REFERENCE,
-    capture: async () => [],
+    capture: sessionOf(async () => []),
   });
   writeFileSync(join(capsule, "release.json"), JSON.stringify(broken, null, 2));
 
@@ -475,9 +488,9 @@ test("no failure report is ever promotable", async () => {
     releaseRoot,
     ffmpeg: real,
     environment: REFERENCE,
-    capture: async () => {
+    capture: sessionOf(async () => {
       throw new Error("the browser could not be launched");
-    },
+    }),
   });
   const before = capsuleState();
 
@@ -492,30 +505,96 @@ test("a capture that outlasts its deadline is a capture failure", async () => {
     environment: REFERENCE,
     deadlineMs: 25,
     // A surface that has stopped answering, which is what a wedged browser is.
-    capture: () => new Promise<never>(() => {}),
+    capture: () => ({ frames: new Promise<never>(() => {}), stop: async (): Promise<void> => {} }),
   });
 
   expect(report.verdict).toBe("capture_failed");
   expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
 });
 
-test("a verifier asked to stop hands its capture the same abort", async () => {
+/** Wait for something a capture does on its own clock, without a fixed sleep. */
+async function until(ready: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 400 && !ready(); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  if (!ready()) {
+    throw new Error("the capture never reached the state this test waits for");
+  }
+}
+
+test("a stopped capture is given back before the run reports", async () => {
+  let asked = false;
+  let released = false;
+  let end!: (error: Error) => void;
+  // A capture that never settles on its own: ending it is the only thing that
+  // ends it, which is what a wedged bundler or a browser that stopped answering
+  // actually is.
+  const frames = new Promise<readonly CapturedFrame[]>((_, reject) => {
+    end = reject;
+  });
+  let finish!: () => void;
+  const cleanup = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+
+  let reported = false;
+  const running = verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    environment: REFERENCE,
+    deadlineMs: 5,
+    capture: () => ({
+      frames,
+      stop: async () => {
+        asked = true;
+        // Closing a browser, stopping a server, and removing a temporary
+        // directory all take time, and this is the window a race returns in.
+        await cleanup;
+        released = true;
+        end(new Error("the capture was ended"));
+      },
+    }),
+  }).then((value) => {
+    reported = true;
+    return value;
+  });
+
+  await until(() => asked);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(released).toBe(false);
+  expect(reported).toBe(false);
+
+  finish();
+  const report = await running;
+
+  expect(released).toBe(true);
+  expect(report.verdict).toBe("capture_failed");
+  expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
+});
+
+test("a verifier asked to stop ends the capture it started", async () => {
   const operator = new AbortController();
-  let given: AbortSignal | undefined;
+  let stopped = false;
 
   const report = await verifyRelease(IDENTITY, artifacts, {
     releaseRoot,
     ffmpeg: real,
     environment: REFERENCE,
     signal: operator.signal,
-    capture: (options) =>
-      new Promise<never>(() => {
-        given = options.signal;
-        operator.abort();
-      }),
+    // A surface that never answers, stopped by the operator rather than by the
+    // deadline: the run still owns it, so the run is still the one that ends it.
+    capture: () => {
+      operator.abort();
+      return {
+        frames: new Promise<never>(() => {}),
+        stop: async (): Promise<void> => {
+          stopped = true;
+        },
+      };
+    },
   });
 
-  expect(given?.aborted).toBe(true);
+  expect(stopped).toBe(true);
   expect(report.verdict).toBe("capture_failed");
 });
 
