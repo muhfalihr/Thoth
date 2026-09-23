@@ -16,7 +16,7 @@
 import { RendererArtifactRoot, probeWithFfprobe } from "../src/artifact-root";
 import { loadArtifactRoot } from "../src/config";
 import { releaseIdentityOf } from "../src/release-capsule";
-import { verifyRelease } from "../src/template-release";
+import { underStopSignals, verifyRelease } from "../src/template-release";
 
 const [requested, ...extra] = process.argv.slice(2);
 
@@ -30,7 +30,11 @@ const artifacts = new RendererArtifactRoot(loadArtifactRoot(process.env), {
   probe: probeWithFfprobe,
 });
 
-const report = await verifyRelease(identity, artifacts);
+// An operator's Ctrl-C reaches the browser through the same abort a deadline
+// uses, so a stopped run still closes itself instead of leaving Chrome behind.
+const report = await underStopSignals((signal) =>
+  verifyRelease(identity, artifacts, { signal }),
+);
 
 // The report is the only output: it is already safe to publish, and it names
 // the run whose candidate an operator can then inspect.

@@ -11,6 +11,7 @@ import { RendererArtifactRoot, type TemplateReleaseRun } from "./artifact-root";
 import {
   CaptureIncomplete,
   NetworkNotIsolated,
+  assembleSurface,
   assertIsolatedNetwork,
   captureReleaseFrames,
   type SurfaceRequest,
@@ -171,6 +172,80 @@ test("takes its staging directory away again, however the capture ended", async 
   expect(staged).toHaveLength(1);
   expect(existsSync(staged[0]!)).toBe(false);
   expect(recorded.closed.sort()).toEqual(["preview", "render"]);
+});
+
+test("a surface that cannot finish opening gives back what it already took", async () => {
+  const taken: string[] = [];
+  const given: string[] = [];
+  const keeping = (name: string) => {
+    taken.push(name);
+    return async () => {
+      given.push(name);
+    };
+  };
+
+  await expect(
+    assembleSurface(async (keep) => {
+      keep(keeping("render directory"));
+      keep(keeping("preview server"));
+      keep(keeping("browser"));
+      throw new Error("a page could not be created");
+    }),
+  ).rejects.toThrow("a page could not be created");
+
+  // Newest first: a page is closed before the browser that owns it.
+  expect(taken).toEqual(["render directory", "preview server", "browser"]);
+  expect(given).toEqual(["browser", "preview server", "render directory"]);
+});
+
+test("a surface gives back everything it took when it is closed", async () => {
+  const given: string[] = [];
+  const surface = await assembleSurface(async (keep) => {
+    keep(async () => void given.push("directory"));
+    keep(async () => {
+      given.push("browser");
+      throw new Error("the browser was already gone");
+    });
+    return async () => undefined;
+  });
+
+  await surface.close();
+
+  // A resource that refuses to be given back is not one that holds the rest.
+  expect(given).toEqual(["browser", "directory"]);
+});
+
+test("a capture that was asked to stop draws nothing and stages nothing", async () => {
+  const { recorded, deps } = fakeDeps();
+  const operator = new AbortController();
+  operator.abort();
+
+  await expect(
+    captureReleaseFrames({ capsule, run, deps, signal: operator.signal }),
+  ).rejects.toThrow();
+
+  expect(recorded.calls).toEqual([]);
+  expect(readdirSync(join(run.directory, "preview"))).toEqual([]);
+});
+
+test("both surfaces are opened with the abort the capture was given", async () => {
+  const seen: (AbortSignal | undefined)[] = [];
+  const { deps } = fakeDeps();
+  const operator = new AbortController();
+  const watched = {
+    openPreview: async (request: SurfaceRequest, signal?: AbortSignal) => {
+      seen.push(signal);
+      return deps.openPreview(request);
+    },
+    openRender: async (request: SurfaceRequest, signal?: AbortSignal) => {
+      seen.push(signal);
+      return deps.openRender(request);
+    },
+  };
+
+  await captureReleaseFrames({ capsule, run, deps: watched, signal: operator.signal });
+
+  expect(seen).toEqual([operator.signal, operator.signal]);
 });
 
 /** A loopback origin that answers once, so "loopback works" is not a mock. */

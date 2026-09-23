@@ -66,6 +66,14 @@ class ContractFailed extends Error {
   }
 }
 
+/** A capture that stopped answering, because it ran out of time or was stopped. */
+class CaptureAbandoned extends Error {
+  constructor() {
+    super("release capture abandoned");
+    this.name = "CaptureAbandoned";
+  }
+}
+
 export type ReleaseVerdict =
   | "pass"
   | "review_required"
@@ -136,10 +144,52 @@ export type ReleaseReport = {
   readonly frames: readonly FrameReport[];
 };
 
+/**
+ * The report of a run that never learned what it was verifying.
+ *
+ * It is the same document with the capsule's facts absent rather than invented,
+ * which is also what makes it unpromotable: promotion compares a candidate's
+ * facts against the capsule on disk, and this one has none to compare.
+ */
+export type ReleaseFailureReport = {
+  readonly schema_version: 1;
+  readonly release: ReleaseIdentity;
+  readonly run_id: string;
+  readonly verdict: "contract_failed";
+  readonly reference_image: ReferenceImage;
+  readonly composition: null;
+  readonly capsule: null;
+  readonly golden_set: null;
+  readonly frames: readonly [];
+};
+
+/** How long a capture may take before it is a capture that did not happen. */
+const CAPTURE_DEADLINE_MS = 900_000;
+
 export type CaptureFrames = (options: {
   capsule: ReleaseCapsule;
   run: TemplateReleaseRun;
+  signal: AbortSignal;
 }) => Promise<readonly CapturedFrame[]>;
+
+/**
+ * Run one verification under an abort the operator can trigger.
+ *
+ * The handlers live exactly as long as the work does: a process that goes on to
+ * do something else is not left with this call's idea of what a signal means.
+ */
+export async function underStopSignals<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const stop = (): void => controller.abort();
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  try {
+    return await work(controller.signal);
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  }
+}
 
 /**
  * The seams the design already allows: the two surfaces, the decoder process,
@@ -151,6 +201,10 @@ export type VerifyDeps = {
   readonly ffmpeg?: RunFfmpeg;
   readonly releaseRoot?: string;
   readonly environment?: Record<string, string | undefined>;
+  /** An operator's stop, if one can arrive. */
+  readonly signal?: AbortSignal;
+  /** How long a capture may take before it is one that did not happen. */
+  readonly deadlineMs?: number;
 };
 
 /**
@@ -164,24 +218,43 @@ export async function verifyRelease(
   identity: ReleaseIdentity,
   artifacts: RendererArtifactRoot,
   deps: VerifyDeps = {},
-): Promise<ReleaseReport> {
+): Promise<ReleaseReport | ReleaseFailureReport> {
   const ffmpeg = deps.ffmpeg ?? runFfmpeg;
   const capture = deps.capture ?? defaultCapture;
+  const environment = deps.environment ?? process.env;
 
-  // Phase one: the capsule. A release nobody can validate is not verified
-  // against, and no run directory is reserved for it.
-  const capsule = await loadReleaseCapsule(releaseIdentityOf(identity), {
-    releaseRoot: deps.releaseRoot,
-  });
+  // Phase one: the run, reserved before anything else can fail, so that every
+  // failure below has somewhere to leave a report an operator can read.
+  const release = releaseIdentityOf(identity);
+  const run = await artifacts.createTemplateReleaseRun(release, newRunId());
+
+  // Phase two: the capsule. A release nobody can validate is a contract failure
+  // with no facts to report, and nothing is drawn to find that out.
+  let capsule: ReleaseCapsule;
+  try {
+    capsule = await loadReleaseCapsule(release, { releaseRoot: deps.releaseRoot });
+  } catch {
+    return closeRun(run, release, environment);
+  }
   const canvas = canvasOf(capsule);
 
-  const run = await artifacts.createTemplateReleaseRun(capsule.identity, newRunId());
+  // Neither a wedged browser nor an operator's stop leaves the run open: both
+  // are the one abort the capture is handed and this phase races against.
+  // Its own controller rather than AbortSignal.timeout: that timer is unref'd,
+  // so a capture that answers nothing at all is exactly the case it sleeps through.
+  const deadline = new AbortController();
+  const expiry = setTimeout(() => deadline.abort(), deps.deadlineMs ?? CAPTURE_DEADLINE_MS);
+  const signal =
+    deps.signal === undefined
+      ? deadline.signal
+      : AbortSignal.any([deadline.signal, deps.signal]);
+
   const frames: FrameReport[] = [];
   const rows: ContactRow[] = [];
   let verdict: ReleaseVerdict = capsule.goldens === null ? "golden_missing" : "pass";
 
   try {
-    const captured = await capture({ capsule, run });
+    const captured = await untilAborted(capture({ capsule, run, signal }), signal);
     assertCaptureAnswersTheRequest(captured, capsule, run);
 
     for (const entry of captured) {
@@ -213,6 +286,8 @@ export async function verifyRelease(
     await writeContactSheet(rows, canvas, run.contactSheet, ffmpeg);
   } catch (error) {
     verdict = worse(verdict, failureOf(error));
+  } finally {
+    clearTimeout(expiry);
   }
 
   const report = buildReport(capsule, run, canvas, verdict, frames, deps.environment);
@@ -277,17 +352,57 @@ function worse(left: ReleaseVerdict, right: ReleaseVerdict): ReleaseVerdict {
   return VERDICT_ORDER.indexOf(left) >= VERDICT_ORDER.indexOf(right) ? left : right;
 }
 
-/** What a thrown phase means to the gate, and nothing about what it said. */
+/**
+ * What a thrown phase means to the gate, and nothing about what it said.
+ *
+ * Every other way a capture can end is a capture that failed: a bundler, a
+ * browser, a page, a screenshot, a still, a decoder, and the deadline all fail
+ * in their own words, and a gate that let any of them past would be a gate that
+ * closed no run and wrote no report.
+ */
 function failureOf(error: unknown): ReleaseVerdict {
-  if (error instanceof ContractFailed) {
-    return "contract_failed";
-  }
-  // `CaptureIncomplete` is named rather than imported: the browser half of this
-  // module is loaded only when a real capture runs.
-  if (error instanceof ImageUnreadable || (error as Error)?.name === "CaptureIncomplete") {
-    return "capture_failed";
-  }
-  throw error;
+  return error instanceof ContractFailed ? "contract_failed" : "capture_failed";
+}
+
+/**
+ * Wait for a capture, but not longer than the abort it was given.
+ *
+ * Nothing here can kill a browser that stopped answering; the run does not have
+ * to wait for one either, and the process this runs in is the container's own.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      if (signal.aborted) {
+        reject(new CaptureAbandoned());
+        return;
+      }
+      signal.addEventListener("abort", () => reject(new CaptureAbandoned()), { once: true });
+    }),
+  ]);
+}
+
+/** Close a run that never learned what it was verifying, with what it does know. */
+async function closeRun(
+  run: TemplateReleaseRun,
+  release: ReleaseIdentity,
+  environment: Record<string, string | undefined>,
+): Promise<ReleaseFailureReport> {
+  const report: ReleaseFailureReport = Object.freeze({
+    schema_version: 1 as const,
+    release,
+    run_id: run.runId,
+    verdict: "contract_failed" as const,
+    reference_image: referenceImageOf(environment),
+    composition: null,
+    capsule: null,
+    golden_set: null,
+    frames: Object.freeze([]) as readonly [],
+  });
+  assertSafeReport(report);
+  await run.writeReport(report);
+  return report;
 }
 
 function canvasOf(capsule: ReleaseCapsule): Geometry & { fps: number; duration_in_frames: number } {

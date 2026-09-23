@@ -174,7 +174,7 @@ export function createRemotionEngine(): RenderEngine {
 }
 
 /** Bridge the platform `AbortSignal` this service owns to Remotion's own token. */
-function toCancelSignal(signal: AbortSignal): (callback: () => void) => void {
+export function toCancelSignal(signal: AbortSignal): (callback: () => void) => void {
   return (callback: () => void) => {
     if (signal.aborted) {
       callback();

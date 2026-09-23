@@ -20,6 +20,7 @@ import {
   assertCompositionGeometry,
   compositionInputProps,
   rendererWebpackOverride,
+  toCancelSignal,
 } from "./remotion-adapter";
 
 /** A frame that was asked for and did not arrive whole. */
@@ -51,9 +52,41 @@ export type CaptureSurface = {
  * tested without a browser. Nothing else about a capture is replaceable.
  */
 export type CaptureDeps = {
-  openPreview(request: SurfaceRequest): Promise<CaptureSurface>;
-  openRender(request: SurfaceRequest): Promise<CaptureSurface>;
+  openPreview(request: SurfaceRequest, signal: AbortSignal): Promise<CaptureSurface>;
+  openRender(request: SurfaceRequest, signal: AbortSignal): Promise<CaptureSurface>;
 };
+
+/** A resource a surface took, and the one call that gives it back. */
+type Release = () => Promise<void>;
+
+/**
+ * Open a surface out of steps that each take a resource, or take none at all.
+ *
+ * A browser, a page, a server, and a temporary directory are taken one after
+ * another, and any of them can fail with the earlier ones already held. Each
+ * step hands back the call that gives its resource up, so a failure halfway
+ * through is given back in full, newest first, and a surface that opened gives
+ * the same resources back when it is closed.
+ */
+export async function assembleSurface(
+  build: (keep: (release: Release) => void) => Promise<CaptureSurface["capture"]>,
+): Promise<CaptureSurface> {
+  const taken: Release[] = [];
+  const giveBack = async (): Promise<void> => {
+    for (const release of taken.reverse()) {
+      await release().catch(() => undefined);
+    }
+    taken.length = 0;
+  };
+
+  try {
+    const capture = await build((release) => void taken.push(release));
+    return { capture, close: giveBack };
+  } catch (error) {
+    await giveBack();
+    throw error;
+  }
+}
 
 export type CapturedFrame = {
   readonly frame: number;
@@ -86,12 +119,15 @@ export async function captureReleaseFrames(options: {
   capsule: ReleaseCapsule;
   run: TemplateReleaseRun;
   deps?: CaptureDeps;
+  signal?: AbortSignal;
 }): Promise<readonly CapturedFrame[]> {
   const { capsule, run, deps = remotionCaptureDeps() } = options;
+  const signal = options.signal ?? new AbortController().signal;
   const publicDir = await mkdtemp(join(tmpdir(), "thoth-release-public-"));
   const opened: CaptureSurface[] = [];
 
   try {
+    signal.throwIfAborted();
     for (const asset of capsule.assets) {
       await copyFile(asset.path, join(publicDir, basename(asset.file)));
     }
@@ -118,13 +154,14 @@ export async function captureReleaseFrames(options: {
       durationInFrames: canvas.duration_in_frames,
     });
 
-    const preview = await deps.openPreview(request);
+    const preview = await deps.openPreview(request, signal);
     opened.push(preview);
-    const render = await deps.openRender(request);
+    const render = await deps.openRender(request, signal);
     opened.push(render);
 
     const captured: CapturedFrame[] = [];
     for (const frame of capsule.frames) {
+      signal.throwIfAborted();
       const pair = {
         frame,
         preview: run.previewFrame(frame),
@@ -255,27 +292,30 @@ export function remotionCaptureDeps(): CaptureDeps {
   return { openPreview, openRender };
 }
 
-async function openRender(request: SurfaceRequest): Promise<CaptureSurface> {
+async function openRender(request: SurfaceRequest, signal: AbortSignal): Promise<CaptureSurface> {
   const { bundle } = await import("@remotion/bundler");
   const { renderStill, selectComposition } = await import("@remotion/renderer");
 
-  const outDir = await mkdtemp(join(tmpdir(), "thoth-release-render-"));
-  const serveUrl = await bundle({
-    entryPoint: COMPOSITION_ENTRY_POINT,
-    outDir,
-    publicDir: request.publicDir,
-    publicPath: "/",
-    webpackOverride: rendererWebpackOverride as never,
-  });
-  const composition = await selectComposition({
-    serveUrl,
-    id: request.compositionId,
-    inputProps: request.inputProps,
-  });
-  assertCompositionGeometry(composition, request);
+  return assembleSurface(async (keep) => {
+    const outDir = await mkdtemp(join(tmpdir(), "thoth-release-render-"));
+    keep(() => rm(outDir, { recursive: true, force: true }));
 
-  return {
-    async capture(frame: number, output: string): Promise<void> {
+    const serveUrl = await bundle({
+      entryPoint: COMPOSITION_ENTRY_POINT,
+      outDir,
+      publicDir: request.publicDir,
+      publicPath: "/",
+      webpackOverride: rendererWebpackOverride as never,
+    });
+    const composition = await selectComposition({
+      serveUrl,
+      id: request.compositionId,
+      inputProps: request.inputProps,
+      timeoutInMilliseconds: READY_TIMEOUT_MS,
+    });
+    assertCompositionGeometry(composition, request);
+
+    return async (frame: number, output: string): Promise<void> => {
       await renderStill({
         composition,
         serveUrl,
@@ -286,42 +326,45 @@ async function openRender(request: SurfaceRequest): Promise<CaptureSurface> {
         scale: 1,
         chromiumOptions: RENDER_CHROMIUM_OPTIONS,
         logLevel: "error",
+        timeoutInMilliseconds: READY_TIMEOUT_MS,
+        // The same stop the run was given, in the token Remotion cancels on.
+        cancelSignal: toCancelSignal(signal),
       });
-    },
-    async close(): Promise<void> {
-      await rm(outDir, { recursive: true, force: true });
-    },
-  };
+    };
+  });
 }
 
-async function openPreview(request: SurfaceRequest): Promise<CaptureSurface> {
+async function openPreview(request: SurfaceRequest, signal: AbortSignal): Promise<CaptureSurface> {
   const { openBrowser } = await import("@remotion/renderer");
 
-  const outDir = await mkdtemp(join(tmpdir(), "thoth-release-preview-"));
-  await buildPreviewPage(outDir);
-  const server = servePreview(outDir, request);
-  const browser = await openBrowser("chrome", {
-    chromiumOptions: RENDER_CHROMIUM_OPTIONS,
-    forceDeviceScaleFactor: 1,
-    logLevel: "error",
-  });
-  const page = await newParityPage(browser, request.width, request.height);
+  return assembleSurface(async (keep) => {
+    const outDir = await mkdtemp(join(tmpdir(), "thoth-release-preview-"));
+    keep(() => rm(outDir, { recursive: true, force: true }));
 
-  return {
-    async capture(frame: number, output: string): Promise<void> {
+    await buildPreviewPage(outDir);
+    const server = servePreview(outDir, request);
+    keep(async () => void server.stop(true));
+
+    const browser = await openBrowser("chrome", {
+      chromiumOptions: RENDER_CHROMIUM_OPTIONS,
+      forceDeviceScaleFactor: 1,
+      logLevel: "error",
+    });
+    keep(() => browser.close({ silent: true }).then(() => undefined));
+
+    const page = await newParityPage(browser, request.width, request.height);
+    keep(() => page.close());
+
+    return async (frame: number, output: string): Promise<void> => {
+      signal.throwIfAborted();
       await page.goto({
         url: `http://${LOOPBACK}:${server.port}/?frame=${frame}`,
         timeout: READY_TIMEOUT_MS,
       });
-      await waitForPreview(page, frame);
+      await waitForPreview(page, frame, signal);
       await Bun.write(output, await screenshot(page, request));
-    },
-    async close(): Promise<void> {
-      await browser.close({ silent: true }).catch(() => undefined);
-      server.stop(true);
-      await rm(outDir, { recursive: true, force: true });
-    },
-  };
+    };
+  });
 }
 
 /** Bundle the page with this service's own bundler: no second toolchain. */
@@ -373,9 +416,14 @@ function servePreview(bundleDir: string, request: SurfaceRequest) {
   });
 }
 
-async function waitForPreview(page: ParityPage, frame: number): Promise<void> {
+async function waitForPreview(
+  page: ParityPage,
+  frame: number,
+  signal: AbortSignal,
+): Promise<void> {
   const deadline = Date.now() + READY_TIMEOUT_MS;
   for (;;) {
+    signal.throwIfAborted();
     const state = await page.evaluate(() => {
       return (window as unknown as Record<string, string | undefined>).__thothPreviewState;
     });

@@ -25,6 +25,7 @@ import {
   ReportUnsafe,
   assertSafeReport,
   promoteRelease,
+  underStopSignals,
   verifyRelease,
   type ReleaseReport,
 } from "./template-release";
@@ -288,7 +289,7 @@ test("the report carries release facts and nothing about this machine", async ()
   // An identity that does not look like one is reported as unknown, not echoed.
   expect(report.reference_image.image_id).toBe("unknown");
   expect(report.release).toBe(IDENTITY);
-  expect(report.capsule.assets.map((asset) => asset.file)).toContain("assets/image.png");
+  expect(report.capsule!.assets.map((asset) => asset.file)).toContain("assets/image.png");
 });
 
 test("a report that names a place on disk is refused before it is written", () => {
@@ -325,19 +326,23 @@ async function candidate(
   pixels: (surface: "preview" | "render", frame: number) => Uint8Array | null = () =>
     canvas(30, 60, 90),
 ): Promise<ReleaseReport> {
-  return verifyRelease(IDENTITY, artifacts, {
+  const report = await verifyRelease(IDENTITY, artifacts, {
     releaseRoot,
     ffmpeg: real,
     capture: captureWriting(pixels),
     environment: REFERENCE,
   });
+  if (report.capsule === null) {
+    throw new Error("the candidate was never verified against a capsule");
+  }
+  return report;
 }
 
-function runDirectory(report: ReleaseReport): string {
+function runDirectory(report: { run_id: string }): string {
   return join(workspace, "artifacts", "template-release", IDENTITY, report.run_id);
 }
 
-function promote(report: ReleaseReport, deps: Record<string, unknown> = {}): Promise<void> {
+function promote(report: { run_id: string }, deps: Record<string, unknown> = {}): Promise<void> {
   return promoteRelease(IDENTITY, artifacts, report.run_id, {
     releaseRoot,
     environment: REFERENCE,
@@ -378,6 +383,164 @@ async function refuses(promotion: Promise<void>, before: Record<string, string>)
   // A refused promotion is not a partial one: the capsule is what it was.
   expect(capsuleState()).toEqual(before);
 }
+
+/** What the real steps say when the reference environment breaks under them. */
+const CAPTURE_FAILURES = [
+  "the preview page could not be built",
+  "the bundler could not bundle the composition",
+  "no composition with the requested id was found",
+  "the browser could not be launched",
+  "a page could not be created",
+  "navigation to the preview never finished",
+  "the screenshot could not be written",
+  "renderStill could not draw the frame",
+];
+
+test("an operational failure closes the run with a capture failure", async () => {
+  for (const failure of CAPTURE_FAILURES) {
+    const report = await verifyRelease(IDENTITY, artifacts, {
+      releaseRoot,
+      ffmpeg: real,
+      environment: REFERENCE,
+      capture: async () => {
+        throw new Error(failure);
+      },
+    });
+
+    expect(report.verdict).toBe("capture_failed");
+    expect(report.frames).toHaveLength(0);
+    // The run is closed rather than abandoned: a report an operator can read,
+    // saying nothing about what the browser or the bundler had to say.
+    const written = JSON.parse(readFileSync(join(runDirectory(report), "report.json"), "utf8"));
+    expect(written).toEqual(report);
+    expect(JSON.stringify(report)).not.toContain(failure);
+  }
+});
+
+test("a decoder that cannot run is a capture failure, not an escape", async () => {
+  const report = await verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    environment: REFERENCE,
+    capture: captureWriting(() => canvas(30, 60, 90)),
+    ffmpeg: async () => {
+      throw new Error("ffmpeg exited with status 127");
+    },
+  });
+
+  expect(report.verdict).toBe("capture_failed");
+  expect(JSON.stringify(report)).not.toContain("127");
+  expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
+});
+
+test("a capsule nobody can load closes the run without drawing anything", async () => {
+  writeFileSync(join(capsule, "release.json"), "{ this is not a capsule");
+  let attempted = false;
+
+  const report = await verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    environment: REFERENCE,
+    capture: async () => {
+      attempted = true;
+      return [];
+    },
+  });
+
+  // A contract failure before the browser is a contract failure without one.
+  expect(attempted).toBe(false);
+  expect(report.verdict).toBe("contract_failed");
+  expect(report.release).toBe(IDENTITY);
+  // Facts this run never had are absent, not invented.
+  expect(report.capsule).toBeNull();
+  expect(report.composition).toBeNull();
+  expect(report.golden_set).toBeNull();
+  expect(report.frames).toHaveLength(0);
+  expect(JSON.parse(readFileSync(join(runDirectory(report), "report.json"), "utf8"))).toEqual(
+    report,
+  );
+});
+
+test("no failure report is ever promotable", async () => {
+  const broken = JSON.parse(readFileSync(join(capsule, "release.json"), "utf8"));
+  writeFileSync(join(capsule, "release.json"), "{ this is not a capsule");
+  const incomplete = await verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    environment: REFERENCE,
+    capture: async () => [],
+  });
+  writeFileSync(join(capsule, "release.json"), JSON.stringify(broken, null, 2));
+
+  const failed = await verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    environment: REFERENCE,
+    capture: async () => {
+      throw new Error("the browser could not be launched");
+    },
+  });
+  const before = capsuleState();
+
+  await refuses(promote(incomplete), before);
+  await refuses(promote(failed), before);
+});
+
+test("a capture that outlasts its deadline is a capture failure", async () => {
+  const report = await verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    environment: REFERENCE,
+    deadlineMs: 25,
+    // A surface that has stopped answering, which is what a wedged browser is.
+    capture: () => new Promise<never>(() => {}),
+  });
+
+  expect(report.verdict).toBe("capture_failed");
+  expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
+});
+
+test("a verifier asked to stop hands its capture the same abort", async () => {
+  const operator = new AbortController();
+  let given: AbortSignal | undefined;
+
+  const report = await verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    environment: REFERENCE,
+    signal: operator.signal,
+    capture: (options) =>
+      new Promise<never>(() => {
+        given = options.signal;
+        operator.abort();
+      }),
+  });
+
+  expect(given?.aborted).toBe(true);
+  expect(report.verdict).toBe("capture_failed");
+});
+
+test("a stoppable verifier leaves no signal handlers behind", async () => {
+  const before = {
+    interrupt: process.listenerCount("SIGINT"),
+    terminate: process.listenerCount("SIGTERM"),
+  };
+  let given: AbortSignal | undefined;
+
+  const answer = await underStopSignals(async (signal) => {
+    given = signal;
+    expect(process.listenerCount("SIGINT")).toBe(before.interrupt + 1);
+    expect(process.listenerCount("SIGTERM")).toBe(before.terminate + 1);
+    // The operator's interrupt, delivered to the handler this call installed.
+    (process.listeners("SIGINT").at(-1) as () => void)();
+    expect(signal.aborted).toBe(true);
+    return "verified";
+  });
+
+  expect(answer).toBe("verified");
+  expect(given?.aborted).toBe(true);
+  expect(process.listenerCount("SIGINT")).toBe(before.interrupt);
+  expect(process.listenerCount("SIGTERM")).toBe(before.terminate);
+});
 
 test("promotion turns one approved candidate into an immutable golden set", async () => {
   const report = await candidate();
