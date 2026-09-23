@@ -76,7 +76,10 @@ RUN test -w /var/lib/thoth/artifacts \
     && test -x /usr/bin/ffprobe \
     && /usr/bin/ffprobe -version >/dev/null 2>&1 \
     && test -d /opt/thoth/renderer/node_modules/.remotion \
-    && test -r /opt/thoth/packages/remotion-composition/src/register.tsx     && test ! -e /opt/thoth/renderer/src/release-preview-entry.tsx     && test ! -e /opt/thoth/renderer/src/release-capture.tsx     && test ! -d /opt/thoth/packages/remotion-composition/releases \
+    && test -r /opt/thoth/packages/remotion-composition/src/register.tsx \
+    && test ! -e /opt/thoth/renderer/src/release-preview-entry.tsx \
+    && test ! -e /opt/thoth/renderer/src/release-capture.tsx \
+    && test ! -d /opt/thoth/packages/remotion-composition/releases \
     && bun --eval "await import('/opt/thoth/renderer/src/server.ts')" \
     && bun --eval "const { loadRendererConfig } = await import('/opt/thoth/renderer/src/config.ts'); \
         const c = loadRendererConfig({ \
