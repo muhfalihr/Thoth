@@ -90,15 +90,26 @@ function controlPlaneOrigin(environment: Environment): string {
   return raw.replace(/\/+$/, "");
 }
 
+/**
+ * The one output root, for a caller that holds no control-plane capability.
+ *
+ * The template-release verifier renders offline and reports to nobody, so it is
+ * given the root and nothing else: no credential to leak and no origin to call.
+ */
+export function loadArtifactRoot(environment: Environment): string {
+  const artifactRoot = required(environment, "THOTH_CONTROL_PLANE_ARTIFACT_ROOT");
+  if (!isContainerRoot(artifactRoot)) {
+    throw new RendererConfigInvalid("THOTH_CONTROL_PLANE_ARTIFACT_ROOT");
+  }
+  return artifactRoot;
+}
+
 export function loadRendererConfig(environment: Environment): RendererConfig {
   const credential = required(environment, "THOTH_RENDERER_INTERNAL_CREDENTIAL");
   if (credential.length < MIN_CREDENTIAL_LENGTH) {
     throw new RendererConfigInvalid("THOTH_RENDERER_INTERNAL_CREDENTIAL");
   }
-  const artifactRoot = required(environment, "THOTH_CONTROL_PLANE_ARTIFACT_ROOT");
-  if (!isContainerRoot(artifactRoot)) {
-    throw new RendererConfigInvalid("THOTH_CONTROL_PLANE_ARTIFACT_ROOT");
-  }
+  const artifactRoot = loadArtifactRoot(environment);
   return Object.freeze({
     port: integer(environment, "THOTH_RENDERER_PORT", 8080, 1, 65535),
     credential,

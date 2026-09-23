@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { RendererConfigInvalid, loadRendererConfig } from "./config";
+import { RendererConfigInvalid, loadArtifactRoot, loadRendererConfig } from "./config";
 
 const COMPLETE = {
   THOTH_RENDERER_INTERNAL_CREDENTIAL: "internal-credential-value",
@@ -74,6 +74,33 @@ describe("loadRendererConfig", () => {
     const serialized = JSON.stringify(config);
     for (const secret of ["postgresql", "creator-key", "provider-secret", "docker.sock"]) {
       expect(serialized).not.toContain(secret);
+    }
+  });
+});
+
+describe("loadArtifactRoot", () => {
+  test("reads the one output root without demanding any capability", () => {
+    // The template-release verifier renders offline and reports to nobody, so
+    // it must not need the credential or control-plane URL a render job needs.
+    expect(loadArtifactRoot({ THOTH_CONTROL_PLANE_ARTIFACT_ROOT: "/srv/artifacts" })).toBe(
+      "/srv/artifacts",
+    );
+  });
+
+  test("applies the same root rules the render service applies", () => {
+    for (const value of [
+      undefined,
+      "",
+      "relative/path",
+      "/srv/artifacts/",
+      "/srv/../escape",
+      "/srv/./artifacts",
+      "/srv//artifacts",
+      "C:\srv\artifacts",
+    ]) {
+      expect(() => loadArtifactRoot({ THOTH_CONTROL_PLANE_ARTIFACT_ROOT: value })).toThrow(
+        RendererConfigInvalid,
+      );
     }
   });
 });

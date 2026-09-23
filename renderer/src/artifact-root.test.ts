@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -294,5 +304,99 @@ describe("RendererArtifactRoot", () => {
     await expect(local.verifyTemporaryOutput("rj_001", EXPECTED)).rejects.toBeInstanceOf(
       ArtifactUnavailable,
     );
+  });
+});
+
+describe("createTemplateReleaseRun", () => {
+  const IDENTITY = "vertical_text_story-v1";
+
+  test("gives one run its own bounded tree below the artifact root", async () => {
+    const run = await artifacts().createTemplateReleaseRun(IDENTITY, "run_aaa");
+    const expected = join(root, "template-release", IDENTITY, "run_aaa");
+
+    expect(run.runId).toBe("run_aaa");
+    expect(run.directory).toBe(expected);
+    expect(run.previewFrame(0)).toBe(join(expected, "preview", "frame-000000.png"));
+    expect(run.renderFrame(89)).toBe(join(expected, "render", "frame-000089.png"));
+    expect(run.diffFrame(30)).toBe(join(expected, "diff", "frame-000030.png"));
+    expect(run.contactSheet).toBe(join(expected, "contact-sheet.png"));
+    expect(run.report).toBe(join(expected, "report.json"));
+
+    // Every declared directory exists, so a capture never creates its own.
+    for (const name of ["preview", "render", "diff"]) {
+      expect(statSync(join(expected, name)).isDirectory()).toBe(true);
+    }
+  });
+
+  test("restricts the run directory to its owner where the platform allows", async () => {
+    const run = await artifacts().createTemplateReleaseRun(IDENTITY, "run_aaa");
+    if (process.platform === "win32") return;
+    expect(statSync(run.directory).mode & 0o777).toBe(0o700);
+  });
+
+  test("accepts only a validated identity and run id", async () => {
+    const local = artifacts();
+    const hostile = ["..", "../escape", "/etc", "a/b", "", ".", "_leading", "a".repeat(200)];
+    for (const value of hostile) {
+      await expect(local.createTemplateReleaseRun(value, "run_aaa")).rejects.toBeInstanceOf(
+        ArtifactPathInvalid,
+      );
+      await expect(local.createTemplateReleaseRun(IDENTITY, value)).rejects.toBeInstanceOf(
+        ArtifactPathInvalid,
+      );
+    }
+  });
+
+  test("accepts only a frame number that can name a file", async () => {
+    const run = await artifacts().createTemplateReleaseRun(IDENTITY, "run_aaa");
+    for (const frame of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 1000000]) {
+      expect(() => run.previewFrame(frame)).toThrow(ArtifactPathInvalid);
+      expect(() => run.renderFrame(frame)).toThrow(ArtifactPathInvalid);
+      expect(() => run.diffFrame(frame)).toThrow(ArtifactPathInvalid);
+    }
+  });
+
+  test("replaces the report atomically and leaves no partial file behind", async () => {
+    const run = await artifacts().createTemplateReleaseRun(IDENTITY, "run_aaa");
+    await run.writeReport({ verdict: "capture_failed" });
+    await run.writeReport({ verdict: "pass" });
+
+    expect(JSON.parse(readFileSync(run.report, "utf8"))).toEqual({ verdict: "pass" });
+    expect(readdirSync(run.directory).filter((name) => name.endsWith(".json"))).toEqual([
+      "report.json",
+    ]);
+  });
+
+  test("refuses a run reached through a link", async () => {
+    const outside = join(root, "outside");
+    mkdirSync(outside, { recursive: true });
+    mkdirSync(join(root, "template-release"), { recursive: true });
+    symlinkSync(outside, join(root, "template-release", IDENTITY), "junction");
+    await expect(
+      artifacts().createTemplateReleaseRun(IDENTITY, "run_aaa"),
+    ).rejects.toBeInstanceOf(ArtifactPathInvalid);
+  });
+
+  test("removes only the one run it owns", async () => {
+    const local = artifacts();
+    const mine = await local.createTemplateReleaseRun(IDENTITY, "run_aaa");
+    const other = await local.createTemplateReleaseRun(IDENTITY, "run_bbb");
+    await mine.writeReport({ verdict: "pass" });
+
+    await mine.remove();
+
+    expect(existsSync(mine.directory)).toBe(false);
+    expect(existsSync(other.directory)).toBe(true);
+    expect(existsSync(join(root, "template-release", IDENTITY))).toBe(true);
+    expect(existsSync(root)).toBe(true);
+  });
+
+  test("never repeats the root or an offending value in its failure", async () => {
+    const failure = await artifacts()
+      .createTemplateReleaseRun(IDENTITY, "../shadow-secret-run")
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ArtifactPathInvalid);
+    expect(String(failure)).not.toContain("shadow-secret-run");
+    expect(String(failure)).not.toContain(root);
   });
 });

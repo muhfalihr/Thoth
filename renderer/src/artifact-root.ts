@@ -16,7 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, open, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import type { RenderBundleAsset } from "./contracts";
@@ -40,6 +40,13 @@ const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/;
 const OUTPUT_NAME = "output.mp4";
 const CLAIMS_DIRECTORY = "claims";
 const CLAIM_SUFFIX = ".claimed";
+/** Where every template-release run this service generates is kept. */
+const RELEASE_DIRECTORY = "template-release";
+const RELEASE_SURFACES = ["preview", "render", "diff"] as const;
+const FRAME_DIGITS = 6;
+const MAX_FRAME = 10 ** FRAME_DIGITS - 1;
+const REPORT_NAME = "report.json";
+const CONTACT_SHEET_NAME = "contact-sheet.png";
 
 /** Whether this process is the one that may run a dispatch, or a later copy. */
 export type DispatchClaim = "claimed" | "replay";
@@ -82,6 +89,27 @@ export type ExpectedOutput = {
 const AUDIO_CODEC = "aac";
 
 export type ProbeMedia = (path: string) => Promise<MediaProbe>;
+
+/**
+ * One template-release verification run, and the only place its files may go.
+ *
+ * The handle names every path the run is allowed to write. Nothing outside this
+ * module composes one, so a capture, a comparison, and a report cannot disagree
+ * about where they are, and none of them can be handed a root of its own.
+ */
+export type TemplateReleaseRun = {
+  readonly runId: string;
+  readonly directory: string;
+  readonly contactSheet: string;
+  readonly report: string;
+  previewFrame(frame: number): string;
+  renderFrame(frame: number): string;
+  diffFrame(frame: number): string;
+  /** Replace the whole report in one step, so no reader sees half of one. */
+  writeReport(report: unknown): Promise<void>;
+  /** Delete this run and only this run, leaving every sibling untouched. */
+  remove(): Promise<void>;
+};
 
 /** Encoding rounds the last frame, so allow a frame either way, never a scene. */
 function durationTolerance(fps: number): number {
@@ -256,6 +284,67 @@ export class RendererArtifactRoot {
       duration_seconds: probe.durationSeconds,
       has_audio: probe.hasAudio,
     };
+  }
+
+  /**
+   * Open one run directory for one release, and hand back the only way in.
+   *
+   * The whole tree is created up front, so a later capture writes into a
+   * directory this method already proved is contained, real, and unlinked.
+   */
+  async createTemplateReleaseRun(identity: string, runId: string): Promise<TemplateReleaseRun> {
+    const release = this.#identifier(identity);
+    const run = this.#identifier(runId);
+    const directory = this.#contained(RELEASE_DIRECTORY, release, run);
+    await this.#assertLinkFree(directory);
+
+    try {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      // mkdir honours the process umask, which is not this service's to assume.
+      await chmod(directory, 0o700);
+      for (const surface of RELEASE_SURFACES) {
+        await mkdir(join(directory, surface), { recursive: true, mode: 0o700 });
+      }
+    } catch {
+      throw new ArtifactUnavailable();
+    }
+
+    const surface = (name: string, frame: number): string =>
+      this.#contained(RELEASE_DIRECTORY, release, run, name, this.#frameName(frame));
+    const report = this.#contained(RELEASE_DIRECTORY, release, run, REPORT_NAME);
+
+    return Object.freeze({
+      runId: run,
+      directory,
+      contactSheet: this.#contained(RELEASE_DIRECTORY, release, run, CONTACT_SHEET_NAME),
+      report,
+      previewFrame: (frame: number) => surface("preview", frame),
+      renderFrame: (frame: number) => surface("render", frame),
+      diffFrame: (frame: number) => surface("diff", frame),
+      writeReport: async (value: unknown) => {
+        const staging = `${report}.tmp`;
+        await this.#assertLinkFree(report);
+        try {
+          await writeFile(staging, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+          await rename(staging, report);
+        } catch {
+          await rm(staging, { force: true });
+          throw new ArtifactUnavailable();
+        }
+      },
+      remove: async () => {
+        await this.#assertLinkFree(directory);
+        await rm(directory, { recursive: true, force: true });
+      },
+    });
+  }
+
+  /** A frame becomes a file name only if it can be one: a bounded whole frame. */
+  #frameName(frame: number): string {
+    if (!Number.isInteger(frame) || frame < 0 || frame > MAX_FRAME) {
+      throw new ArtifactPathInvalid();
+    }
+    return `frame-${String(frame).padStart(FRAME_DIGITS, "0")}.png`;
   }
 
   #identifier(value: string): string {

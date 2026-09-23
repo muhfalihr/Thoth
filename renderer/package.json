@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun run src/server.ts",
     "test": "bun test",
-    "schema": "bun run scripts/extract-document-schema.ts"
+    "schema": "bun run scripts/extract-document-schema.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@remotion/bundler": "4.0.523",
