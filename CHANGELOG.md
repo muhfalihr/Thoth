@@ -2,6 +2,200 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-23 - Revision-bound render job verified offline end to end (E1 Task 14)
+
+Task 14 runs no new product behaviour. It re-derives, from a clean worktree,
+every claim the twenty-five commits of this feature have made, and writes down
+what was actually observed.
+
+Baseline `20e7aa14bad82cccfc6ef6b751b5c48e2c7c6461`, final
+`68987fe4ddb75a5e5240af345c7bd6a6d212d297`, branch `codex/stage1-container-ci`,
+26 commits ahead of `origin/codex/stage1-container-ci` and 0 behind, worktree
+clean before and after every gate. The 25 feature commits, oldest first:
+`4f76617` plan, `586ce45` domain, `c48a0ee` schema, `e437701` repository,
+`f717996` artifact paths, `c1a7a18` bundles, `d6898e4` private gateway,
+`41c4475` lifecycle, `871e64c` public and private APIs, `d407017` shared
+composition, `fb9c795` isolated renderer, `bab60e3` operator-owned GPL v3.0
+license change, `7418404` renderer review gaps, `33d52a4` replay contract,
+`06528fa` dispatch claims, `4b827b8` cancellation during claim, `89bb6b8`
+browser render client, `18a8639` client state contracts, `7da6146` monotonic
+snapshots, `90d3062` Creator Studio render controls, `8a7ebb4` panel recovery
+gaps, `1ad98fd` reload recovery, `c44d86b` valid composition id, `cfc1402`
+render-stack gate, `68987fe` render-stack review gaps.
+
+Scope and security, re-derived from `git diff 20e7aa1...HEAD` across 97 files
+(23278 insertions, 1969 deletions):
+
+- No queue, broker, or object store. A search for boto3, S3, AWS, Celery,
+  RabbitMQ, Kafka, Redis, SQS, pika, dramatiq, and arq across every render
+  module, the renderer source, `Dockerfile.renderer`, and the render overlay
+  returns nothing. `python/pyproject.toml`, `python/uv.lock`, and
+  `dashboard/package.json` are byte-identical to the baseline, so the feature
+  added no dependency at all.
+- One output root. `THOTH_CONTROL_PLANE_ARTIFACT_ROOT` is the only artifact
+  setting and `LocalArtifactRoot` is constructed exactly once, in `app.py`.
+- Nothing private reaches the public contract. The internal router is built
+  with `include_in_schema=False` and each of its routes repeats it. In
+  `python/openapi.json` and `dashboard/src/api/generated/control-plane.ts` the
+  strings `internal`, `artifact_root`, `output_relative_path`, `renderer_url`,
+  `bundle_path`, `Bearer`, and `/var/lib/thoth` appear zero times. The only
+  occurrence of `dispatch` is the fixed public failure code
+  `render_dispatch_failed`; the only occurrence of `credential` is a
+  pre-existing provider-catalog docstring. `RenderOutputView` carries media
+  facts and a checksum but no locator, and `RenderJobView` carries no path,
+  dispatch id, or credential.
+- The renderer holds no control-plane capability. `renderer/src/config.ts`
+  reads exactly six inputs: the internal credential, the control-plane URL, the
+  artifact root, the port, the version, and the render ceiling. No database,
+  provider, Creator Studio, Temporal, Docker-socket, or browser-profile
+  reference exists anywhere in `renderer/src` or `Dockerfile.renderer`, and the
+  image's own final build step asserts the absence of `THOTH_EDITOR_DATABASE_URL`,
+  `THOTH_CONTROL_PLANE_API_KEY`, `THOTH_PROMPT_PROVIDER_SECRETS`, `DOCKER_HOST`,
+  `/var/run/docker.sock`, `python3`, and `psql`.
+- The browser chooses nothing but which saved revision to render.
+  `CreateRenderJobRequest` is a strict model of `document_id` and
+  `document_revision`. The composition id is the server-side literal
+  `advanced-timeline-v1`, the codec is the renderer-side constant `h264`, and
+  the composition entry point is pinned to the repository path; the image build
+  proves both that the entry point is not configurable and that it resolves to
+  the repository composition. No renderer URL, artifact root, codec, or
+  filesystem path appears anywhere in `dashboard/src`.
+- Nothing unrelated moved. Not one `.rs` file and not one file under `scout/`
+  changed since the baseline. The only manifest edits are the five
+  `license.workspace = true` lines and one `license` key belonging to the
+  operator-owned `bab60e3`.
+
+Python gates, all from the frozen environment (`uv sync --frozen --all-groups
+--extra acquisition`, 70 packages audited, no change): the non-live suite is
+**1587 passed, 32 skipped, 3 deselected, 29 warnings** in 42.24s; the deployment
+suite alone is **283 passed, 29 skipped**; `ruff check` reports all checks
+passed; `ruff format --check` reports 157 files already formatted. The 29
+warnings are pre-existing and unrelated to rendering: asyncio marks on
+synchronous provider tests, and Pydantic serialisation notices in the source
+investigation workflow.
+
+Generated contracts are stable. `python/scripts/export_openapi.py` and
+`generate:control-plane-types` were each run twice. Both runs produced
+byte-identical output, and both match what the repository already tracks, so the
+worktree stayed clean throughout:
+
+    python/openapi.json
+      8b3f9844878ca658aad2f72572f5ad4b513465dee0ed2137837310ecece7056c
+    dashboard/src/api/generated/control-plane.ts
+      7343e5fbbcc81aa202c55a4a66380a12fd4072dc41feef3046c6a440a27d98d2
+
+Dashboard gates. The suite was run three consecutive times and gave the same
+result every time: **467 pass, 0 fail, 1447 expect() calls across 31 files**
+(31.70s, 26.14s, 26.66s). `oxlint` exits 0 with **4 warnings and 0 errors**, all
+four in files this feature never touched (`button.tsx`, `badge.tsx`,
+`PromptProposalPanel.tsx`, `Discovery.tsx`). The production build succeeds in
+641ms and emits one advisory chunk-size notice for the pre-existing
+829.77 kB bundle.
+
+Renderer gates. `bun install --frozen-lockfile` audits 182 installs across 227
+packages with no change; `bun test` is **95 pass, 0 fail, 351 expect() calls
+across 8 files**; `tsc -p tsconfig.json --noEmit`, run from the renderer
+directory because Bun does not forward `--cwd` to the spawned executable, exits 0
+with no diagnostic.
+
+Renderer image. `docker build -f Dockerfile.renderer -t
+thoth-remotion-renderer:e1-local .` exits 0 with every layer cached, so it
+reproduces the image already on the machine rather than a new one. Its identity,
+read straight from `docker image inspect`, is
+`sha256:9f98862cff6b3176afef1c2cb960de27761e25e60dc2b4932b5aac51ceeb86aa`,
+created 2026-09-21T22:07:10+07:00. Its runtime user is `thoth`, which resolves
+inside the image to `uid=10001(thoth) gid=10001(thoth)`; it exposes 8080/tcp to
+its own network only and is entered through `tini`. Nothing was pulled from or
+substituted by a registry. The control plane side of the smoke used the existing
+local `thoth-stage1:e1-local`
+`sha256:d42c352e0fc4419160fa8bb98b6bf086bb05cefdc7b15fc7f766a6f22592cc0e`.
+
+One correction belongs in this record. The Task 13 corrective entry below states
+the renderer image id as `c0f3e4c33356`. That value is wrong: `docker image
+inspect` reports `9f98862cff6b...` for the same tag with the same
+2026-09-21T22:07:10 creation time, and no image whose id begins `c0f3e4c3`
+exists on the machine. The earlier reading passed through an output-compressing
+command proxy that rewrote the digest. Every hash in this entry was read with
+that proxy bypassed. No image was rebuilt or retagged to make this true; only
+the record was wrong.
+
+Synthetic render smoke, the self-cleaning offline harness, run once end to end
+against those two local images and exiting 0. Every verdict:
+
+    api_healthz_ready=true
+    api_readyz_ready=true
+    renderer_runs_unprivileged=true
+    renderer_host_binding_absent=true
+    renderer_holds_no_control_plane_capability=true
+    render_output_is_h264_mp4=true
+    render_output_checksum_matches=true
+    render_output_inside_artifact_root=true
+    second_render_is_refused=true
+    no_waiting_row_was_created=true
+    cancel_leaves_no_published_output=true
+    deadline_failure_code=render_deadline_exceeded
+    deadline_fails_without_publishing=true
+    teardown_leaves_nothing=true
+
+The observed facts behind them. Codec and media: `ffprobe` reports one h264
+video stream at 1080x1920 and 30/1 fps and one aac audio stream, in an
+`mov,mp4,m4a,3gp,3g2,mj2` container, 2.048 s long and 214645 bytes, checksum
+`8d756b99ac06e2bb958dc724df35459d59aba1dbc3c5c26831110e402b07d354`, which is the
+checksum the control plane published. Path: the published bytes live under the
+one artifact root, at the canonical per-job location, and the harness finds no
+`output.mp4` anywhere else. Concurrency: a second render against a busy renderer
+is refused outright, and no waiting row is written, because the E1 renderer has
+one slot and no queue. Cancellation: a render cancelled mid-flight publishes
+nothing. Timeout: a render that outlasts its deadline ends `failed` with exactly
+`render_deadline_exceeded`, not with a bundle, engine, dispatch, or output code,
+and publishes nothing. Cleanup: after teardown no `stage1-renderer-smoke-*`
+container, network, or volume remains, no harness temporary root survives under
+`/tmp`, and the operator's own inventory still reads seven containers, five
+networks, and four volumes. No prune or broad deletion was issued at any point.
+The media size and checksum differ from the previous run because the harness
+regenerates its synthetic source with fresh random ids each time.
+
+Compose, all four shapes, none of which starts anything. Base stack with every
+renderer input absent, against a synthetic environment created outside the
+repository and deleted immediately afterwards: exit 0, seven services, zero
+renderer tokens in the rendered configuration. Base stack with both renderer
+variables blanked against the tracked example: exit 0. Base plus
+`compose.stage1.renderer.yml` with both inputs present: exit 0, eight services,
+the API holding `THOTH_RENDERER_INTERNAL_URL` and the credential together, the
+renderer on its digest with no published port. Image supplied without the
+credential: exit 1. Credential supplied without the image: exit 1. The operator
+stack was never started, restarted, or recreated.
+
+Mandatory repository regressions. `build_cuda.bat`, run from native PowerShell,
+exits 0; `build_log.txt` was rewritten at 2026-09-23 11:58:31 and contains no
+error, warning, failure, or panic, only the two `Finished release profile` lines
+and the harmless `vswhere.exe is not recognized` notice the script recovers from
+by using its configured Visual Studio path. `target/release/thoth.exe` keeps its
+2026-08-31 timestamp because no Rust source changed in this feature at all.
+`cargo test --bin thoth` exits 0 and reports 0 passed, 0 failed: that binary
+target carries no unit tests. Scout: `bun install --frozen-lockfile` audits 17
+installs across 18 packages with no change, `test:acquisition` exits 0 with 140
+`ok` lines and no `not ok` line, and `test:runtime` is 126 pass, 0 fail, 316
+expect() calls across 13 files. `git diff --check` is clean, and `graphify
+update .` reports no code-graph topology change, which is what a verification
+task should produce.
+
+Known limitations, unchanged and deliberate for E1: one output row per job, one
+composition, one preset, one active execution, a native HTTP server and client
+with no queue or broker, and the local filesystem as the only store. A render is
+bound to an exact saved revision, so a later revision needs a new job. The
+renderer holds a single slot, so a second concurrent render is refused rather
+than queued. Artifact cleanup is explicit, not scheduled.
+
+Non-live boundary. Everything above is synthetic and offline. No real project,
+revision, asset, credential, provider, TikTok, CDN, or browser request took
+place. Nothing was pushed, fetched, pulled, published, tagged, released, or
+logged in to a registry. No deployment, restart, recreation, or mutation of the
+operator stack occurred, no migration ran against an operator database, and no
+Stage 1 evidence, observation, aggregate, or Issue #5 was touched. No parity,
+controlled fallback, acceptance, or soak operation ran, and no later render
+phase was begun.
+
 ## 2026-09-23 - Rendering became opt-in, and two smoke verdicts stopped overstating (E1 Task 13 corrective)
 
 Review of the Task 13 gate found three things the gate itself could not have
