@@ -7,3 +7,8 @@ docker/start-parity-reference text eol=lf
 # formatter or a Linux consumer rejects it.
 *.ts text eol=lf
 *.py text eol=lf
+
+# The tracked release capsule is pinned by digest: its media and its typeface
+# must arrive from any checkout as the exact bytes that were committed.
+packages/remotion-composition/releases/*/assets/** binary
+packages/remotion-composition/src/typeface/*.ttf binary

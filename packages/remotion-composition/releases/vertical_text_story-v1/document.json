@@ -1,0 +1,191 @@
+{
+  "schema_version": 2,
+  "document_id": "doc_vertical_text_story_v1",
+  "project_id": "project_template_release",
+  "revision": 1,
+  "template": { "template_id": "vertical_text_story", "version": 1 },
+  "canvas": { "width": 1080, "height": 1920, "fps": 30, "duration_in_frames": 120 },
+  "scenes": [
+    {
+      "scene_id": "scene_title",
+      "role": "title",
+      "start_frame": 0,
+      "duration_in_frames": 60,
+      "clip_ids": ["clip_title"]
+    },
+    {
+      "scene_id": "scene_source",
+      "role": "source",
+      "start_frame": 60,
+      "duration_in_frames": 60,
+      "clip_ids": ["clip_body"]
+    }
+  ],
+  "tracks": [
+    { "track_id": "track_main", "kind": "main_video", "label": "Main", "order": 0 },
+    { "track_id": "track_story", "kind": "overlay", "label": "Story", "order": 1 },
+    { "track_id": "track_badge", "kind": "overlay", "label": "Badge", "order": 2 },
+    { "track_id": "track_caption", "kind": "caption", "label": "Caption", "order": 3 },
+    { "track_id": "track_score", "kind": "music", "label": "Score", "order": 4, "muted": true },
+    { "track_id": "track_spare", "kind": "b_roll", "label": "Spare", "order": 5, "hidden": true }
+  ],
+  "clips": [
+    {
+      "clip_id": "clip_still",
+      "track_id": "track_main",
+      "scene_id": "scene_title",
+      "from_frame": 0,
+      "duration_in_frames": 60,
+      "ownership": "ai_managed",
+      "kind": "video",
+      "asset_id": "asset_image",
+      "crop": { "left": 0.1, "top": 0.05, "width": 0.8, "height": 0.9 },
+      "position": { "x": 0.02, "y": -0.03, "scale": 1.05 },
+      "fit": "cover"
+    },
+    {
+      "clip_id": "clip_motion",
+      "track_id": "track_main",
+      "scene_id": "scene_source",
+      "from_frame": 60,
+      "duration_in_frames": 60,
+      "ownership": "ai_managed",
+      "kind": "video",
+      "asset_id": "asset_video",
+      "fit": "contain",
+      "source_from_frame": 0
+    },
+    {
+      "clip_id": "clip_title",
+      "track_id": "track_story",
+      "scene_id": "scene_title",
+      "from_frame": 0,
+      "duration_in_frames": 60,
+      "ownership": "ai_managed",
+      "kind": "text",
+      "heading": "Preview and render agree",
+      "body": "Every glyph on this frame is drawn with the typeface this package carries.",
+      "style_slot": "title"
+    },
+    {
+      "clip_id": "clip_body",
+      "track_id": "track_story",
+      "scene_id": "scene_source",
+      "from_frame": 60,
+      "duration_in_frames": 60,
+      "ownership": "user_edited",
+      "kind": "text",
+      "heading": "Or the release does not ship",
+      "body": "A changed pixel is a failed comparison, never a tolerance.",
+      "style_slot": "source"
+    },
+    {
+      "clip_id": "clip_withheld",
+      "track_id": "track_story",
+      "from_frame": 0,
+      "duration_in_frames": 120,
+      "ownership": "ai_managed",
+      "kind": "text",
+      "heading": "Hidden clip",
+      "body": "A hidden clip on a visible track must never reach either surface.",
+      "style_slot": "title",
+      "hidden": true
+    },
+    {
+      "clip_id": "clip_badge",
+      "track_id": "track_badge",
+      "from_frame": 0,
+      "duration_in_frames": 60,
+      "ownership": "ai_managed",
+      "kind": "overlay",
+      "preset_id": "badge",
+      "parameters": { "accent_slot": "accent_primary", "text": "Release capsule" }
+    },
+    {
+      "clip_id": "clip_lower_third",
+      "track_id": "track_badge",
+      "from_frame": 60,
+      "duration_in_frames": 60,
+      "ownership": "ai_managed",
+      "kind": "overlay",
+      "preset_id": "lower_third",
+      "parameters": { "accent_slot": "accent_secondary", "text": "vertical_text_story v1" }
+    },
+    {
+      "clip_id": "clip_progress",
+      "track_id": "track_badge",
+      "from_frame": 0,
+      "duration_in_frames": 120,
+      "ownership": "ai_managed",
+      "kind": "overlay",
+      "preset_id": "progress_bar"
+    },
+    {
+      "clip_id": "clip_caption",
+      "track_id": "track_caption",
+      "from_frame": 0,
+      "duration_in_frames": 120,
+      "ownership": "ai_managed",
+      "kind": "caption",
+      "style_slot": "caption_default",
+      "cues": [
+        { "from_frame": 0, "duration_in_frames": 40, "text": "A cue the still frame must carry." },
+        { "from_frame": 40, "duration_in_frames": 40, "text": "A cue that changes on a boundary." },
+        { "from_frame": 80, "duration_in_frames": 40, "text": "A cue that closes the timeline." }
+      ]
+    },
+    {
+      "clip_id": "clip_score",
+      "track_id": "track_score",
+      "from_frame": 0,
+      "duration_in_frames": 120,
+      "ownership": "ai_managed",
+      "kind": "audio",
+      "asset_id": "asset_audio",
+      "volume": 0.8,
+      "fade_in_frames": 15,
+      "fade_out_frames": 15,
+      "source_from_frame": 0
+    },
+    {
+      "clip_id": "clip_spare",
+      "track_id": "track_spare",
+      "from_frame": 0,
+      "duration_in_frames": 120,
+      "ownership": "ai_managed",
+      "kind": "video",
+      "asset_id": "asset_video",
+      "fit": "cover"
+    }
+  ],
+  "asset_refs": [
+    {
+      "asset_id": "asset_image",
+      "project_id": "project_template_release",
+      "kind": "image",
+      "has_audio": false,
+      "validation_state": "ready",
+      "width": 540,
+      "height": 960
+    },
+    {
+      "asset_id": "asset_video",
+      "project_id": "project_template_release",
+      "kind": "video",
+      "has_audio": true,
+      "validation_state": "ready",
+      "width": 360,
+      "height": 640,
+      "fps": 30,
+      "duration_in_frames": 60
+    },
+    {
+      "asset_id": "asset_audio",
+      "project_id": "project_template_release",
+      "kind": "audio",
+      "has_audio": true,
+      "validation_state": "ready",
+      "duration_in_frames": 120
+    }
+  ]
+}

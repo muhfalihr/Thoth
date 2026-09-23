@@ -103,6 +103,10 @@ api_key.txt
 # suite imports, plans and renders. Must survive the *.mp4 / *.jpg rules above.
 !crates/thoth-core/tests/fixtures/scout_package/**
 
+# Committed template release capsule: the synthetic media the preview/render
+# parity gate renders. Must survive the *.mp4 / *.wav rules above.
+!packages/remotion-composition/releases/**
+
 # ── TikTok Stage 1 soak: never commit observation data or partial writes ────
 tiktok-stage1-soak-observations*.jsonl
 tiktok-stage1-soak-report.json.part

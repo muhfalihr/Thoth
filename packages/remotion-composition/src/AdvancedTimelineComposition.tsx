@@ -4,6 +4,7 @@ import type { CSSProperties, ReactNode } from "react";
 import type { AssetKind, EditDocumentV2, TimelineClip } from "./timeline";
 import { visibleLanes } from "./timeline";
 import { safePreviewSource } from "./media";
+import { COMPOSITION_FONT_FAMILY, useCompositionFonts } from "./fonts";
 
 type OverlayClip = Extract<TimelineClip, { kind: "overlay" }>;
 type AudioClip = Extract<TimelineClip, { kind: "audio" }>;
@@ -24,7 +25,13 @@ type Props = {
  * Styling is inline on purpose: the server bundle has no CSS pipeline, so a
  * class name would render in the browser and vanish in the rendered file.
  */
-const CANVAS: CSSProperties = { backgroundColor: "#09090b", color: "#ffffff" };
+const CANVAS: CSSProperties = {
+  backgroundColor: "#09090b",
+  color: "#ffffff",
+  // Set once at the root: every glyph below inherits the family this package
+  // ships, so nothing drawn depends on what the host has installed.
+  fontFamily: COMPOSITION_FONT_FAMILY,
+};
 const TEXT_CLIP: CSSProperties = {
   alignItems: "center",
   justifyContent: "center",
@@ -148,6 +155,7 @@ export function AdvancedTimelineComposition({
   previewSources = {},
   onPreviewUnavailable,
 }: Props) {
+  useCompositionFonts();
   // Whether a clip is a still or a movie comes only from the document's own
   // validated asset reference, never from a preview URL or its suffix.
   const kinds = new Map((document.asset_refs ?? []).map((ref) => [ref.asset_id, ref.kind]));

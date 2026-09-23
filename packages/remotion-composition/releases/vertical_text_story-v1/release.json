@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "template_id": "vertical_text_story",
+  "template_version": 1,
+  "composition_id": "advanced-timeline-v1",
+  "document": "document.json",
+  "assets": [
+    {
+      "asset_id": "asset_image",
+      "file": "assets/image.png",
+      "sha256": "sha256:fb22b6689c81081651ced62c3f119e79f4280ca4c648290ea0e4d7ce117c146a"
+    },
+    {
+      "asset_id": "asset_video",
+      "file": "assets/video.mp4",
+      "sha256": "sha256:5ddcfed8ae41416c01638c5279096b08d0de02ab21d1eb16555f311e5aa01418"
+    },
+    {
+      "asset_id": "asset_audio",
+      "file": "assets/audio.wav",
+      "sha256": "sha256:f63005bba67f7ec3abc1a6274bc78ee15f7c9bf3f7d47f0c18dd7bf91096e2f6"
+    }
+  ],
+  "frames": [
+    0,
+    30,
+    60,
+    90,
+    119
+  ]
+}

@@ -1,5 +1,6 @@
 import type { EditDocument, EditDocumentV1 } from "@/api/control-plane";
-import { AdvancedTimelineComposition, type PreviewSources } from "./AdvancedTimelineComposition";
+import type { PreviewSources } from "./AdvancedTimelineComposition";
+import { timelineComposition } from "@thoth/remotion-composition";
 import { VerticalTextStory } from "./VerticalTextStory";
 import { isTimelineDocument } from "./timeline_domain";
 
@@ -7,13 +8,9 @@ import { isTimelineDocument } from "./timeline_domain";
 // is the rule the browser enforces; editing callers keep importing it from here.
 export { safePreviewSource } from "@thoth/remotion-composition";
 
-export function getPlayerConfig(document: EditDocument) {
-  const { width, height, fps, duration_in_frames: durationInFrames } = document.canvas;
-  if (![width, height, fps, durationInFrames].every((value) => Number.isFinite(value) && value > 0)) {
-    throw new Error("invalid Studio preview timing");
-  }
-  return { durationInFrames, fps, compositionWidth: width, compositionHeight: height };
-}
+// Timing and geometry are the composition's, not this view's: the parity
+// harness reads the same function, so the two surfaces cannot drift apart.
+export { playerConfig as getPlayerConfig } from "@thoth/remotion-composition";
 
 export function getOrderedTextClips(document: EditDocumentV1) {
   return [...document.clips].sort((left, right) => left.start_frame - right.start_frame);
@@ -32,9 +29,6 @@ export function previewComposition(
   onPreviewUnavailable?: (assetId: string) => void,
 ) {
   return isTimelineDocument(document)
-    ? {
-        component: AdvancedTimelineComposition,
-        inputProps: { document, previewSources, onPreviewUnavailable },
-      }
+    ? timelineComposition(document, previewSources, onPreviewUnavailable)
     : { component: VerticalTextStory, inputProps: { document } };
 }

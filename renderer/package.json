@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",
-    "test": "bun test",
+    "test": "bun test src ../packages/remotion-composition/src",
     "schema": "bun run scripts/extract-document-schema.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

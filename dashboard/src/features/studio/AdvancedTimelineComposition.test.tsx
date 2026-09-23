@@ -14,6 +14,13 @@ const mediaProps: { audio: Record<string, unknown>[] } = { audio: [] };
 /** Every composition the server root registered, in registration order. */
 const registrations: Record<string, unknown>[] = [];
 
+/** What the composition asked Remotion to wait for, and how the wait ended. */
+const renderDelay: { delayed: string[]; continued: number[]; cancelled: unknown[] } = {
+  delayed: [],
+  continued: [],
+  cancelled: [],
+};
+
 // Remotion primitives need a composition context that no unit test provides, so
 // they are replaced with inert markers that keep the real rendering decisions
 // (ordering, ranges, source lookup) under test.
@@ -49,6 +56,16 @@ mock.module("remotion", () => ({
     return null;
   },
   registerRoot: () => undefined,
+  // A render delay is the composition's decision to make, so the scope is
+  // recorded rather than reimplemented; the real one throws out of the page.
+  useDelayRender: () => ({
+    delayRender: (label?: string) => {
+      renderDelay.delayed.push(label ?? "");
+      return renderDelay.delayed.length;
+    },
+    continueRender: (handle: number) => renderDelay.continued.push(handle),
+    cancelRender: (error: unknown) => renderDelay.cancelled.push(error),
+  }),
 }));
 
 const { AdvancedTimelineComposition, COMPOSITION_ID } = await import("@thoth/remotion-composition");
@@ -57,8 +74,31 @@ const { RenderRoot } = await import("@thoth/remotion-composition/register");
 afterEach(() => {
   mediaProps.audio.length = 0;
   registrations.length = 0;
+  renderDelay.delayed.length = 0;
+  renderDelay.continued.length = 0;
+  renderDelay.cancelled.length = 0;
   cleanup();
 });
+
+/** Let the font registration settle, the way a real page would between paints. */
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Replace the inert registry with one whose faces never arrive. */
+function withUnloadableFonts(): () => void {
+  const scope = globalThis as unknown as Record<string, unknown>;
+  const previous = scope.FontFace;
+  scope.FontFace = class {
+    load() {
+      return Promise.reject(new Error("font unavailable"));
+    }
+  };
+  return () => {
+    scope.FontFace = previous;
+  };
+}
 
 /** The rendered volume callback of the audio clip at `index`. */
 function volumeOf(index: number): (frame: number) => number {
@@ -469,4 +509,34 @@ test("a visual clip whose asset reference is missing or not visual stays unavail
   render(<AdvancedTimelineComposition document={mismatched} previewSources={sources} />);
   expect(screen.queryByTestId("img")).toBeNull();
   expect(screen.getAllByTestId("preview-unavailable")).toHaveLength(1);
+});
+
+test("the composition root draws with the font family this package ships", () => {
+  const { container } = render(<AdvancedTimelineComposition document={documentV2()} />);
+
+  const root = container.firstElementChild as HTMLElement;
+  expect(root.style.fontFamily).toContain("ThothComposition");
+});
+
+test("the render waits until both font weights are registered", async () => {
+  render(<AdvancedTimelineComposition document={documentV2()} />);
+
+  expect(renderDelay.delayed).toHaveLength(1);
+  expect(renderDelay.continued).toHaveLength(0);
+  await settle();
+  expect(renderDelay.continued).toHaveLength(1);
+  expect(renderDelay.cancelled).toEqual([]);
+});
+
+test("a font that will not load cancels the render instead of drawing a substitute", async () => {
+  const restore = withUnloadableFonts();
+  try {
+    render(<AdvancedTimelineComposition document={documentV2()} />);
+    await settle();
+
+    expect(renderDelay.cancelled).toHaveLength(1);
+    expect(renderDelay.continued).toEqual([]);
+  } finally {
+    restore();
+  }
 });

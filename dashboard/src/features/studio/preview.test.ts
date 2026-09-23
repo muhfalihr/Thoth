@@ -3,7 +3,12 @@
 import { expect, test } from "bun:test";
 
 import type { EditDocument, EditDocumentV1, EditDocumentV2 } from "@/api/control-plane";
-import { getOrderedTextClips, getPlayerConfig, safePreviewSource } from "./preview";
+import {
+  getOrderedTextClips,
+  getPlayerConfig,
+  previewComposition,
+  safePreviewSource,
+} from "./preview";
 
 const document = {
   canvas: { width: 1080, height: 1920, fps: 30, duration_in_frames: 300 },
@@ -81,4 +86,25 @@ test("a version 2 document is not mistaken for a version 1 text story", () => {
 test("preview source narrowing has one implementation, shared with the renderer", async () => {
   const shared = await import("@thoth/remotion-composition");
   expect(safePreviewSource).toBe(shared.safePreviewSource);
+});
+
+test("Player timing has one implementation, shared with the parity harness", async () => {
+  const shared = await import("@thoth/remotion-composition");
+  // Identity, not equality: a second function with the same body could drift a
+  // pixel apart from the one the harness captures with.
+  expect(getPlayerConfig).toBe(shared.playerConfig);
+});
+
+test("a timeline document is paired by the shared composition projection", async () => {
+  const shared = await import("@thoth/remotion-composition");
+  const timeline = { ...document, schema_version: 2 } as unknown as EditDocumentV2;
+  const sources = { asset_video: "/public/asset_video.mp4" };
+  const unavailable = () => undefined;
+
+  // The whole pairing, not just the component: the harness renders these exact
+  // props, so a source or a callback the view added alone would be a difference
+  // no comparison could attribute.
+  expect(previewComposition(timeline, sources, unavailable)).toEqual(
+    shared.timelineComposition(timeline, sources, unavailable),
+  );
 });

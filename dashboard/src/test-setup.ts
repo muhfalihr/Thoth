@@ -27,3 +27,26 @@ if (!("EventSource" in globalThis)) {
   }
   (globalThis as Record<string, unknown>).EventSource = InertEventSource;
 }
+
+// happy-dom implements neither FontFace nor document.fonts. The shared
+// composition registers its own font bytes through both, so component tests get
+// an inert registry that accepts a face and reports it loaded; a test that cares
+// how loading ends replaces this stub for its own duration.
+if (!("FontFace" in globalThis)) {
+  class InertFontFace {
+    family: string;
+    constructor(family: string) {
+      this.family = family;
+    }
+    load() {
+      return Promise.resolve(this);
+    }
+  }
+  (globalThis as Record<string, unknown>).FontFace = InertFontFace;
+}
+if (!("fonts" in globalThis.document)) {
+  Object.defineProperty(globalThis.document, "fonts", {
+    configurable: true,
+    value: { add: () => undefined, ready: Promise.resolve() },
+  });
+}

@@ -7,6 +7,10 @@
 
 export { AdvancedTimelineComposition, type PreviewSources } from "./AdvancedTimelineComposition";
 export { safePreviewSource } from "./media";
+// One projection for both surfaces: Studio's Player and the parity harness are
+// only comparable while they take their props and geometry from here.
+export { playerConfig, timelineComposition, type PlayerProjection } from "./preview-projection";
+export { COMPOSITION_FONT_FAMILY, loadCompositionFonts, useCompositionFonts } from "./fonts";
 export {
   hasAudibleContent,
   visibleLanes,

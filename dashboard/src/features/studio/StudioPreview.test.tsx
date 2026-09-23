@@ -87,3 +87,19 @@ test("forwards a persistent preview error callback without exposing a locator", 
   expect(unavailable).toEqual(["asset_video"]);
   expect(JSON.stringify(timeline)).not.toContain("editor-assets");
 });
+
+test("the view states no part of the Player projection itself", async () => {
+  // Rendering the view here would prove nothing: GuidedStudio's tests replace
+  // ./StudioPreview for the whole test process, so the props it hands a Player
+  // are unobservable. Its source is not, and the invariant is structural — both
+  // halves of the projection are spread in whole, and none of it is restated.
+  const source = await Bun.file(new URL("StudioPreview.tsx", import.meta.url)).text();
+
+  expect(source).toMatch(/\{\s*\.\.\.\(?previewComposition\(/);
+  expect(source).toMatch(/\{\s*\.\.\.getPlayerConfig\(/);
+  // A value the view names again is a value that can drift from the frame the
+  // parity harness captures.
+  for (const restated of ["durationInFrames", "fps", "compositionWidth", "compositionHeight"]) {
+    expect(source).not.toContain(restated);
+  }
+});

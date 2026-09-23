@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -418,5 +418,55 @@ describe("loadReleaseCapsule", () => {
     expect(failure).toBeInstanceOf(ReleaseCapsuleInvalid);
     expect(String(failure)).not.toContain("shadow-secret-value");
     expect(String(failure)).not.toContain(root);
+  });
+});
+
+/**
+ * The capsule this repository actually ships, read from where it really lives.
+ *
+ * Every other case writes a capsule to prove the parser; this one proves the
+ * tracked fixture is a capsule, because a release that stops loading is a
+ * release nobody can compare a render against.
+ */
+describe("the tracked release capsule", () => {
+  test("loads from the canonical release root with no golden set yet", async () => {
+    const capsule = await loadReleaseCapsule(IDENTITY);
+
+    expect(capsule.identity).toBe(IDENTITY);
+    expect(capsule.composition_id).toBe("advanced-timeline-v1");
+    expect(capsule.directory).toBe(join(canonicalReleaseRoot(), IDENTITY));
+    expect(capsule.assets.length).toBeGreaterThan(0);
+    // The ends of the timeline are where a one-frame drift shows, so both are
+    // compared: the first frame and the last one the canvas has.
+    const duration = (capsule.document.canvas as { duration_in_frames: number }).duration_in_frames;
+    expect(capsule.frames.at(0)).toBe(0);
+    expect(capsule.frames.at(-1)).toBe(duration - 1);
+    expect(capsule.frames.length).toBeGreaterThan(2);
+    // A tracked golden set is an operator's approval, not a build product.
+    expect(capsule.goldens).toBeNull();
+  });
+
+  test("names no source the composition would have to fetch", async () => {
+    const capsule = await loadReleaseCapsule(IDENTITY);
+    const declared = readFileSync(join(capsule.directory, "release.json"), "utf8");
+    const document = JSON.stringify(capsule.document);
+
+    for (const text of [declared, document]) {
+      expect(text).not.toMatch(/https?:|\/\/|data:|blob:|file:/);
+    }
+  });
+
+  test("draws content a renderer must hide, mute, and lay over", async () => {
+    const capsule = await loadReleaseCapsule(IDENTITY);
+    const tracks = capsule.document.tracks as { hidden?: boolean; muted?: boolean }[];
+    const clips = capsule.document.clips as { kind: string; hidden?: boolean }[];
+
+    expect(tracks.some((track) => track.hidden === true)).toBe(true);
+    expect(tracks.some((track) => track.muted === true)).toBe(true);
+    expect(clips.some((clip) => clip.hidden === true)).toBe(true);
+    // Both weights, both media kinds, and both timed lanes are worth comparing.
+    expect(new Set(clips.map((clip) => clip.kind))).toEqual(
+      new Set(["text", "video", "overlay", "caption", "audio"]),
+    );
   });
 });
