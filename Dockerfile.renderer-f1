@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1.7
+
+# The F1 preview/render parity reference environment.
+#
+# Two surfaces are compared here — a controls-free Remotion Player and
+# `renderStill()` — so the comparison is only meaningful while both are drawn by
+# one browser, one font set, and one set of locked dependencies. That is what
+# this image is: a fixed environment, pinned to an immutable base digest, that
+# captures frames with no network at all.
+#
+# It is a test image. It is never published, never deployed, and never dispatched
+# to. The service image is `Dockerfile.renderer`, which carries none of this.
+#
+# Base resolved from registry metadata for oven/bun:1.3.14:
+#   index         sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
+#   linux/amd64   sha256:50317d83cd5a5ae1d8b35b3379c69f57ce1a0dbf4def91f0965653d767851834
+
+FROM oven/bun:1.3.14@sha256:50317d83cd5a5ae1d8b35b3379c69f57ce1a0dbf4def91f0965653d767851834 AS parity
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    THOTH_F1_BASE_DIGEST=sha256:50317d83cd5a5ae1d8b35b3379c69f57ce1a0dbf4def91f0965653d767851834 \
+    THOTH_RENDERER_VERSION=remotion-4.0.523 \
+    HOME=/home/thoth
+
+# The same browser libraries and the same system fonts the service image
+# installs: a frame drawn against another font set is another frame.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        ffmpeg \
+        fonts-liberation \
+        fonts-noto-color-emoji \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libcairo2 \
+        libcups2 \
+        libdbus-1-3 \
+        libgbm1 \
+        libnss3 \
+        libpango-1.0-0 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxkbcommon0 \
+        libxrandr2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 thoth \
+    && useradd --uid 10001 --gid 10001 --create-home \
+        --home-dir /home/thoth --shell /usr/sbin/nologin thoth \
+    && mkdir -p /opt/thoth/renderer /opt/thoth/packages \
+    && chown -R thoth:thoth /opt/thoth /home/thoth
+
+WORKDIR /opt/thoth/renderer
+
+# Development dependencies are the point of this image: the Player the parity
+# preview mounts is one of them.
+COPY --chown=thoth:thoth renderer/package.json renderer/bun.lock /opt/thoth/renderer/
+RUN bun install --frozen-lockfile
+
+COPY --chown=thoth:thoth packages/remotion-composition/src/ /opt/thoth/packages/remotion-composition/src/
+# The tracked release capsule: the document, its synthetic assets, and the
+# frames this image is asked to capture.
+COPY --chown=thoth:thoth packages/remotion-composition/releases/ /opt/thoth/packages/remotion-composition/releases/
+COPY --chown=thoth:thoth renderer/src/ /opt/thoth/renderer/src/
+COPY --chown=thoth:thoth renderer/scripts/ /opt/thoth/renderer/scripts/
+COPY --chown=thoth:thoth renderer/tsconfig.json /opt/thoth/renderer/
+
+# Fetch the pinned browser now, because every capture run is offline.
+RUN bun --eval "await import('@remotion/renderer').then((m) => m.ensureBrowser())" \
+    && chown -R thoth:thoth /opt/thoth/renderer/node_modules /home/thoth
+
+USER thoth
+
+# Prove this image can capture before it is ever asked to.
+RUN test -x /usr/bin/ffmpeg \
+    && test -x /usr/bin/ffprobe \
+    && /usr/bin/ffprobe -version >/dev/null 2>&1 \
+    && test -d /opt/thoth/renderer/node_modules/.remotion \
+    && test -d /opt/thoth/renderer/node_modules/@remotion/player \
+    && test -r /opt/thoth/packages/remotion-composition/releases/vertical_text_story-v1/release.json \
+    && bun --eval "const { loadReleaseCapsule } = await import('/opt/thoth/renderer/src/release-capsule.ts'); \
+        await loadReleaseCapsule('vertical_text_story-v1');"
+
+# The default command is the environment's own self-check: it proves the network
+# is gone, loads the capsule, and reports the identity of what drew the frames.
+CMD ["bun", "--eval", "const { selfCheck } = await import('/opt/thoth/renderer/src/release-capture.tsx'); await selfCheck();"]

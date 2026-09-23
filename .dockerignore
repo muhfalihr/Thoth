@@ -54,3 +54,7 @@ crates
 dashboard
 docs
 test
+
+# The parity reference image builds from the tracked release capsule, whose
+# media are repository fixtures rather than generated output.
+!packages/remotion-composition/releases/**

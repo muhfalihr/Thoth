@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7-labs
 
 # The isolated Remotion renderer.
 #
@@ -52,8 +52,12 @@ WORKDIR /opt/thoth/renderer
 COPY --chown=thoth:thoth renderer/package.json renderer/bun.lock /opt/thoth/renderer/
 RUN bun install --frozen-lockfile --production
 
-COPY --chown=thoth:thoth packages/remotion-composition/ /opt/thoth/packages/remotion-composition/
-COPY --chown=thoth:thoth renderer/src/ /opt/thoth/renderer/src/
+# Sources and typefaces only: the release capsule the parity harness compares
+# against is a repository fixture, and this image renders projects, not releases.
+COPY --chown=thoth:thoth packages/remotion-composition/src/ /opt/thoth/packages/remotion-composition/src/
+# The parity page and its harness are development surfaces. Excluding them from
+# the layer keeps them out of the image rather than deleting them from it.
+COPY --chown=thoth:thoth --exclude=release-capture.tsx --exclude=release-preview-entry.tsx --exclude=release-capture.test.ts renderer/src/ /opt/thoth/renderer/src/
 COPY --chown=thoth:thoth renderer/tsconfig.json /opt/thoth/renderer/
 
 # Fetch the pinned browser now so a render never reaches the network.
@@ -72,7 +76,7 @@ RUN test -w /var/lib/thoth/artifacts \
     && test -x /usr/bin/ffprobe \
     && /usr/bin/ffprobe -version >/dev/null 2>&1 \
     && test -d /opt/thoth/renderer/node_modules/.remotion \
-    && test -r /opt/thoth/packages/remotion-composition/src/register.tsx \
+    && test -r /opt/thoth/packages/remotion-composition/src/register.tsx     && test ! -e /opt/thoth/renderer/src/release-preview-entry.tsx     && test ! -e /opt/thoth/renderer/src/release-capture.tsx     && test ! -d /opt/thoth/packages/remotion-composition/releases \
     && bun --eval "await import('/opt/thoth/renderer/src/server.ts')" \
     && bun --eval "const { loadRendererConfig } = await import('/opt/thoth/renderer/src/config.ts'); \
         const c = loadRendererConfig({ \

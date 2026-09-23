@@ -1,3 +1,4 @@
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -57,7 +58,10 @@ def test_dockerignore_excludes_sensitive_and_generated_inputs() -> None:
         "tiktok-stage1-soak-report.json*",
     }
     assert required_patterns <= patterns
-    assert not any(pattern.startswith("!") for pattern in patterns)
+    # One exception, and only one: the tracked release capsule is media the
+    # parity image has to render, and the rules above would otherwise drop it.
+    negations = {pattern for pattern in patterns if pattern.startswith("!")}
+    assert negations == {"!packages/remotion-composition/releases/**"}
 
 
 def test_dockerfile_uses_locked_full_compatibility_runtime() -> None:
@@ -816,3 +820,52 @@ def test_editor_preview_signing_key_is_injected_at_runtime_only() -> None:
     assert 'echo "THOTH_EDITOR_PREVIEW_SIGNING_KEY=$(openssl rand -hex 24)"' in smoke
     # Generated into the throwaway env file, never echoed as an output or a summary.
     assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" not in smoke.split("> stage1.ci.env", 1)[1]
+
+
+def test_renderer_image_carries_the_composition_without_the_release_capsule() -> None:
+    dockerfile = _repo_text("Dockerfile.renderer")
+    copied = [line for line in dockerfile.splitlines() if line.startswith("COPY")]
+
+    assert any(
+        "packages/remotion-composition/src/ /opt/thoth/packages/remotion-composition/src/" in line
+        for line in copied
+    )
+    # The whole package would drag the release capsule into the service image.
+    assert not any(
+        line.rstrip().endswith("packages/remotion-composition/ /opt/thoth/packages/remotion-composition/")
+        for line in copied
+    )
+    assert not any("releases" in line for line in copied)
+    # The parity page and its harness are development surfaces. They are kept out
+    # of the layer rather than deleted from it, so no layer ever carried them.
+    assert "--exclude=release-capture.tsx --exclude=release-preview-entry.tsx" in dockerfile
+    assert "test ! -e /opt/thoth/renderer/src/release-preview-entry.tsx" in dockerfile
+    assert "test ! -d /opt/thoth/packages/remotion-composition/releases" in dockerfile
+    assert "bun install --frozen-lockfile --production" in dockerfile
+
+
+def test_the_player_is_only_a_development_dependency_of_the_renderer() -> None:
+    manifest = json.loads(_repo_text("renderer/package.json"))
+
+    assert manifest["devDependencies"]["@remotion/player"] == "4.0.523"
+    assert "@remotion/player" not in manifest["dependencies"]
+
+
+def test_parity_reference_image_is_pinned_and_separate() -> None:
+    dockerfile = _repo_text("Dockerfile.renderer-f1")
+
+    assert re.search(r"^FROM oven/bun:1\.3\.14@sha256:[0-9a-f]{64} AS ", dockerfile, re.MULTILINE)
+    assert "THOTH_F1_BASE_DIGEST=sha256:" in dockerfile
+    # Development dependencies are the point of this image: the Player lives there.
+    assert "bun install --frozen-lockfile" in dockerfile
+    assert "bun install --frozen-lockfile --production" not in dockerfile
+    assert "packages/remotion-composition/releases/" in dockerfile
+    assert "ensureBrowser" in dockerfile
+    assert "ffprobe" in dockerfile
+
+
+def test_parity_reference_image_is_never_published() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    publication = workflow.split("publish-image:", 1)
+    assert len(publication) == 2
+    assert "Dockerfile.renderer-f1" not in publication[1]

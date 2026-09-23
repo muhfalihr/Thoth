@@ -15,7 +15,6 @@
 
 import { resolve } from "node:path";
 
-import type { RenderBundle } from "./contracts";
 import type { EngineRequest, RenderEngine } from "./server";
 
 /**
@@ -33,6 +32,15 @@ export const RENDER_PRESET = Object.freeze({
   muted: false,
 } as const);
 
+/**
+ * The browser every surface renders through.
+ *
+ * Containers run Chromium without a session bus; this is Remotion's documented
+ * Docker setting. The parity harness renders with this too, so what it compares
+ * was drawn by the browser production draws with.
+ */
+export const RENDER_CHROMIUM_OPTIONS = Object.freeze({ enableMultiProcessOnLinux: true } as const);
+
 /** Where `bundle()` publishes the staged public directory it copied. */
 const STATIC_BASE = "/public";
 
@@ -40,7 +48,40 @@ export function assetSourceUrl(relativeName: string): string {
   return `${STATIC_BASE}/${relativeName.slice("assets/".length)}`;
 }
 
-export function compositionInputProps(bundle: RenderBundle): {
+/** Whatever names a document and its staged assets: a job, or a release capsule. */
+export type StagedComposition = {
+  readonly document: Record<string, unknown>;
+  readonly assets: readonly { readonly asset_id: string; readonly relative_name: string }[];
+};
+
+export type CompositionGeometry = {
+  readonly width: number;
+  readonly height: number;
+  readonly fps: number;
+  readonly durationInFrames: number;
+};
+
+/**
+ * Refuse a composition that is not the one the caller was promised.
+ *
+ * Shared by the encoder and the parity harness: a still captured at another
+ * size or rate is another frame, whoever asked for it.
+ */
+export function assertCompositionGeometry(
+  composition: CompositionGeometry,
+  expected: CompositionGeometry,
+): void {
+  if (
+    composition.width !== expected.width ||
+    composition.height !== expected.height ||
+    composition.fps !== expected.fps ||
+    composition.durationInFrames !== expected.durationInFrames
+  ) {
+    throw new Error("composition geometry does not match the authorized bundle");
+  }
+}
+
+export function compositionInputProps(bundle: StagedComposition): {
   document: Record<string, unknown>;
   previewSources: Record<string, string>;
 } {
@@ -111,14 +152,7 @@ export function createRemotionEngine(): RenderEngine {
         id: request.compositionId,
         inputProps: request.inputProps,
       });
-      if (
-        composition.width !== request.expected.width ||
-        composition.height !== request.expected.height ||
-        composition.fps !== request.expected.fps ||
-        composition.durationInFrames !== request.expected.durationInFrames
-      ) {
-        throw new Error("composition geometry does not match the authorized bundle");
-      }
+      assertCompositionGeometry(composition, request.expected);
 
       await renderMedia({
         composition,
@@ -131,9 +165,7 @@ export function createRemotionEngine(): RenderEngine {
         imageFormat: RENDER_PRESET.imageFormat,
         enforceAudioTrack: RENDER_PRESET.enforceAudioTrack,
         muted: RENDER_PRESET.muted,
-        // Containers run Chromium without a session bus; this is Remotion's
-        // documented Docker setting.
-        chromiumOptions: { enableMultiProcessOnLinux: true },
+        chromiumOptions: RENDER_CHROMIUM_OPTIONS,
         cancelSignal: toCancelSignal(request.signal),
         onProgress: ({ progress }) => request.onProgress(Math.round(progress * 100)),
       });
