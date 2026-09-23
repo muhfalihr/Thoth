@@ -65,8 +65,13 @@ jobs:
           uv run --project python ruff check python/src python/tests
           uv run --project python ruff format --check python/src python/tests
 
+      # Rendering is opt-in, so both shapes are gated: the base stack has to parse
+      # with no renderer input at all, and the overlay has to parse with the pair.
       - name: Validate local Stage 1 Compose
-        run: docker compose --env-file .env.stage1.local.example -f compose.stage1.local.yml config --quiet
+        run: |
+          set -euo pipefail
+          THOTH_RENDERER_IMAGE= THOTH_RENDERER_INTERNAL_CREDENTIAL= docker compose --env-file .env.stage1.local.example -f compose.stage1.local.yml config --quiet
+          docker compose --env-file .env.stage1.local.example -f compose.stage1.local.yml -f compose.stage1.renderer.yml config --quiet
 
       - name: Install locked Scout dependencies
         run: bun --cwd=scout install --frozen-lockfile
@@ -304,14 +309,12 @@ jobs:
           {
             echo "COMPOSE_PROJECT_NAME=thoth-stage1-ci"
             echo "THOTH_IMAGE=${THOTH_IMAGE_REF}"
-            echo "THOTH_RENDERER_IMAGE=${THOTH_RENDERER_IMAGE_REF}"
             echo "THOTH_STAGE1_DATA_ROOT=${RUNNER_TEMP}/thoth-stage1"
             echo "THOTH_STAGE1_ACTIVITY_MODE=python_tiktok_with_legacy_fallback"
             echo "THOTH_CONTROL_PLANE_API_KEY=$(openssl rand -hex 24)"
             echo "THOTH_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             echo "THOTH_EDITOR_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             echo "THOTH_EDITOR_PREVIEW_SIGNING_KEY=$(openssl rand -hex 24)"
-            echo "THOTH_RENDERER_INTERNAL_CREDENTIAL=$(openssl rand -hex 24)"
           } > stage1.ci.env
 
       - name: Validate the operator inputs

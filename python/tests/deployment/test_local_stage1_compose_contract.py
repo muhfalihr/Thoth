@@ -3,6 +3,10 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
+#: Rendering is an overlay, not a member of the base stack. See
+#: ``test_renderer_is_opt_in_and_the_base_stack_carries_no_renderer_input``.
+RENDERER_OVERLAY = "compose.stage1.renderer.yml"
+
 
 def _repo_text(relative_path: str) -> str:
     return (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
@@ -134,12 +138,20 @@ def test_local_stage1_creator_studio_uses_a_separate_editor_database() -> None:
 
 def test_local_stage1_compose_is_validated_by_offline_ci() -> None:
     workflow = _repo_text(".github/workflows/container-image.yml")
-    command = (
+    # Blanking both renderer inputs is the whole point: the base stack has to
+    # parse for an installation that never renders anything.
+    disabled = (
+        "THOTH_RENDERER_IMAGE= THOTH_RENDERER_INTERNAL_CREDENTIAL= "
         "docker compose --env-file .env.stage1.local.example "
         "-f compose.stage1.local.yml config --quiet"
     )
+    enabled = (
+        "docker compose --env-file .env.stage1.local.example "
+        f"-f compose.stage1.local.yml -f {RENDERER_OVERLAY} config --quiet"
+    )
     assert "Validate local Stage 1 Compose" in workflow
-    assert command in workflow
+    assert disabled in workflow
+    assert enabled in workflow
 
 
 def test_local_stage1_runbook_keeps_live_and_evidence_actions_operator_gated() -> None:
@@ -325,9 +337,9 @@ def test_editor_preview_signing_key_reaches_the_api_only() -> None:
         "temporal-ui",
         "legacy-cdp",
         "worker",
-        "remotion-renderer",
     ):
         assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" not in _service_block(compose, service)
+    assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY" not in _repo_text(RENDERER_OVERLAY)
     assert "THOTH_EDITOR_PREVIEW_SIGNING_KEY=replace-with-local-secret" in env_example
     workflow = _repo_text(".github/workflows/container-image.yml")
     assert 'echo "THOTH_EDITOR_PREVIEW_SIGNING_KEY=$(openssl rand -hex 24)"' in workflow
@@ -348,7 +360,6 @@ def test_editor_preview_adds_no_service_port_or_mount() -> None:
         "  legacy-cdp:",
         "  api:",
         "  worker:",
-        "  remotion-renderer:",
     ]
 
 
@@ -373,9 +384,60 @@ def _environment_names(block: str) -> set[str]:
     return set(re.findall(r"(?m)^      ([A-Z][A-Z0-9_]*):", environment.group("body")))
 
 
-def test_renderer_runs_unprivileged_on_a_digest_and_the_private_network_only() -> None:
+def test_renderer_is_opt_in_and_the_base_stack_carries_no_renderer_input() -> None:
+    """An installation that renders nothing must still parse, start, and serve.
+
+    The control plane already degrades to an unavailable render gateway when the
+    settings are absent, but a required ``${...:?}`` fails during interpolation,
+    long before that code runs: Compose cannot even read the file. So the base
+    stack names no renderer image, URL, or credential at all.
+    """
     compose = _repo_text("compose.stage1.local.yml")
-    renderer = _service_block(compose, "remotion-renderer")
+    api = _service_block(compose, "api")
+
+    assert "THOTH_RENDERER" not in compose
+    assert "remotion-renderer" not in compose
+    assert not {name for name in _environment_names(api) if name.startswith("THOTH_RENDERER")}
+
+
+def test_renderer_overlay_turns_rendering_on_for_both_sides_at_once() -> None:
+    """One overlay is the whole switch, so the two sides cannot drift apart."""
+    overlay = _repo_text(RENDERER_OVERLAY)
+    api = _service_block(overlay, "api")
+    renderer = _service_block(overlay, "remotion-renderer")
+
+    assert re.findall(r"(?m)^  [a-z][a-z0-9-]*:$", overlay) == ["  api:", "  remotion-renderer:"]
+    assert "THOTH_RENDERER_INTERNAL_URL: http://remotion-renderer:8080" in api
+    assert (
+        "THOTH_RENDERER_INTERNAL_CREDENTIAL: "
+        "${THOTH_RENDERER_INTERNAL_CREDENTIAL:?set THOTH_RENDERER_INTERNAL_CREDENTIAL}" in api
+    )
+    # The overlay adds a capability; it never restates what the base stack owns.
+    assert "image:" not in api
+    assert "command:" not in api
+    assert "depends_on:" not in api
+    assert "${THOTH_RENDERER_IMAGE:?set digest-qualified THOTH_RENDERER_IMAGE}" in renderer
+
+
+def test_enabling_only_one_half_of_the_renderer_pair_fails_closed() -> None:
+    """Compose refuses a half-configured render stack before a container starts.
+
+    Both inputs are required interpolations in the same file, and the URL is a
+    literal beside them, so the API can never hold a credential without a
+    renderer, nor a renderer answer without the credential to attribute it.
+    """
+    overlay = _repo_text(RENDERER_OVERLAY)
+
+    assert overlay.count("${THOTH_RENDERER_IMAGE:?") == 1
+    assert overlay.count("${THOTH_RENDERER_INTERNAL_CREDENTIAL:?") == 2
+    assert "THOTH_RENDERER_INTERNAL_URL: ${" not in overlay
+    # A default would let half a pair through as a working-looking stack.
+    assert set(re.findall(r"\$\{([A-Z_]+):-", overlay)) == {"THOTH_RENDERER_VERSION"}
+
+
+def test_renderer_runs_unprivileged_on_a_digest_and_the_private_network_only() -> None:
+    overlay = _repo_text(RENDERER_OVERLAY)
+    renderer = _service_block(overlay, "remotion-renderer")
 
     assert "${THOTH_RENDERER_IMAGE:?set digest-qualified THOTH_RENDERER_IMAGE}" in renderer
     assert 'user: "10001:10001"' in renderer
@@ -390,8 +452,8 @@ def test_renderer_runs_unprivileged_on_a_digest_and_the_private_network_only() -
 
 
 def test_renderer_receives_its_supported_settings_and_nothing_else() -> None:
-    compose = _repo_text("compose.stage1.local.yml")
-    renderer = _service_block(compose, "remotion-renderer")
+    overlay = _repo_text(RENDERER_OVERLAY)
+    renderer = _service_block(overlay, "remotion-renderer")
 
     assert "THOTH_RENDERER_CONTROL_PLANE_URL: http://api:8000" in renderer
     assert (
@@ -403,8 +465,8 @@ def test_renderer_receives_its_supported_settings_and_nothing_else() -> None:
 
 
 def test_renderer_holds_no_database_provider_or_creator_capability() -> None:
-    compose = _repo_text("compose.stage1.local.yml")
-    renderer = _service_block(compose, "remotion-renderer")
+    overlay = _repo_text(RENDERER_OVERLAY)
+    renderer = _service_block(overlay, "remotion-renderer")
 
     for forbidden in (
         "THOTH_EDITOR_DATABASE_URL",
@@ -425,7 +487,7 @@ def test_renderer_holds_no_database_provider_or_creator_capability() -> None:
 
 def test_renderer_shares_the_one_canonical_artifact_root_and_no_second_output() -> None:
     compose = _repo_text("compose.stage1.local.yml")
-    renderer = _service_block(compose, "remotion-renderer")
+    renderer = _service_block(_repo_text(RENDERER_OVERLAY), "remotion-renderer")
     api = _service_block(compose, "api")
 
     mount = (
@@ -446,8 +508,8 @@ def test_renderer_health_uses_the_authenticated_health_endpoint_it_already_serve
     An unauthenticated probe would have to be a second health API, and the whole
     point of this service is that it answers nothing it cannot attribute.
     """
-    compose = _repo_text("compose.stage1.local.yml")
-    renderer = _service_block(compose, "remotion-renderer")
+    overlay = _repo_text(RENDERER_OVERLAY)
+    renderer = _service_block(overlay, "remotion-renderer")
 
     assert "healthcheck:" in renderer
     assert "http://127.0.0.1:8080/health" in renderer
@@ -459,7 +521,8 @@ def test_renderer_health_uses_the_authenticated_health_endpoint_it_already_serve
 
 def test_control_plane_dispatches_over_private_dns_and_the_worker_never_can() -> None:
     compose = _repo_text("compose.stage1.local.yml")
-    api = _service_block(compose, "api")
+    overlay = _repo_text(RENDERER_OVERLAY)
+    api = _service_block(overlay, "api")
     worker = _service_block(compose, "worker")
 
     assert "THOTH_RENDERER_INTERNAL_URL: http://remotion-renderer:8080" in api
@@ -469,15 +532,16 @@ def test_control_plane_dispatches_over_private_dns_and_the_worker_never_can() ->
     )
     assert "127.0.0.1:8080" not in api
     assert "localhost" not in api
-    # The renderer is dispatched to by the control plane alone.
+    # The renderer is dispatched to by the control plane alone, enabled or not.
+    assert "worker:" not in overlay
     assert "THOTH_RENDERER_INTERNAL_URL" not in worker
     assert "THOTH_RENDERER_INTERNAL_CREDENTIAL" not in worker
 
 
 def test_pinned_renderer_version_is_declared_once_on_each_side() -> None:
-    compose = _repo_text("compose.stage1.local.yml")
-    api = _service_block(compose, "api")
-    renderer = _service_block(compose, "remotion-renderer")
+    overlay = _repo_text(RENDERER_OVERLAY)
+    api = _service_block(overlay, "api")
+    renderer = _service_block(overlay, "remotion-renderer")
 
     pinned = "THOTH_RENDERER_VERSION: ${THOTH_RENDERER_VERSION:-remotion-4.0.523}"
     assert api.count(pinned) == 1
@@ -492,12 +556,15 @@ def test_api_startup_never_waits_on_the_renderer() -> None:
     the renderer settings are absent.
     """
     compose = _repo_text("compose.stage1.local.yml")
+    overlay = _repo_text(RENDERER_OVERLAY)
     api = _service_block(compose, "api")
     settings = _repo_text("python/src/thoth_control_plane/config.py")
 
     depends = re.search(r"(?ms)^    depends_on:\n(?P<body>.*?)(?=^    [a-z_]+:|\Z)", api)
     assert depends is not None
     assert "remotion-renderer" not in depends.group("body")
+    # Enabling the overlay must not add the wait the base stack refused to take.
+    assert "depends_on:" not in _service_block(overlay, "api")
     assert "THOTH_RENDERER_INTERNAL_URL: AnyHttpUrl | None = None" in settings
     assert "THOTH_RENDERER_INTERNAL_CREDENTIAL: SecretStr | None = None" in settings
 

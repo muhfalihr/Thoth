@@ -2,6 +2,82 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-23 - Rendering became opt-in, and two smoke verdicts stopped overstating (E1 Task 13 corrective)
+
+Review of the Task 13 gate found three things the gate itself could not have
+caught, because each one was a property of the harness or the stack rather than
+of a render.
+
+Rendering is opt-in now. `compose.stage1.local.yml` required
+`THOTH_RENDERER_IMAGE` and `THOTH_RENDERER_INTERNAL_CREDENTIAL` through `${...:?}`
+and always handed the API a renderer URL, so an installation that renders nothing
+could not read its own Compose file: interpolation fails before any Python runs,
+which is several layers below the graceful degradation the control plane already
+implements. The renderer service and the API's renderer settings moved to
+`compose.stage1.renderer.yml`, an overlay in the shape the provider override
+already established. The base stack names no renderer input at all; adding
+`-f compose.stage1.renderer.yml` turns both sides on together. Both inputs stay
+required inside the overlay and the dispatch URL is a literal beside them, so a
+half-supplied pair still fails closed, before a container starts.
+
+The smoke never proved readiness. It probed `/healthz`, which is unconditional
+and answers before the workflow gateway exists - the exact reason the harness
+grew a throwaway Temporal in the first place. The generated API healthcheck now
+asserts `/readyz` as well, so `compose up --wait` gates on it, and each endpoint
+is probed once more afterwards as its own verdict.
+
+The deadline verdict accepted any terminal failure. A bundle, engine, dispatch,
+or output defect also ends `failed` and also publishes nothing, so
+`deadline_fails_without_publishing` would have held for a defect that has nothing
+to do with a deadline. The phase now reads the authoritative public job and
+requires `render_deadline_exceeded` by name, printing the observed code either
+way.
+
+Red first, against the deployment contracts: 18 failed / 62 passed, covering the
+base stack still carrying renderer interpolation, the missing overlay, the
+missing `/readyz` probe, and the missing failure-code assertion. Green after the
+change, with the whole deployment suite at 283 passed / 29 skipped.
+
+Both Compose modes were then run for real. Disabled, against a synthetic
+environment created outside the repository and deleted afterwards that omits
+every renderer image, URL, and credential: `config --quiet` exit 0, seven
+services, and zero renderer tokens anywhere in the rendered configuration. The
+reported reproduction, blanking both renderer variables against the repository
+example, also exits 0 now. Enabled, with the overlay: exit 0, eight services, the
+API holding `THOTH_RENDERER_INTERNAL_URL` and the credential together, the
+renderer on its digest with no published port. Each half of the pair on its own
+exits 1, naming the missing variable.
+
+The whole smoke then ran end to end. No image-copied input changed, so the
+existing local images were reused rather than rebuilt: `thoth-stage1:e1-local`
+(d42c352e0fc4) and `thoth-remotion-renderer:e1-local` (c0f3e4c33356). Every
+verdict held, the two new ones included: `api_healthz_ready=true`,
+`api_readyz_ready=true`, `renderer_runs_unprivileged=true`,
+`renderer_host_binding_absent=true`,
+`renderer_holds_no_control_plane_capability=true`,
+`render_output_is_h264_mp4=true`, `render_output_checksum_matches=true`,
+`render_output_inside_artifact_root=true`, `second_render_is_refused=true`,
+`no_waiting_row_was_created=true`, `cancel_leaves_no_published_output=true`,
+`deadline_failure_code=render_deadline_exceeded`,
+`deadline_fails_without_publishing=true`, `teardown_leaves_nothing=true`. The
+published render was 1080x1920 H.264 at 30 fps with AAC audio, 2.048 s and
+218409 bytes. Afterwards no smoke container, network, or volume survived, the
+temporary root was gone, and the operator's own inventory still read seven
+containers, five networks, and four volumes.
+
+Gates: deployment suite 283 passed / 29 skipped; `ruff check` clean;
+`ruff format --check` 157 files already formatted; the workflow and both Compose
+files parse as YAML; `bash -n docker/test-renderer-offline.sh` exit 0;
+`build_cuda.bat` exit 0 against a freshly written log; `cargo test --bin thoth`
+exit 0, reporting no tests because that binary target carries none;
+`git diff --check` clean.
+
+Limitations: everything here is synthetic and local. No real project, revision,
+asset, credential, provider, TikTok, CDN, or browser request took place; nothing
+was pushed, published, deployed, or restarted; no Stage 1 evidence or Issue #5
+was touched; no parity, fallback, acceptance, or soak work ran; no operator
+database was migrated. Task 14 has not begun.
+
 ## 2026-09-21 - A valid composition id, and the isolated render stack gated (E1 Task 13)
 
 The renderer had never produced a frame. Every render ended `failed` with

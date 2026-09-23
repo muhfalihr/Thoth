@@ -209,7 +209,8 @@ services:
         - CMD-SHELL
         - >-
           /opt/thoth/python/.venv/bin/python -c "import urllib.request;
-          assert urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200"
+          assert urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200;
+          assert urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status == 200"
       interval: 5s
       timeout: 5s
       retries: 40
@@ -506,6 +507,14 @@ def verify(render_job_id, expected_seconds):
     print("ok")
 
 
+def failure(render_job_id):
+    """The one fact the deadline verdict rests on: which failure closed the job."""
+    job = read(render_job_id)
+    if job["status"] != "failed":
+        raise SystemExit(f"job is {job['status']}, not failed")
+    print(job["failure_code"] or "none")
+
+
 def absent(render_job_id):
     """A cancelled or timed-out render publishes nothing and keeps no half-render."""
     leftovers = [published(render_job_id), ROOT / "temp" / render_job_id / "output.mp4"]
@@ -523,6 +532,7 @@ COMMANDS = {
     "cancel": cancel,
     "history": history,
     "verify": verify,
+    "failure": failure,
     "absent": absent,
 }
 
@@ -541,13 +551,29 @@ driver() {
         api /opt/thoth/python/.venv/bin/python - "$@" < "$work_root/driver.py"
 }
 
+#: One bounded probe of one control-plane endpoint, from inside the container.
+endpoint() {
+    compose exec -T api /opt/thoth/python/.venv/bin/python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/' + sys.argv[1], timeout=5).status == 200 else 1)" "$1"
+}
+
 # --- bring up only what a render needs ---------------------------------------
 compose up --detach --wait --wait-timeout "$start_timeout" editor-postgresql temporal >/dev/null 2>&1 \
-    || fail renderer_runs_unprivileged
+    || fail api_healthz_ready
 # The schema exists before the control plane does, exactly as a deployment does it.
 compose run --rm --no-deps -T api thoth-control editor migrate >/dev/null \
-    || fail renderer_runs_unprivileged
-compose up --detach --wait --wait-timeout "$start_timeout" api remotion-renderer >/dev/null 2>&1 \
+    || fail api_healthz_ready
+# The API healthcheck proves both endpoints, so `--wait` already gates readiness.
+compose up --detach --wait --wait-timeout "$start_timeout" api >/dev/null 2>&1 \
+    || fail api_readyz_ready
+
+endpoint healthz >/dev/null 2>&1 || fail api_healthz_ready
+echo api_healthz_ready=true
+# `/healthz` is unconditional. `/readyz` is what proves the workflow gateway, and
+# is the only reason this harness runs a Temporal at all, so it is its own verdict.
+endpoint readyz >/dev/null 2>&1 || fail api_readyz_ready
+echo api_readyz_ready=true
+
+compose up --detach --wait --wait-timeout "$start_timeout" remotion-renderer >/dev/null 2>&1 \
     || fail renderer_runs_unprivileged
 
 # --- what the renderer is, and is not ----------------------------------------
@@ -645,6 +671,12 @@ deadline_job=$(driver create "$long_document_id") || fail deadline_fails_without
 reached=$(driver await "$deadline_job" "$deadline_timeout" failed cancelled completed) \
     || fail deadline_fails_without_publishing
 [ "$reached" = "failed" ] || fail deadline_fails_without_publishing
+# Every render failure ends `failed` and publishes nothing, so a bundle, engine,
+# dispatch, or output defect would satisfy the shape of this phase. The observed
+# code is printed either way, and only the deadline's own code passes it.
+code=$(driver failure "$deadline_job") || fail deadline_fails_without_publishing
+echo "deadline_failure_code=${code}"
+[ "$code" = "render_deadline_exceeded" ] || fail deadline_fails_without_publishing
 driver absent "$deadline_job" >/dev/null || fail deadline_fails_without_publishing
 echo deadline_fails_without_publishing=true
 

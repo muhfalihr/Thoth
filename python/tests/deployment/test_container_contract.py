@@ -209,10 +209,11 @@ def test_container_workflow_smokes_the_render_stack_on_published_digests() -> No
         'bash docker/test-renderer-offline.sh "${THOTH_IMAGE_REF}" '
         '"${THOTH_RENDERER_IMAGE_REF}"' in smoke
     )
-    # The shared Compose file now requires both renderer inputs, so the throwaway
-    # environment has to carry them or nothing in this job starts at all.
-    assert 'echo "THOTH_RENDERER_IMAGE=${THOTH_RENDERER_IMAGE_REF}"' in smoke
-    assert 'echo "THOTH_RENDERER_INTERNAL_CREDENTIAL=$(openssl rand -hex 24)"' in smoke
+    # The harness builds its own two-image stack from these arguments, and the
+    # shared stack no longer starts a renderer, so the throwaway environment
+    # carries no renderer input for a service this job never runs.
+    assert 'echo "THOTH_RENDERER_IMAGE=' not in smoke
+    assert 'echo "THOTH_RENDERER_INTERNAL_CREDENTIAL=' not in smoke
 
 
 def test_container_workflow_never_prints_a_generated_credential() -> None:
@@ -248,6 +249,8 @@ def test_renderer_smoke_is_a_two_image_self_cleaning_harness() -> None:
 def test_renderer_smoke_proves_the_properties_a_render_stack_must_hold() -> None:
     script = _repo_text("docker/test-renderer-offline.sh")
     required = {
+        "api_healthz_ready=true",
+        "api_readyz_ready=true",
         "renderer_runs_unprivileged=true",
         "renderer_host_binding_absent=true",
         "renderer_holds_no_control_plane_capability=true",
@@ -261,6 +264,40 @@ def test_renderer_smoke_proves_the_properties_a_render_stack_must_hold() -> None
         "teardown_leaves_nothing=true",
     }
     assert required <= set(script.split())
+
+
+def test_renderer_smoke_waits_for_readiness_and_not_only_liveness() -> None:
+    """``/healthz`` answers before the workflow gateway exists.
+
+    The harness runs a throwaway Temporal precisely because ``/readyz`` proves
+    it, so a broken backend or namespace has to fail the smoke instead of
+    passing an unconditional liveness probe.
+    """
+    script = _repo_text("docker/test-renderer-offline.sh")
+
+    assert "urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200" in script
+    assert "urlopen('http://127.0.0.1:8000/readyz', timeout=2).status == 200" in script
+    assert "|| fail api_healthz_ready" in script
+    assert "|| fail api_readyz_ready" in script
+
+
+def test_renderer_smoke_accepts_only_the_deadline_failure_code() -> None:
+    """Any terminal failure used to satisfy the deadline phase.
+
+    A bundle, engine, dispatch, or output failure also ends ``failed`` and also
+    publishes nothing, so the verdict would have held for a defect that has
+    nothing to do with the deadline. It now names the one code the deadline
+    itself produces, and prints the observed code either way.
+    """
+    script = _repo_text("docker/test-renderer-offline.sh")
+
+    assert 'code=$(driver failure "$deadline_job")' in script
+    assert 'echo "deadline_failure_code=${code}"' in script
+    assert '[ "$code" = "render_deadline_exceeded" ] || fail deadline_fails_without_publishing' in (
+        script
+    )
+    for unrelated in ("render_engine_failed", "render_bundle_invalid", "render_output_invalid"):
+        assert unrelated not in script
 
 
 def test_renderer_smoke_reads_no_real_credential_or_asset() -> None:

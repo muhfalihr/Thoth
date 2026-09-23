@@ -127,9 +127,6 @@ services:
       THOTH_TEMPORAL_TARGET: temporal:7233
       THOTH_TEMPORAL_NAMESPACE: thoth-stage1
       THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts
-      THOTH_RENDERER_INTERNAL_URL: http://remotion-renderer:8080
-      THOTH_RENDERER_INTERNAL_CREDENTIAL: ${THOTH_RENDERER_INTERNAL_CREDENTIAL:?set THOTH_RENDERER_INTERNAL_CREDENTIAL}
-      THOTH_RENDERER_VERSION: ${THOTH_RENDERER_VERSION:-remotion-4.0.523}
       THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE: python_tiktok_with_legacy_fallback
       THOTH_PROMPT_PROVIDER_CATALOG: ${THOTH_PROMPT_PROVIDER_CATALOG:-[]}
     volumes:
@@ -176,37 +173,6 @@ services:
       - type: bind
         source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts
         target: /var/lib/thoth/artifacts
-    restart: unless-stopped
-    networks: [stage1-private]
-
-  # The isolated render stack. It holds a browser, an encoder, and one
-  # composition, and is reachable only from the control plane on this network.
-  remotion-renderer:
-    image: ${THOTH_RENDERER_IMAGE:?set digest-qualified THOTH_RENDERER_IMAGE}
-    user: "10001:10001"
-    environment:
-      THOTH_RENDERER_CONTROL_PLANE_URL: http://api:8000
-      THOTH_RENDERER_INTERNAL_CREDENTIAL: ${THOTH_RENDERER_INTERNAL_CREDENTIAL:?set THOTH_RENDERER_INTERNAL_CREDENTIAL}
-      THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts
-      THOTH_RENDERER_PORT: "8080"
-      THOTH_RENDERER_VERSION: ${THOTH_RENDERER_VERSION:-remotion-4.0.523}
-    volumes:
-      - type: bind
-        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts
-        target: /var/lib/thoth/artifacts
-    # Every renderer route proves the control plane first, health included, so
-    # the probe presents the same internal credential a dispatch would.
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          bun --eval "const response = await fetch('http://127.0.0.1:8080/health',
-          { headers: { Authorization: 'Bearer ' + process.env.THOTH_RENDERER_INTERNAL_CREDENTIAL } });
-          if (response.status !== 200) { process.exit(1); }"
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
     restart: unless-stopped
     networks: [stage1-private]
 

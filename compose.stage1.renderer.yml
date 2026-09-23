@@ -1,0 +1,50 @@
+# Render overlay: `-f compose.stage1.local.yml -f compose.stage1.renderer.yml`.
+#
+# Rendering is opt-in. The base stack names no renderer input at all, because a
+# required `${...:?}` fails during interpolation and would make an installation
+# that never renders unable to read its own Compose file. Without this overlay the
+# API starts, serves, and reports render capability unavailable, which is the
+# degradation the control plane already implements.
+#
+# Adding this file turns rendering on for both sides in one step. Both inputs are
+# required here and the dispatch URL is a literal beside them, so a half-supplied
+# pair fails closed before a container starts: the API is never handed a credential
+# without a renderer, and the renderer never answers without the credential it
+# attributes the call to.
+services:
+  api:
+    environment:
+      THOTH_RENDERER_INTERNAL_URL: http://remotion-renderer:8080
+      THOTH_RENDERER_INTERNAL_CREDENTIAL: ${THOTH_RENDERER_INTERNAL_CREDENTIAL:?set THOTH_RENDERER_INTERNAL_CREDENTIAL}
+      THOTH_RENDERER_VERSION: ${THOTH_RENDERER_VERSION:-remotion-4.0.523}
+
+  # The isolated render stack. It holds a browser, an encoder, and one
+  # composition, and is reachable only from the control plane on this network.
+  remotion-renderer:
+    image: ${THOTH_RENDERER_IMAGE:?set digest-qualified THOTH_RENDERER_IMAGE}
+    user: "10001:10001"
+    environment:
+      THOTH_RENDERER_CONTROL_PLANE_URL: http://api:8000
+      THOTH_RENDERER_INTERNAL_CREDENTIAL: ${THOTH_RENDERER_INTERNAL_CREDENTIAL:?set THOTH_RENDERER_INTERNAL_CREDENTIAL}
+      THOTH_CONTROL_PLANE_ARTIFACT_ROOT: /var/lib/thoth/artifacts
+      THOTH_RENDERER_PORT: "8080"
+      THOTH_RENDERER_VERSION: ${THOTH_RENDERER_VERSION:-remotion-4.0.523}
+    volumes:
+      - type: bind
+        source: ${THOTH_STAGE1_DATA_ROOT:?set THOTH_STAGE1_DATA_ROOT}/artifacts
+        target: /var/lib/thoth/artifacts
+    # Every renderer route proves the control plane first, health included, so
+    # the probe presents the same internal credential a dispatch would.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bun --eval "const response = await fetch('http://127.0.0.1:8080/health',
+          { headers: { Authorization: 'Bearer ' + process.env.THOTH_RENDERER_INTERNAL_CREDENTIAL } });
+          if (response.status !== 200) { process.exit(1); }"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    networks: [stage1-private]
