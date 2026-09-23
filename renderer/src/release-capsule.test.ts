@@ -219,6 +219,34 @@ describe("loadReleaseCapsule", () => {
     expect((await load()).document_sha256).not.toBe(capsule.document_sha256);
   });
 
+  test("parses and hashes the document from one identical read", async () => {
+    writeCapsule();
+    const documentPath = join(root, IDENTITY, "document.json");
+    const approved = readFileSync(documentPath);
+    // What a second read could hand back: a document nobody validated.
+    const swapped = Buffer.from(JSON.stringify(capsuleDocument({ revision: 2 })));
+
+    const served: Buffer[] = [];
+    const capsule = await loadReleaseCapsule(IDENTITY, {
+      releaseRoot: root,
+      readBytes: async (path: string) => {
+        if (path !== documentPath) {
+          return readFileSync(path);
+        }
+        const bytes = served.length === 0 ? approved : swapped;
+        served.push(bytes);
+        return bytes;
+      },
+    });
+
+    // One read, so the bytes that were parsed are the bytes that were hashed.
+    expect(served).toHaveLength(1);
+    expect(capsule.document.revision).toBe(1);
+    expect(capsule.document_sha256).toBe(
+      `sha256:${createHash("sha256").update(approved).digest("hex")}`,
+    );
+  });
+
   test("derives its canonical root from the repository, not from the environment", () => {
     const canonical = canonicalReleaseRoot();
     expect(canonical.endsWith(join("packages", "remotion-composition", "releases"))).toBe(true);

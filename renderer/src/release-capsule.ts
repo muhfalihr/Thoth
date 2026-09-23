@@ -111,7 +111,11 @@ export type ReleaseCapsule = {
  */
 export type CapsuleTestDeps = {
   readonly releaseRoot?: string;
+  readonly readBytes?: ReadBytes;
 };
+
+/** Every capsule file is read through one function, so a read can be counted. */
+type ReadBytes = (path: string) => Promise<Buffer>;
 
 /**
  * Where the tracked capsules live, derived from this file and nothing else.
@@ -211,19 +215,26 @@ async function digestOf(path: string): Promise<string> {
   return `sha256:${hash.digest("hex")}`;
 }
 
-async function readJson(base: string, path: string): Promise<unknown> {
+/** The validated bytes of one contained file, handed back whole. */
+async function bytesOf(base: string, path: string, read: ReadBytes): Promise<Buffer> {
   await assertRegularFile(base, path);
-  let text: string;
   try {
-    text = await readFile(path, "utf8");
+    return await read(path);
   } catch {
     throw new ReleaseCapsuleInvalid();
   }
+}
+
+function parsed(bytes: Buffer): unknown {
   try {
-    return JSON.parse(text);
+    return JSON.parse(bytes.toString("utf8"));
   } catch {
     throw new ReleaseCapsuleInvalid();
   }
+}
+
+async function readJson(base: string, path: string, read: ReadBytes): Promise<unknown> {
+  return parsed(await bytesOf(base, path, read));
 }
 
 /** The frames worth comparing: ascending, distinct, and inside the timeline. */
@@ -348,13 +359,14 @@ export function goldenSetAddress(frames: readonly GoldenAddressFrame[]): string 
 async function goldensOf(
   directory: string,
   frames: readonly number[],
+  read: ReadBytes,
 ): Promise<GoldenManifest | null> {
   const path = join(directory, GOLDEN_MANIFEST_NAME);
   if (!(await lstat(path).catch(() => null))) {
     return null;
   }
 
-  const manifest = record(await readJson(directory, path));
+  const manifest = record(await readJson(directory, path, read));
   exactly(manifest, MANIFEST_FIELDS);
   literal(manifest.schema_version, 1);
   const set = matching(manifest.golden_set, GOLDEN_SET);
@@ -433,16 +445,22 @@ export async function loadReleaseCapsule(
   const root = deps.releaseRoot === undefined ? canonicalReleaseRoot() : resolve(deps.releaseRoot);
   const directory = join(root, release);
 
-  const raw = record(await readJson(root, join(directory, RELEASE_NAME)));
+  const read = deps.readBytes ?? ((path: string) => readFile(path));
+
+  const raw = record(await readJson(root, join(directory, RELEASE_NAME), read));
   exactly(raw, RELEASE_FIELDS);
   literal(raw.schema_version, 1);
   literal(raw.template_id, template.id);
   literal(raw.template_version, template.version);
   literal(raw.composition_id, TRUSTED_COMPOSITION_ID);
 
+  // One read, kept whole: the document that is parsed and validated here is
+  // the same byte sequence the capsule is addressed by, so no later read can
+  // hand a different document to the hash than the one anybody checked.
   const documentPath = join(directory, matching(raw.document, PLAIN_NAME));
+  const documentBytes = await bytesOf(directory, documentPath, read);
   const { document, durationInFrames } = documentOf(
-    await readJson(directory, documentPath),
+    parsed(documentBytes),
     template.id,
     template.version,
   );
@@ -455,9 +473,9 @@ export async function loadReleaseCapsule(
     composition_id: TRUSTED_COMPOSITION_ID,
     directory,
     document,
-    document_sha256: await digestOf(documentPath),
+    document_sha256: `sha256:${createHash("sha256").update(documentBytes).digest("hex")}`,
     assets: await assetsOf(directory, raw.assets),
     frames,
-    goldens: await goldensOf(directory, frames),
+    goldens: await goldensOf(directory, frames, read),
   });
 }
