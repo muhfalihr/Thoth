@@ -56,7 +56,11 @@ WORKDIR /opt/thoth/renderer
 # Development dependencies are the point of this image: the Player the parity
 # preview mounts is one of them.
 COPY --chown=thoth:thoth renderer/package.json renderer/bun.lock /opt/thoth/renderer/
-RUN bun install --frozen-lockfile
+# The composition is imported from outside the renderer package, so it needs a
+# resolution root of its own for its React and Remotion peers: one hoisted
+# `node_modules` at the top of the tree, the shape a workspace install has.
+RUN bun install --frozen-lockfile \
+    && ln -s /opt/thoth/renderer/node_modules /opt/thoth/node_modules
 
 COPY --chown=thoth:thoth packages/remotion-composition/src/ /opt/thoth/packages/remotion-composition/src/
 # The tracked release capsule: the document, its synthetic assets, and the
@@ -79,6 +83,7 @@ RUN test -x /usr/bin/ffmpeg \
     && test -d /opt/thoth/renderer/node_modules/.remotion \
     && test -d /opt/thoth/renderer/node_modules/@remotion/player \
     && test -r /opt/thoth/packages/remotion-composition/releases/vertical_text_story-v1/release.json \
+    && bun --eval "await import('@thoth/remotion-composition');" \
     && bun --eval "const { loadReleaseCapsule } = await import('/opt/thoth/renderer/src/release-capsule.ts'); \
         await loadReleaseCapsule('vertical_text_story-v1');"
 

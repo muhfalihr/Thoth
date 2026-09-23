@@ -23,5 +23,5 @@
       "react/*": ["./node_modules/@types/react/*"]
     }
   },
-  "include": ["src", "../packages/remotion-composition/src/font-assets.d.ts"]
+  "include": ["src", "scripts", "../packages/remotion-composition/src/font-assets.d.ts"]
 }
