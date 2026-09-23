@@ -843,6 +843,13 @@ def test_renderer_image_carries_the_composition_without_the_release_capsule() ->
 
 
 def test_the_player_is_only_a_development_dependency_of_the_renderer() -> None:
+    """The parity harness may mount the Player; the service must never import it.
+
+    The package itself is already inside the production image and was before this
+    gate existed: `@remotion/bundler` depends on `@remotion/studio`, which depends
+    on `@remotion/player`. What is checkable, and what this asserts, is that the
+    renderer never declares it as a runtime dependency of its own.
+    """
     manifest = json.loads(_repo_text("renderer/package.json"))
 
     assert manifest["devDependencies"]["@remotion/player"] == "4.0.523"
