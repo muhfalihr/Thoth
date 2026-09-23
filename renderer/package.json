@@ -8,6 +8,7 @@
     "test": "bun test src ../packages/remotion-composition/src",
     "schema": "bun run scripts/extract-document-schema.ts",
     "verify-release": "bun run scripts/verify-template-release.ts",
+    "promote-release": "bun run scripts/promote-template-release.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

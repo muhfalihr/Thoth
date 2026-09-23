@@ -831,10 +831,8 @@ def test_renderer_image_carries_the_composition_without_the_release_capsule() ->
         for line in copied
     )
     # The whole package would drag the release capsule into the service image.
-    assert not any(
-        line.rstrip().endswith("packages/remotion-composition/ /opt/thoth/packages/remotion-composition/")
-        for line in copied
-    )
+    whole = "packages/remotion-composition/ /opt/thoth/packages/remotion-composition/"
+    assert not any(line.rstrip().endswith(whole) for line in copied)
     assert not any("releases" in line for line in copied)
     # The parity page and its harness are development surfaces. They are kept out
     # of the layer rather than deleted from it, so no layer ever carried them.
@@ -864,8 +862,63 @@ def test_parity_reference_image_is_pinned_and_separate() -> None:
     assert "ffprobe" in dockerfile
 
 
+def _workflow_jobs() -> dict[str, str]:
+    """Each job of the container workflow, by name, as its own text."""
+    body = _repo_text(".github/workflows/container-image.yml").split("\njobs:\n", 1)[1]
+    starts = [
+        (found.group(1), found.start())
+        for found in re.finditer(r"^  ([a-z][a-z0-9-]*):$", body, re.MULTILINE)
+    ]
+    ends = [*(at for _, at in starts[1:]), len(body)]
+    return {name: body[at:end] for (name, at), end in zip(starts, ends, strict=True)}
+
+
 def test_parity_reference_image_is_never_published() -> None:
+    jobs = _workflow_jobs()
+    assert "publish-image" in jobs
+
+    # The reference image is a test image: no job that can publish may build it.
+    for job in jobs.values():
+        if "push: true" in job or "login-action" in job:
+            assert "Dockerfile.renderer-f1" not in job
+
+
+def _parity_job() -> str:
+    """The template-release parity job, the only job that builds the reference."""
+    return _workflow_jobs()["template-release-parity"]
+
+
+def test_container_workflow_verifies_template_parity_in_the_reference_image() -> None:
+    job = _parity_job()
+
+    # One image, built from the pinned reference Dockerfile, for one platform.
+    assert "file: Dockerfile.renderer-f1" in job
+    assert "platforms: linux/amd64" in job
+    assert "push: false" in job
+    assert "load: true" in job
+    assert "login-action" not in job
+    # Its build identity travels into the report, so a candidate names what drew it.
+    assert "THOTH_F1_IMAGE_ID=" in job
+    assert "docker image inspect" in job
+    assert "verify-template-release.ts vertical_text_story-v1" in job
+
+
+def test_container_workflow_verifies_template_parity_without_a_network() -> None:
+    job = _parity_job()
+
+    assert "--network none" in job
+    # A fresh root outside the checkout, mounted once and nowhere else.
+    assert 'root="$(mktemp -d)"' in job
+    assert job.count("THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts") == 1
+    assert job.count('-v "${root}":/var/lib/thoth/artifacts') == 1
+    assert "GITHUB_WORKSPACE" not in job
+
+
+def test_container_workflow_never_promotes_or_uploads_a_candidate() -> None:
     workflow = _repo_text(".github/workflows/container-image.yml")
-    publication = workflow.split("publish-image:", 1)
-    assert len(publication) == 2
-    assert "Dockerfile.renderer-f1" not in publication[1]
+
+    # Promotion is an operator action against the repository, never a CI action.
+    assert "promote-template-release" not in workflow
+    assert "golden-manifest" not in workflow
+    # A candidate is local evidence for one run, not an artifact CI hands around.
+    assert "upload-artifact" not in _parity_job()

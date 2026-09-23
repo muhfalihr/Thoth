@@ -372,3 +372,50 @@ jobs:
         run: |
           test -f stage1.ci.env || exit 0
           docker compose ${COMPOSE_FILE_ARGS} down --remove-orphans
+
+  template-release-parity:
+    name: Template release parity
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      F1_IMAGE: thoth-renderer-f1:${{ github.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # The reference environment is built here rather than pulled: it is a test
+      # image, it is never published, and the comparison is only meaningful when
+      # the browser and fonts that draw both surfaces are this image's own.
+      - name: Build the F1 reference environment
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.renderer-f1
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.F1_IMAGE }}
+          cache-from: type=gha,scope=thoth-renderer-f1
+          cache-to: type=gha,mode=max,scope=thoth-renderer-f1
+
+      # The candidate lands in a throwaway root outside the checkout, and it is
+      # neither promoted nor uploaded: approving a golden set is the operator's
+      # gate, so this step stays non-pass until the capsule carries one.
+      - name: Verify the released template with no network
+        run: |
+          set -euo pipefail
+          image_id="$(docker image inspect "${F1_IMAGE}" --format '{{.Id}}')"
+          root="$(mktemp -d)"
+          trap 'sudo rm -rf "${root}"' EXIT
+          sudo chown 10001:10001 "${root}"
+          docker run --rm --network none \
+            -e THOTH_CONTROL_PLANE_ARTIFACT_ROOT=/var/lib/thoth/artifacts \
+            -e THOTH_F1_IMAGE_ID="${image_id}" \
+            -v "${root}":/var/lib/thoth/artifacts \
+            "${F1_IMAGE}" \
+            bun run scripts/verify-template-release.ts vertical_text_story-v1

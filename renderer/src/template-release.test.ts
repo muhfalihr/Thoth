@@ -1,16 +1,33 @@
 /// <reference types="bun-types" />
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 import { RendererArtifactRoot } from "./artifact-root";
 import type { CapturedFrame } from "./release-capture";
 import { canonicalReleaseRoot } from "./release-capsule";
 import { ffmpegRunner, writeRgbaPng, type RunFfmpeg } from "./release-compare";
-import { ReportUnsafe, assertSafeReport, verifyRelease } from "./template-release";
+import {
+  PromotionRefused,
+  ReportUnsafe,
+  assertSafeReport,
+  promoteRelease,
+  verifyRelease,
+  type ReleaseReport,
+} from "./template-release";
 
 const FFMPEG =
   process.platform === "win32" ? resolve(import.meta.dir, "..", "..", "ffmpeg.exe") : "ffmpeg";
@@ -273,4 +290,238 @@ test("a report that names a place on disk is refused before it is written", () =
   expect(() => assertSafeReport({ ...safe, note: "https://example.test/pixel.png" })).toThrow(
     ReportUnsafe,
   );
+});
+
+/** The identity a real reference container reports about itself. */
+const REFERENCE = {
+  THOTH_F1_BASE_DIGEST: `sha256:${"11".repeat(32)}`,
+  THOTH_F1_IMAGE_ID: `sha256:${"22".repeat(32)}`,
+  THOTH_RENDERER_VERSION: "remotion-4.0.523",
+} as const;
+
+const MANIFEST = "golden-manifest.json";
+const PREVIEW_NAME = "frame-000000-preview.png";
+const RENDER_NAME = "frame-000000-render.png";
+
+async function candidate(
+  pixels: (surface: "preview" | "render", frame: number) => Uint8Array | null = () =>
+    canvas(30, 60, 90),
+): Promise<ReleaseReport> {
+  return verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    capture: captureWriting(pixels),
+    environment: REFERENCE,
+  });
+}
+
+function runDirectory(report: ReleaseReport): string {
+  return join(workspace, "artifacts", "template-release", IDENTITY, report.run_id);
+}
+
+function promote(report: ReleaseReport, deps: Record<string, unknown> = {}): Promise<void> {
+  return promoteRelease(IDENTITY, artifacts, report.run_id, { releaseRoot, ...deps });
+}
+
+function rewriteReport(
+  report: ReleaseReport,
+  change: (value: Record<string, any>) => void,
+): void {
+  const path = join(runDirectory(report), "report.json");
+  const value = JSON.parse(readFileSync(path, "utf8"));
+  change(value);
+  writeFileSync(path, JSON.stringify(value, null, 2));
+}
+
+function manifestOf(): Record<string, any> {
+  return JSON.parse(readFileSync(join(capsule, MANIFEST), "utf8"));
+}
+
+/** Every file of the capsule and what is in it, so a refusal can be proven inert. */
+function capsuleState(): Record<string, string> {
+  const state: Record<string, string> = {};
+  for (const entry of readdirSync(capsule, { recursive: true }) as string[]) {
+    const path = join(capsule, entry);
+    if (statSync(path).isFile()) {
+      state[entry.split(sep).join("/")] = createHash("sha256")
+        .update(readFileSync(path))
+        .digest("hex");
+    }
+  }
+  return state;
+}
+
+async function refuses(promotion: Promise<void>, before: Record<string, string>): Promise<void> {
+  await expect(promotion).rejects.toBeInstanceOf(PromotionRefused);
+  // A refused promotion is not a partial one: the capsule is what it was.
+  expect(capsuleState()).toEqual(before);
+}
+
+test("promotion turns one approved candidate into an immutable golden set", async () => {
+  const report = await candidate();
+
+  await promote(report);
+
+  const manifest = manifestOf();
+  expect(manifest.schema_version).toBe(1);
+  expect(manifest.golden_set).toMatch(/^sha256-[0-9a-f]{64}$/);
+  expect(manifest.frames).toEqual([{ frame: 0, preview: PREVIEW_NAME, render: RENDER_NAME }]);
+  const set = join(capsule, "golden-sets", manifest.golden_set);
+  expect(readFileSync(join(set, PREVIEW_NAME))).toEqual(
+    readFileSync(join(runDirectory(report), "preview", "frame-000000.png")),
+  );
+
+  // The promoted set is now what a later run of the same release passes against.
+  const after = await candidate();
+  expect(after.verdict).toBe("pass");
+  expect(after.golden_set).toBe(manifest.golden_set);
+});
+
+test("a golden set is named by the pixels in it, not by the run that drew them", async () => {
+  const first = await candidate();
+  await promote(first);
+  const name = manifestOf().golden_set;
+
+  // The same picture from another run addresses the same set, and promoting it
+  // again is the same state rather than a second set.
+  const again = await candidate();
+  await promote(again);
+  expect(manifestOf().golden_set).toBe(name);
+  expect(readdirSync(join(capsule, "golden-sets"))).toEqual([name]);
+
+  // A different picture is a different set, which is what an operator approves.
+  const changed = await candidate(() => nudged(canvas(30, 60, 90), 40));
+  await promote(changed);
+  expect(manifestOf().golden_set).not.toBe(name);
+  expect(readdirSync(join(capsule, "golden-sets"))).toHaveLength(2);
+});
+
+test("only a candidate of this release, this run, and this reference image is promoted", async () => {
+  const report = await candidate();
+  const before = capsuleState();
+
+  rewriteReport(report, (value) => {
+    value.release = "vertical_text_story-v2";
+  });
+  await refuses(promote(report), before);
+
+  rewriteReport(report, (value) => {
+    value.release = IDENTITY;
+    value.run_id = "run_0000000000000000";
+  });
+  await refuses(promote(report), before);
+
+  rewriteReport(report, (value) => {
+    value.run_id = report.run_id;
+    value.reference_image.image_id = "unknown";
+  });
+  await refuses(promote(report), before);
+
+  rewriteReport(report, (value) => {
+    value.reference_image.image_id = REFERENCE.THOTH_F1_IMAGE_ID;
+    value.verdict = "capture_failed";
+  });
+  await refuses(promote(report), before);
+});
+
+test("a candidate drawn against other fixtures is refused", async () => {
+  const report = await candidate();
+  const before = capsuleState();
+
+  rewriteReport(report, (value) => {
+    value.capsule.assets[0].sha256 = `sha256:${"ab".repeat(32)}`;
+  });
+  await refuses(promote(report), before);
+
+  rewriteReport(report, (value) => {
+    value.capsule.assets[0].sha256 = report.capsule.assets[0]!.sha256;
+    value.capsule.frames = [0, 30];
+  });
+  await refuses(promote(report), before);
+});
+
+test("a candidate missing its report is refused", async () => {
+  const report = await candidate();
+  const before = capsuleState();
+  rmSync(join(runDirectory(report), "report.json"));
+
+  await refuses(promote(report), before);
+});
+
+test("a partial, altered, or padded candidate is refused", async () => {
+  const report = await candidate();
+  const before = capsuleState();
+  const preview = join(runDirectory(report), "preview", "frame-000000.png");
+  const kept = readFileSync(preview);
+
+  rmSync(preview);
+  await refuses(promote(report), before);
+
+  // A frame that is no longer the frame the report vouched for.
+  await writeRgbaPng(canvas(1, 2, 3), CANVAS, preview, real);
+  await refuses(promote(report), before);
+
+  writeFileSync(preview, kept);
+  writeFileSync(join(runDirectory(report), "preview", "frame-000001.png"), kept);
+  await refuses(promote(report), before);
+});
+
+test("a candidate reached through a link is refused", async () => {
+  const report = await candidate();
+  const before = capsuleState();
+  const outside = join(workspace, "outside");
+  mkdirSync(outside, { recursive: true });
+  const decoy = join(outside, "frame-000000.png");
+  const preview = join(runDirectory(report), "preview", "frame-000000.png");
+  writeFileSync(decoy, readFileSync(preview));
+
+  rmSync(preview);
+  try {
+    symlinkSync(decoy, preview, "file");
+    await refuses(promote(report), before);
+  } catch {
+    // Creating a file symlink is a privilege on Windows, not a capability this
+    // check depends on. The linked directory below walks it everywhere.
+  }
+
+  rmSync(join(runDirectory(report), "preview"), { recursive: true, force: true });
+  symlinkSync(outside, join(runDirectory(report), "preview"), "junction");
+  await refuses(promote(report), before);
+});
+
+test("an existing set is never rewritten by a promotion", async () => {
+  const report = await candidate();
+  await promote(report);
+  const name = manifestOf().golden_set;
+  // Another picture, readable and whole, under the name this candidate
+  // addresses: the case where only the set's own contents can refuse it.
+  await writeRgbaPng(
+    canvas(90, 60, 30),
+    CANVAS,
+    join(capsule, "golden-sets", name, PREVIEW_NAME),
+    real,
+  );
+  const before = capsuleState();
+
+  const repeat = await candidate();
+  await refuses(promote(repeat), before);
+});
+
+test("a failed copy, sync, or manifest switch leaves the approved release alone", async () => {
+  const first = await candidate();
+  await promote(first);
+  const before = capsuleState();
+  const failing = async () => {
+    throw new Error("the disk said no");
+  };
+
+  const changed = await candidate(() => nudged(canvas(30, 60, 90), 40));
+  await refuses(promote(changed, { copy: failing }), before);
+  await refuses(promote(changed, { sync: failing }), before);
+  await refuses(promote(changed, { swap: failing }), before);
+
+  // And the release still verifies against the set it had all along.
+  const after = await candidate();
+  expect(after.verdict).toBe("pass");
+  expect(after.golden_set).toBe(manifestOf().golden_set);
 });
