@@ -31,6 +31,7 @@ import { StudioJobNav } from "./StudioJobNav";
 import { StudioReviewPanel, type StudioReviewClient } from "./StudioReviewPanel";
 import { useStudioViewport, type StudioEditPane, type StudioJob } from "./studio_viewport";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
+import "./studio.css";
 
 type Props = {
   client: PromptLabClient &
@@ -304,7 +305,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   };
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Guided Studio">
+    <section className="studio-shell flex min-h-0 flex-1 flex-col bg-background text-foreground" aria-label="Guided Studio">
       <header className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-4 py-2">
         <button
           type="button"
@@ -523,7 +524,10 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           </div>
           <main
             hidden={!previewVisible}
-            className={`flex min-w-0 flex-col gap-3 bg-black/40 p-4 ${compact ? "min-h-[28rem]" : "min-h-0"} ${
+            className={`flex min-w-0 flex-col gap-3 bg-black/40 p-4 ${
+              // A compact column keeps the preview watchable above the review panel.
+              compact ? "min-h-[28rem] [&>section]:min-h-72" : "min-h-0"
+            } ${
               stripLayout ? "col-start-1 row-start-1" : ""
             }`}
           >

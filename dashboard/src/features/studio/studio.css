@@ -1,0 +1,28 @@
+/* Creator Studio's dark canvas: tokens are overridden only inside the Studio root. */
+.studio-shell {
+  --background: #18191b;
+  --foreground: #f5f3ee;
+  --card: #242628;
+  --card-foreground: #f5f3ee;
+  --primary: #d49a79;
+  --primary-foreground: #1b1918;
+  --secondary: #303234;
+  --secondary-foreground: #f5f3ee;
+  --muted: #2b2d2f;
+  --muted-foreground: #c5c6c7;
+  --accent: #3b3532;
+  --accent-foreground: #f5f3ee;
+  --border: #47494a;
+  --input: #47494a;
+  --ring: #efb28e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-shell *,
+  .studio-shell *::before,
+  .studio-shell *::after {
+    scroll-behavior: auto;
+    transition-duration: 0.01ms;
+    animation-duration: 0.01ms;
+  }
+}

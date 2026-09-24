@@ -136,6 +136,24 @@ test("offers the four jobs at every width and compact Edit panes only below desk
   expect(screen.getByLabelText("Inspector width")).toBeDefined();
 });
 
+test("scopes the dark workspace to Studio and marks the current job at every width", async () => {
+  await renderStudio(375);
+  const shell = screen.getByLabelText("Guided Studio");
+  expect(shell.classList.contains("studio-shell")).toBe(true);
+  expect(globalThis.document.documentElement.classList.contains("studio-shell")).toBe(false);
+  expect(globalThis.document.body.classList.contains("studio-shell")).toBe(false);
+
+  for (const width of [375, 820, 1024, 1440]) {
+    resize(width);
+    job("Review");
+    const nav = screen.getByRole("navigation", { name: "Studio jobs" });
+    const current = within(nav).getAllByRole("button").filter((button) => button.getAttribute("aria-current") === "page");
+    expect(current.map((button) => button.textContent)).toEqual(["Review"]);
+    job("Edit");
+  }
+  expect(previewMounts).toBe(1);
+});
+
 test("keeps one preview mounted across every viewport", async () => {
   await renderStudio(1024);
   for (const width of [375, 900, 1440, 1024]) {
