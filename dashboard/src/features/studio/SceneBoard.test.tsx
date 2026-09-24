@@ -41,3 +41,27 @@ test("selects a scene through a native pressed button", () => {
   fireEvent.click(second!);
   expect(onSelect).toHaveBeenCalledWith("scene_002");
 });
+
+test("labels a scene by its first text heading even when media comes first", () => {
+  const mediaFirst = {
+    canvas: { fps: 30 },
+    scenes: [
+      { scene_id: "scene_001", role: "title", duration_in_frames: 150, clip_ids: ["clip_video", "clip_text"] },
+      { scene_id: "scene_002", role: "body", duration_in_frames: 90, clip_ids: ["clip_video", "clip_blank"] },
+      { scene_id: "scene_003", role: "body", duration_in_frames: 60, clip_ids: ["clip_video"] },
+    ],
+    clips: [
+      { clip_id: "clip_video", kind: "video", ownership: "ai_managed" },
+      { clip_id: "clip_text", kind: "text", heading: "Text second", ownership: "user_edited" },
+      { clip_id: "clip_blank", kind: "text", heading: "   ", ownership: "ai_managed" },
+    ],
+  };
+  const onSelect = mock((_sceneId: string) => {});
+  render(<SceneBoard document={mediaFirst} selectedSceneId="scene_002" onSelect={onSelect} />);
+
+  const buttons = within(screen.getByRole("list")).getAllByRole("button");
+  expect(buttons.map((button) => button.querySelector("span")?.textContent)).toEqual(["Text second", "Scene 2", "Scene 3"]);
+  expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "true", "false"]);
+  fireEvent.click(buttons[2]!);
+  expect(onSelect.mock.calls).toEqual([["scene_003"]]);
+});

@@ -22,6 +22,10 @@ export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
       <ol className="flex gap-2 overflow-x-auto pb-1">
         {document.scenes.map((scene, index) => {
           const clip = document.clips?.find((candidate) => candidate.clip_id === scene.clip_ids[0]);
+          // The first usable heading in clip order, so a media clip first does not hide the text.
+          const heading = scene.clip_ids
+            .map((clipId) => document.clips?.find((candidate) => candidate.clip_id === clipId)?.heading?.trim())
+            .find(Boolean);
           const selected = scene.scene_id === selectedSceneId;
           return (
             <li key={scene.scene_id} className="w-40 shrink-0">
@@ -36,7 +40,7 @@ export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
                 }`}
               >
                 <span className="block truncate text-sm font-medium text-foreground">
-                  {clip?.heading?.trim() || `Scene ${index + 1}`}
+                  {heading || `Scene ${index + 1}`}
                 </span>
                 <span className="mt-1 flex items-center justify-between gap-2 text-xs">
                   <span className="capitalize">{scene.role}</span>
