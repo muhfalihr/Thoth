@@ -291,3 +291,39 @@ test("collapses a compact-desktop side region from a trigger that keeps focus", 
   expect(screen.queryByRole("button", { name: "Scene board panel" }) === null).toBe(true);
   expect(isHidden(screen.getByLabelText("Scene board"))).toBe(false);
 });
+
+test("monitors renders on a phone without offering render mutations", async () => {
+  const renderClient = {
+    getRenderCapability: mock(async () => ({ available: true, preset_id: "standard_vertical_mp4_v1" as const, renderer_version: "r" })),
+    listRenderJobs: mock(async () => ({ jobs: [], next_cursor: null })),
+    createRenderJob: mock(async () => { throw new Error("unused"); }),
+    getRenderJob: mock(async () => { throw new Error("unused"); }),
+    cancelRenderJob: mock(async () => { throw new Error("unused"); }),
+    retryRenderJob: mock(async () => { throw new Error("unused"); }),
+    downloadRenderOutput: mock(async () => new Blob()),
+    cleanupRenderArtifacts: mock(async () => { throw new Error("unused"); }),
+  };
+  resize(375);
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{ ...promptClientBase, getEditDocument: mock(async () => document), patchEditDocument: pendingSave, ...renderClient }}
+      projectId="project_001"
+      documentId={document.document_id}
+      onBack={() => {}}
+    />,
+  );
+  await screen.findByLabelText("Draft preview");
+  const trigger = screen.getByRole("button", { name: "Renders" });
+  trigger.focus();
+  pane("Renders");
+  await screen.findByText("Starting, retrying, cancelling, and deleting renders need a wider screen.");
+  expect(window.document.activeElement === trigger).toBe(true);
+  expect(screen.queryByRole("button", { name: "Render video" }) === null).toBe(true);
+  // The empty workstation must not push render status off the first screen.
+  expect(isHidden(screen.getByLabelText("Guided editing workstation"))).toBe(true);
+  expect(screen.getAllByLabelText("Draft preview").length).toBe(1);
+
+  resize(900);
+  expect(screen.getByRole("button", { name: "Render video" })).toBeDefined();
+});

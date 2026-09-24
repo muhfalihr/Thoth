@@ -2,6 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-24 - Creator Studio works on phones and tablets (F2 responsive workspace)
+
+Plan `docs/superpowers/plans/2026-09-24-creator-studio-f2-responsive-workspace.md`,
+from baseline `c50f85994e11a98e3160deba1a263f7c3bd02a81` on
+`codex/stage1-container-ci`, offline and test-first. No push, deployment, live
+provider request, or evidence mutation.
+
+What changed:
+
+- `useStudioViewport` classifies the window as phone (<768), tablet (768–1023),
+  compact desktop (1024–1439), or full desktop (>=1440). Below 1024 the Studio
+  shows one pane at a time (Scenes, Preview, Edit, Prompt Lab, Review, Renders)
+  from `CompactStudioNav`; hidden panes stay mounted but leave the tab order.
+  Compact desktop gets collapsible Scene board and Inspector regions.
+- One edit-document state owner and one `StudioPreview` instance serve every
+  viewport. Unsaved drafts, pending timeline operations, the selection,
+  conflicts, and the Advanced-mode choice survive a resize in either direction.
+  Advanced timeline editing explains that it needs a desktop-width screen.
+- New `set_caption_cue_text` edit operation (Python domain, TypeScript mirror,
+  OpenAPI, and generated client) changes one caption cue's text under the
+  saved base revision; locked or missing cues are refused and a stale base is a
+  conflict. `CaptionTextInspector` edits cue text on tablet and desktop.
+- On a phone, the Inspector edits heading and body only, Prompt Lab shows
+  saved template and override text only (proposals, locks, and providers stay
+  mounted but hidden), and the Renders pane monitors status, progress, failure
+  reason, history, and download. `RenderPanel monitorOnly` hides create,
+  retry, cancel, and cleanup, including their confirmations, and explains
+  offline and unavailable states.
+
+Verification at the Plan A HEAD:
+
+- Dashboard `bun test` 506 pass / 0 fail; `tsc --noEmit` 0 errors; lint 0
+  errors (pre-existing warnings only); `vite build` succeeded.
+- Python `pytest -m "not live"` 1604 passed, 32 skipped, 3 deselected; Ruff
+  check and format clean; OpenAPI export and client generation produced no
+  diff on a second pass; `git diff --check` clean.
+- `build_cuda.bat` exit 0 with a fresh `build_log.txt`; cargo reported the
+  release profile already current (no Rust change in this feature).
+- Browser inspection (Edge headless via ephemeral Playwright, local harness
+  mounting `GuidedStudio` over an in-memory mock client, all non-local requests
+  aborted) at 375, 820 portrait, 1180 landscape, 1024, and 1440, plus 200%
+  zoom and reduced motion: no horizontal overflow, exactly one preview, phone
+  pane buttons 44 px tall, no phone render mutation, tab order stays out of
+  hidden panes, and a heading plus caption edit survived 1440 -> 375 -> 1440
+  unsaved. The inspection found an empty workstation pushing phone render
+  status below the fold; the Renders pane now hides the workstation.
+
+Remaining: the F2 editorial-review plan, then the end-of-feature review gate.
+
 ## 2026-09-23 - Revision-bound render job verified offline end to end (E1 Task 14)
 
 Task 14 runs no new product behaviour. It re-derives, from a clean worktree,

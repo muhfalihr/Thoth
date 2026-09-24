@@ -489,6 +489,8 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
       >
         <div
           aria-label="Guided editing workstation"
+          // The Renders pane shows nothing from the workstation, so it yields the space.
+          hidden={compact && pane === "renders"}
           style={workstationStyle}
           className={`grid min-h-0 flex-1 ${compact ? "grid-cols-1 overflow-auto" : "overflow-hidden"}`}
         >
@@ -614,6 +616,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               templateId={base.template.template_id}
               templateVersion={base.template.version}
               facts={{ saveStatus, online: !state.isOffline }}
+              monitorOnly={viewport === "phone"}
               // The saved revision is what a render reads, so its text and its
               // structure are what decide whether it can be rendered at all.
               validation={{

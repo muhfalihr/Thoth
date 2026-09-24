@@ -1319,3 +1319,122 @@ describe("confirmation semantics", () => {
     expect(window.document.activeElement).toBe(destroy);
   });
 });
+
+describe("phone monitoring", () => {
+  const MUTATIONS = /render video|start render|retry render|cancel render|delete render files|delete files/i;
+
+  function monitor(client: RenderPanelClient, facts: EditorFacts = SAVED) {
+    return render(
+      <RenderPanel
+        client={client}
+        projectId="project_001"
+        documentId="document_001"
+        documentRevision={7}
+        templateId="vertical_text_story"
+        templateVersion={1}
+        facts={facts}
+        validation={VALID}
+        monitorOnly
+      />,
+    );
+  }
+
+  test("a running render shows status and progress with no mutation control, even after polling", async () => {
+    jest.useFakeTimers();
+    const running = job({ status: "rendering", progress_percent: 42 } as Partial<RenderJob>);
+    const client = makeClient([running], {
+      getRenderCapability: mock(async () => ({
+        ...AVAILABLE,
+        available: false,
+        reason: "render_busy" as const,
+        active_render_job_id: "rj_001",
+      })),
+      getRenderJob: mock(async () => running),
+    });
+    monitor(client);
+    await settle();
+
+    expect(screen.getByLabelText("Current render").textContent).toContain("Rendering · 42%");
+    expect(screen.queryAllByRole("button", { name: MUTATIONS }).length).toBe(0);
+    await act(async () => {
+      jest.advanceTimersByTime(1_500);
+    });
+    expect(client.getRenderJob).toHaveBeenCalled();
+    expect(screen.queryAllByRole("button", { name: MUTATIONS }).length).toBe(0);
+    expect(screen.getByText("Starting, retrying, cancelling, and deleting renders need a wider screen.")).toBeDefined();
+  });
+
+  test("a completed render can still be downloaded but not deleted", async () => {
+    const client = makeClient([COMPLETED]);
+    monitor(client);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T09:00:00Z/ }));
+
+    expect(screen.getByLabelText("Current render").textContent).toContain("Completed");
+    expect(screen.queryAllByRole("button", { name: MUTATIONS }).length).toBe(0);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Download video" }));
+    });
+    expect(client.downloadRenderOutput).toHaveBeenCalledTimes(1);
+  });
+
+  test("a failed render shows its safe reason and offers no retry", async () => {
+    const client = makeClient([
+      job({ status: "failed", finished_at: "2026-09-21T10:04:00Z", failure_code: "render_asset_unavailable" } as Partial<RenderJob>),
+    ]);
+    monitor(client);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: /Render started 2026-09-21T10:00:00Z/ }));
+
+    expect(screen.getByLabelText("Current render").textContent).toContain("Failed");
+    expect(screen.getByLabelText("Current render").textContent).toContain(
+      "A file this render needs was not available.",
+    );
+    expect(screen.queryAllByRole("button", { name: MUTATIONS }).length).toBe(0);
+    expect(client.retryRenderJob).toHaveBeenCalledTimes(0);
+  });
+
+  test("being offline is explained in plain view", async () => {
+    monitor(makeClient([COMPLETED]), { ...SAVED, online: false });
+    await settle();
+    expect(screen.getByText("You are offline. Render status updates when the connection returns.")).toBeDefined();
+  });
+
+  test("an unavailable renderer is still explained", async () => {
+    monitor(
+      makeClient([], {
+        getRenderCapability: mock(async () => ({
+          ...AVAILABLE,
+          available: false,
+          reason: "renderer_not_configured" as const,
+        })),
+      }),
+    );
+    await settle();
+    expect(screen.getByText("Rendering is not set up on this installation.")).toBeDefined();
+  });
+
+  test("an open confirmation cannot survive the switch to monitoring", async () => {
+    const client = makeClient();
+    const { rerender } = panel(client);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Render video" }));
+    expect(screen.getByRole("button", { name: "Start render" })).toBeDefined();
+
+    rerender(
+      <RenderPanel
+        client={client}
+        projectId="project_001"
+        documentId="document_001"
+        documentRevision={7}
+        templateId="vertical_text_story"
+        templateVersion={1}
+        facts={SAVED}
+        validation={VALID}
+        monitorOnly
+      />,
+    );
+    expect(screen.queryAllByRole("button", { name: MUTATIONS }).length).toBe(0);
+    expect(client.createRenderJob).toHaveBeenCalledTimes(0);
+  });
+});

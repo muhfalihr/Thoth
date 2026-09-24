@@ -59,6 +59,8 @@ type Props = {
   templateVersion: RenderJob["template_version"];
   facts: Omit<RenderEditorFacts, "documentValid">;
   validation: RenderValidation;
+  /** Phone surface: status, history, and download only; every render mutation stays hidden. */
+  monitorOnly?: boolean;
 };
 
 const POLL_INTERVAL_MS = 1_500;
@@ -188,6 +190,7 @@ function RenderSurface({
   templateVersion,
   facts,
   validation,
+  monitorOnly = false,
 }: Props) {
   const [state, dispatch] = useReducer(renderJobReducer, undefined, createRenderJobState);
   const [confirmCreate, setConfirmCreate] = useState<RenderConfirmation | null>(null);
@@ -499,16 +502,22 @@ function RenderSurface({
   return (
     <section className="flex flex-col gap-3 border-t border-border px-4 py-3" aria-label="Render">
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className={actionButton}
-          disabled={!gate.allowed}
-          aria-describedby={gateText !== null ? gateReasonId : undefined}
-          onClick={openConfirm}
-        >
-          Render video
-        </button>
-        {gateText !== null ? (
+        {monitorOnly ? (
+          <p className="text-xs text-muted-foreground">
+            Starting, retrying, cancelling, and deleting renders need a wider screen.
+          </p>
+        ) : (
+          <button
+            type="button"
+            className={actionButton}
+            disabled={!gate.allowed}
+            aria-describedby={gateText !== null ? gateReasonId : undefined}
+            onClick={openConfirm}
+          >
+            Render video
+          </button>
+        )}
+        {!monitorOnly && gateText !== null ? (
           <span id={gateReasonId} className="sr-only">
             {gateText}
           </span>
@@ -521,6 +530,12 @@ function RenderSurface({
       {state.capability !== null && !state.capability.available && state.capability.reason ? (
         <p role="status" className="text-sm text-muted-foreground">
           {unavailableCopy[state.capability.reason]}
+        </p>
+      ) : null}
+
+      {monitorOnly && offline ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          You are offline. Render status updates when the connection returns.
         </p>
       ) : null}
 
@@ -542,7 +557,7 @@ function RenderSurface({
             <p className="text-sm text-muted-foreground">{failureText(selected)}</p>
           ) : null}
           <div className="flex flex-wrap gap-2">
-            {canCancel(selected) ? (
+            {!monitorOnly && canCancel(selected) ? (
               <button
                 type="button"
                 className={actionButton}
@@ -552,7 +567,7 @@ function RenderSurface({
                 Cancel render
               </button>
             ) : null}
-            {canRetry(selected) ? (
+            {!monitorOnly && canRetry(selected) ? (
               <button
                 type="button"
                 className={actionButton}
@@ -572,7 +587,7 @@ function RenderSurface({
                 Download video
               </button>
             ) : null}
-            {canCleanup(selected) ? (
+            {!monitorOnly && canCleanup(selected) ? (
               <button
                 type="button"
                 className={actionButton}
@@ -607,7 +622,7 @@ function RenderSurface({
         ))}
       </ol>
 
-      {confirmCreate ? (
+      {!monitorOnly && confirmCreate ? (
         <div
           role="group"
           aria-labelledby={confirmTitleId}
@@ -648,7 +663,7 @@ function RenderSurface({
         </div>
       ) : null}
 
-      {confirmCleanup !== null ? (
+      {!monitorOnly && confirmCleanup !== null ? (
         <div
           role="group"
           aria-label="Delete render files"
