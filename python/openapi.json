@@ -1,6 +1,43 @@
 {
   "components": {
     "schemas": {
+      "ActorSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_type": {
+            "enum": [
+              "user",
+              "service"
+            ],
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          }
+        },
+        "required": [
+          "actor_id",
+          "actor_type"
+        ],
+        "title": "ActorSnapshot",
+        "type": "object"
+      },
       "AddClipFromAsset": {
         "additionalProperties": false,
         "properties": {
@@ -474,6 +511,91 @@
           "footage"
         ],
         "title": "ContentSetImportRequest",
+        "type": "object"
+      },
+      "CreateComment": {
+        "additionalProperties": false,
+        "description": "A plain-text comment on the saved revision the caller last saw.",
+        "properties": {
+          "base_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "frame": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "base_revision",
+          "operation_id",
+          "text"
+        ],
+        "title": "CreateComment",
+        "type": "object"
+      },
+      "CreateDecision": {
+        "additionalProperties": false,
+        "description": "An editorial decision on the saved revision the caller last saw.",
+        "properties": {
+          "base_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "decision": {
+            "enum": [
+              "approved",
+              "changes_requested"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "base_revision",
+          "operation_id",
+          "decision"
+        ],
+        "title": "CreateDecision",
         "type": "object"
       },
       "CreatePromptProposalRequest": {
@@ -2605,6 +2727,189 @@
         "title": "RetryRequest",
         "type": "object"
       },
+      "ReviewComment": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ActorSnapshot"
+          },
+          "comment_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Comment Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Document Revision",
+            "type": "integer"
+          },
+          "frame": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "comment_id",
+          "project_id",
+          "document_id",
+          "document_revision",
+          "actor",
+          "text",
+          "created_at"
+        ],
+        "title": "ReviewComment",
+        "type": "object"
+      },
+      "ReviewCommentPage": {
+        "additionalProperties": false,
+        "description": "Bounded oldest-first comment page with an opaque cursor.",
+        "properties": {
+          "comments": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ReviewComment"
+            },
+            "maxItems": 50,
+            "title": "Comments",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "title": "ReviewCommentPage",
+        "type": "object"
+      },
+      "ReviewDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ActorSnapshot"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "approved",
+              "changes_requested"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "decision_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "document_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Document Revision",
+            "type": "integer"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "decision_id",
+          "project_id",
+          "document_id",
+          "document_revision",
+          "actor",
+          "decision",
+          "created_at"
+        ],
+        "title": "ReviewDecision",
+        "type": "object"
+      },
+      "ReviewDecisionPage": {
+        "additionalProperties": false,
+        "description": "Bounded newest-first decision page with an opaque cursor.",
+        "properties": {
+          "decisions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ReviewDecision"
+            },
+            "maxItems": 50,
+            "title": "Decisions",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "title": "ReviewDecisionPage",
+        "type": "object"
+      },
       "ReviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2617,6 +2922,28 @@
           "require_publish_approval"
         ],
         "title": "ReviewRequest",
+        "type": "object"
+      },
+      "ReviewRevisionConflictBody": {
+        "additionalProperties": false,
+        "description": "Typed 409 body: the review targeted a revision that is no longer the latest.",
+        "properties": {
+          "code": {
+            "const": "review_revision_conflict",
+            "default": "review_revision_conflict",
+            "title": "Code",
+            "type": "string"
+          },
+          "latest_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Latest Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "latest_revision"
+        ],
+        "title": "ReviewRevisionConflictBody",
         "type": "object"
       },
       "SaveProjectPromptBindingRequest": {
@@ -4722,6 +5049,366 @@
           }
         },
         "summary": "Apply Edit Document Patch"
+      }
+    },
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}/review-comments": {
+      "get": {
+        "operationId": "list_review_comments_api_v1_projects__project_id__edit_documents__document_id__review_comments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Review Comments"
+      },
+      "post": {
+        "operationId": "create_review_comment_api_v1_projects__project_id__edit_documents__document_id__review_comments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateComment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewComment"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewRevisionConflictBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Review Comment"
+      }
+    },
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}/review-decisions": {
+      "get": {
+        "operationId": "list_review_decisions_api_v1_projects__project_id__edit_documents__document_id__review_decisions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDecisionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Review Decisions"
+      },
+      "post": {
+        "operationId": "create_review_decision_api_v1_projects__project_id__edit_documents__document_id__review_decisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDecision"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewRevisionConflictBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Review Decision"
       }
     },
     "/api/v1/projects/{project_id}/edit-documents/{document_id}/upgrade-timeline": {

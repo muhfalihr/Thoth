@@ -67,6 +67,13 @@ export type RenderJobPage = components["schemas"]["RenderJobPageView"];
 export type RenderOutput = components["schemas"]["RenderOutputView"];
 export type CreateRenderJobPayload = components["schemas"]["CreateRenderJobRequest"];
 export type RenderJobStatus = RenderJob["status"];
+export type CreateComment = components["schemas"]["CreateComment"];
+export type CreateDecision = components["schemas"]["CreateDecision"];
+export type ReviewComment = components["schemas"]["ReviewComment"];
+export type ReviewCommentPage = components["schemas"]["ReviewCommentPage"];
+export type ReviewDecision = components["schemas"]["ReviewDecision"];
+export type ReviewDecisionPage = components["schemas"]["ReviewDecisionPage"];
+export type ReviewListQuery = { limit?: number; cursor?: string };
 
 /**
  * Every fixed code a render request may end with: the server's own safe codes
@@ -113,6 +120,50 @@ export class RenderRequestError extends Error {
     this.name = "RenderRequestError";
     this.code = code;
   }
+}
+
+/** Every fixed code a Studio review request may end with, plus one generic fallback. */
+const REVIEW_ERROR_CODES = [
+  "review_revision_conflict",
+  "review_document_not_found",
+  "idempotency_conflict",
+  "review_frame_out_of_range",
+  "review_not_eligible",
+  "invalid_review_page",
+  "review_unavailable",
+  "review_request_failed",
+] as const;
+
+export type ReviewErrorCode = (typeof REVIEW_ERROR_CODES)[number];
+
+const KNOWN_REVIEW_ERROR_CODES: ReadonlySet<string> = new Set(REVIEW_ERROR_CODES);
+
+/** Why a review request failed; a stale write also carries the newer saved revision. */
+export class StudioReviewRequestError extends Error {
+  readonly code: ReviewErrorCode;
+  readonly latestRevision: number | null;
+
+  constructor(code: ReviewErrorCode, latestRevision: number | null = null) {
+    super(`Studio review request failed (${code})`);
+    this.name = "StudioReviewRequestError";
+    this.code = code;
+    this.latestRevision = latestRevision;
+  }
+}
+
+function reviewError(body: unknown): StudioReviewRequestError {
+  const raw = (body ?? {}) as { code?: unknown; latest_revision?: unknown; detail?: { code?: unknown } };
+  if (raw.code === "review_revision_conflict") {
+    return Number.isInteger(raw.latest_revision) && (raw.latest_revision as number) > 0
+      ? new StudioReviewRequestError("review_revision_conflict", raw.latest_revision as number)
+      : new StudioReviewRequestError("review_request_failed");
+  }
+  const code = raw.detail?.code;
+  return new StudioReviewRequestError(
+    typeof code === "string" && KNOWN_REVIEW_ERROR_CODES.has(code)
+      ? (code as ReviewErrorCode)
+      : "review_request_failed",
+  );
 }
 
 export type ControlPlaneClient = {
@@ -214,6 +265,26 @@ export type ControlPlaneClient = {
   ) => Promise<RenderJob>;
   downloadRenderOutput: (projectId: string, renderJobId: string) => Promise<Blob>;
   cleanupRenderArtifacts: (projectId: string, renderJobId: string) => Promise<RenderJob>;
+  listStudioReviewComments: (
+    projectId: string,
+    documentId: string,
+    query?: ReviewListQuery,
+  ) => Promise<ReviewCommentPage>;
+  createStudioReviewComment: (
+    projectId: string,
+    documentId: string,
+    request: CreateComment,
+  ) => Promise<ReviewComment>;
+  listStudioReviewDecisions: (
+    projectId: string,
+    documentId: string,
+    query?: ReviewListQuery,
+  ) => Promise<ReviewDecisionPage>;
+  createStudioReviewDecision: (
+    projectId: string,
+    documentId: string,
+    request: CreateDecision,
+  ) => Promise<ReviewDecision>;
 };
 
 type ClientOptions = { baseUrl?: string; apiKey?: string; fetch?: typeof fetch };
@@ -319,6 +390,34 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
     const response = await renderCall(path, init);
     return renderBody(() => response.json() as Promise<T>);
   };
+
+  // Review calls never retry on their own: a failure, including a stale write,
+  // returns to the caller, who resubmits explicitly with a new operation ID.
+  async function reviewJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+    try {
+      const response = await doFetch(`${baseUrl}${path}`, { ...init, headers: headers(init.headers) });
+      if (response.ok) return (await response.json()) as T;
+      throw reviewError(await response.json().catch(() => null));
+    } catch (error) {
+      throw error instanceof StudioReviewRequestError
+        ? error
+        : new StudioReviewRequestError("review_request_failed");
+    }
+  }
+
+  const reviewPath = (projectId: string, documentId: string, resource: string) =>
+    `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/${encodeURIComponent(documentId)}/${resource}`;
+  const reviewList = <T>(path: string, { limit = 50, cursor }: ReviewListQuery = {}) => {
+    const query = new URLSearchParams({ limit: String(Math.min(Math.max(limit, 1), 50)) });
+    if (cursor) query.set("cursor", cursor);
+    return reviewJson<T>(`${path}?${query.toString()}`);
+  };
+  const reviewPost = <T>(path: string, body: unknown) =>
+    reviewJson<T>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
 
   const rendersPath = (projectId: string) =>
     `/api/v1/projects/${encodeURIComponent(projectId)}/render-jobs`;
@@ -512,6 +611,14 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
       renderJson<RenderJob>(`${renderJobPath(projectId, renderJobId)}/artifacts`, {
         method: "DELETE",
       }),
+    listStudioReviewComments: (projectId, documentId, query) =>
+      reviewList<ReviewCommentPage>(reviewPath(projectId, documentId, "review-comments"), query),
+    createStudioReviewComment: (projectId, documentId, request) =>
+      reviewPost<ReviewComment>(reviewPath(projectId, documentId, "review-comments"), request),
+    listStudioReviewDecisions: (projectId, documentId, query) =>
+      reviewList<ReviewDecisionPage>(reviewPath(projectId, documentId, "review-decisions"), query),
+    createStudioReviewDecision: (projectId, documentId, request) =>
+      reviewPost<ReviewDecision>(reviewPath(projectId, documentId, "review-decisions"), request),
     streamWorkflow(workflowId, onSnapshot, lastEventId) {
       let active = true;
       let cursor = lastEventId;

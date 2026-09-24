@@ -5,6 +5,7 @@ import { afterEach, expect, mock, test } from "bun:test";
 import {
   asRenderErrorCode,
   createControlPlaneClient,
+  StudioReviewRequestError,
   type EditDocument,
   type EditDocumentPatch,
   type EditorAssetPage,
@@ -18,6 +19,9 @@ import {
   type RenderErrorCode,
   type RenderJob,
   type RenderJobPage,
+  type ReviewComment,
+  type ReviewDecision,
+  type ReviewErrorCode,
   RenderRequestError,
   type ResolvedPromptDraft,
   type SaveProjectPromptBindingRequest,
@@ -860,4 +864,131 @@ test("only the fixed render codes are representable", () => {
   expect(asRenderErrorCode("ENOENT C:/srv/artifacts")).toBe("render_request_failed");
   expect(asRenderErrorCode(new Error("boom"))).toBe("render_request_failed");
   expect(asRenderErrorCode(undefined)).toBe("render_request_failed");
+});
+
+const REVIEW_COMMENT = {
+  comment_id: "rev_comment_1",
+  project_id: "project_001",
+  document_id: "edoc_001",
+  document_revision: 3,
+  actor: { actor_id: "owner", actor_type: "user", display_name: null },
+  text: "Check the hook",
+  frame: 29,
+  created_at: "2026-09-24T09:00:00Z",
+} satisfies ReviewComment;
+const REVIEW_DECISION = {
+  decision_id: "rev_decision_1",
+  project_id: "project_001",
+  document_id: "edoc_001",
+  document_revision: 3,
+  actor: { actor_id: "owner", actor_type: "user", display_name: null },
+  decision: "approved",
+  reason: null,
+  created_at: "2026-09-24T09:00:00Z",
+} satisfies ReviewDecision;
+const REVIEW_BASE = "/api/v1/projects/project%20one/edit-documents/edoc%2F001";
+
+async function reviewFailure(promise: Promise<unknown>): Promise<StudioReviewRequestError> {
+  const error = await promise.then(
+    () => null,
+    (reason: unknown) => reason,
+  );
+  expect(error instanceof StudioReviewRequestError).toBe(true);
+  return error as StudioReviewRequestError;
+}
+
+test("posts one review comment and one decision to the document's own routes", async () => {
+  const calls: RecordedCall[] = [];
+  let body: unknown = REVIEW_COMMENT;
+  const client = renderClient(calls, () => new Response(JSON.stringify(body), { status: 201 }));
+  const comment = { base_revision: 3, operation_id: "op_review_1", text: "Check the hook", frame: 29 };
+
+  await expect(client.createStudioReviewComment("project one", "edoc/001", comment)).resolves.toEqual(
+    REVIEW_COMMENT,
+  );
+  body = REVIEW_DECISION;
+  await expect(
+    client.createStudioReviewDecision("project one", "edoc/001", {
+      base_revision: 3,
+      operation_id: "op_review_3",
+      decision: "approved",
+    }),
+  ).resolves.toEqual(REVIEW_DECISION);
+
+  expect(calls.map((call) => `${call.init?.method} ${call.url}`)).toEqual([
+    `POST ${REVIEW_BASE}/review-comments`,
+    `POST ${REVIEW_BASE}/review-decisions`,
+  ]);
+  // The caller's operation ID travels unchanged in the body; nothing else is added.
+  expect(calls[0].init?.body).toBe(JSON.stringify(comment));
+  expect(new Headers(calls[0].init?.headers).get("Authorization")).toBe("Bearer secret");
+});
+
+test("lists bounded review pages with an opaque cursor", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(
+    calls,
+    () => new Response(JSON.stringify({ comments: [], next_cursor: null }), { status: 200 }),
+  );
+
+  await client.listStudioReviewComments("project one", "edoc/001");
+  await client.listStudioReviewDecisions("project one", "edoc/001", { limit: 500, cursor: "c / 1" });
+
+  expect(calls.map((call) => call.url)).toEqual([
+    `${REVIEW_BASE}/review-comments?limit=50`,
+    `${REVIEW_BASE}/review-decisions?limit=50&cursor=c+%2F+1`,
+  ]);
+});
+
+test("a stale review write surfaces only the typed latest revision", async () => {
+  const calls: RecordedCall[] = [];
+  const client = renderClient(
+    calls,
+    () =>
+      new Response(JSON.stringify({ code: "review_revision_conflict", latest_revision: 4 }), {
+        status: 409,
+      }),
+  );
+
+  const error = await reviewFailure(
+    client.createStudioReviewComment("project_001", "edoc_001", {
+      base_revision: 3,
+      operation_id: "op_review_1",
+      text: "Check",
+    }),
+  );
+
+  expect(error.code).toBe("review_revision_conflict");
+  expect(error.latestRevision).toBe(4);
+  expect(calls.length).toBe(1);
+});
+
+test("every other review failure collapses to a fixed safe code", async () => {
+  const bodies: Array<[number, unknown, ReviewErrorCode]> = [
+    [409, { detail: { code: "review_not_eligible", issues: ["main_track_gap"] } }, "review_not_eligible"],
+    [503, { detail: { code: "review_unavailable" } }, "review_unavailable"],
+    [500, { detail: "postgresql://user:secret@db/thoth" }, "review_request_failed"],
+    [409, { code: "review_revision_conflict", latest_revision: "C:/secret" }, "review_request_failed"],
+  ];
+  for (const [status, body, code] of bodies) {
+    const client = renderClient([], () => new Response(JSON.stringify(body), { status }));
+    const error = await reviewFailure(
+      client.createStudioReviewDecision("project_001", "edoc_001", {
+        base_revision: 3,
+        operation_id: "op_review_3",
+        decision: "approved",
+      }),
+    );
+    expect(error.code).toBe(code);
+    expect(error.latestRevision).toBe(null);
+    expect(error.message.includes("secret")).toBe(false);
+  }
+  const offline = createControlPlaneClient({
+    baseUrl: "",
+    fetch: mock(async () => {
+      throw new Error("connect ECONNREFUSED C:/secret");
+    }) as unknown as typeof fetch,
+  });
+  const error = await reviewFailure(offline.listStudioReviewComments("project_001", "edoc_001"));
+  expect(error.code).toBe("review_request_failed");
 });

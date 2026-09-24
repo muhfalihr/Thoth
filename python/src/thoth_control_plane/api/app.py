@@ -21,6 +21,7 @@ from thoth_control_plane.api.routes.internal_render_jobs import router as intern
 from thoth_control_plane.api.routes.prompt_lab import router as prompt_lab_router
 from thoth_control_plane.api.routes.prompt_proposals import router as prompt_proposal_router
 from thoth_control_plane.api.routes.render_jobs import router as render_job_router
+from thoth_control_plane.api.routes.studio_review import router as studio_review_router
 from thoth_control_plane.api.routes.workflows import router as workflow_router
 from thoth_control_plane.application import (
     ApprovalNotAllowed,
@@ -46,6 +47,8 @@ from thoth_control_plane.application.prompt_proposal_ports import (
 from thoth_control_plane.application.prompt_proposals import PromptProposalService
 from thoth_control_plane.application.render_bundles import RenderPresetSettings
 from thoth_control_plane.application.render_jobs import RenderJobService
+from thoth_control_plane.application.studio_review import StudioReviewService
+from thoth_control_plane.application.studio_review_ports import StudioReviewRepository
 from thoth_control_plane.config import Settings
 from thoth_control_plane.domain.prompt_proposals import PromptProviderDefinition
 from thoth_control_plane.infrastructure.artifact_root import LocalArtifactRoot
@@ -68,6 +71,9 @@ from thoth_control_plane.infrastructure.render_job_repository import PostgresRen
 from thoth_control_plane.infrastructure.renderer_gateway import (
     HttpRendererGateway,
     UnavailableRendererGateway,
+)
+from thoth_control_plane.infrastructure.studio_review_repository import (
+    PostgresStudioReviewRepository,
 )
 from thoth_control_plane.infrastructure.temporal_gateway import TemporalWorkflowGateway
 
@@ -145,6 +151,7 @@ def create_app(
     prompt_provider_catalog: tuple[PromptProviderDefinition, ...] | None = None,
     editor_asset_repository: EditorAssetRepository | None = None,
     render_job_service: RenderJobService | None = None,
+    studio_review_repository: StudioReviewRepository | None = None,
 ) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
     settings = settings or Settings()  # type: ignore[call-arg]
@@ -162,6 +169,10 @@ def create_app(
         )
     if prompt_proposal_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
         prompt_proposal_repository = PostgresPromptProposalRepository(
+            settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
+        )
+    if studio_review_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
+        studio_review_repository = PostgresStudioReviewRepository(
             settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
         )
     effective_catalog = (
@@ -235,6 +246,7 @@ def create_app(
     app.state.prompt_lab_service = PromptLabService(prompt_repository)
     app.state.prompt_proposal_service = prompt_proposal_service
     app.state.render_job_service = render_service
+    app.state.studio_review_service = StudioReviewService(studio_review_repository)
 
     app.add_middleware(
         CORSMiddleware,
@@ -307,6 +319,7 @@ def create_app(
     app.include_router(prompt_lab_router, prefix="/api/v1")
     app.include_router(prompt_proposal_router, prefix="/api/v1")
     app.include_router(render_job_router, prefix="/api/v1")
+    app.include_router(studio_review_router, prefix="/api/v1")
     # Unversioned and unpublished: only the private renderer ever calls these.
     app.include_router(internal_render_router)
     return app

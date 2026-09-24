@@ -178,3 +178,27 @@ def test_public_asset_schema_exposes_only_safe_projection_fields(schema) -> None
         "validation_state",
         "checksum",
     }
+
+
+REVIEW_COMMENTS_PATH = "/api/v1/projects/{project_id}/edit-documents/{document_id}/review-comments"
+REVIEW_DECISIONS_PATH = (
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}/review-decisions"
+)
+
+
+@pytest.mark.parametrize("path", [REVIEW_COMMENTS_PATH, REVIEW_DECISIONS_PATH])
+def test_schema_publishes_bounded_review_reads_and_writes(schema, path: str) -> None:
+    assert sorted(schema["paths"][path]) == ["get", "post"]
+    parameters = {item["name"]: item for item in schema["paths"][path]["get"]["parameters"]}
+    assert parameters["limit"]["schema"]["maximum"] == 50
+    assert parameters["limit"]["schema"]["minimum"] == 1
+    assert parameters["cursor"]["required"] is False
+    assert "409" in schema["paths"][path]["post"]["responses"]
+
+
+@pytest.mark.parametrize("name", ["CreateComment", "CreateDecision"])
+def test_review_requests_cannot_carry_an_actor(schema, name: str) -> None:
+    properties = schema["components"]["schemas"][name]["properties"]
+
+    assert "actor" not in properties
+    assert {"base_revision", "operation_id"} <= set(properties)

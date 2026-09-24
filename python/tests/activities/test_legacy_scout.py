@@ -383,6 +383,8 @@ def test_no_fastapi_request_model_exposes_activity_mode() -> None:
         "ApplyPromptProposalRequest",
         "ApprovalSubmission",
         "ContentSetImportRequest",
+        "CreateComment",
+        "CreateDecision",
         "CreatePromptProposalRequest",
         "CreateRenderJobRequest",
         "EditDocumentPatch",

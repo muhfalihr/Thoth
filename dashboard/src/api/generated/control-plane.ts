@@ -79,6 +79,42 @@ export interface paths {
         patch: operations["apply_edit_document_patch_api_v1_projects__project_id__edit_documents__document_id__patch"];
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}/review-comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Review Comments */
+        get: operations["list_review_comments_api_v1_projects__project_id__edit_documents__document_id__review_comments_get"];
+        put?: never;
+        /** Create Review Comment */
+        post: operations["create_review_comment_api_v1_projects__project_id__edit_documents__document_id__review_comments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/edit-documents/{document_id}/review-decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Review Decisions */
+        get: operations["list_review_decisions_api_v1_projects__project_id__edit_documents__document_id__review_decisions_get"];
+        put?: never;
+        /** Create Review Decision */
+        post: operations["create_review_decision_api_v1_projects__project_id__edit_documents__document_id__review_decisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/edit-documents/{document_id}/upgrade-timeline": {
         parameters: {
             query?: never;
@@ -699,6 +735,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ActorSnapshot */
+        ActorSnapshot: {
+            /** Actor Id */
+            actor_id: string;
+            /**
+             * Actor Type
+             * @enum {string}
+             */
+            actor_type: "user" | "service";
+            /** Display Name */
+            display_name?: string | null;
+        };
         /** AddClipFromAsset */
         AddClipFromAsset: {
             /** Asset Id */
@@ -872,6 +920,37 @@ export interface components {
             /** Footage */
             footage: components["schemas"]["FootageImport"][];
             main: components["schemas"]["MainImport"];
+        };
+        /**
+         * CreateComment
+         * @description A plain-text comment on the saved revision the caller last saw.
+         */
+        CreateComment: {
+            /** Base Revision */
+            base_revision: number;
+            /** Frame */
+            frame?: number | null;
+            /** Operation Id */
+            operation_id: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * CreateDecision
+         * @description An editorial decision on the saved revision the caller last saw.
+         */
+        CreateDecision: {
+            /** Base Revision */
+            base_revision: number;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approved" | "changes_requested";
+            /** Operation Id */
+            operation_id: string;
+            /** Reason */
+            reason?: string | null;
         };
         /** CreatePromptProposalRequest */
         CreatePromptProposalRequest: {
@@ -1608,10 +1687,95 @@ export interface components {
             /** From Stage */
             from_stage?: ("validation" | "source" | "assets" | "narration" | "render" | "review" | "delivery") | null;
         };
+        /** ReviewComment */
+        ReviewComment: {
+            actor: components["schemas"]["ActorSnapshot"];
+            /** Comment Id */
+            comment_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Document Id */
+            document_id: string;
+            /** Document Revision */
+            document_revision: number;
+            /** Frame */
+            frame?: number | null;
+            /** Project Id */
+            project_id: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * ReviewCommentPage
+         * @description Bounded oldest-first comment page with an opaque cursor.
+         */
+        ReviewCommentPage: {
+            /**
+             * Comments
+             * @default []
+             */
+            comments: components["schemas"]["ReviewComment"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** ReviewDecision */
+        ReviewDecision: {
+            actor: components["schemas"]["ActorSnapshot"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approved" | "changes_requested";
+            /** Decision Id */
+            decision_id: string;
+            /** Document Id */
+            document_id: string;
+            /** Document Revision */
+            document_revision: number;
+            /** Project Id */
+            project_id: string;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * ReviewDecisionPage
+         * @description Bounded newest-first decision page with an opaque cursor.
+         */
+        ReviewDecisionPage: {
+            /**
+             * Decisions
+             * @default []
+             */
+            decisions: components["schemas"]["ReviewDecision"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** ReviewRequest */
         ReviewRequest: {
             /** Require Publish Approval */
             require_publish_approval: boolean;
+        };
+        /**
+         * ReviewRevisionConflictBody
+         * @description Typed 409 body: the review targeted a revision that is no longer the latest.
+         */
+        ReviewRevisionConflictBody: {
+            /**
+             * Code
+             * @default review_revision_conflict
+             * @constant
+             */
+            code: "review_revision_conflict";
+            /** Latest Revision */
+            latest_revision: number;
         };
         /** SaveProjectPromptBindingRequest */
         SaveProjectPromptBindingRequest: {
@@ -2486,6 +2650,174 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DocumentRevisionConflictBody"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_review_comments_api_v1_projects__project_id__edit_documents__document_id__review_comments_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewCommentPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_review_comment_api_v1_projects__project_id__edit_documents__document_id__review_comments_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateComment"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewComment"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewRevisionConflictBody"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_review_decisions_api_v1_projects__project_id__edit_documents__document_id__review_decisions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewDecisionPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_review_decision_api_v1_projects__project_id__edit_documents__document_id__review_decisions_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDecision"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewDecision"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewRevisionConflictBody"];
                 };
             };
             /** @description Validation Error */
