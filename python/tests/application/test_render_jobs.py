@@ -22,11 +22,14 @@ from thoth_control_plane.application.render_job_ports import (
     RendererNotConfigured,
     RendererUnavailable,
     RenderIdempotencyConflict,
+    RenderImportUnresolved,
     RenderJobNotActive,
     RenderJobNotCancellable,
     RenderJobNotCleanable,
     RenderJobNotFound,
     RenderJobNotRetryable,
+    RenderPersistenceError,
+    RenderRevisionStale,
     StagedAsset,
 )
 from thoth_control_plane.application.render_jobs import (
@@ -45,6 +48,7 @@ from thoth_control_plane.domain.render_jobs import (
     apply_render_event,
     mark_cancel_requested,
 )
+from thoth_control_plane.domain.studio_imports import StudioImportInventory
 
 NOW = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
 CHECKSUM = "sha256:" + "a" * 64
@@ -122,6 +126,52 @@ class Assets:
     ) -> tuple[EditorAssetRecord, ...]:
         wanted = set(asset_ids)
         return tuple(item for item in self.records if item.asset.asset_id in wanted)
+
+
+class Imports:
+    """A draft's import inventory, read fresh on every call like the database."""
+
+    def __init__(
+        self, dispositions: dict[str, str] | None = None, revision: int = REVISION
+    ) -> None:
+        self.dispositions = {} if dispositions is None else dispositions
+        self.revision = revision
+        self.error: Exception | None = None
+
+    async def get_inventory(
+        self, *, project_id: str, document_id: str
+    ) -> StudioImportInventory | None:
+        if self.error is not None:
+            raise self.error
+        if project_id != PROJECT or document_id != DOCUMENT or not self.dispositions:
+            return None
+        roles = {
+            "main": ("main", "video"),
+            "footage": ("footage", "video"),
+            "comment": ("comment", "image"),
+        }
+        return StudioImportInventory.model_validate(
+            {
+                "document_id": DOCUMENT,
+                "source_key": "c" * 64,
+                "revision": self.revision,
+                "items": [
+                    {
+                        "item_id": f"{name}_000",
+                        "role": roles[name][0],
+                        "order": 0,
+                        "label": f"{name} media",
+                        "platform": None,
+                        "media_kind": roles[name][1],
+                        "scene_id": "scene_001",
+                        "reason": None,
+                        "disposition": disposition,
+                        "asset_id": "asset_main" if disposition == "attached" else None,
+                    }
+                    for name, disposition in self.dispositions.items()
+                ],
+            }
+        )
 
 
 class Artifacts:
@@ -321,6 +371,7 @@ def build_service(
     assets: Assets | None = None,
     artifacts: Artifacts | None = None,
     renderer: Renderer | None = None,
+    imports: Imports | None = None,
     max_render_seconds: int = 900,
     unconfigured_repository: bool = False,
 ) -> RenderJobService:
@@ -336,6 +387,7 @@ def build_service(
         assets=assets if assets is not None else Assets(),
         artifacts=artifacts if artifacts is not None else Artifacts(),
         renderer=renderer if renderer is not None else Renderer(),
+        imports=imports,
         settings=RenderPresetSettings(
             preset_id="standard_vertical_mp4_v1",
             renderer_version="remotion-4.0.523",
@@ -552,6 +604,103 @@ async def test_a_staging_failure_closes_the_job_without_dispatch_or_retry() -> N
     assert history.jobs[0].failure_code == "render_asset_unavailable"
     assert renderer.started == []
     assert (await service.capability(PROJECT)).available is True
+
+
+@pytest.mark.parametrize("unresolved", ["main", "footage", "comment"])
+@pytest.mark.asyncio
+async def test_a_source_linked_draft_with_an_unresolved_item_never_reaches_the_renderer(
+    unresolved: str,
+) -> None:
+    dispositions = {"main": "attached", "footage": "excluded", "comment": "excluded"}
+    dispositions[unresolved] = "unresolved"
+    jobs, renderer, artifacts = Jobs(), Renderer(), Artifacts()
+    service = build_service(
+        jobs=jobs, renderer=renderer, artifacts=artifacts, imports=Imports(dispositions)
+    )
+
+    with pytest.raises(RenderImportUnresolved):
+        await create_one(service)
+
+    assert renderer.started == []
+    assert jobs.rows == {}
+    assert artifacts.bundles == {}
+
+
+@pytest.mark.asyncio
+async def test_a_draft_whose_items_are_all_attached_or_excluded_renders() -> None:
+    renderer = Renderer()
+    imports = Imports({"main": "attached", "footage": "excluded", "comment": "excluded"})
+    service = build_service(renderer=renderer, imports=imports)
+
+    job = await create_one(service)
+
+    assert renderer.started == [(job.render_job_id, job.dispatch_id)]
+
+
+@pytest.mark.asyncio
+async def test_a_source_linked_draft_renders_only_its_latest_saved_revision() -> None:
+    renderer = Renderer()
+    imports = Imports({"main": "attached"}, revision=REVISION + 1)
+    service = build_service(renderer=renderer, imports=imports)
+
+    with pytest.raises(RenderRevisionStale):
+        await create_one(service)
+
+    assert renderer.started == []
+
+
+@pytest.mark.asyncio
+async def test_readiness_is_rechecked_when_the_render_is_created() -> None:
+    imports = Imports({"main": "attached", "footage": "excluded"})
+    renderer = Renderer()
+    service = build_service(renderer=renderer, imports=imports)
+    shown = await imports.get_inventory(project_id=PROJECT, document_id=DOCUMENT)
+    assert shown is not None
+    assert all(item.disposition != "unresolved" for item in shown.items)
+
+    # The checklist the browser showed is stale by the time Render is pressed.
+    imports.dispositions["footage"] = "unresolved"
+    with pytest.raises(RenderImportUnresolved):
+        await create_one(service)
+
+    assert renderer.started == []
+
+
+@pytest.mark.asyncio
+async def test_an_attached_asset_that_is_no_longer_ready_blocks_the_render() -> None:
+    renderer = Renderer()
+    imports = Imports({"main": "attached"})
+    # Invalidated, or owned by another project: the ready lookup no longer returns it.
+    service = build_service(renderer=renderer, imports=imports, assets=Assets(records=()))
+
+    with pytest.raises(ArtifactUnavailable):
+        await create_one(service)
+
+    assert renderer.started == []
+
+
+@pytest.mark.asyncio
+async def test_a_draft_without_a_source_keeps_its_render_behavior() -> None:
+    renderer = Renderer()
+    service = build_service(renderer=renderer, imports=Imports())
+
+    job = await create_one(service, document_revision=REVISION)
+
+    assert renderer.started == [(job.render_job_id, job.dispatch_id)]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_import_inventory_refuses_the_render() -> None:
+    imports = Imports({"main": "attached"})
+    imports.error = RuntimeError("postgres at C:/secret refused")
+    renderer = Renderer()
+    service = build_service(renderer=renderer, imports=imports)
+
+    with pytest.raises(RenderPersistenceError) as raised:
+        await create_one(service)
+
+    assert "secret" not in str(raised.value)
+    assert renderer.started == []
 
 
 @pytest.mark.asyncio

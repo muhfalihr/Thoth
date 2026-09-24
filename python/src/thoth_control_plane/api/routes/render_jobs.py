@@ -28,12 +28,14 @@ from thoth_control_plane.application.render_job_ports import (
     RendererRejected,
     RendererUnavailable,
     RenderIdempotencyConflict,
+    RenderImportUnresolved,
     RenderJobNotActive,
     RenderJobNotCancellable,
     RenderJobNotCleanable,
     RenderJobNotFound,
     RenderJobNotRetryable,
     RenderPersistenceError,
+    RenderRevisionStale,
 )
 from thoth_control_plane.application.render_jobs import (
     MAX_PAGE_SIZE,
@@ -69,6 +71,8 @@ DOWNLOAD_HEADERS = {
 _ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
     (RenderJobNotFound, status.HTTP_404_NOT_FOUND, "render_job_not_found"),
     (RenderBusy, status.HTTP_409_CONFLICT, "render_busy"),
+    (RenderImportUnresolved, status.HTTP_409_CONFLICT, "render_import_unresolved"),
+    (RenderRevisionStale, status.HTTP_409_CONFLICT, "render_revision_stale"),
     (RenderIdempotencyConflict, status.HTTP_409_CONFLICT, "idempotency_conflict"),
     (RenderJobNotActive, status.HTTP_409_CONFLICT, "render_job_not_active"),
     (RenderJobNotCancellable, status.HTTP_409_CONFLICT, "render_job_not_cancellable"),

@@ -96,6 +96,8 @@ const RENDER_ERROR_CODES = [
   "render_job_not_retryable",
   "render_job_not_cleanable",
   "render_preparation_failed",
+  "render_import_unresolved",
+  "render_revision_stale",
   "render_output_unavailable",
   "invalid_render_cursor",
   "render_document_invalid",

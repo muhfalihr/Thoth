@@ -376,3 +376,24 @@ test("Escape closes the dialog without creating anything", async () => {
   expect(onClose).toHaveBeenCalledTimes(1);
   expect(client.createStudioImport).toHaveBeenCalledTimes(0);
 });
+
+test("reopening a draft from Studio goes straight to its inventory and creates nothing", async () => {
+  const client = fakeClient();
+  const onOpen = mock((_documentId: string) => {});
+  render(
+    <StudioImportGate
+      client={client}
+      projectId="project_001"
+      source={SOURCE}
+      resumeDocumentId="edoc_003"
+      onOpen={onOpen}
+      onClose={() => {}}
+    />,
+  );
+
+  expect(await screen.findByRole("list", { name: "Source inventory" })).toBeDefined();
+  expect(client.getStudioImportInventory).toHaveBeenCalledWith("project_001", "edoc_003");
+  expect(client.createStudioImport).not.toHaveBeenCalled();
+  await userEvent.setup().click(screen.getByRole("button", { name: "Continue in Studio" }));
+  expect(onOpen).toHaveBeenCalledWith("edoc_003");
+});

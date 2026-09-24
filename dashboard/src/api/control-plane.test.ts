@@ -863,6 +863,8 @@ test("only the fixed render codes are representable", () => {
   const code: RenderErrorCode = "render_busy";
   expect(new RenderRequestError(code).code).toBe("render_busy");
   expect(asRenderErrorCode("render_output_unavailable")).toBe("render_output_unavailable");
+  expect(asRenderErrorCode("render_import_unresolved")).toBe("render_import_unresolved");
+  expect(asRenderErrorCode("render_revision_stale")).toBe("render_revision_stale");
   expect(asRenderErrorCode("ENOENT C:/srv/artifacts")).toBe("render_request_failed");
   expect(asRenderErrorCode(new Error("boom"))).toBe("render_request_failed");
   expect(asRenderErrorCode(undefined)).toBe("render_request_failed");

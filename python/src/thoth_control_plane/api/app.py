@@ -111,6 +111,7 @@ def _render_job_service(
     settings: Settings,
     editor_repository: EditDocumentRepository | None,
     editor_asset_repository: EditorAssetRepository | None,
+    studio_import_repository: StudioImportRepository | None,
 ) -> RenderJobService:
     """Compose the render service from settings, degrading instead of failing.
 
@@ -142,6 +143,7 @@ def _render_job_service(
             max_asset_bytes=RENDER_ASSET_MAX_BYTES,
         ),
         max_render_seconds=settings.THOTH_RENDER_MAX_SECONDS,
+        imports=studio_import_repository,
     )
 
 
@@ -205,7 +207,7 @@ def create_app(
     )
 
     render_service = render_job_service or _render_job_service(
-        settings, editor_repository, editor_asset_repository
+        settings, editor_repository, editor_asset_repository, studio_import_repository
     )
 
     @asynccontextmanager

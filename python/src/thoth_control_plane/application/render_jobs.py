@@ -26,7 +26,7 @@ from uuid import uuid4
 from pydantic import Field
 
 from thoth_control_plane.application.editor_asset_ports import EditorAssetRepository
-from thoth_control_plane.application.ports import EditDocumentRepository
+from thoth_control_plane.application.ports import EditDocumentRepository, StudioImportRepository
 from thoth_control_plane.application.render_bundles import (
     TRUSTED_TEMPLATE_ID,
     TRUSTED_TEMPLATE_VERSION,
@@ -45,12 +45,15 @@ from thoth_control_plane.application.render_job_ports import (
     RendererRejected,
     RendererUnavailable,
     RenderIdempotencyConflict,
+    RenderImportUnresolved,
     RenderJobNotActive,
     RenderJobNotCancellable,
     RenderJobNotCleanable,
     RenderJobNotFound,
     RenderJobNotRetryable,
     RenderJobRepository,
+    RenderPersistenceError,
+    RenderRevisionStale,
 )
 from thoth_control_plane.domain.models import OpaqueId, StrictModel
 from thoth_control_plane.domain.render_jobs import (
@@ -135,6 +138,7 @@ class RenderJobService:
         renderer: RendererGateway,
         settings: RenderPresetSettings,
         max_render_seconds: int,
+        imports: StudioImportRepository | None = None,
         clock: Callable[[], datetime] = _utcnow,
         new_id: Callable[[str], str] = _default_id,
     ) -> None:
@@ -145,6 +149,7 @@ class RenderJobService:
         self._renderer = renderer
         self._settings = settings
         self._max_render_seconds = max_render_seconds
+        self._imports = imports
         self._clock = clock
         self._new_id = new_id
 
@@ -239,6 +244,7 @@ class RenderJobService:
         render_job_id = self._new_id("rj")
         dispatch_id = self._new_id("dsp")
         payload_hash = _payload_hash(project_id, request, retry_of_job_id)
+        await self._require_import_ready(project_id, request)
 
         try:
             bundle = await self._stage(render_job_id, dispatch_id, project_id, request)
@@ -287,6 +293,28 @@ class RenderJobService:
             await self._close(jobs, reserved, "render_dispatch_failed")
             raise
         return reserved
+
+    async def _require_import_ready(self, project_id: str, request: CreateRenderJobRequest) -> None:
+        """Refuse a source-linked draft until every import item has a decision.
+
+        Read at creation time, so a checklist the browser showed earlier is never
+        the authority. Decisions are final and a rendered revision is immutable,
+        so nothing this check passed can become unready before dispatch.
+        """
+        if self._imports is None:
+            return
+        try:
+            inventory = await self._imports.get_inventory(
+                project_id=project_id, document_id=request.document_id
+            )
+        except Exception as error:
+            raise RenderPersistenceError() from error
+        if inventory is None:
+            return  # not opened from a source: nothing to resolve
+        if inventory.revision != request.document_revision:
+            raise RenderRevisionStale()
+        if any(item.disposition == "unresolved" for item in inventory.items):
+            raise RenderImportUnresolved()
 
     async def _stage(
         self,

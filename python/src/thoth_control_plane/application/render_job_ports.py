@@ -59,6 +59,20 @@ class RenderIdempotencyConflict(Exception):
         super().__init__("render idempotency conflict")
 
 
+class RenderImportUnresolved(Exception):
+    """Raised when a source-linked draft still has an import item without a decision."""
+
+    def __init__(self) -> None:
+        super().__init__("render import unresolved")
+
+
+class RenderRevisionStale(Exception):
+    """Raised when a source-linked draft is rendered from other than its latest revision."""
+
+    def __init__(self) -> None:
+        super().__init__("render revision stale")
+
+
 class InvalidRenderCursor(Exception):
     """Raised when a history cursor is not one this server issued."""
 

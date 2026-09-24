@@ -52,6 +52,7 @@ type Props = {
         | "retryRenderJob"
         | "downloadRenderOutput"
         | "cleanupRenderArtifacts"
+        | "getStudioImportInventory"
         | "listStudioReviewComments"
         | "createStudioReviewComment"
         | "listStudioReviewDecisions"
@@ -61,12 +62,14 @@ type Props = {
   projectId: string;
   documentId: string;
   onBack: () => void;
+  /** Reopen the source inventory of a draft opened from a Content Set. */
+  onResolveImports?: () => void;
 };
 
 const toolbarButton =
   "rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40";
 
-function Editor({ client, projectId, documentId, onBack, document }: Props & { document: EditDocument }) {
+function Editor({ client, projectId, documentId, onBack, onResolveImports, document }: Props & { document: EditDocument }) {
   const [state, dispatch] = useReducer(editorReducer, document, createEditorState);
   // The job is the destination at every width; compact screens also pick one
   // Edit pane at a time.
@@ -201,6 +204,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
     retryRenderJob,
     downloadRenderOutput,
     cleanupRenderArtifacts,
+    getStudioImportInventory,
   } = client;
   // Rendering appears only where the whole render API is present, and the slice
   // is stable so the panel does not reload on every keystroke in the draft.
@@ -223,6 +227,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             retryRenderJob,
             downloadRenderOutput,
             cleanupRenderArtifacts,
+            getStudioImportInventory,
           }
         : undefined,
     [
@@ -234,6 +239,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
       retryRenderJob,
       downloadRenderOutput,
       cleanupRenderArtifacts,
+      getStudioImportInventory,
     ],
   );
 
@@ -703,6 +709,10 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               templateVersion={base.template.version}
               facts={{ saveStatus, online: !state.isOffline }}
               monitorOnly={viewport === "phone"}
+              sceneOrder={[...base.scenes]
+                .sort((a, b) => a.start_frame - b.start_frame)
+                .map((scene) => scene.scene_id)}
+              onResolveImports={onResolveImports}
               // The saved revision is what a render reads, so its text and its
               // structure are what decide whether it can be rendered at all.
               validation={{

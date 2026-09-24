@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
 
-import type {
-  ControlPlaneClient,
-  CreateRenderJobPayload,
-  RenderCapability,
-  RenderErrorCode,
-  RenderJob,
-  RenderJobStatus,
+import {
+  StudioImportRequestError,
+  type ControlPlaneClient,
+  type CreateRenderJobPayload,
+  type RenderCapability,
+  type RenderErrorCode,
+  type RenderJob,
+  type RenderJobStatus,
+  type StudioImportInventory,
 } from "@/api/control-plane";
 
 import {
@@ -18,6 +20,7 @@ import {
   renderGate,
   renderJobReducer,
   selectedRenderJob,
+  type ImportBlock,
   type RenderEditorFacts,
   type RenderGateReason,
 } from "./render_job_state";
@@ -33,7 +36,9 @@ export type RenderPanelClient = Pick<
   | "retryRenderJob"
   | "downloadRenderOutput"
   | "cleanupRenderArtifacts"
->;
+> &
+  // A draft opened from a source also answers whether every source item is decided.
+  Partial<Pick<ControlPlaneClient, "getStudioImportInventory">>;
 
 type RenderUnavailableReason = NonNullable<RenderCapability["reason"]>;
 type RenderFailureCode = NonNullable<RenderJob["failure_code"]>;
@@ -57,8 +62,12 @@ type Props = {
   documentRevision: number;
   templateId: RenderJob["template_id"];
   templateVersion: RenderJob["template_version"];
-  facts: Omit<RenderEditorFacts, "documentValid">;
+  facts: Omit<RenderEditorFacts, "documentValid" | "importBlock">;
   validation: RenderValidation;
+  /** Scene ids of the saved revision in play order, to name a blocked item's scene. */
+  sceneOrder?: readonly string[];
+  /** Reopen the draft's source inventory to attach or exclude what blocks rendering. */
+  onResolveImports?: () => void;
   /** Phone surface: status, history, and download only; every render mutation stays hidden. */
   monitorOnly?: boolean;
 };
@@ -87,6 +96,9 @@ const gateCopy: Record<RenderGateReason, string> = {
   conflict: "A newer version exists. Resolve it before rendering.",
   dirty: "Save your changes before rendering.",
   document_invalid: "Fix the issues in your document before rendering.",
+  import_unresolved: "Resolve every source item before rendering.",
+  import_stale: "This draft changed elsewhere since this version. Reopen it to render the latest version.",
+  import_unknown: "The source import status could not be checked.",
   renderer_unavailable: "Rendering is not available right now.",
   render_busy: "Another render is already running.",
   mutation_in_progress: "A render request is already in progress.",
@@ -111,6 +123,8 @@ const errorCopy: Record<RenderErrorCode, string> = {
   render_job_not_retryable: "That render cannot be retried.",
   render_job_not_cleanable: "Those render files cannot be deleted.",
   render_preparation_failed: "This version could not be prepared for rendering.",
+  render_import_unresolved: "Resolve every source item before rendering this draft.",
+  render_revision_stale: "This draft changed elsewhere. Reopen it to render the latest version.",
   render_output_unavailable: "The rendered video is no longer available to download.",
   invalid_render_cursor: "The render history could not be loaded.",
   render_document_invalid: "This version cannot be rendered as it is.",
@@ -190,9 +204,13 @@ function RenderSurface({
   templateVersion,
   facts,
   validation,
+  sceneOrder = [],
+  onResolveImports,
   monitorOnly = false,
 }: Props) {
   const [state, dispatch] = useReducer(renderJobReducer, undefined, createRenderJobState);
+  // undefined while loading; null when the draft was not opened from a source.
+  const [imports, setImports] = useState<StudioImportInventory | null | "failed">();
   const [confirmCreate, setConfirmCreate] = useState<RenderConfirmation | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState<string | null>(null);
   const gateReasonId = useId();
@@ -221,9 +239,17 @@ function RenderSurface({
     dispatch({ type: "load_started" });
     const generation = ++generationRef.current;
     try {
-      const [capability, page] = await Promise.all([
+      const [capability, page, inventory] = await Promise.all([
         client.getRenderCapability(projectId),
         client.listRenderJobs(projectId),
+        // Re-read with every load, so a refusal or a reconnect shows today's decisions.
+        client.getStudioImportInventory
+          ? client.getStudioImportInventory(projectId, documentId).then(
+              (result) => result,
+              (error: unknown) =>
+                error instanceof StudioImportRequestError && error.status === 404 ? null : ("failed" as const),
+            )
+          : null,
       ]);
       // A superseded load answers for a context that has already moved on, so
       // it reaches the surface through nothing at all - not the history, not
@@ -231,6 +257,7 @@ function RenderSurface({
       if (generation !== generationRef.current) return;
       // A page without records is an empty history, not a broken panel.
       const jobs = page.jobs ?? [];
+      setImports(inventory);
       dispatch({ type: "loaded", generation, capability, jobs });
       // A reload lands on a render already running: the control plane names it,
       // so the panel resumes that one instead of inventing a rule of its own,
@@ -243,7 +270,7 @@ function RenderSurface({
       if (generation !== generationRef.current) return;
       dispatch({ type: "load_failed", generation, code: codeOf(error) });
     }
-  }, [client, projectId]);
+  }, [client, projectId, documentId]);
 
   /**
    * Land the outcome of a mutation. Every outcome ends in authoritative state
@@ -417,10 +444,25 @@ function RenderSurface({
   }, [client, projectId, pollJobId, paused]);
 
   const blockingIssues = validation.blockingIssues;
+  const unresolved =
+    imports && imports !== "failed" ? imports.items.filter((item) => item.disposition === "unresolved") : [];
+  // The server rechecks all of this when a render is created; this only explains it first.
+  const importBlock: ImportBlock | undefined =
+    imports === "failed"
+      ? "import_unknown"
+      : imports && imports.revision !== documentRevision
+        ? "import_stale"
+        : unresolved.length
+          ? "import_unresolved"
+          : undefined;
   const gate = renderGate(
-    { ...facts, documentValid: validation.textValid && blockingIssues === 0 },
+    { ...facts, documentValid: validation.textValid && blockingIssues === 0, importBlock },
     state,
   );
+  const itemName = (item: (typeof unresolved)[number]) => {
+    const scene = item.scene_id ? sceneOrder.indexOf(item.scene_id) : -1;
+    return scene < 0 ? item.label : `${item.label} · Scene ${scene + 1}`;
+  };
   // A structural problem is nameable, so the guidance says how many stand in
   // the way instead of repeating the generic invalid-document sentence.
   const gateText =
@@ -537,6 +579,44 @@ function RenderSurface({
         <p role="status" className="text-sm text-muted-foreground">
           You are offline. Render status updates when the connection returns.
         </p>
+      ) : null}
+
+      {importBlock ? (
+        <div
+          role="status"
+          aria-label="Source import"
+          className="flex flex-col gap-2 rounded-md border border-border p-3 text-sm"
+        >
+          <p>
+            {importBlock === "import_unresolved"
+              ? `Resolve ${unresolved.length} source item${unresolved.length === 1 ? "" : "s"} before rendering.`
+              : gateCopy[importBlock]}
+          </p>
+          {importBlock === "import_unresolved" ? (
+            <ul className="list-disc pl-5 text-xs text-muted-foreground">
+              {unresolved.map((item) => (
+                <li key={item.item_id}>{itemName(item)}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div>
+            {importBlock === "import_unknown" ? (
+              <button type="button" className={actionButton} disabled={offline} onClick={() => void load()}>
+                Check again
+              </button>
+            ) : onResolveImports ? (
+              // Leaving remounts Studio from the server, so only a saved draft may go.
+              <button
+                type="button"
+                className={actionButton}
+                disabled={offline || facts.saveStatus !== "saved"}
+                onClick={onResolveImports}
+              >
+                {importBlock === "import_stale" ? "Reopen draft" : "Resolve source items"}
+              </button>
+            ) : null}
+          </div>
+        </div>
       ) : null}
 
       {state.lastError !== null ? (

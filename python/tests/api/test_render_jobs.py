@@ -24,11 +24,13 @@ from thoth_control_plane.application.render_job_ports import (
     RendererNotConfigured,
     RendererUnavailable,
     RenderIdempotencyConflict,
+    RenderImportUnresolved,
     RenderJobNotCancellable,
     RenderJobNotCleanable,
     RenderJobNotFound,
     RenderJobNotRetryable,
     RenderPersistenceError,
+    RenderRevisionStale,
 )
 from thoth_control_plane.application.render_jobs import DownloadableRender
 from thoth_control_plane.config import Settings
@@ -354,6 +356,8 @@ async def test_create_reports_an_unconfigured_renderer_as_a_fixed_degradation(ga
     [
         (RenderBundleInvalid(), 422, "render_document_invalid"),
         (ArtifactUnavailable(), 409, "render_preparation_failed"),
+        (RenderImportUnresolved(), 409, "render_import_unresolved"),
+        (RenderRevisionStale(), 409, "render_revision_stale"),
         (RendererUnavailable(), 503, "render_dispatch_failed"),
         (RenderPersistenceError(), 503, "render_unavailable"),
     ],
@@ -580,6 +584,18 @@ async def test_an_app_without_a_renderer_still_serves_capability(gateway) -> Non
     assert response.status_code == 200
     assert response.json()["available"] is False
     assert response.json()["reason"] == "renderer_not_configured"
+
+
+def test_the_composed_render_service_checks_studio_import_readiness(gateway) -> None:
+    imports = object()
+    app = create_app(
+        Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"),
+        gateway,
+        studio_import_repository=imports,  # type: ignore[arg-type]
+    )
+
+    # Without the import store, render creation would skip the readiness guard.
+    assert app.state.render_job_service._imports is imports
 
 
 @pytest.mark.asyncio

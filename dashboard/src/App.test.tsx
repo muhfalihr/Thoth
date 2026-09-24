@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, expect, mock, test } from "bun:test";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { EditDocument } from "./api/control-plane";
 
@@ -24,6 +24,8 @@ const sourceKey = "c".repeat(64);
 const draft = { document_id: "document_001", source_key: sourceKey, revision: 1, created_at: "2026-09-24T18:02:00Z" };
 let inspectBodies: string[] = [];
 let createCalls = 0;
+let revision = 1;
+let inventoryItems: unknown[] = [];
 let projects: unknown[] = [{ id: "project_001", name: "Project", workspace_path: "", created_at: "", updated_at: "" }];
 const originalFetch = globalThis.fetch;
 const response = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -42,15 +44,21 @@ function stubFetch() {
       return response({ project_id: "project_001", source_key: sourceKey, items: [], drafts: [draft], more_drafts: false });
     }
     if (path.endsWith("/studio-imports")) { createCalls += 1; return response(draft); }
-    if (path.endsWith("/studio-imports/documents/document_001")) {
-      return response({ document_id: "document_001", source_key: sourceKey, revision: 1, items: [] });
+    if (path.endsWith("/items/footage_000/resolve")) {
+      revision += 1;
+      inventoryItems = [{ ...(inventoryItems[0] as object), disposition: "excluded" }];
     }
-    if (path.includes("/edit-documents/document_001")) return response(document);
+    if (path.includes("/studio-imports/documents/document_001")) {
+      return response({ document_id: "document_001", source_key: sourceKey, revision, items: inventoryItems });
+    }
+    if (path.includes("/edit-documents/document_001")) return response({ ...document, revision });
+    if (path.endsWith("/render-capability")) return response({ available: true, preset_id: "p", renderer_version: "r" });
+    if (path.includes("/render-jobs")) return response({ jobs: [], next_cursor: null });
     return response([]);
   }) as unknown as typeof fetch;
 }
 
-afterEach(() => { cleanup(); globalThis.fetch = originalFetch; inspectBodies = []; createCalls = 0; projects = [{ id: "project_001", name: "Project", workspace_path: "", created_at: "", updated_at: "" }]; });
+afterEach(() => { cleanup(); globalThis.fetch = originalFetch; inspectBodies = []; createCalls = 0; revision = 1; inventoryItems = []; projects = [{ id: "project_001", name: "Project", workspace_path: "", created_at: "", updated_at: "" }]; });
 
 async function openContentSet() {
   stubFetch();
@@ -134,4 +142,29 @@ test("keeps naming the Studio document's project after the global project change
   await screen.findByRole("button", { name: /new project/i });
   expect(within(header).getByText("Project project_001")).toBeDefined();
   expect(within(header).getByText("Saved revision 1")).toBeDefined();
+});
+
+test("Resolve source items in Studio reopens the draft's inventory and reloads the decided revision", async () => {
+  inventoryItems = [{
+    item_id: "footage_000", role: "footage", order: 0, label: "Crowd reaction", platform: "tiktok",
+    media_kind: "video", scene_id: "scene_001", reason: null, disposition: "unresolved", asset_id: null,
+  }];
+  await openContentSet();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Open in Studio" }));
+  await resumeDraft(user);
+  await screen.findByLabelText("Heading");
+  await user.click(screen.getByRole("button", { name: "Render" }));
+
+  const blocked = await screen.findByRole("status", { name: "Source import" });
+  expect(blocked.textContent).toContain("Crowd reaction · Scene 1");
+  await user.click(within(blocked).getByRole("button", { name: "Resolve source items" }));
+  const dialog = await screen.findByRole("dialog", { name: "Open in Studio — Main" });
+  await user.click(await within(dialog).findByRole("button", { name: "Exclude from Studio edit" }));
+  await user.click(within(dialog).getByRole("button", { name: "Continue in Studio" }));
+
+  expect(await screen.findByText("Saved revision 2")).toBeDefined();
+  expect(createCalls).toBe(0);
+  await user.click(screen.getByRole("button", { name: "Render" }));
+  await waitFor(() => expect(screen.queryByRole("status", { name: "Source import" })).toBeNull());
 });

@@ -26,15 +26,32 @@ export default function App() {
     path: string;
     forced: boolean;
   } | null>(null);
-  const [studioDocument, setStudioDocument] = useState<{ projectId: string; documentId: string } | null>(null);
+  // `opened` rises on every entry, so Studio reloads the revision the import decisions just saved.
+  const [studioDocument, setStudioDocument] = useState<{
+    projectId: string;
+    documentId: string;
+    source: StudioSourceProjection;
+    opened: number;
+  } | null>(null);
   // The import chooser keeps the project it was opened for, so a project switch never retargets it.
-  const [studioImport, setStudioImport] = useState<{ projectId: string; source: StudioSourceProjection } | null>(null);
+  const [studioImport, setStudioImport] = useState<{
+    projectId: string;
+    source: StudioSourceProjection;
+    resumeDocumentId?: string;
+  } | null>(null);
   const handleSendToRender = (path: string, forced: boolean) => {
     setPendingContentSet({ path, forced });
     setView("runs");
   };
   const handleOpenInStudio = (source: StudioSourceProjection) => {
     if (projectId) setStudioImport({ projectId, source });
+  };
+  const openStudio = (documentId: string) => {
+    if (!studioImport) return;
+    const { projectId: importProjectId, source } = studioImport;
+    setStudioDocument((current) => ({ projectId: importProjectId, documentId, source, opened: (current?.opened ?? 0) + 1 }));
+    setStudioImport(null);
+    setView("studio");
   };
 
   const needsProject = (
@@ -46,10 +63,10 @@ export default function App() {
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-background text-foreground">
-      <div className="flex items-center gap-2 border-b border-border bg-card px-4 py-1.5">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-4 py-1.5">
         <span className="font-mono text-lg leading-none text-primary" aria-hidden>🪶</span>
         <span className="font-mono text-sm font-semibold tracking-wide text-foreground">Thoth</span>
-        <div className="ml-3 flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+        <div className="ml-3 flex flex-wrap items-center gap-0.5 rounded-lg border border-border p-0.5">
           {([
             ["workflows", "Workflows"],
             ["runs", "Legacy console"],
@@ -90,10 +107,18 @@ export default function App() {
         />
       ) : view === "studio" && studioDocument ? (
         <GuidedStudio
+          key={`${studioDocument.documentId}:${studioDocument.opened}`}
           client={controlPlaneClient}
           projectId={studioDocument.projectId}
           documentId={studioDocument.documentId}
           onBack={() => setView("contentset")}
+          onResolveImports={() =>
+            setStudioImport({
+              projectId: studioDocument.projectId,
+              source: studioDocument.source,
+              resumeDocumentId: studioDocument.documentId,
+            })
+          }
         />
       ) : projectId ? (
         <>
@@ -121,12 +146,13 @@ export default function App() {
           client={controlPlaneClient}
           projectId={studioImport.projectId}
           source={studioImport.source}
-          onClose={() => setStudioImport(null)}
-          onOpen={(documentId) => {
-            setStudioDocument({ projectId: studioImport.projectId, documentId });
+          resumeDocumentId={studioImport.resumeDocumentId}
+          onClose={() => {
             setStudioImport(null);
-            setView("studio");
+            // Decisions made before closing saved a new revision: reload Studio onto it.
+            if (studioImport.resumeDocumentId) openStudio(studioImport.resumeDocumentId);
           }}
+          onOpen={openStudio}
         />
       ) : null}
     </div>

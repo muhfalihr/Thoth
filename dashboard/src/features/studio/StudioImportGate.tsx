@@ -27,6 +27,8 @@ type StudioImportGateProps = {
   client: StudioImportClient;
   projectId: string;
   source: StudioSourceProjection;
+  /** Reopened from Studio: show this draft's inventory first instead of the draft choice. */
+  resumeDocumentId?: string;
   onOpen: (documentId: string) => void;
   onClose: () => void;
 };
@@ -59,7 +61,7 @@ const sectionLabel = "font-mono text-[11px] font-semibold uppercase tracking-[0.
  * create a new one, then attach or exclude each source item the draft cannot
  * play yet. Inspecting never writes; every decision is saved on the draft.
  */
-export function StudioImportGate({ client, projectId, source, onOpen, onClose }: StudioImportGateProps) {
+export function StudioImportGate({ client, projectId, source, resumeDocumentId, onOpen, onClose }: StudioImportGateProps) {
   const id = useId();
   const panel = useRef<HTMLDivElement>(null);
   const alertRef = useRef<HTMLParagraphElement>(null);
@@ -153,6 +155,7 @@ export function StudioImportGate({ client, projectId, source, onOpen, onClose }:
       // A draft that is gone is never replaced silently: the list is refreshed and the creator chooses again.
       setAlert("That draft is no longer available. The draft list has been refreshed.");
       setSelected(undefined);
+      if (!sourceKey) return; // reopened before the list loaded: the inspect under way refreshes it
       try {
         const list = await client.listStudioImportDrafts(projectId, sourceKey);
         setInspection((current) => current && { ...current, drafts: list.drafts, more_drafts: list.more_drafts });
@@ -163,6 +166,11 @@ export function StudioImportGate({ client, projectId, source, onOpen, onClose }:
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (resumeDocumentId) void openDraft(resumeDocumentId, "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, for the draft the gate was reopened with.
+  }, []);
 
   const create = async () => {
     if (!inspection) return;

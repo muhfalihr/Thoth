@@ -37,15 +37,20 @@ export type RenderGateReason =
   | "conflict"
   | "dirty"
   | "document_invalid"
+  | ImportBlock
   | "renderer_unavailable"
   | "render_busy"
   | "mutation_in_progress";
+
+/** Why a draft opened from a source cannot render yet, read from its import inventory. */
+export type ImportBlock = "import_unresolved" | "import_stale" | "import_unknown";
 
 /** Everything the editor tells the render surface, and nothing of its draft. */
 export type RenderEditorFacts = {
   saveStatus: EditorSaveStatus;
   online: boolean;
   documentValid: boolean;
+  importBlock?: ImportBlock;
 };
 
 export type RenderJobState = {
@@ -175,6 +180,7 @@ export function renderGate(
   // exact saved revision and the editor is the only thing that can produce it.
   if (facts.saveStatus !== "saved") return { allowed: false, reason: "dirty" };
   if (!facts.documentValid) return { allowed: false, reason: "document_invalid" };
+  if (facts.importBlock) return { allowed: false, reason: facts.importBlock };
   const capability = state.capability;
   if (capability === null || (!capability.available && capability.reason !== "render_busy")) {
     return { allowed: false, reason: "renderer_unavailable" };

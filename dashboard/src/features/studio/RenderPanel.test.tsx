@@ -3,7 +3,15 @@
 import { afterEach, describe, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { RenderCapability, RenderJob, RenderJobPage } from "@/api/control-plane";
+import {
+  RenderRequestError,
+  StudioImportRequestError,
+  type RenderCapability,
+  type RenderJob,
+  type RenderJobPage,
+  type StudioImportInventory,
+  type StudioImportItem,
+} from "@/api/control-plane";
 import { RenderPanel, type RenderPanelClient, type RenderValidation } from "./RenderPanel";
 import type { RenderEditorFacts } from "./render_job_state";
 
@@ -1436,5 +1444,136 @@ describe("phone monitoring", () => {
     );
     expect(screen.queryAllByRole("button", { name: MUTATIONS }).length).toBe(0);
     expect(client.createRenderJob).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe("source import readiness", () => {
+  const item = (item_id: string, label: string, disposition: StudioImportItem["disposition"], scene_id: string | null) =>
+    ({ item_id, role: "footage", order: 0, label, platform: null, media_kind: scene_id ? "video" : "none", scene_id, reason: null, disposition }) as StudioImportItem;
+  const inventory = (items: StudioImportItem[], revision = 7): StudioImportInventory => ({
+    document_id: "document_001",
+    source_key: "c".repeat(64),
+    revision,
+    items,
+  });
+
+  function linkedPanel(client: RenderPanelClient, onResolveImports = mock(() => {}), facts = SAVED) {
+    render(
+      <RenderPanel
+        client={client}
+        projectId="project_001"
+        documentId="document_001"
+        documentRevision={7}
+        templateId="vertical_text_story"
+        templateVersion={1}
+        facts={facts}
+        validation={VALID}
+        sceneOrder={["scene_001", "scene_002"]}
+        onResolveImports={onResolveImports}
+      />,
+    );
+    return onResolveImports;
+  }
+
+  test("names each unresolved item and its scene, and offers the resolution route", async () => {
+    const client = makeClient([], {
+      getStudioImportInventory: mock(async () =>
+        inventory([
+          item("footage_000", "Crowd reaction", "unresolved", "scene_002"),
+          item("unsupported_000", "profile", "unresolved", null),
+          item("main_000", "Main clip", "attached", "scene_001"),
+        ]),
+      ),
+    });
+    const onResolve = linkedPanel(client);
+    await settle();
+
+    const button = screen.getByRole("button", { name: "Render video" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    const status = screen.getByRole("status", { name: "Source import" });
+    expect(status.textContent).toContain("Resolve 2 source items before rendering.");
+    expect(status.textContent).toContain("Crowd reaction · Scene 2");
+    expect(status.textContent).toContain("profile");
+    expect(status.textContent).not.toContain("Main clip");
+    fireEvent.click(button);
+    fireEvent.click(screen.getByRole("button", { name: "Resolve source items" }));
+    expect(calls(onResolve)).toHaveLength(1);
+    expect(calls(client.createRenderJob)).toHaveLength(0);
+  });
+
+  test("leaving to resolve waits until local edits are saved, so reopening Studio cannot drop them", async () => {
+    const client = makeClient([], {
+      getStudioImportInventory: mock(async () => inventory([item("footage_000", "Crowd reaction", "unresolved", "scene_002")])),
+    });
+    const onResolve = linkedPanel(client, undefined, { saveStatus: "dirty", online: true });
+    await settle();
+
+    const resolve = screen.getByRole("button", { name: "Resolve source items" }) as HTMLButtonElement;
+    expect(resolve.disabled).toBe(true);
+    fireEvent.click(resolve);
+    expect(calls(onResolve)).toHaveLength(0);
+  });
+
+  test("a draft changed elsewhere since this revision has its own explanation", async () => {
+    const client = makeClient([], {
+      getStudioImportInventory: mock(async () => inventory([item("main_000", "Main clip", "attached", "scene_001")], 8)),
+    });
+    linkedPanel(client);
+    await settle();
+
+    expect((screen.getByRole("button", { name: "Render video" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("status", { name: "Source import" }).textContent).toContain(
+      "This draft changed elsewhere since this version. Reopen it to render the latest version.",
+    );
+  });
+
+  test("an unreadable import status blocks rendering instead of guessing", async () => {
+    const client = makeClient([], {
+      getStudioImportInventory: mock(async () => {
+        throw new StudioImportRequestError(503, "editor_unavailable");
+      }),
+    });
+    linkedPanel(client);
+    await settle();
+
+    expect((screen.getByRole("button", { name: "Render video" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("status", { name: "Source import" }).textContent).toContain(
+      "The source import status could not be checked.",
+    );
+  });
+
+  test("a resolved draft and a draft without a source both render", async () => {
+    for (const lookup of [
+      async () => inventory([item("footage_000", "Crowd reaction", "excluded", "scene_002")]),
+      async () => {
+        throw new StudioImportRequestError(404, null);
+      },
+    ]) {
+      const client = makeClient([], { getStudioImportInventory: mock(lookup) });
+      linkedPanel(client);
+      await startRender();
+      expect(calls(client.createRenderJob)).toHaveLength(1);
+      expect(screen.queryByRole("status", { name: "Source import" })).toBeNull();
+      cleanup();
+    }
+  });
+
+  test("a server refusal after the checklist was shown re-reads the import status", async () => {
+    let unresolved = false;
+    const client = makeClient([], {
+      getStudioImportInventory: mock(async () =>
+        inventory([item("footage_000", "Crowd reaction", unresolved ? "unresolved" : "excluded", "scene_002")]),
+      ),
+      createRenderJob: mock(async () => {
+        unresolved = true;
+        throw new RenderRequestError("render_import_unresolved");
+      }),
+    });
+    linkedPanel(client);
+    await startRender();
+    await settle();
+
+    expect(screen.getByRole("alert").textContent).toBe("Resolve every source item before rendering this draft.");
+    expect(screen.getByRole("status", { name: "Source import" }).textContent).toContain("Crowd reaction · Scene 2");
   });
 });
