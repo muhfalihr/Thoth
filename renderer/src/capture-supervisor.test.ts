@@ -136,3 +136,88 @@ test("the child captures the document the parent validated, not the one on disk 
   }
   expect(await ended).toBe("CaptureProcessEnded");
 });
+
+/**
+ * An entry fragment that starts what Remotion starts: a browser in its own
+ * session, which a signal to the capture's process group never reaches, and
+ * which refuses the polite way out.
+ */
+function browserThatOutlivesIt(pidFile: string): string {
+  const browser = [
+    `process.on("SIGTERM", () => {});`,
+    `require("node:fs").writeFileSync(${JSON.stringify(`${pidFile}.part`)}, String(process.pid));`,
+    `require("node:fs").renameSync(${JSON.stringify(`${pidFile}.part`)}, ${JSON.stringify(pidFile)});`,
+    `setInterval(() => {}, 1000);`,
+  ].join(" ");
+  return `
+    const { spawn } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
+    spawn(process.execPath, ["-e", ${JSON.stringify(browser)}], { detached: true, stdio: "ignore" }).unref();
+    while (!existsSync(${JSON.stringify(pidFile)})) await Bun.sleep(5);
+  `;
+}
+
+/** Running, as opposed to gone or a zombie nobody has reaped yet. */
+function running(pid: number): boolean {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return !["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3));
+  } catch {
+    return false;
+  }
+}
+
+async function browserPid(pidFile: string): Promise<number> {
+  await until(() => existsSync(pidFile));
+  return Number(readFileSync(pidFile, "utf8"));
+}
+
+const linux = process.platform === "linux";
+
+test.skipIf(!linux)("a stopped capture is not given back while a browser it started still runs", async () => {
+  const pidFile = join(workspace, "browser.pid");
+  const entry = entryThat(`
+    ${browserThatOutlivesIt(pidFile)}
+    process.on("SIGTERM", () => process.exit(143));
+    setInterval(() => {}, 1000);
+  `);
+
+  const session = superviseCapture({ capsule: capsule(), run, entry, graceMs: 200 });
+  const ended = outcomeOf(session.frames);
+  const browser = await browserPid(pidFile);
+
+  try {
+    const started = Date.now();
+    await session.stop();
+
+    expect(running(browser)).toBe(false);
+    expect(existsSync(session.workDir)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(await ended).toBe("CaptureProcessEnded");
+  } finally {
+    if (running(browser)) process.kill(browser, "SIGKILL");
+  }
+});
+
+test.skipIf(!linux)("a capture that finished is not given back while a browser it started still runs", async () => {
+  const pidFile = join(workspace, "browser.pid");
+  const entry = entryThat(`
+    ${browserThatOutlivesIt(pidFile)}
+    await Bun.sleep(300);
+    const request = JSON.parse(await Bun.file(process.argv[2]).text());
+    await Bun.write(request.answer, JSON.stringify(request.frames));
+  `);
+
+  const session = superviseCapture({ capsule: capsule(), run, entry, graceMs: 200 });
+  const browser = await browserPid(pidFile);
+
+  try {
+    await expect(session.frames).resolves.toHaveLength(1);
+    await session.stop();
+
+    expect(running(browser)).toBe(false);
+    expect(existsSync(session.workDir)).toBe(false);
+  } finally {
+    if (running(browser)) process.kill(browser, "SIGKILL");
+  }
+});

@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import { RendererArtifactRoot } from "./artifact-root";
+import { CaptureTeardownUnconfirmed } from "./capture-supervisor";
 import type { CapturedFrame } from "./release-capture";
 import { canonicalReleaseRoot, goldenSetAddress } from "./release-capsule";
 import { ffmpegRunner, writeRgbaPng, type RunFfmpeg } from "./release-compare";
@@ -506,6 +507,25 @@ test("a capture that outlasts its deadline is a capture failure", async () => {
     deadlineMs: 25,
     // A surface that has stopped answering, which is what a wedged browser is.
     capture: () => ({ frames: new Promise<never>(() => {}), stop: async (): Promise<void> => {} }),
+  });
+
+  expect(report.verdict).toBe("capture_failed");
+  expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
+});
+
+test("a capture whose teardown cannot be confirmed is a capture failure", async () => {
+  const drawn = captureWriting(() => canvas(30, 60, 90));
+  const report = await verifyRelease(IDENTITY, artifacts, {
+    releaseRoot,
+    ffmpeg: real,
+    environment: REFERENCE,
+    // Every frame arrives; only the proof that nothing is left running does not.
+    capture: (options) => ({
+      frames: drawn(options).frames,
+      stop: async (): Promise<void> => {
+        throw new CaptureTeardownUnconfirmed();
+      },
+    }),
   });
 
   expect(report.verdict).toBe("capture_failed");
