@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, expect, mock, test } from "bun:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { EditDocument } from "./api/control-plane";
 
@@ -20,8 +20,11 @@ const originalFetch = globalThis.fetch;
 const response = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
 
 function stubFetch() {
-  globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+  globalThis.fetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
+    if (path === "/api/projects" && init?.method === "POST") {
+      return response({ id: "project_002", name: "Other", workspace_path: "", created_at: "", updated_at: "" });
+    }
     if (path === "/api/projects") return response(projects);
     if (path === "/api/scout/content-set/data") return response({ path: "content-set.json", exists: true, output_root: "", content, error: null });
     if (path === "/api/scout/status") return response({ run: { status: "idle" } });
@@ -62,4 +65,22 @@ test("keeps Send to render on the legacy console path", async () => {
   await openContentSet();
   await userEvent.setup().click(screen.getByRole("button", { name: /Send to render/ }));
   expect((screen.getByLabelText("Content-set path (optional)") as HTMLInputElement).value).toBe("content-set.json");
+});
+
+test("keeps naming the Studio document's project after the global project changes", async () => {
+  await openContentSet();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Open in Studio" }));
+  await screen.findByLabelText("Heading");
+  const header = globalThis.document.querySelector<HTMLElement>('section[aria-label="Guided Studio"] > header')!;
+  expect(within(header).getByText("Project project_001")).toBeDefined();
+
+  await user.click(screen.getByRole("button", { name: /new project/i }));
+  await user.type(screen.getByLabelText("New project name"), "Other");
+  await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+  // The switcher selects the new project once its form closes.
+  await screen.findByRole("button", { name: /new project/i });
+  expect(within(header).getByText("Project project_001")).toBeDefined();
+  expect(within(header).getByText("Saved revision 1")).toBeDefined();
 });

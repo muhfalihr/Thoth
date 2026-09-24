@@ -434,8 +434,11 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             ) : null}
           </div>
         )}
-        <div className="ml-auto font-mono text-xs text-muted-foreground" aria-live="polite">
-          {statusLabel[state.saveStatus]}
+        <div className="ml-auto flex min-w-0 flex-wrap items-center gap-x-3 font-mono text-xs text-muted-foreground">
+          {/* The document's own project, which the global project switcher may no longer show. */}
+          <span className="break-all">Project {base.project_id}</span>
+          <span>Saved revision {base.revision}</span>
+          <span aria-live="polite">{statusLabel[state.saveStatus]}</span>
         </div>
       </header>
 

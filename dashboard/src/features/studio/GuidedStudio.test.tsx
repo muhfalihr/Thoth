@@ -985,3 +985,47 @@ test("a blocking timeline issue stops a render whose text is valid", async () =>
   );
   expect(client.createRenderJob).toHaveBeenCalledTimes(0);
 });
+
+test("names the document's own project and its saved revision in every job", async () => {
+  let resolveSave: (value: { kind: "saved"; document: EditDocument }) => void = () => {};
+  const patchEditDocument = mock(
+    () => new Promise<{ kind: "saved"; document: EditDocument }>((resolve) => { resolveSave = resolve; }),
+  );
+  // The document belongs to another project than the one Studio was opened with.
+  const foreign = { ...document, project_id: "project_other" };
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{ ...promptClientBase, getEditDocument: mock(async () => foreign), patchEditDocument }}
+      projectId="project_001"
+      documentId="document_001"
+      onBack={() => {}}
+    />,
+  );
+  const heading = await screen.findByLabelText("Heading");
+  const header = globalThis.document.querySelector<HTMLElement>('section[aria-label="Guided Studio"] > header')!;
+  const shows = (text: string) => within(header).getByText(text).closest("[hidden]") === null;
+
+  for (const name of ["Edit", "Prompt", "Review", "Render"]) {
+    job(name);
+    expect(shows("Project project_other")).toBe(true);
+    expect(shows("Saved revision 1")).toBe(true);
+  }
+  expect(within(header).queryByText("Project project_001") === null).toBe(true);
+
+  job("Edit");
+  jest.useFakeTimers();
+  try {
+    fireEvent.change(heading, { target: { value: "Edited heading" } });
+    act(() => jest.advanceTimersByTime(500));
+    // An unsaved edit does not change the saved revision the header names.
+    expect(shows("Saved revision 1")).toBe(true);
+    await act(async () => {
+      resolveSave({ kind: "saved", document: { ...foreign, revision: 2, clips: [{ ...document.clips[0], heading: "Edited heading" }] } });
+    });
+    expect(shows("Saved revision 2")).toBe(true);
+    expect(within(header).queryByText("Saved revision 1") === null).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
+});
