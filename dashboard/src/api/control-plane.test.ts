@@ -5,6 +5,7 @@ import { afterEach, expect, mock, test } from "bun:test";
 import {
   asRenderErrorCode,
   createControlPlaneClient,
+  StudioImportRequestError,
   StudioReviewRequestError,
   type EditDocument,
   type EditDocumentPatch,
@@ -24,6 +25,7 @@ import {
   type ReviewErrorCode,
   RenderRequestError,
   type ResolvedPromptDraft,
+  type StudioSourceProjection,
   type SaveProjectPromptBindingRequest,
   type SavePromptTemplateRequest,
   type CreatePromptProposalPayload,
@@ -991,4 +993,113 @@ test("every other review failure collapses to a fixed safe code", async () => {
   });
   const error = await reviewFailure(offline.listStudioReviewComments("project_001", "edoc_001"));
   expect(error.code).toBe("review_request_failed");
+});
+
+const SOURCE_KEY = "a".repeat(64);
+const STUDIO_SOURCE = {
+  items: [
+    {
+      role: "main",
+      order: 0,
+      title: "Main",
+      text: null,
+      platform: "tiktok",
+      source_url: "https://example.test/main",
+      media_kind: "video",
+      trim_start_seconds: null,
+    },
+  ],
+  unsupported: [],
+} satisfies StudioSourceProjection;
+const importClient = (calls: RecordedCall[], respond: () => Response) =>
+  createControlPlaneClient({ baseUrl: "", apiKey: "secret", fetch: recordingFetch(calls, respond) });
+const ok = (value: unknown, status = 200) => () => new Response(JSON.stringify(value), { status });
+
+test("Studio import inspection posts the source and reads back drafts", async () => {
+  const calls: RecordedCall[] = [];
+  const inspection = { project_id: "project_001", source_key: SOURCE_KEY, items: [], drafts: [], more_drafts: false };
+  await expect(
+    importClient(calls, ok(inspection)).inspectStudioImport("project / 1", STUDIO_SOURCE),
+  ).resolves.toEqual(inspection);
+  expect(calls[0]).toMatchObject({
+    url: "/api/v1/projects/project%20%2F%201/studio-imports/inspect",
+    init: { method: "POST", body: JSON.stringify(STUDIO_SOURCE) },
+  });
+});
+
+test("Studio import creation carries the caller's own idempotency key", async () => {
+  const calls: RecordedCall[] = [];
+  const client = importClient(calls, ok({ document_id: "edoc_001" }, 201));
+  const body = { source: STUDIO_SOURCE, source_key: SOURCE_KEY };
+
+  await client.createStudioImport("project_001", body, "create_001");
+  await client.createStudioImport("project_001", body, "create_001");
+
+  expect(calls.map((call) => call.url)).toEqual([
+    "/api/v1/projects/project_001/studio-imports",
+    "/api/v1/projects/project_001/studio-imports",
+  ]);
+  expect(calls.map((call) => new Headers(call.init?.headers).get("Idempotency-Key"))).toEqual([
+    "create_001",
+    "create_001",
+  ]);
+  expect(calls[0].init?.body).toBe(JSON.stringify(body));
+});
+
+test("Studio import drafts, inventory, and decisions use their own routes", async () => {
+  const calls: RecordedCall[] = [];
+  const client = importClient(calls, ok({}));
+  const decision = { base_revision: 3, decision: { kind: "attach_asset", asset_id: "asset_1" } } as const;
+
+  await client.listStudioImportDrafts("project_001", SOURCE_KEY);
+  await client.getStudioImportInventory("project_001", "edoc / 1");
+  await client.resolveStudioImportItem("project_001", "edoc_001", "footage_000", decision);
+
+  expect(calls.map((call) => [call.url, call.init?.method ?? "GET"])).toEqual([
+    [`/api/v1/projects/project_001/studio-imports/${SOURCE_KEY}`, "GET"],
+    ["/api/v1/projects/project_001/studio-imports/documents/edoc%20%2F%201", "GET"],
+    ["/api/v1/projects/project_001/studio-imports/documents/edoc_001/items/footage_000/resolve", "POST"],
+  ]);
+  expect(calls[2].init?.body).toBe(JSON.stringify(decision));
+});
+
+test("an editor asset upload streams the file itself with its media type", async () => {
+  const calls: RecordedCall[] = [];
+  const file = new File(["frames"], "clip.mp4", { type: "video/mp4" });
+
+  await importClient(calls, ok({ asset_id: "asset_1" }, 201)).uploadEditorAsset("project_001", file);
+
+  expect(calls[0].url).toBe("/api/v1/projects/project_001/editor-assets");
+  expect(calls[0].init?.method).toBe("POST");
+  expect(calls[0].init?.body).toBe(file);
+  expect(new Headers(calls[0].init?.headers).get("Content-Type")).toBe("video/mp4");
+});
+
+test("a Studio import failure carries its status and fixed code, never the server's words", async () => {
+  const conflict = importClient([], () =>
+    new Response(JSON.stringify({ detail: { code: "stale_source_key" }, message: "C:\\secret" }), { status: 409 }),
+  );
+  const refused = await conflict
+    .createStudioImport("project_001", { source: STUDIO_SOURCE, source_key: SOURCE_KEY }, "k")
+    .catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(StudioImportRequestError);
+  expect(refused).toMatchObject({ status: 409, code: "stale_source_key" });
+  expect(String(refused)).not.toContain("secret");
+
+  const stale = await importClient([], () =>
+    new Response(JSON.stringify({ code: "document_revision_conflict", latest: {} }), { status: 409 }),
+  )
+    .resolveStudioImportItem("project_001", "edoc_001", "main_000", { base_revision: 1, decision: { kind: "exclude" } })
+    .catch((error: unknown) => error);
+  expect(stale).toMatchObject({ status: 409, code: "document_revision_conflict" });
+
+  const offline = createControlPlaneClient({
+    baseUrl: "",
+    fetch: mock(async () => {
+      throw new TypeError("proxy at C:\\proxy failed");
+    }) as unknown as typeof fetch,
+  });
+  const lost = await offline.inspectStudioImport("project_001", STUDIO_SOURCE).catch((error: unknown) => error);
+  expect(lost).toMatchObject({ status: null, code: null });
+  expect(String(lost)).not.toContain("proxy");
 });

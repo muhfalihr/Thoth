@@ -5,7 +5,6 @@ export type WorkflowSummary = components["schemas"]["WorkflowSummary"];
 export type StylePreset = components["schemas"]["StylePreset"];
 export type ApprovalSubmission = components["schemas"]["ApprovalSubmission"];
 export type RetryRequest = components["schemas"]["RetryRequest"];
-export type ContentSetImportRequest = components["schemas"]["ContentSetImportRequest"];
 export type EditDocumentV1 = components["schemas"]["EditDocumentV1"];
 export type EditDocumentV2 = components["schemas"]["EditDocumentV2"];
 export type EditDocument = EditDocumentV1 | EditDocumentV2;
@@ -20,6 +19,14 @@ export type EditDocumentPatchResult =
 export type EditorAsset = components["schemas"]["EditorAsset"];
 export type EditorAssetPage = components["schemas"]["EditorAssetPage"];
 export type EditorPreviewCapability = components["schemas"]["PreviewCapabilityResponse"];
+export type StudioSourceProjection = components["schemas"]["StudioSourceProjection"];
+export type StudioSourceInspection = components["schemas"]["StudioSourceInspection"];
+export type StudioImportItem = components["schemas"]["StudioImportItem"];
+export type StudioDraft = components["schemas"]["StudioDraft"];
+export type StudioDraftList = components["schemas"]["StudioDraftList"];
+export type StudioImportInventory = components["schemas"]["StudioImportInventory"];
+export type CreateStudioImport = components["schemas"]["CreateStudioImport"];
+export type ResolveStudioImportItem = components["schemas"]["ResolveStudioImportItem"];
 export type PromptStageDefinition = components["schemas"]["PromptStageDefinition"];
 export type PromptTemplateRevision = components["schemas"]["PromptTemplateRevision"];
 export type SavePromptTemplateRequest = components["schemas"]["SavePromptTemplateRequest"];
@@ -166,6 +173,22 @@ function reviewError(body: unknown): StudioReviewRequestError {
   );
 }
 
+/**
+ * Why a Studio import request failed: the HTTP status, or null when the request
+ * never landed, and the server's fixed code. The server's own words are dropped.
+ */
+export class StudioImportRequestError extends Error {
+  readonly status: number | null;
+  readonly code: string | null;
+
+  constructor(status: number | null, code: string | null = null) {
+    super(`Studio import request failed (${status ?? "offline"})`);
+    this.name = "StudioImportRequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export type ControlPlaneClient = {
   listStylePresets: () => Promise<StylePreset[]>;
   createWorkflow: (request: WorkflowRequest) => Promise<WorkflowSummary>;
@@ -178,7 +201,20 @@ export type ControlPlaneClient = {
   approveWorkflow: (workflowId: string, approval: ApprovalSubmission) => Promise<WorkflowSummary>;
   cancelWorkflow: (workflowId: string) => Promise<WorkflowSummary>;
   retryWorkflow: (workflowId: string, retry?: RetryRequest) => Promise<WorkflowSummary>;
-  importContentSet: (projectId: string, request: ContentSetImportRequest) => Promise<EditDocument>;
+  inspectStudioImport: (projectId: string, source: StudioSourceProjection) => Promise<StudioSourceInspection>;
+  createStudioImport: (
+    projectId: string,
+    request: CreateStudioImport,
+    idempotencyKey: string,
+  ) => Promise<StudioDraft>;
+  listStudioImportDrafts: (projectId: string, sourceKey: string) => Promise<StudioDraftList>;
+  getStudioImportInventory: (projectId: string, documentId: string) => Promise<StudioImportInventory>;
+  resolveStudioImportItem: (
+    projectId: string,
+    documentId: string,
+    itemId: string,
+    request: ResolveStudioImportItem,
+  ) => Promise<StudioImportInventory>;
   getEditDocument: (projectId: string, documentId: string) => Promise<EditDocument>;
   patchEditDocument: (
     projectId: string,
@@ -200,6 +236,8 @@ export type ControlPlaneClient = {
     projectId: string,
     assetId: string,
   ) => Promise<EditorPreviewCapability>;
+  /** Stream one local file to the project's assets; never a URL or a path. */
+  uploadEditorAsset: (projectId: string, file: Blob) => Promise<EditorAsset>;
   listPromptStages: () => Promise<PromptStageDefinition[]>;
   listPromptTemplates: (projectId: string, stageId: string) => Promise<PromptTemplateRevision[]>;
   savePromptTemplate: (
@@ -361,6 +399,33 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
     return { kind: "saved", document: (await response.json()) as EditDocument };
   }
 
+  // Import failures answer `{ detail: { code } }`, a stale revision `{ code, latest }`.
+  // Only the status and the code survive, so no server text reaches the page.
+  async function importCall<T>(path: string, init: RequestInit = {}): Promise<T> {
+    let response: Response;
+    try {
+      response = await doFetch(`${baseUrl}${path}`, { ...init, headers: headers(init.headers) });
+    } catch {
+      throw new StudioImportRequestError(null);
+    }
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as
+        | { code?: unknown; detail?: { code?: unknown } }
+        | null;
+      const code = body?.detail?.code ?? body?.code;
+      throw new StudioImportRequestError(response.status, typeof code === "string" ? code : null);
+    }
+    return response.json() as Promise<T>;
+  }
+  const importPath = (projectId: string, rest = "") =>
+    `/api/v1/projects/${encodeURIComponent(projectId)}/studio-imports${rest}`;
+  const importPost = <T>(path: string, body: unknown, extra: HeadersInit = {}) =>
+    importCall<T>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...extra },
+      body: JSON.stringify(body),
+    });
+
   // Render failures answer `{ detail: { code } }`. Only an allowlisted code is
   // believed; every other body, however it is shaped, becomes one fixed code.
   async function renderCall(path: string, init: RequestInit = {}): Promise<Response> {
@@ -447,14 +512,20 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(retry),
       }),
-    importContentSet: (projectId, document) =>
-      request<EditDocument>(
-        `/api/v1/projects/${encodeURIComponent(projectId)}/edit-documents/import-content-set`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(document),
-        },
+    inspectStudioImport: (projectId, source) => importPost(importPath(projectId, "/inspect"), source),
+    createStudioImport: (projectId, request, idempotencyKey) =>
+      importPost(importPath(projectId), request, { "Idempotency-Key": idempotencyKey }),
+    listStudioImportDrafts: (projectId, sourceKey) =>
+      importCall(importPath(projectId, `/${encodeURIComponent(sourceKey)}`)),
+    getStudioImportInventory: (projectId, documentId) =>
+      importCall(importPath(projectId, `/documents/${encodeURIComponent(documentId)}`)),
+    resolveStudioImportItem: (projectId, documentId, itemId, request) =>
+      importPost(
+        importPath(
+          projectId,
+          `/documents/${encodeURIComponent(documentId)}/items/${encodeURIComponent(itemId)}/resolve`,
+        ),
+        request,
       ),
     getEditDocument: (projectId, documentId) =>
       request<EditDocument>(
@@ -487,6 +558,12 @@ export function createControlPlaneClient(options: ClientOptions = {}): ControlPl
         `/api/v1/projects/${encodeURIComponent(projectId)}/editor-assets/${encodeURIComponent(assetId)}/preview-capability`,
         { method: "POST", credentials: "include" },
       ),
+    uploadEditorAsset: (projectId, file) =>
+      importCall<EditorAsset>(`/api/v1/projects/${encodeURIComponent(projectId)}/editor-assets`, {
+        method: "POST",
+        headers: { "Content-Type": file.type },
+        body: file,
+      }),
     listPromptStages: () => request<PromptStageDefinition[]>("/api/v1/prompt-stages"),
     listPromptTemplates: (projectId, stageId) =>
       request<PromptTemplateRevision[]>(

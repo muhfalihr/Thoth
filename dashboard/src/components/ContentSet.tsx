@@ -5,8 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { LogPane, type LogLine } from "@/components/LogPane";
 import { CleanupButton } from "@/components/CleanupButton";
-import { buildContentSetImportRequest } from "@/features/studio/domain";
-import type { ContentSetImportRequest } from "@/api/control-plane";
+import { projectStudioSource, StudioSourceError } from "@/features/studio/content_set_import";
+import type { StudioSourceProjection } from "@/api/control-plane";
 import {
   cleanupPackage,
   describeCode,
@@ -35,18 +35,17 @@ type Reference = { term?: string; kind?: string; summary?: string };
 export function ContentSet({
   onSendToRender,
   projectId = null,
-  onOpenInStudio = async () => {},
+  onOpenInStudio = () => {},
 }: {
   onSendToRender: (path: string, forced: boolean) => void;
   projectId?: string | null;
-  onOpenInStudio?: (request: ContentSetImportRequest) => Promise<void>;
+  onOpenInStudio?: (source: StudioSourceProjection) => void;
 }) {
   const [data, setData] = useState<ContentSetData | null>(null);
   const [content, setContent] = useState<any | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
-  const [openingStudio, setOpeningStudio] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [lines, setLines] = useState<ScoutLogLine[]>([]);
@@ -187,16 +186,17 @@ export function ContentSet({
     onSendToRender(data.path, content.main_footage?.mode === "forced_url_pool");
   };
 
-  const openInStudio = async () => {
-    if (!content || !projectId || running || openingStudio) return;
-    setOpeningStudio(true);
+  const openInStudio = () => {
+    if (!content || !projectId || running) return;
     setNotice(null);
     try {
-      await onOpenInStudio(buildContentSetImportRequest(content));
-    } catch {
-      setNotice("Could not open Studio. Try again.");
-    } finally {
-      setOpeningStudio(false);
+      onOpenInStudio(projectStudioSource(content));
+    } catch (error) {
+      setNotice(
+        error instanceof StudioSourceError
+          ? `Studio cannot open this Content Set: ${error.message}.`
+          : "Could not open Studio. Try again.",
+      );
     }
   };
 
@@ -460,9 +460,9 @@ export function ContentSet({
         <Button
           variant="secondary"
           onClick={openInStudio}
-          disabled={openingStudio || running || !projectId || !content}
+          disabled={running || !projectId || !content}
         >
-          {openingStudio ? "Opening Studio…" : "Open in Studio"}
+          Open in Studio
         </Button>
         {dirty && <span className="text-xs text-muted-foreground">unsaved changes</span>}
         {running && <span className="text-xs text-muted-foreground">scout busy — save disabled</span>}

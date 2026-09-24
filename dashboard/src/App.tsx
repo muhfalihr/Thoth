@@ -7,9 +7,10 @@ import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { Discovery } from "@/components/Discovery";
 import { ContentSet } from "@/components/ContentSet";
 import { GuidedStudio } from "@/features/studio/GuidedStudio";
+import { StudioImportGate } from "@/features/studio/StudioImportGate";
 import { WorkflowMonitor } from "@/components/WorkflowMonitor";
 import { WorkflowWizard } from "@/components/WorkflowWizard";
-import { controlPlaneClient, type ContentSetImportRequest } from "@/api/control-plane";
+import { controlPlaneClient, type StudioSourceProjection } from "@/api/control-plane";
 import { Button } from "@/components/ui/button";
 
 /** Cockpit shell with a Runs/Profiles/Discovery/Content Set view toggle,
@@ -26,15 +27,14 @@ export default function App() {
     forced: boolean;
   } | null>(null);
   const [studioDocument, setStudioDocument] = useState<{ projectId: string; documentId: string } | null>(null);
+  // The import chooser keeps the project it was opened for, so a project switch never retargets it.
+  const [studioImport, setStudioImport] = useState<{ projectId: string; source: StudioSourceProjection } | null>(null);
   const handleSendToRender = (path: string, forced: boolean) => {
     setPendingContentSet({ path, forced });
     setView("runs");
   };
-  const handleOpenInStudio = async (request: ContentSetImportRequest) => {
-    if (!projectId) return;
-    const document = await controlPlaneClient.importContentSet(projectId, request);
-    setStudioDocument({ projectId, documentId: document.document_id });
-    setView("studio");
+  const handleOpenInStudio = (source: StudioSourceProjection) => {
+    if (projectId) setStudioImport({ projectId, source });
   };
 
   const needsProject = (
@@ -116,6 +116,19 @@ export default function App() {
       ) : (
         needsProject
       )}
+      {studioImport ? (
+        <StudioImportGate
+          client={controlPlaneClient}
+          projectId={studioImport.projectId}
+          source={studioImport.source}
+          onClose={() => setStudioImport(null)}
+          onOpen={(documentId) => {
+            setStudioDocument({ projectId: studioImport.projectId, documentId });
+            setStudioImport(null);
+            setView("studio");
+          }}
+        />
+      ) : null}
     </div>
   );
 }
