@@ -270,3 +270,79 @@ async def test_review_is_unavailable_without_a_database(gateway) -> None:
 
     assert response.status_code == 503
     assert response.json() == {"detail": {"code": "review_unavailable"}}
+
+
+class RevisionBoundReviews:
+    """An in-memory store with the repository's revision contract, for one HTTP round trip."""
+
+    def __init__(self, revision: int) -> None:
+        self.revision = revision
+        self.comments: list[ReviewComment] = []
+        self.decisions: list[ReviewDecision] = []
+
+    def _check(self, request) -> None:
+        if request.base_revision != self.revision:
+            raise StudioReviewRevisionConflict(latest_revision=self.revision)
+
+    async def create_comment(self, *, project_id, document_id, request, actor) -> ReviewComment:
+        self._check(request)
+        record = ReviewComment(
+            comment_id=f"comment_{len(self.comments)}",
+            project_id=project_id,
+            document_id=document_id,
+            document_revision=request.base_revision,
+            actor=actor,
+            text=request.text,
+            frame=request.frame,
+            created_at=NOW,
+        )
+        self.comments.append(record)
+        return record
+
+    async def create_decision(self, *, project_id, document_id, request, actor) -> ReviewDecision:
+        self._check(request)
+        record = ReviewDecision(
+            decision_id=f"decision_{len(self.decisions)}",
+            project_id=project_id,
+            document_id=document_id,
+            document_revision=request.base_revision,
+            actor=actor,
+            decision=request.decision,
+            reason=request.reason,
+            created_at=NOW,
+        )
+        self.decisions.insert(0, record)
+        return record
+
+    async def list_comments(self, **_: object) -> ReviewCommentPage:
+        return ReviewCommentPage(comments=tuple(self.comments))
+
+    async def list_decisions(self, **_: object) -> ReviewDecisionPage:
+        return ReviewDecisionPage(decisions=tuple(self.decisions))
+
+
+@pytest.mark.asyncio
+async def test_a_new_saved_revision_keeps_history_and_retires_the_current_approval(gateway) -> None:
+    store = RevisionBoundReviews(revision=3)
+    async with client(gateway, store) as http:
+        await http.post(COMMENTS_URL, json=COMMENT_BODY | {"frame": 29}, headers=AUTH_HEADERS)
+        await http.post(DECISIONS_URL, json=DECISION_BODY, headers=AUTH_HEADERS)
+        store.revision = 4
+        comments = (await http.get(COMMENTS_URL, headers=AUTH_HEADERS)).json()["comments"]
+        decisions = (await http.get(DECISIONS_URL, headers=AUTH_HEADERS)).json()["decisions"]
+        stale_response = await http.post(
+            COMMENTS_URL, json=COMMENT_BODY | {"operation_id": "op_review_9"}, headers=AUTH_HEADERS
+        )
+
+    prior_decision = decisions[0]
+    current_decision_for_revision_4 = next(
+        (item for item in decisions[:1] if item["document_revision"] == 4), None
+    )
+    assert [item["document_revision"] for item in comments] == [3]
+    assert comments[0]["frame"] == 29
+    assert prior_decision["document_revision"] == 3
+    assert prior_decision["decision"] == "approved"
+    assert current_decision_for_revision_4 is None
+    assert stale_response.status_code == 409
+    assert stale_response.json() == {"code": "review_revision_conflict", "latest_revision": 4}
+    assert len(store.comments) == 1

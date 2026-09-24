@@ -3,7 +3,14 @@
 import { afterEach, expect, jest, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
-import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
+import {
+  StudioReviewRequestError,
+  type CreateComment,
+  type EditDocument,
+  type EditDocumentPatch,
+  type ReviewComment,
+  type ReviewDecision,
+} from "@/api/control-plane";
 import { createC2ClientFixtureBase } from "./prompt-proposal-test-fixtures";
 import { FakePlayer, timelineDocument, upgradedTextDocument } from "./timeline-test-fixtures";
 import type { PlayerTimelineRef } from "./usePlayerTimeline";
@@ -335,8 +342,8 @@ test("monitors renders on a phone without offering render mutations", async () =
 
 function reviewClient() {
   return {
-    listStudioReviewComments: mock(async () => ({ comments: [], next_cursor: null })),
-    listStudioReviewDecisions: mock(async () => ({ decisions: [], next_cursor: null })),
+    listStudioReviewComments: mock(async () => ({ comments: [] as ReviewComment[], next_cursor: null })),
+    listStudioReviewDecisions: mock(async () => ({ decisions: [] as ReviewDecision[], next_cursor: null })),
     createStudioReviewComment: mock(async () => { throw new Error("unused"); }),
     createStudioReviewDecision: mock(async () => { throw new Error("unused"); }),
   };
@@ -374,4 +381,55 @@ test("keeps unsent review text across pane and viewport changes beside one previ
   expect((screen.getByLabelText("Review comment") as HTMLTextAreaElement).value).toBe("Phone note");
   expect(screen.getAllByLabelText("Draft preview").length).toBe(1);
   expect(previewMounts).toBe(1);
+});
+
+test("keeps a stale review comment until the newer revision is loaded, then resubmits by hand", async () => {
+  const review = reviewClient();
+  review.listStudioReviewDecisions.mockImplementation(async () => ({
+    decisions: [{
+      decision_id: "decision_1",
+      project_id: "project_001",
+      document_id: "document_001",
+      document_revision: 1,
+      actor: { actor_id: "owner", actor_type: "user", display_name: null },
+      decision: "approved" as const,
+      reason: null,
+      created_at: "2026-09-24T09:00:00Z",
+    }],
+    next_cursor: null,
+  }));
+  const posted = mock(async (_projectId: string, _documentId: string, request: CreateComment): Promise<ReviewComment> => {
+    if (request.base_revision === 1) throw new StudioReviewRequestError("review_revision_conflict", 2);
+    return {
+      comment_id: "comment_1",
+      project_id: "project_001",
+      document_id: "document_001",
+      document_revision: request.base_revision,
+      actor: { actor_id: "owner", actor_type: "user", display_name: null },
+      text: request.text,
+      frame: request.frame ?? null,
+      created_at: "2026-09-24T09:00:00Z",
+    };
+  });
+  const revisions = [document, { ...document, revision: 2 }];
+  const getEditDocument = mock(async () => revisions.shift() ?? document);
+  await renderStudio(375, document, pendingSave, { ...review, createStudioReviewComment: posted, getEditDocument });
+  pane("Review");
+  await screen.findByText("Current decision: Approved on revision 1");
+  fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Phone note" } });
+  fireEvent.click(screen.getByRole("button", { name: "Post comment" }));
+
+  fireEvent.click(await screen.findByRole("button", { name: "Load revision 2" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Reload Latest" }));
+  expect(screen.getByText("Review applies to saved revision 2.")).toBeDefined();
+  expect(screen.getByText("No decision on revision 2 yet.")).toBeDefined();
+  expect(screen.getByText(/Approved on revision 1/)).toBeDefined();
+  expect((screen.getByLabelText("Review comment") as HTMLTextAreaElement).value).toBe("Phone note");
+  expect(posted).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Post comment" }));
+  await screen.findByText("Comment posted.");
+  const [stale, resubmitted] = posted.mock.calls.map((call) => call[2]);
+  expect(resubmitted!.base_revision).toBe(2);
+  expect(resubmitted!.operation_id === stale!.operation_id).toBe(false);
 });

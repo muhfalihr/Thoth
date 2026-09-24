@@ -313,3 +313,12 @@ test("labels every control for keyboard use", async () => {
   expect(screen.getByLabelText("Pin to current frame 0:00:29").getAttribute("type")).toBe("checkbox");
   expect(screen.getByRole("status")).toBeDefined();
 });
+
+test("reads a malformed history page as a load failure instead of crashing Studio", async () => {
+  const client = makeClient();
+  client.listStudioReviewDecisions.mockImplementationOnce(async () => ({}) as never);
+  client.listStudioReviewComments.mockImplementationOnce(async () => ({}) as never);
+  await renderPanel(client);
+  expect(screen.getByText("Could not load review history.")).toBeDefined();
+  expect(screen.getByText("No decision on revision 3 yet.")).toBeDefined();
+});

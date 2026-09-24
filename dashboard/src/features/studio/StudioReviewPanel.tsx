@@ -98,6 +98,7 @@ export function StudioReviewPanel({
         .listStudioReviewComments(projectId, documentId, cursor ? { cursor } : undefined)
         .then((page) => {
           if (requestGeneration !== generation.current) return;
+          if (!Array.isArray(page.comments)) throw new Error("malformed review page");
           dispatch({ type: "comments_loaded", comments: page.comments, nextCursor: page.next_cursor ?? null, append: Boolean(cursor) });
         })
         .catch(() => {
@@ -113,6 +114,7 @@ export function StudioReviewPanel({
         .listStudioReviewDecisions(projectId, documentId, cursor ? { cursor } : undefined)
         .then((page) => {
           if (requestGeneration !== generation.current) return;
+          if (!Array.isArray(page.decisions)) throw new Error("malformed review page");
           dispatch({ type: "decisions_loaded", decisions: page.decisions, nextCursor: page.next_cursor ?? null, append: Boolean(cursor) });
         })
         .catch(() => {

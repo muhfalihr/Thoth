@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-24 - Creator Studio editorial review bound to the saved revision (F2 review)
+
+Plan `docs/superpowers/plans/2026-09-24-creator-studio-f2-editorial-review.md`,
+continuing from the F2 responsive workspace on `codex/stage1-container-ci`,
+offline and test-first. No push, deployment, live provider request, or
+evidence mutation.
+
+What changed:
+
+- Review comments and approve/request-changes decisions are domain events
+  bound to one project, document, and saved revision. The Python repository
+  persists them append-only with idempotent operation IDs and cursor paging.
+- The control plane exposes list and create routes for comments and decisions
+  under `/api/v1/projects/{project_id}/edit-documents/{document_id}/`. The
+  server refuses a stale base revision (409 with `latest_revision`), a frame
+  outside the saved canvas, and approval of a revision with blocking issues.
+  Review approval is separate from workflow approval and Stage 1 operator
+  approval.
+- `StudioReviewPanel` shows which saved revision it reviews, the current
+  decision only while it belongs to that revision, and history with
+  earlier-revision labels. It pins comments to the preview frame, asks for
+  confirmation before a decision, and disables every mutation while offline,
+  unsaved, in conflict, or stale, saying why. Unsent text survives every
+  failure; a stale write offers to load the newer revision, then the user
+  resubmits by hand. A malformed history page reads as a load failure.
+- The panel is the Review pane on phones and tablets and sits below the
+  timeline on desktop, sharing the one edit-document owner and one preview.
+
+Verification at the Plan B HEAD:
+
+- Dashboard `bun test` 540 pass / 0 fail; `tsc --noEmit` 0 errors; lint 0
+  errors (pre-existing warnings only); `vite build` succeeded.
+- Python `pytest -m "not live"` 1677 passed, 32 skipped, 3 deselected; Ruff
+  check and format clean; OpenAPI export and client generation byte-identical
+  on a second pass; `git diff --check` clean.
+- `build_cuda.bat` exit 0 with a fresh `build_log.txt` (no Rust change).
+- Browser inspection over a local mock client at 375, 820, 1180, 1024, and
+  1440, plus 200% zoom and reduced motion: no horizontal overflow, keyboard
+  comment and confirmed approval, focus on the confirm button, no console
+  errors.
+
+Remaining: the Codex end-of-feature review gate.
+
 ## 2026-09-24 - Creator Studio works on phones and tablets (F2 responsive workspace)
 
 Plan `docs/superpowers/plans/2026-09-24-creator-studio-f2-responsive-workspace.md`,
