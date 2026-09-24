@@ -202,4 +202,4 @@ uv run --project python ruff format --check python/src python/tests
 cmd /c ".\build_cuda.bat > build_log.txt 2>&1"; "EXIT=$LASTEXITCODE"
 ```
 
-- [ ] Record exact gate results and remaining editorial-review dependency in the ignored F2 checkpoint and `CHANGELOG.md`. Commit task files plus `CHANGELOG.md` with one subject line, e.g. `git commit -m "feat: finish responsive Studio workspace"`. Stop for the review/approval gate before starting the editorial-review plan.
+- [ ] Record exact gate results and remaining editorial-review dependency in the ignored F2 checkpoint and `CHANGELOG.md`. Commit task files plus `CHANGELOG.md` with one subject line, e.g. `git commit -m "feat: finish responsive Studio workspace"`. If the offline gates pass and no material blocker appears, continue directly to the editorial-review plan; defer the full product review until both plans are complete.

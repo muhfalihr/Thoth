@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python/FastAPI/Pydantic, PostgreSQL/Psycopg, OpenAPI, React 19.2.7, TypeScript, Bun/Testing Library.
 
-**Spec:** `docs/superpowers/specs/2026-09-24-creator-studio-responsive-review-design.md`. Start after `2026-09-24-creator-studio-f2-responsive-workspace.md` has passed its gate; do not redo its responsive shell.
+**Spec:** `docs/superpowers/specs/2026-09-24-creator-studio-responsive-review-design.md`. Start after `2026-09-24-creator-studio-f2-responsive-workspace.md` passes its offline checks; do not redo its responsive shell. The full product review occurs after this plan, not between plans.
 
 ## Global Constraints
 
