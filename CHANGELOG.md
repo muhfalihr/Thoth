@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-24 - Creator Studio workspace is organized around four creator jobs (F3 Plan A)
+
+Offline Plan A slice on `codex/stage1-container-ci` after `7c46843`, dashboard only; no API, schema, renderer, EditDocument operation, or Rust change. The F3 first-mode migration (Content Set import, scene reordering) is not part of this slice.
+
+- Studio opens on Edit, Prompt, Review, and Render jobs with one retained preview and draft. Below desktop width, Edit switches between Scenes, Preview, and Controls panes. Review shows the saved revision and stays optional before Render.
+- Simple mode shows scenes as an ordered strip under the preview, labelled by heading with durations in seconds. The inspector edits duration in seconds and commits on blur or Enter, with an inline error for invalid values.
+- Studio uses a scoped dark workspace with visible focus and reduced-motion support; other dashboard views are unchanged. Compact Review keeps the saved preview watchable above the review panel.
+
+Verification: new job, scene, duration, and workspace tests failed first and now pass; dashboard `bun test` 570 pass / 0 fail; `tsc --noEmit` 0 errors; lint 0 errors (pre-existing warnings only); `vite build` succeeded; `build_cuda.bat` exit 0 with a fresh log (Rust already up to date); `git diff --check` clean. Offline browser checks at 1440, 1024, 820, and 375 px, 200% zoom, and reduced motion showed no horizontal overflow, one preview, and no hidden tab stops.
+
 ## 2026-09-24 - Studio review orders history exactly and shows load and Retry state (F2 review correction)
 
 Offline review correction on `codex/stage1-container-ci` after `e63cef8`,
