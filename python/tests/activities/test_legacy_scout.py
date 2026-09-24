@@ -371,14 +371,25 @@ def test_no_fastapi_request_model_exposes_activity_mode() -> None:
 
     app = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="key"))
     openapi_schema = app.openapi()
-    request_schema_names = {
-        request_body["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]
+    bodies = [
+        (media_type, content["schema"])
         for path_item in openapi_schema["paths"].values()
         for operation in path_item.values()
         if "requestBody" in operation
-        for request_body in [operation["requestBody"]]
+        for media_type, content in operation["requestBody"]["content"].items()
+    ]
+    request_schema_names = {
+        schema["$ref"].rsplit("/", 1)[-1]
+        for media_type, schema in bodies
+        if media_type == "application/json"
     }
 
+    # A raw upload body is bytes, so it carries no model that could expose a mode.
+    assert all(
+        schema == {"type": "string", "format": "binary"}
+        for media_type, schema in bodies
+        if media_type != "application/json"
+    )
     assert request_schema_names == {
         "ApplyPromptProposalRequest",
         "ApprovalSubmission",
@@ -387,12 +398,15 @@ def test_no_fastapi_request_model_exposes_activity_mode() -> None:
         "CreateDecision",
         "CreatePromptProposalRequest",
         "CreateRenderJobRequest",
+        "CreateStudioImport",
         "EditDocumentPatch",
+        "ResolveStudioImportItem",
         "RetryRequest",
         "SaveProjectPromptBindingRequest",
         "SavePromptLayerLockRequest",
         "SavePromptModelPreferenceRequest",
         "SavePromptTemplateRequest",
+        "StudioSourceProjection",
         "UpgradeTimelineRequest",
         "WorkflowRequest",
     }
