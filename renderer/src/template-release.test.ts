@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import { RendererArtifactRoot } from "./artifact-root";
-import { CaptureTeardownUnconfirmed } from "./capture-supervisor";
+import { CaptureTeardownUnconfirmed, superviseCapture } from "./capture-supervisor";
 import type { CapturedFrame } from "./release-capture";
 import { canonicalReleaseRoot, goldenSetAddress } from "./release-capsule";
 import { ffmpegRunner, writeRgbaPng, type RunFfmpeg } from "./release-compare";
@@ -683,6 +683,67 @@ test("a verifier asked to stop ends the capture it started", async () => {
   expect(stopped).toBe(true);
   expect(report.verdict).toBe("capture_failed");
 });
+
+/** Whether `pid` is a process that has not ended (Linux only). */
+function alive(pid: number): boolean {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return !["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3));
+  } catch {
+    return false;
+  }
+}
+
+for (const ending of ["deadline", "interruption"] as const) {
+  test.skipIf(process.platform !== "linux")(
+    `a capture ended by ${ending} leaves nothing it started running`,
+    async () => {
+      const pidFile = join(workspace, "detached.pid");
+      // A capture that never answers and refuses a polite stop, having started
+      // a process in its own session that refuses one too: a browser, detached.
+      const detach = `setsid sh -c 'trap "" TERM; echo $$ > ${pidFile}.part && mv ${pidFile}.part ${pidFile}; exec sleep 600' > /dev/null 2>&1 &`;
+      const entry = join(workspace, "wedged-capture.ts");
+      writeFileSync(
+        entry,
+        `process.on("SIGTERM", () => {});
+        require("node:child_process").spawnSync("sh", ["-c", ${JSON.stringify(detach)}], { stdio: "ignore" });
+        setInterval(() => {}, 1000);`,
+      );
+      const operator = new AbortController();
+      let workDir: string | undefined;
+
+      const running = verifyRelease(IDENTITY, artifacts, {
+        releaseRoot,
+        ffmpeg: real,
+        environment: REFERENCE,
+        ...(ending === "deadline" ? { deadlineMs: 3000 } : { signal: operator.signal }),
+        capture: (options) => {
+          const session = superviseCapture({ ...options, entry, graceMs: 200 });
+          workDir = session.workDir;
+          return session;
+        },
+      });
+      await until(() => existsSync(pidFile));
+      const detached = Number(readFileSync(pidFile, "utf8"));
+      try {
+        operator.abort();
+        const report = await running;
+
+        expect({ verdict: report.verdict, running: alive(detached) }).toEqual({
+          verdict: "capture_failed",
+          running: false,
+        });
+        expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
+        expect(workDir !== undefined && existsSync(workDir)).toBe(false);
+      } finally {
+        if (alive(detached)) {
+          process.kill(detached, "SIGKILL");
+        }
+      }
+    },
+    15_000,
+  );
+}
 
 test("a stoppable verifier leaves no signal handlers behind", async () => {
   const before = {

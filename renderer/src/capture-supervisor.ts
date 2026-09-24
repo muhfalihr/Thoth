@@ -4,10 +4,12 @@
  * Remotion's bundler cannot be cancelled once it has started, `selectComposition`
  * answers only to a timeout, and a Chrome that stopped answering is not this
  * process's to close. So a run does not own the capture directly — it owns a
- * process it can end, and every process that one started. Ending it is a signal
- * to all of them and, if that is refused, a kill that cannot be; only once none
- * of them is seen running is the one temporary directory everything the capture
- * made lives under removed.
+ * process it can end, and every process that one started. On Linux the capture
+ * runs under a keeper that is a child subreaper, so nothing the capture starts
+ * can leave the keeper's subtree however it detaches. Ending it is a signal to
+ * all of them and, if that is refused, a kill that cannot be; only once the
+ * keeper has said it holds nothing is it released and the one temporary
+ * directory everything the capture made lives under removed.
  *
  * That is why this exists at all: an `AbortSignal` alone proves that a stop was
  * asked for, never that anything was given back.
@@ -46,11 +48,14 @@ const TERMINATION_GRACE_MS = 20_000;
 /** How long a killed capture gets to be seen gone before that is reported as unknown. */
 const KILL_WAIT_MS = 5_000;
 
-/** How often the processes a capture owns are looked for. */
+/** How often a capture being ended is looked at, and its stragglers killed. */
 const SCAN_MS = 50;
 
 /** The child entry: release-only, and never copied into the render image. */
 const CAPTURE_ENTRY_POINT = resolve(import.meta.dir, "..", "scripts", "capture-release-frames.ts");
+
+/** The Linux subreaper the capture runs under, release-only for the same reason. */
+const KEEPER_ENTRY_POINT = resolve(import.meta.dir, "..", "scripts", "capture-keeper.ts");
 
 /** A supervised capture, and the directory its whole temporary world lives in. */
 export type SupervisedCapture = CaptureSession & { readonly workDir: string };
@@ -90,31 +95,48 @@ export function superviseCapture(options: {
     }),
   );
 
-  const child = spawn(process.execPath, [options.entry ?? CAPTURE_ENTRY_POINT, request], {
-    // Its own process group, so a browser the child launched is ended with it
-    // instead of being left behind holding the capture's directory open.
+  // Linux runs the capture under a keeper; elsewhere the capture is the child and
+  // only it can be ended (Remotion's browser shares its lifetime on Windows).
+  const kept = process.platform === "linux";
+  const entry = options.entry ?? CAPTURE_ENTRY_POINT;
+  const child = spawn(process.execPath, kept ? [KEEPER_ENTRY_POINT, entry, request] : [entry, request], {
+    // Its own process group, so what the capture launched without detaching is
+    // ended with it.
     detached: process.platform !== "win32",
-    stdio: ["ignore", "inherit", "inherit"],
+    // The keeper's standard output is what it holds and how the capture ended.
+    stdio: ["ignore", kept ? "pipe" : "inherit", "inherit"],
     // Every temporary file the child, the bundler, or the browser makes lands
     // under one directory this process removes once the child is gone.
     env: { ...process.env, TMPDIR: workDir, TEMP: workDir, TMP: workDir },
   });
 
-  const exited = new Promise<number | null>((settle) => {
-    child.on("exit", (code) => settle(code));
-    child.on("error", () => settle(null));
-  });
+  // `close`, not `exit`: by then everything the keeper said has been read.
   let over = false;
-  void exited.then(() => {
+  const gone = new Promise<void>((settle) => {
+    child.on("close", () => settle());
+    child.on("error", () => settle());
+  }).then(() => {
     over = true;
   });
 
-  // Remotion starts Chrome in a session of its own, which no signal to this
-  // child's group reaches; it is found while its parent is still this child.
-  const owned =
-    process.platform === "linux" && child.pid !== undefined ? new OwnedProcesses(child.pid) : null;
-  const watch = owned === null ? undefined : setInterval(() => owned.scan(), SCAN_MS);
-  watch?.unref();
+  let said = "";
+  const told = (line: string): boolean => said.split("\n").slice(0, -1).includes(line);
+  const exited = new Promise<number | null>((settle) => {
+    void gone.then(() => settle(null));
+    child.on("exit", (code) => {
+      if (!kept) {
+        settle(code);
+      }
+    });
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      said += chunk;
+      const reported = /^exited (-?\d+)\n/m.exec(said);
+      if (reported !== null) {
+        settle(Number(reported[1]));
+      }
+    });
+  });
 
   const frames = exited.then(async (code) => {
     if (code !== 0) {
@@ -123,13 +145,25 @@ export function superviseCapture(options: {
     return JSON.parse(await readFile(answer, "utf8")) as readonly CapturedFrame[];
   });
 
+  // Whether nothing of the capture is left: the keeper said so, or ended before
+  // it started anything. Elsewhere, whether the child is gone.
+  const clear = (): boolean => (kept ? told("empty") || (over && !told("held")) : over);
+
+  // What of the capture is seen running, to be signalled; null once that can no
+  // longer be known, because a keeper that is gone has handed it all to init.
+  const held = (): number[] | null => {
+    if (child.pid === undefined || over) {
+      return kept && over ? null : [];
+    }
+    return kept ? runningBelow(child.pid) : [child.pid];
+  };
+
   let ending: Promise<void> | undefined;
 
   return {
     workDir,
     frames,
-    stop: (): Promise<void> =>
-      (ending ??= end({ child, over: () => over, owned, watch, workDir, grace })),
+    stop: (): Promise<void> => (ending ??= end({ child, clear, held, gone, workDir, grace })),
   };
 }
 
@@ -172,49 +206,55 @@ export async function captureRequestOf(requestPath: string): Promise<{
  * Every wait is bounded because the last signal is one no process can refuse,
  * and the directory is removed after the processes rather than beside them: a
  * capture that was still running could write into it again. A capture that is
- * still seen running after the kill is removed from anyway and reported, never
- * silently given back.
+ * still seen running after the kill, or can no longer be seen at all, is removed
+ * from anyway and reported, never silently given back.
  */
 async function end(capture: {
   child: ChildProcess;
-  over: () => boolean;
-  owned: OwnedProcesses | null;
-  watch: ReturnType<typeof setInterval> | undefined;
+  clear: () => boolean;
+  held: () => number[] | null;
+  gone: Promise<void>;
   workDir: string;
   grace: number;
 }): Promise<void> {
-  const { child, owned, workDir } = capture;
-  // The polite half: the child closes what it opened, and what it cannot answer
-  // for is asked directly.
-  if (!capture.over()) {
-    signalGroup(child, "SIGTERM");
-  }
-  signalEach(owned?.scan() ?? [], "SIGTERM");
-  let gone = await settled(capture, capture.grace, null);
-  if (!gone) {
-    if (!capture.over()) {
-      signalGroup(child, "SIGKILL");
-    }
-    gone = await settled(capture, KILL_WAIT_MS, "SIGKILL");
-  }
-  clearInterval(capture.watch);
-  await rm(workDir, { recursive: true, force: true });
-  if (!gone) {
+  const { child, clear, held } = capture;
+  // The polite half: the capture closes what it opened, and what it cannot
+  // answer for is asked directly. The keeper only takes this as the question
+  // whether it still holds anything.
+  signalGroup(child, "SIGTERM");
+  signalEach(held() ?? [], "SIGTERM");
+  const confirmed =
+    (await emptied(clear, held, capture.grace, null)) ||
+    (await emptied(clear, held, KILL_WAIT_MS, "SIGKILL"));
+  // The keeper is released last: ended any earlier, whatever it still held
+  // would pass to init, out of sight.
+  signalGroup(child, "SIGKILL");
+  await capture.gone;
+  await rm(capture.workDir, { recursive: true, force: true });
+  if (!confirmed) {
     throw new CaptureTeardownUnconfirmed();
   }
 }
 
-/** Whether the child and all it started are gone within `within`, killing stragglers if asked. */
-async function settled(
-  capture: { over: () => boolean; owned: OwnedProcesses | null },
+/**
+ * Whether the capture is clear within `within`, killing whatever is seen of it
+ * if asked. What is seen only picks what to kill: a look at the process table
+ * can miss a process forked while it is read, so it is never taken as proof.
+ */
+async function emptied(
+  clear: () => boolean,
+  held: () => number[] | null,
   within: number,
   kill: "SIGKILL" | null,
 ): Promise<boolean> {
   const until = Date.now() + within;
   for (;;) {
-    const running = capture.owned?.scan() ?? [];
-    if (capture.over() && running.length === 0) {
+    if (clear()) {
       return true;
+    }
+    const running = held();
+    if (running === null) {
+      return false;
     }
     if (kill !== null) {
       signalEach(running, kill);
@@ -237,66 +277,11 @@ function signalEach(pids: readonly number[], signal: "SIGTERM" | "SIGKILL"): voi
 }
 
 /**
- * Every process a capture started, followed across `setsid` (Linux only).
- *
- * A process belongs to the capture if its parent does, or if it is in a session
- * one of the capture's processes leads, which is how a browser's own children
- * stay found after the process that launched it is gone. A process is known by
- * its pid and start time together, so a recycled pid is never mistaken for it.
- *
- * ponytail: polled, so a process that detaches and loses its parent between two
- * scans escapes; PR_SET_CHILD_SUBREAPER on the child closes that if it matters.
+ * Every running process seen below `root` in `/proc` (Linux only), `root`
+ * excluded: what there is to kill, never proof that nothing else runs.
  */
-class OwnedProcesses {
-  private readonly owned = new Map<number, string>();
-  private readonly sessions = new Set<number>();
-
-  constructor(root: number) {
-    const entry = processTable().get(root);
-    if (entry !== undefined) {
-      this.owned.set(root, entry.start);
-    }
-  }
-
-  /** Learn every process that belongs to the capture now, and answer which still run. */
-  scan(): number[] {
-    const table = processTable();
-    for (const [pid, start] of this.owned) {
-      if (table.get(pid)?.start !== start) {
-        this.owned.delete(pid);
-      }
-    }
-    // A session nobody is in any more is a number the kernel may hand out again.
-    const inUse = new Set([...table.values()].map((entry) => entry.session));
-    for (const session of this.sessions) {
-      if (!inUse.has(session)) {
-        this.sessions.delete(session);
-      }
-    }
-    for (let grew = true; grew; ) {
-      grew = false;
-      for (const pid of this.owned.keys()) {
-        if (table.get(pid)?.session === pid) {
-          this.sessions.add(pid);
-        }
-      }
-      for (const [pid, entry] of table) {
-        if (this.owned.has(pid) || !(this.owned.has(entry.ppid) || this.sessions.has(entry.session))) {
-          continue;
-        }
-        this.owned.set(pid, entry.start);
-        grew = true;
-      }
-    }
-    return [...this.owned.keys()].filter((pid) => table.get(pid)?.running === true);
-  }
-}
-
-type ProcessEntry = { ppid: number; session: number; start: string; running: boolean };
-
-/** Every process `/proc` shows now: parent, session, start time, and whether it runs. */
-function processTable(): Map<number, ProcessEntry> {
-  const table = new Map<number, ProcessEntry>();
+function runningBelow(root: number): number[] {
+  const table = new Map<number, { ppid: number; running: boolean }>();
   for (const name of readdirSync("/proc")) {
     if (!/^\d+$/.test(name)) {
       continue;
@@ -309,15 +294,22 @@ function processTable(): Map<number, ProcessEntry> {
     }
     // The command name may hold spaces and parentheses; the fields after it cannot.
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    table.set(Number(name), {
-      ppid: Number(fields[1]),
-      session: Number(fields[3]),
-      start: fields[19] ?? "",
-      // A zombie has ended; it is only waiting for a parent that may never reap it.
-      running: fields[0] !== "Z" && fields[0] !== "X",
-    });
+    // A zombie has ended; it is only waiting for a parent that may never reap it.
+    table.set(Number(name), { ppid: Number(fields[1]), running: fields[0] !== "Z" && fields[0] !== "X" });
   }
-  return table;
+
+  const below = new Set([root]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [pid, entry] of table) {
+      if (!below.has(pid) && below.has(entry.ppid)) {
+        below.add(pid);
+        grew = true;
+      }
+    }
+  }
+  below.delete(root);
+  return [...below].filter((pid) => table.get(pid)?.running === true);
 }
 
 function signalGroup(child: ChildProcess, signal: "SIGTERM" | "SIGKILL"): void {

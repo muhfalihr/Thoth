@@ -221,3 +221,34 @@ test.skipIf(!linux)("a capture that finished is not given back while a browser i
     if (running(browser)) process.kill(browser, "SIGKILL");
   }
 });
+
+test.skipIf(!linux)("a descendant detached just before the capture exits is still ended", async () => {
+  const pidFile = join(workspace, "detached.pid");
+  // A shell that lives for a moment: it detaches a descendant that ignores
+  // SIGTERM into a session of its own and is gone, and so is the capture, well
+  // inside one look at the process table.
+  const detach = `setsid sh -c 'trap "" TERM; echo $$ > ${pidFile}.part && mv ${pidFile}.part ${pidFile}; exec sleep 600' > /dev/null 2>&1 &`;
+  const entry = entryThat(`
+    const { spawnSync } = await import("node:child_process");
+    spawnSync("sh", ["-c", ${JSON.stringify(detach)}], { stdio: "ignore" });
+    const request = JSON.parse(await Bun.file(process.argv[2]).text());
+    await Bun.write(request.answer, JSON.stringify(request.frames));
+  `);
+
+  const session = superviseCapture({ capsule: capsule(), run, entry, graceMs: 200 });
+  const descendant = await browserPid(pidFile);
+
+  try {
+    await expect(session.frames).resolves.toHaveLength(1);
+    const teardown = await session.stop().then(
+      () => "confirmed",
+      (error: Error) => error.constructor.name,
+    );
+
+    // Whatever stop() answers, it may never answer "confirmed" while this runs.
+    expect({ teardown, running: running(descendant) }).toEqual({ teardown: "confirmed", running: false });
+    expect(existsSync(session.workDir)).toBe(false);
+  } finally {
+    if (running(descendant)) process.kill(descendant, "SIGKILL");
+  }
+});
