@@ -255,6 +255,13 @@ export function applyTimelineOperation(
       clip.volume = operation.volume;
       break;
     }
+    case "set_caption_cue_text": {
+      const clip = unlockedClip(next, operation.clip_id);
+      const cue = clip.kind === "caption" ? clip.cues[operation.cue_index] : undefined;
+      if (!cue) throw new Error("caption cue unavailable");
+      cue.text = operation.text;
+      break;
+    }
     case "set_track_visibility":
       unlockedTrack(next, operation.track_id).hidden = operation.hidden;
       break;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from tests.domain.edit_document_v2_fixtures import document_with_every_clip_kind
 from thoth_control_plane.api import create_app
 from thoth_control_plane.application.edit_documents import EditDocumentNotFound
 from thoth_control_plane.application.ports import (
@@ -491,3 +492,42 @@ async def test_upgrade_route_reports_unavailable_persistence(gateway) -> None:
         )
 
     assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_patch_edits_one_caption_cue_under_the_base_revision(gateway) -> None:
+    repository = MemoryEditDocumentRepository()
+    document = EditDocumentV2.model_validate(document_with_every_clip_kind())
+    await repository.insert_revision(document)
+    app = create_app(Settings(THOTH_CONTROL_PLANE_API_KEY="test-key"), gateway, repository)
+    url = f"/api/v1/projects/project_001/edit-documents/{document.document_id}"
+
+    def caption_patch(base_revision: int, cue_index: int) -> dict[str, object]:
+        return {
+            "base_revision": base_revision,
+            "operations": [
+                {
+                    "kind": "set_caption_cue_text",
+                    "operation_id": "op_caption_1",
+                    "clip_id": "clip_caption",
+                    "cue_index": cue_index,
+                    "text": "Corrected caption",
+                }
+            ],
+        }
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        rejected = await client.patch(url, headers=AUTH_HEADERS, json=caption_patch(1, 5))
+        after_rejection = await client.get(url, headers=AUTH_HEADERS)
+        saved = await client.patch(url, headers=AUTH_HEADERS, json=caption_patch(1, 0))
+        stale = await client.patch(url, headers=AUTH_HEADERS, json=caption_patch(1, 0))
+
+    assert rejected.status_code >= 400
+    assert after_rejection.json()["revision"] == 1
+    assert saved.status_code == 200
+    assert saved.json()["revision"] == 2
+    caption = next(clip for clip in saved.json()["clips"] if clip["clip_id"] == "clip_caption")
+    assert caption["cues"][0]["text"] == "Corrected caption"
+    assert stale.status_code == 409
+    assert stale.json()["latest"]["revision"] == 2

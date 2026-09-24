@@ -954,7 +954,7 @@ export interface components {
             /** Base Revision */
             base_revision: number;
             /** Operations */
-            operations: (components["schemas"]["ReplaceText"] | components["schemas"]["SetOwnership"] | components["schemas"]["SetSceneDuration"] | components["schemas"]["AddTrack"] | components["schemas"]["RemoveEmptyTrack"] | components["schemas"]["ReorderTrack"] | components["schemas"]["AddClipFromAsset"] | components["schemas"]["RemoveClip"] | components["schemas"]["MoveClip"] | components["schemas"]["TrimClipStart"] | components["schemas"]["TrimClipEnd"] | components["schemas"]["SplitClip"] | components["schemas"]["SetClipHidden"] | components["schemas"]["SetClipLocked"] | components["schemas"]["SetClipVolume"] | components["schemas"]["SetTrackVisibility"] | components["schemas"]["SetTrackMuted"] | components["schemas"]["SetTrackLocked"])[];
+            operations: (components["schemas"]["ReplaceText"] | components["schemas"]["SetOwnership"] | components["schemas"]["SetSceneDuration"] | components["schemas"]["AddTrack"] | components["schemas"]["RemoveEmptyTrack"] | components["schemas"]["ReorderTrack"] | components["schemas"]["AddClipFromAsset"] | components["schemas"]["RemoveClip"] | components["schemas"]["MoveClip"] | components["schemas"]["TrimClipStart"] | components["schemas"]["TrimClipEnd"] | components["schemas"]["SplitClip"] | components["schemas"]["SetClipHidden"] | components["schemas"]["SetClipLocked"] | components["schemas"]["SetClipVolume"] | components["schemas"]["SetCaptionCueText"] | components["schemas"]["SetTrackVisibility"] | components["schemas"]["SetTrackMuted"] | components["schemas"]["SetTrackLocked"])[];
         };
         /**
          * EditDocumentV1
@@ -1671,6 +1671,22 @@ export interface components {
             scene_id: string;
             /** Start Frame */
             start_frame: number;
+        };
+        /** SetCaptionCueText */
+        SetCaptionCueText: {
+            /** Clip Id */
+            clip_id: string;
+            /** Cue Index */
+            cue_index: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_caption_cue_text";
+            /** Operation Id */
+            operation_id: string;
+            /** Text */
+            text: string;
         };
         /** SetClipHidden */
         SetClipHidden: {

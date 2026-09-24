@@ -678,6 +678,7 @@
                   "remove_empty_track": "#/components/schemas/RemoveEmptyTrack",
                   "reorder_track": "#/components/schemas/ReorderTrack",
                   "replace_text": "#/components/schemas/ReplaceText",
+                  "set_caption_cue_text": "#/components/schemas/SetCaptionCueText",
                   "set_clip_hidden": "#/components/schemas/SetClipHidden",
                   "set_clip_locked": "#/components/schemas/SetClipLocked",
                   "set_clip_volume": "#/components/schemas/SetClipVolume",
@@ -737,6 +738,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/SetClipVolume"
+                },
+                {
+                  "$ref": "#/components/schemas/SetCaptionCueText"
                 },
                 {
                   "$ref": "#/components/schemas/SetTrackVisibility"
@@ -2820,6 +2824,46 @@
           "clip_ids"
         ],
         "title": "Scene",
+        "type": "object"
+      },
+      "SetCaptionCueText": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "cue_index": {
+            "minimum": 0.0,
+            "title": "Cue Index",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "set_caption_cue_text",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "cue_index",
+          "text"
+        ],
+        "title": "SetCaptionCueText",
         "type": "object"
       },
       "SetClipHidden": {

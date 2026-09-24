@@ -20,13 +20,14 @@ from thoth_control_plane.domain.edit_document_v2 import (
     AssetRef,
     EditDocumentV2,
     TimelineAudioClip,
+    TimelineCaptionClip,
     TimelineClip,
     TimelineTrack,
     TimelineVideoClip,
     TrackKind,
     Volume,
 )
-from thoth_control_plane.domain.edit_documents import Frame, FrameStart
+from thoth_control_plane.domain.edit_documents import Frame, FrameStart, ShortText
 from thoth_control_plane.domain.models import OpaqueId, StrictModel
 
 
@@ -122,6 +123,14 @@ class SetClipVolume(StrictModel):
     volume: Volume
 
 
+class SetCaptionCueText(StrictModel):
+    kind: Literal["set_caption_cue_text"]
+    operation_id: OpaqueId
+    clip_id: OpaqueId
+    cue_index: Annotated[int, Field(ge=0)]
+    text: ShortText
+
+
 class SetTrackVisibility(StrictModel):
     kind: Literal["set_track_visibility"]
     operation_id: OpaqueId
@@ -156,6 +165,7 @@ TimelineOperation: TypeAlias = Annotated[
     | SetClipHidden
     | SetClipLocked
     | SetClipVolume
+    | SetCaptionCueText
     | SetTrackVisibility
     | SetTrackMuted
     | SetTrackLocked,
@@ -194,6 +204,11 @@ def apply_timeline_operation(
             _clip(document, operation.clip_id).locked = operation.locked
         case SetClipVolume():
             _set_clip_volume(document, operation)
+        case SetCaptionCueText():
+            clip = _unlocked_clip(document, operation.clip_id)
+            if not isinstance(clip, TimelineCaptionClip) or operation.cue_index >= len(clip.cues):
+                raise ValueError("caption cue unavailable")
+            clip.cues[operation.cue_index].text = operation.text
         case SetTrackVisibility():
             _unlocked_track(document, operation.track_id).hidden = operation.hidden
         case SetTrackMuted():

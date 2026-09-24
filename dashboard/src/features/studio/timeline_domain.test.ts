@@ -483,6 +483,65 @@ test("an asset with no unlocked compatible track produces no operation", () => {
   ).toBeUndefined();
 });
 
+function documentWithCaptions(locked = false): EditDocumentV2 {
+  const document = documentV2();
+  document.tracks.push({
+    track_id: "track_caption",
+    kind: "caption",
+    label: "Captions",
+    order: 3,
+    hidden: false,
+    muted: false,
+    locked: false,
+    clip_ids: ["clip_caption"],
+  });
+  document.clips!.push({
+    kind: "caption",
+    clip_id: "clip_caption",
+    track_id: "track_caption",
+    from_frame: 0,
+    duration_in_frames: 120,
+    ownership: "ai_managed",
+    hidden: false,
+    locked,
+    style_slot: "caption_default",
+    cues: [
+      { from_frame: 0, duration_in_frames: 60, text: "hello" },
+      { from_frame: 60, duration_in_frames: 60, text: "world" },
+    ],
+  });
+  return document;
+}
+
+const captionText = (clipId: string, cueIndex: number) =>
+  ({
+    kind: "set_caption_cue_text",
+    operation_id: "op_caption_1",
+    clip_id: clipId,
+    cue_index: cueIndex,
+    text: "Corrected caption",
+  }) as const;
+
+test("a caption cue edit changes only that cue's text", () => {
+  const source = documentWithCaptions();
+  const next = applyTimelineOperation(source, captionText("clip_caption", 1), {});
+
+  const expected = structuredClone(source);
+  const caption = expected.clips!.at(-1)!;
+  if (caption.kind === "caption") caption.cues[1]!.text = "Corrected caption";
+  expect(next).toEqual(expected);
+  expect(source.clips!.at(-1)).toEqual(documentWithCaptions().clips!.at(-1));
+});
+
+test.each([
+  ["a non-caption clip", documentWithCaptions(), "clip_main", 0, "caption cue unavailable"],
+  ["an out-of-range cue", documentWithCaptions(), "clip_caption", 2, "caption cue unavailable"],
+  ["a missing clip", documentWithCaptions(), "clip_missing", 0, "unknown clip"],
+  ["a locked caption", documentWithCaptions(true), "clip_caption", 0, "clip is locked"],
+] as const)("a caption cue edit on %s is refused", (_label, document, clipId, cueIndex, message) => {
+  expect(() => applyTimelineOperation(document, captionText(clipId, cueIndex), {})).toThrow(message);
+});
+
 test("lane selection has one implementation, shared with the renderer", async () => {
   const shared = await import("@thoth/remotion-composition");
   expect(visibleLanes).toBe(shared.visibleLanes);

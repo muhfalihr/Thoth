@@ -29,6 +29,7 @@ from thoth_control_plane.domain.timeline_operations import (
     RemoveClip,
     RemoveEmptyTrack,
     ReorderTrack,
+    SetCaptionCueText,
     SetClipHidden,
     SetClipLocked,
     SetClipVolume,
@@ -195,6 +196,13 @@ def trim_end(clip_id: str, end_frame: int) -> TrimClipEnd:
         },
         {"kind": "set_clip_volume", "operation_id": "op_1", "clip_id": "clip_main", "volume": 0.5},
         {
+            "kind": "set_caption_cue_text",
+            "operation_id": "op_1",
+            "clip_id": "clip_caption",
+            "cue_index": 0,
+            "text": "Corrected caption",
+        },
+        {
             "kind": "replace_text",
             "operation_id": "op_1",
             "clip_id": "clip_001",
@@ -241,6 +249,16 @@ def test_every_operation_parses_through_the_shared_union(payload: dict[str, Any]
             "artifact_location": "../../etc/passwd",
         },
         {"kind": "trim_clip_end", "operation_id": "op_1", "clip_id": "clip_main", "end_frame": 0},
+        *(
+            {
+                "kind": "set_caption_cue_text",
+                "operation_id": "op_1",
+                "clip_id": "clip_caption",
+                "cue_index": cue_index,
+                "text": text,
+            }
+            for cue_index, text in [(-1, "Fine"), (0, ""), (0, "x" * 301)]
+        ),
         {
             "kind": "move_clip",
             "operation_id": "op_1",
@@ -587,6 +605,72 @@ def test_set_clip_volume_only_applies_to_audio_clips() -> None:
                     kind="set_clip_volume", operation_id="op_1", clip_id="clip_main", volume=0.25
                 )
             ],
+        )
+
+
+def caption_text(clip_id: str, cue_index: int, text: str) -> SetCaptionCueText:
+    return SetCaptionCueText(
+        kind="set_caption_cue_text",
+        operation_id="op_caption_1",
+        clip_id=clip_id,
+        cue_index=cue_index,
+        text=text,
+    )
+
+
+def document_with_two_caption_cues(*, locked: bool = False) -> EditDocumentV2:
+    payload = document_with_every_clip_kind()
+    caption = clip_by_id(payload, "clip_caption")
+    caption["cues"].append({"from_frame": 60, "duration_in_frames": 30, "text": "world"})
+    caption["locked"] = locked
+    return EditDocumentV2.model_validate(payload)
+
+
+def test_set_caption_cue_text_changes_only_the_selected_cue_text() -> None:
+    document = document_with_two_caption_cues()
+    before = find_clip(document, "clip_caption").model_dump()
+
+    result = apply_edit_operations(document, [caption_text("clip_caption", 1, "Corrected caption")])
+
+    after = find_clip(result, "clip_caption").model_dump()
+    assert after["cues"][1]["text"] == "Corrected caption"
+    before["cues"][1]["text"] = "Corrected caption"
+    assert after == before
+    assert find_clip(document, "clip_caption").cues[1].text == "world"
+
+
+@pytest.mark.parametrize(
+    ("clip_id", "cue_index", "message"),
+    [
+        ("clip_main", 0, "caption cue unavailable"),
+        ("clip_missing", 0, "unknown clip"),
+        ("clip_caption", 2, "caption cue unavailable"),
+    ],
+)
+def test_set_caption_cue_text_rejects_a_cue_that_does_not_exist(
+    clip_id: str, cue_index: int, message: str
+) -> None:
+    document = document_with_two_caption_cues()
+    before = document.model_dump()
+
+    with pytest.raises(ValueError, match=message):
+        apply_edit_operations(document, [caption_text(clip_id, cue_index, "Corrected")])
+
+    assert document.model_dump() == before
+
+
+def test_set_caption_cue_text_respects_clip_and_track_locks() -> None:
+    with pytest.raises(ValueError, match="clip is locked"):
+        apply_edit_operations(
+            document_with_two_caption_cues(locked=True),
+            [caption_text("clip_caption", 0, "Corrected")],
+        )
+
+    payload = document_with_every_clip_kind()
+    track_by_id(payload, "track_caption")["locked"] = True
+    with pytest.raises(ValueError, match="track is locked"):
+        apply_edit_operations(
+            EditDocumentV2.model_validate(payload), [caption_text("clip_caption", 0, "Corrected")]
         )
 
 
