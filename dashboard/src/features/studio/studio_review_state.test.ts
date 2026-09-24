@@ -62,13 +62,11 @@ test("pages merge by identity and keep their cursor", () => {
     type: "comments_loaded",
     comments: [comment("c1", 2)],
     nextCursor: "next",
-    append: false,
   });
   state = reviewReducer(state, {
     type: "comments_loaded",
     comments: [comment("c1", 2), comment("c2", 3)],
     nextCursor: null,
-    append: true,
   });
   expect(state.comments.map((item) => item.comment_id)).toEqual(["c1", "c2"]);
   expect(state.commentCursor).toBeNull();
@@ -157,4 +155,101 @@ test("a stale write blocks review until Studio holds the newer saved revision", 
 test("a frame reads as minutes, seconds, and frames", () => {
   expect(formatTimecode(29, 30)).toBe("0:00:29");
   expect(formatTimecode(30 * 61 + 5, 30)).toBe("1:01:05");
+});
+
+const at = <T extends ReviewComment | ReviewDecision>(item: T, created_at: string): T => ({ ...item, created_at });
+const decisionSubmission = (reason: string | null): ReviewSubmission => ({
+  kind: "decision",
+  request: { base_revision: 3, operation_id: "op_2", decision: "approved", reason },
+});
+
+test("a late first comment page keeps a comment posted after the load began, in contract order", () => {
+  let state = reviewReducer(withComment("Adjust opening"), { type: "submitted", submission: commentSubmission });
+  state = reviewReducer(state, { type: "comment_created", comment: at(comment("c9", 3), "2026-09-24T10:00:00Z") });
+  state = reviewReducer(state, {
+    type: "comments_loaded",
+    comments: [at(comment("c1", 2), "2026-09-24T08:00:00Z")],
+    nextCursor: "next",
+  });
+  expect(state.comments.map((item) => item.comment_id)).toEqual(["c1", "c9"]);
+
+  state = reviewReducer(state, {
+    type: "comments_loaded",
+    comments: [at(comment("c2", 2), "2026-09-24T09:00:00Z"), at(comment("c9", 3), "2026-09-24T10:00:00Z")],
+    nextCursor: null,
+  });
+  expect(state.comments.map((item) => item.comment_id)).toEqual(["c1", "c2", "c9"]);
+  expect(state.commentCursor).toBeNull();
+});
+
+test("a late first decision page keeps a decision recorded after the load began, newest first", () => {
+  let state = reviewReducer(createReviewState(), { type: "submitted", submission: decisionSubmission(null) });
+  state = reviewReducer(state, { type: "decision_created", decision: at(decision("d9", 3), "2026-09-24T10:00:00Z") });
+  state = reviewReducer(state, {
+    type: "decisions_loaded",
+    decisions: [at(decision("d1", 2), "2026-09-24T08:00:00Z")],
+    nextCursor: "older",
+  });
+  expect(state.decisions.map((item) => item.decision_id)).toEqual(["d9", "d1"]);
+  expect(currentDecision(state.decisions, 3)?.decision_id).toBe("d9");
+
+  state = reviewReducer(state, {
+    type: "decisions_loaded",
+    decisions: [at(decision("d0", 1), "2026-09-24T07:00:00Z")],
+    nextCursor: null,
+  });
+  expect(state.decisions.map((item) => item.decision_id)).toEqual(["d9", "d1", "d0"]);
+});
+
+test("a comment that lands keeps a newer draft typed while it was pending", () => {
+  let state = reviewReducer(withComment("Adjust opening"), { type: "submitted", submission: commentSubmission });
+  state = reviewReducer(state, { type: "comment_edited", text: "Also fix the ending" });
+  state = reviewReducer(state, { type: "comment_created", comment: comment("c9", 3) });
+  expect(state.commentText).toBe("Also fix the ending");
+  expect(state.notice).toBe("Comment posted.");
+});
+
+test("a decision that lands keeps a newer reason typed while it was pending", () => {
+  let state = reviewReducer(createReviewState(), { type: "reason_edited", reason: "Looks right" });
+  state = reviewReducer(state, { type: "submitted", submission: decisionSubmission("Looks right") });
+  state = reviewReducer(state, { type: "reason_edited", reason: "Looks right after the fix" });
+  state = reviewReducer(state, { type: "decision_created", decision: decision("d9", 3) });
+  expect(state.reason).toBe("Looks right after the fix");
+
+  let cleared = reviewReducer(createReviewState(), { type: "reason_edited", reason: "Looks right" });
+  cleared = reviewReducer(cleared, { type: "submitted", submission: decisionSubmission("Looks right") });
+  cleared = reviewReducer(cleared, { type: "decision_created", decision: decision("d9", 3) });
+  expect(cleared.reason).toBe("");
+});
+
+test("a transport failure offers no Retry once the comment draft changed while pending", () => {
+  let state = reviewReducer(withComment("Adjust opening"), { type: "submitted", submission: commentSubmission });
+  state = reviewReducer(state, { type: "comment_edited", text: "Adjust the opening" });
+  state = reviewReducer(state, { type: "submit_failed", code: "review_request_failed", latestRevision: null });
+  expect(state.retryable).toBeNull();
+  expect(state.commentText).toBe("Adjust the opening");
+  expect(state.error).toBe("review_request_failed");
+
+  let unpinned = reviewReducer(withComment("Adjust opening"), { type: "submitted", submission: commentSubmission });
+  unpinned = reviewReducer(unpinned, { type: "pin_toggled", pinned: false });
+  unpinned = reviewReducer(unpinned, { type: "submit_failed", code: "review_unavailable", latestRevision: null });
+  expect(unpinned.retryable).toBeNull();
+
+  let unchanged = reviewReducer(withComment("Adjust opening"), { type: "submitted", submission: commentSubmission });
+  unchanged = reviewReducer(unchanged, { type: "submit_failed", code: "review_unavailable", latestRevision: null });
+  expect(unchanged.retryable).toEqual(commentSubmission);
+  expect(reviewReducer(unchanged, { type: "pin_toggled", pinned: false }).retryable).toBeNull();
+});
+
+test("a transport failure offers no Retry once the decision reason changed while pending", () => {
+  let state = reviewReducer(createReviewState(), { type: "reason_edited", reason: "Looks right" });
+  state = reviewReducer(state, { type: "submitted", submission: decisionSubmission("Looks right") });
+  state = reviewReducer(state, { type: "reason_edited", reason: "" });
+  state = reviewReducer(state, { type: "submit_failed", code: "review_request_failed", latestRevision: null });
+  expect(state.retryable).toBeNull();
+
+  let unchanged = reviewReducer(createReviewState(), { type: "reason_edited", reason: "Looks right" });
+  unchanged = reviewReducer(unchanged, { type: "submitted", submission: decisionSubmission("Looks right") });
+  unchanged = reviewReducer(unchanged, { type: "submit_failed", code: "review_request_failed", latestRevision: null });
+  expect(unchanged.retryable).toEqual(decisionSubmission("Looks right"));
 });

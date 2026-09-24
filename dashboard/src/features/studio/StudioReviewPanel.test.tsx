@@ -322,3 +322,64 @@ test("reads a malformed history page as a load failure instead of crashing Studi
   expect(screen.getByText("Could not load review history.")).toBeDefined();
   expect(screen.getByText("No decision on revision 3 yet.")).toBeDefined();
 });
+
+function withLateHistory() {
+  const client = makeClient();
+  const comments = deferred<{ comments: ReviewComment[]; next_cursor: null }>();
+  const decisions = deferred<{ decisions: ReviewDecision[]; next_cursor: null }>();
+  client.listStudioReviewComments.mockImplementationOnce(() => comments.promise);
+  client.listStudioReviewDecisions.mockImplementationOnce(() => decisions.promise);
+  return { client, comments, decisions };
+}
+
+test("a late history load keeps the comment and decision that landed after it began", async () => {
+  const { client, comments, decisions } = withLateHistory();
+  client.createStudioReviewComment.mockImplementationOnce(async (_p, _d, request) =>
+    comment("c_new", request.base_revision, { text: request.text, created_at: "2026-09-24T10:00:00Z" }),
+  );
+  client.createStudioReviewDecision.mockImplementationOnce(async (_p, _d, request) => ({
+    ...decision("d_new", request.base_revision, request.decision),
+    created_at: "2026-09-24T10:00:00Z",
+  }));
+  render(<StudioReviewPanel {...props(client)} />);
+
+  typeComment("Posted before history");
+  fireEvent.click(button("Post comment"));
+  await screen.findByText("Comment posted.");
+  fireEvent.click(button("Approve"));
+  fireEvent.click(button("Confirm approval"));
+  await screen.findByText("Approval recorded for revision 3.");
+
+  await act(async () => {
+    comments.resolve({ comments: [comment("c1", 2)], next_cursor: null });
+    decisions.resolve({ decisions: [decision("d1", 2)], next_cursor: null });
+  });
+  expect(screen.getByText("Posted before history")).toBeDefined();
+  expect(screen.getByText("Comment c1")).toBeDefined();
+  expect(screen.getByText("Current decision: Approved on revision 3")).toBeDefined();
+});
+
+test("a draft edited while its request is pending survives success and is never retried stale", async () => {
+  const client = makeClient();
+  const posted = deferred<ReviewComment>();
+  const decided = deferred<ReviewDecision>();
+  client.createStudioReviewComment.mockImplementationOnce(() => posted.promise);
+  client.createStudioReviewDecision.mockImplementationOnce(() => decided.promise);
+  await renderPanel(client);
+
+  typeComment("First note");
+  fireEvent.click(button("Post comment"));
+  typeComment("Second note");
+  await act(async () => posted.resolve(comment("c_new", 3, { text: "First note" })));
+  expect(commentValue()).toBe("Second note");
+
+  const reason = () => screen.getByLabelText("Decision reason (optional)") as HTMLTextAreaElement;
+  fireEvent.change(reason(), { target: { value: "Ship it" } });
+  fireEvent.click(button("Approve"));
+  fireEvent.click(button("Confirm approval"));
+  fireEvent.change(reason(), { target: { value: "Ship it after the caption fix" } });
+  await act(async () => decided.reject(new StudioReviewRequestError("review_request_failed")));
+  expect(reason().value).toBe("Ship it after the caption fix");
+  expect(screen.queryByRole("button", { name: "Retry" }) === null).toBe(true);
+  expect(client.createStudioReviewDecision).toHaveBeenCalledTimes(1);
+});

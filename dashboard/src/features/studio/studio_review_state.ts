@@ -44,8 +44,8 @@ export type ReviewState = {
 
 export type ReviewAction =
   | { type: "reset" }
-  | { type: "comments_loaded"; comments: ReviewComment[]; nextCursor: string | null; append: boolean }
-  | { type: "decisions_loaded"; decisions: ReviewDecision[]; nextCursor: string | null; append: boolean }
+  | { type: "comments_loaded"; comments: ReviewComment[]; nextCursor: string | null }
+  | { type: "decisions_loaded"; decisions: ReviewDecision[]; nextCursor: string | null }
   | { type: "load_failed" }
   | { type: "comment_edited"; text: string }
   | { type: "pin_toggled"; pinned: boolean }
@@ -90,9 +90,34 @@ export function createReviewState(): ReviewState {
   };
 }
 
-function merge<T>(current: T[], page: T[], key: (item: T) => string): T[] {
-  const seen = new Set(current.map(key));
-  return [...current, ...page.filter((item) => !seen.has(key(item)))];
+/** The reason a decision sends: blank text means no reason. */
+export const reasonPayload = (reason: string): string | null => (reason.trim() ? reason : null);
+
+// History is append-only, so a page never removes a record: it is a union with
+// what is already held, re-sorted into the control plane's (created_at, id) order.
+// ponytail: Date.parse keeps milliseconds; two events in one millisecond fall back
+// to id order, where the server would compare microseconds first.
+function merge<T extends { created_at: string }>(
+  current: T[],
+  page: T[],
+  key: (item: T) => string,
+  newestFirst = false,
+): T[] {
+  const byKey = new Map(current.map((item) => [key(item), item]));
+  for (const item of page) if (!byKey.has(key(item))) byKey.set(key(item), item);
+  const order = (a: T, b: T) =>
+    Date.parse(a.created_at) - Date.parse(b.created_at) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+  return [...byKey.values()].sort((a, b) => (newestFirst ? order(b, a) : order(a, b)));
+}
+
+/** Whether the displayed draft is still exactly what this submission sent. */
+function draftMatches(state: ReviewState, submission: ReviewSubmission | null): boolean {
+  if (submission?.kind === "comment") {
+    const { text, frame } = submission.request;
+    return state.commentText === text && state.pinToFrame === (frame !== null && frame !== undefined);
+  }
+  if (submission?.kind === "decision") return reasonPayload(state.reason) === (submission.request.reason ?? null);
+  return false;
 }
 
 const RETRYABLE: readonly ReviewErrorCode[] = ["review_request_failed", "review_unavailable"];
@@ -104,16 +129,14 @@ export function reviewReducer(state: ReviewState, action: ReviewAction): ReviewS
     case "comments_loaded":
       return {
         ...state,
-        comments: action.append ? merge(state.comments, action.comments, (item) => item.comment_id) : action.comments,
+        comments: merge(state.comments, action.comments, (item) => item.comment_id),
         commentCursor: action.nextCursor,
         loadStatus: "loaded",
       };
     case "decisions_loaded":
       return {
         ...state,
-        decisions: action.append
-          ? merge(state.decisions, action.decisions, (item) => item.decision_id)
-          : action.decisions,
+        decisions: merge(state.decisions, action.decisions, (item) => item.decision_id, true),
         decisionCursor: action.nextCursor,
         loadStatus: "loaded",
       };
@@ -126,7 +149,11 @@ export function reviewReducer(state: ReviewState, action: ReviewAction): ReviewS
         retryable: state.retryable?.kind === "comment" ? null : state.retryable,
       };
     case "pin_toggled":
-      return { ...state, pinToFrame: action.pinned };
+      return {
+        ...state,
+        pinToFrame: action.pinned,
+        retryable: state.retryable?.kind === "comment" ? null : state.retryable,
+      };
     case "reason_edited":
       return {
         ...state,
@@ -148,15 +175,15 @@ export function reviewReducer(state: ReviewState, action: ReviewAction): ReviewS
       return {
         ...state,
         comments: merge(state.comments, [action.comment], (item) => item.comment_id),
-        commentText: "",
+        commentText: draftMatches(state, state.pending) ? "" : state.commentText,
         pending: null,
         notice: "Comment posted.",
       };
     case "decision_created":
       return {
         ...state,
-        decisions: [action.decision, ...state.decisions.filter((item) => item.decision_id !== action.decision.decision_id)],
-        reason: "",
+        decisions: merge(state.decisions, [action.decision], (item) => item.decision_id, true),
+        reason: draftMatches(state, state.pending) ? "" : state.reason,
         confirming: null,
         pending: null,
         notice: `${action.decision.decision === "approved" ? "Approval" : "Change request"} recorded for revision ${action.decision.document_revision}.`,
@@ -166,7 +193,10 @@ export function reviewReducer(state: ReviewState, action: ReviewAction): ReviewS
       if (action.code === "review_revision_conflict" && action.latestRevision !== null) {
         return { ...failed, staleRevision: action.latestRevision };
       }
-      if (RETRYABLE.includes(action.code)) return { ...failed, retryable: state.pending, error: action.code };
+      if (RETRYABLE.includes(action.code)) {
+        // Retry replays the original key only while the draft on screen is what it sent.
+        return { ...failed, retryable: draftMatches(state, state.pending) ? state.pending : null, error: action.code };
+      }
       return { ...failed, error: action.code };
     }
   }

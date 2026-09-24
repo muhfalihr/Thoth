@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-24 - Studio review keeps late-loaded history and newer drafts (F2 corrective)
+
+Offline corrective round on `codex/stage1-container-ci` after `1b146ce`,
+dashboard only; no API, schema, or Rust change.
+
+- A history page is now merged with the records already held and re-sorted
+  into the control plane's order (comments oldest first, decisions newest
+  first). A slow first load or a later page can no longer remove a comment or
+  decision whose POST succeeded after the load began.
+- A successful comment or decision clears its text only when the draft on
+  screen is still what it sent, so text typed while the request was pending
+  survives.
+- After a transport failure, Retry replays the original operation ID only
+  while the displayed draft (comment text and frame pin, or decision reason)
+  still matches it; otherwise the user sends a new request. The stale-409
+  explicit resubmit path is unchanged.
+
+Verification: 8 new reducer and component tests failed first (6 reducer,
+2 component) and now pass; focused F2 files 49/49; dashboard `bun test`
+548 pass / 0 fail; `tsc --noEmit` 0 errors; lint 0 errors (pre-existing
+warnings only); `vite build` succeeded; `build_cuda.bat` exit 0 with a fresh
+log; `git diff --check` clean.
+
 ## 2026-09-24 - Creator Studio editorial review bound to the saved revision (F2 review)
 
 Plan `docs/superpowers/plans/2026-09-24-creator-studio-f2-editorial-review.md`,

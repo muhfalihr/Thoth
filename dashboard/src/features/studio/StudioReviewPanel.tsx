@@ -12,6 +12,7 @@ import {
   createReviewState,
   currentDecision,
   formatTimecode,
+  reasonPayload,
   reviewGate,
   reviewReducer,
   type ReviewAction,
@@ -99,7 +100,7 @@ export function StudioReviewPanel({
         .then((page) => {
           if (requestGeneration !== generation.current) return;
           if (!Array.isArray(page.comments)) throw new Error("malformed review page");
-          dispatch({ type: "comments_loaded", comments: page.comments, nextCursor: page.next_cursor ?? null, append: Boolean(cursor) });
+          dispatch({ type: "comments_loaded", comments: page.comments, nextCursor: page.next_cursor ?? null });
         })
         .catch(() => {
           if (requestGeneration === generation.current) dispatch({ type: "load_failed" });
@@ -115,7 +116,7 @@ export function StudioReviewPanel({
         .then((page) => {
           if (requestGeneration !== generation.current) return;
           if (!Array.isArray(page.decisions)) throw new Error("malformed review page");
-          dispatch({ type: "decisions_loaded", decisions: page.decisions, nextCursor: page.next_cursor ?? null, append: Boolean(cursor) });
+          dispatch({ type: "decisions_loaded", decisions: page.decisions, nextCursor: page.next_cursor ?? null });
         })
         .catch(() => {
           if (requestGeneration === generation.current) dispatch({ type: "load_failed" });
@@ -184,7 +185,7 @@ export function StudioReviewPanel({
         base_revision: savedRevision,
         operation_id: makeOperationId(),
         decision,
-        reason: state.reason.trim() ? state.reason : null,
+        reason: reasonPayload(state.reason),
       },
     });
   };
