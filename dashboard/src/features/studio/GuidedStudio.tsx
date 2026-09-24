@@ -3,6 +3,7 @@ import { useEffect, useId, useMemo, useReducer, useRef, useState, type CSSProper
 import type { ControlPlaneClient, EditDocument, EditorAsset } from "@/api/control-plane";
 import type { PreviewSources } from "./AdvancedTimelineComposition";
 import { AssetLibrary } from "./AssetLibrary";
+import { CompactStudioNav } from "./CompactStudioNav";
 import {
   canStartUpgrade,
   createEditorState,
@@ -25,6 +26,7 @@ import {
   timelineIssues,
 } from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
+import { useStudioViewport, type StudioPane } from "./studio_viewport";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
 
 type Props = {
@@ -52,15 +54,22 @@ type Props = {
   onBack: () => void;
 };
 
-type StudioWorkspace = "scenes" | "prompts";
-
 const toolbarButton =
   "rounded-md border border-border px-3 py-1.5 text-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40";
 
 function Editor({ client, projectId, documentId, onBack, document }: Props & { document: EditDocument }) {
   const [state, dispatch] = useReducer(editorReducer, document, createEditorState);
-  const [workspace, setWorkspace] = useState<StudioWorkspace>("scenes");
+  // One pane choice serves every surface: desktop shows Prompt Lab or the
+  // workstation, compact screens show exactly the chosen pane.
+  const [pane, setPane] = useState<StudioPane>("preview");
   const [promptLabVisited, setPromptLabVisited] = useState(false);
+  const viewport = useStudioViewport();
+  const compact = viewport === "phone" || viewport === "tablet";
+  const [sceneBoardOpen, setSceneBoardOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const collapsible = viewport === "compact_desktop";
+  const sceneRegionOpen = !collapsible || sceneBoardOpen;
+  const inspectorRegionOpen = !collapsible || inspectorOpen;
   const backDescriptionId = useId();
   const sceneWidthId = useId();
   const inspectorWidthId = useId();
@@ -69,7 +78,10 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const selectedScene = state.draft.scenes.find((scene) => scene.scene_id === state.selectedSceneId);
   const timeline = isTimelineDocument(state.draft) ? state.draft : undefined;
   // Both modes project the same draft; only version 2 can show the advanced one.
-  const advanced = Boolean(timeline) && state.mode === "advanced";
+  // A compact screen presents Simple without touching the stored mode, so a
+  // wider screen brings the Advanced workspace back.
+  const effectiveMode = compact ? "simple" : state.mode;
+  const advanced = Boolean(timeline) && effectiveMode === "advanced";
   const selectedClip = findTextClip(state.draft, selectedScene?.clip_ids[0]);
   const [previewSources, setPreviewSources] = useState<PreviewSources>({});
   const upgradeReasonId = useId();
@@ -90,10 +102,32 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const backDisabled = saveStatus !== "saved";
   // An upgrade replaces the document, so nothing may edit it until it settles.
   const upgrading = state.upgradeStatus === "running";
-  const workstationStyle = {
-    "--scene-board-width": `${sceneBoardWidth}rem`,
-    "--inspector-width": `${inspectorWidth}rem`,
-  } as CSSProperties;
+  const workstationStyle = compact
+    ? undefined
+    : ({
+        "--scene-board-width": `${sceneBoardWidth}rem`,
+        "--inspector-width": `${inspectorWidth}rem`,
+        gridTemplateColumns: [
+          sceneRegionOpen && "var(--scene-board-width)",
+          "minmax(0,1fr)",
+          inspectorRegionOpen && "var(--inspector-width)",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      } as CSSProperties);
+  const reviewing = compact && pane === "review";
+  const previewVisible = compact ? pane === "preview" || pane === "review" : pane !== "prompts";
+  const { pause } = player;
+
+  // A hidden preview must not keep playing; showing it again never resumes it.
+  useEffect(() => {
+    if (!previewVisible) pause();
+  }, [pause, previewVisible]);
+
+  const selectPane = (next: StudioPane) => {
+    if (next === "prompts") setPromptLabVisited(true);
+    setPane(next);
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -260,7 +294,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         >
           Redo
         </button>
-        {!timeline && client.upgradeEditDocument ? (
+        {!compact && !timeline && client.upgradeEditDocument ? (
           <>
             <button
               type="button"
@@ -279,7 +313,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             </span>
           </>
         ) : null}
-        {timeline ? (
+        {!compact && timeline ? (
           <div role="group" aria-label="Editor mode" id={modeGroupId} className="flex gap-1">
             {(["simple", "advanced"] as const).map((mode) => (
               <button
@@ -294,30 +328,69 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             ))}
           </div>
         ) : null}
-        <div className="flex flex-wrap items-center gap-3 px-2 text-xs text-muted-foreground" aria-label="Workspace layout">
-          <label htmlFor={sceneWidthId}>Scene board width</label>
-          <input
-            id={sceneWidthId}
-            type="range"
-            min={12}
-            max={22}
-            step={1}
-            value={sceneBoardWidth}
-            onChange={(event) => setSceneBoardWidth(event.target.valueAsNumber)}
-            className="h-2 w-24 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-          <label htmlFor={inspectorWidthId}>Inspector width</label>
-          <input
-            id={inspectorWidthId}
-            type="range"
-            min={16}
-            max={28}
-            step={1}
-            value={inspectorWidth}
-            onChange={(event) => setInspectorWidth(event.target.valueAsNumber)}
-            className="h-2 w-24 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-        </div>
+        {compact && ((timeline && state.mode === "advanced") || (!timeline && client.upgradeEditDocument)) ? (
+          <p className="text-xs text-muted-foreground">
+            {timeline
+              ? "Advanced timeline editing needs a desktop-width screen. Your Advanced workspace returns on a wider screen."
+              : "Enabling the advanced timeline needs a desktop-width screen."}
+          </p>
+        ) : null}
+        {compact ? null : (
+          <div className="flex flex-wrap items-center gap-3 px-2 text-xs text-muted-foreground" aria-label="Workspace layout">
+            {collapsible ? (
+              <button
+                type="button"
+                className={toolbarButton}
+                aria-expanded={sceneBoardOpen}
+                aria-controls="studio-region-scenes"
+                onClick={() => setSceneBoardOpen((open) => !open)}
+              >
+                Scene board panel
+              </button>
+            ) : null}
+            {sceneRegionOpen ? (
+              <>
+                <label htmlFor={sceneWidthId}>Scene board width</label>
+                <input
+                  id={sceneWidthId}
+                  type="range"
+                  min={12}
+                  max={22}
+                  step={1}
+                  value={sceneBoardWidth}
+                  onChange={(event) => setSceneBoardWidth(event.target.valueAsNumber)}
+                  className="h-2 w-24 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </>
+            ) : null}
+            {collapsible ? (
+              <button
+                type="button"
+                className={toolbarButton}
+                aria-expanded={inspectorOpen}
+                aria-controls="studio-region-inspector"
+                onClick={() => setInspectorOpen((open) => !open)}
+              >
+                Inspector panel
+              </button>
+            ) : null}
+            {inspectorRegionOpen ? (
+              <>
+                <label htmlFor={inspectorWidthId}>Inspector width</label>
+                <input
+                  id={inspectorWidthId}
+                  type="range"
+                  min={16}
+                  max={28}
+                  step={1}
+                  value={inspectorWidth}
+                  onChange={(event) => setInspectorWidth(event.target.valueAsNumber)}
+                  className="h-2 w-24 accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </>
+            ) : null}
+          </div>
+        )}
         <div className="ml-auto font-mono text-xs text-muted-foreground" aria-live="polite">
           {statusLabel[state.saveStatus]}
         </div>
@@ -360,73 +433,100 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         </div>
       )}
 
-      <div
-        role="tablist"
-        aria-label="Studio workspace"
-        className="flex gap-2 border-b border-border bg-card px-4 py-1"
-      >
-        <button
-          type="button"
-          role="tab"
-          id="studio-tab-scenes"
-          aria-selected={workspace === "scenes"}
-          aria-controls="studio-panel-scenes"
-          className={`${toolbarButton} ${workspace === "scenes" ? "bg-accent" : ""}`}
-          onClick={() => setWorkspace("scenes")}
+      {compact ? (
+        <CompactStudioNav
+          panes={[
+            { id: "scenes", label: "Scenes" },
+            { id: "preview", label: "Preview" },
+            { id: "edit", label: "Edit" },
+            { id: "prompts", label: "Prompt Lab" },
+            { id: "review", label: "Review" },
+            ...(renderClient ? [{ id: "renders" as const, label: "Renders" }] : []),
+          ]}
+          selected={pane}
+          onSelect={selectPane}
+        />
+      ) : (
+        <div
+          role="tablist"
+          aria-label="Studio workspace"
+          className="flex gap-2 border-b border-border bg-card px-4 py-1"
         >
-          Scenes
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="studio-tab-prompts"
-          aria-selected={workspace === "prompts"}
-          aria-controls="studio-panel-prompts"
-          className={`${toolbarButton} ${workspace === "prompts" ? "bg-accent" : ""}`}
-          onClick={() => {
-            setPromptLabVisited(true);
-            setWorkspace("prompts");
-          }}
-        >
-          Prompt Lab
-        </button>
-      </div>
+          <button
+            type="button"
+            role="tab"
+            id="studio-tab-scenes"
+            aria-selected={pane !== "prompts"}
+            aria-controls="studio-panel-scenes"
+            className={`${toolbarButton} ${pane !== "prompts" ? "bg-accent" : ""}`}
+            onClick={() => {
+              if (pane === "prompts") setPane("preview");
+            }}
+          >
+            Scenes
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="studio-tab-prompts"
+            aria-selected={pane === "prompts"}
+            aria-controls="studio-panel-prompts"
+            className={`${toolbarButton} ${pane === "prompts" ? "bg-accent" : ""}`}
+            onClick={() => selectPane("prompts")}
+          >
+            Prompt Lab
+          </button>
+        </div>
+      )}
 
       <div
-        role="tabpanel"
+        role={compact ? undefined : "tabpanel"}
         id="studio-panel-scenes"
         aria-label="Scenes"
-        hidden={workspace !== "scenes"}
+        hidden={pane === "prompts"}
         className="flex min-h-0 flex-1 flex-col"
       >
         <div
           aria-label="Guided editing workstation"
           style={workstationStyle}
-          className="grid min-h-0 flex-1 grid-cols-1 overflow-auto lg:grid-cols-[var(--scene-board-width)_minmax(0,1fr)_var(--inspector-width)] lg:overflow-hidden"
+          className={`grid min-h-0 flex-1 ${compact ? "grid-cols-1 overflow-auto" : "overflow-hidden"}`}
         >
-          {advanced ? (
-            assetClient ? (
-              <AssetLibrary
-                client={assetClient}
-                projectId={projectId}
-                generationRef={generation}
-                onAssets={(assets, replace) => dispatch({ type: "assets_loaded", assets, replace })}
-                onAdd={addAsset}
-                onPreviewSource={(assetId, previewUrl) =>
-                  setPreviewSources((current) => ({ ...current, [assetId]: previewUrl }))
-                }
+          <div
+            id="studio-region-scenes"
+            className="contents"
+            hidden={compact ? pane !== "scenes" : !sceneRegionOpen}
+          >
+            {advanced ? (
+              assetClient ? (
+                <AssetLibrary
+                  client={assetClient}
+                  projectId={projectId}
+                  generationRef={generation}
+                  onAssets={(assets, replace) => dispatch({ type: "assets_loaded", assets, replace })}
+                  onAdd={addAsset}
+                  onPreviewSource={(assetId, previewUrl) =>
+                    setPreviewSources((current) => ({ ...current, [assetId]: previewUrl }))
+                  }
+                />
+              ) : null
+            ) : (
+              <SceneBoard
+                document={state.draft}
+                selectedSceneId={state.selectedSceneId}
+                onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
               />
-            ) : null
-          ) : (
-            <SceneBoard
-              document={state.draft}
-              selectedSceneId={state.selectedSceneId}
-              onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
-            />
-          )}
-          <main className="flex min-h-[28rem] min-w-0 flex-col gap-3 bg-black/40 p-4 lg:min-h-0">
+            )}
+          </div>
+          <main
+            hidden={compact && !previewVisible}
+            className={`flex min-w-0 flex-col gap-3 bg-black/40 p-4 ${compact ? "min-h-[28rem]" : "min-h-0"}`}
+          >
+            {reviewing ? (
+              <p className="text-sm text-muted-foreground">Reviewing saved revision {base.revision}</p>
+            ) : null}
             <StudioPreview
-              document={state.draft}
+              // Review shows what was saved; every other pane shows the draft.
+              document={reviewing ? base : state.draft}
               onPlayer={setAttachedPlayer}
               embedded
               previewSources={previewSources}
@@ -458,57 +558,65 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               </>
             ) : null}
           </main>
-          {advanced && timeline ? (
-            <TimelineInspector
-              document={timeline}
-              selectedClipId={state.selectedClipId}
-              selectedTrackId={state.selectedTrackId}
-              onOperation={(operation) => dispatch({ type: "commit_timeline_operation", operation })}
-            />
-          ) : (
-            <Inspector
-              scene={selectedScene}
-              clip={selectedClip}
-              disabled={upgrading}
-              onTextChange={(clipId, field, value) =>
-                dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
-              }
-              onOwnershipChange={(clipId, ownership) =>
-                dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
-              }
-              onDurationChange={(sceneId, durationInFrames) =>
-                dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
-              }
-            />
-          )}
+          <div
+            id="studio-region-inspector"
+            className="contents"
+            hidden={compact ? pane !== "edit" : !inspectorRegionOpen}
+          >
+            {advanced && timeline ? (
+              <TimelineInspector
+                document={timeline}
+                selectedClipId={state.selectedClipId}
+                selectedTrackId={state.selectedTrackId}
+                onOperation={(operation) => dispatch({ type: "commit_timeline_operation", operation })}
+              />
+            ) : (
+              <Inspector
+                scene={selectedScene}
+                clip={selectedClip}
+                disabled={upgrading}
+                onTextChange={(clipId, field, value) =>
+                  dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
+                }
+                onOwnershipChange={(clipId, ownership) =>
+                  dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
+                }
+                onDurationChange={(sceneId, durationInFrames) =>
+                  dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
+                }
+              />
+            )}
+          </div>
         </div>
         {renderClient ? (
-          <RenderPanel
-            client={renderClient}
-            projectId={projectId}
-            documentId={documentId}
-            // The saved revision, never the draft: an unsaved or conflicted
-            // document cannot be rendered, and the panel's gate explains why.
-            documentRevision={base.revision}
-            // The template the saved document carries, not one the UI assumes.
-            templateId={base.template.template_id}
-            templateVersion={base.template.version}
-            facts={{ saveStatus, online: !state.isOffline }}
-            // The saved revision is what a render reads, so its text and its
-            // structure are what decide whether it can be rendered at all.
-            validation={{
-              textValid: hasValidText(base),
-              blockingIssues: isTimelineDocument(base) ? timelineIssues(base).length : 0,
-            }}
-          />
+          <div className="contents" hidden={compact && pane !== "renders"}>
+            <RenderPanel
+              client={renderClient}
+              projectId={projectId}
+              documentId={documentId}
+              // The saved revision, never the draft: an unsaved or conflicted
+              // document cannot be rendered, and the panel's gate explains why.
+              documentRevision={base.revision}
+              // The template the saved document carries, not one the UI assumes.
+              templateId={base.template.template_id}
+              templateVersion={base.template.version}
+              facts={{ saveStatus, online: !state.isOffline }}
+              // The saved revision is what a render reads, so its text and its
+              // structure are what decide whether it can be rendered at all.
+              validation={{
+                textValid: hasValidText(base),
+                blockingIssues: isTimelineDocument(base) ? timelineIssues(base).length : 0,
+              }}
+            />
+          </div>
         ) : null}
       </div>
 
       <div
-        role="tabpanel"
+        role={compact ? undefined : "tabpanel"}
         id="studio-panel-prompts"
         aria-label="Prompt Lab"
-        hidden={workspace !== "prompts"}
+        hidden={pane !== "prompts"}
         className="flex min-h-0 flex-1 flex-col"
       >
         {promptLabVisited ? <PromptLab client={client} projectId={projectId} /> : null}
