@@ -512,6 +512,72 @@ test("a capture that outlasts its deadline is a capture failure", async () => {
   expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
 });
 
+/** An FFmpeg that never exits, leaving its process id where a test can check it. */
+function wedgedFfmpeg(pidFile: string): RunFfmpeg {
+  const hang = ffmpegRunner(process.execPath);
+  const body = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`;
+  return (_args, _stdin, signal) => hang(["-e", body], undefined, signal);
+}
+
+function stillRunning(pidFile: string): boolean {
+  try {
+    process.kill(Number(readFileSync(pidFile, "utf8")), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function endWedged(pidFile: string): void {
+  if (existsSync(pidFile) && stillRunning(pidFile)) {
+    process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+  }
+}
+
+test("an FFmpeg that never exits while decoding is ended by the deadline", async () => {
+  const pidFile = join(workspace, "decode.pid");
+  try {
+    const report = await verifyRelease(IDENTITY, artifacts, {
+      releaseRoot,
+      environment: REFERENCE,
+      deadlineMs: 2000,
+      ffmpeg: wedgedFfmpeg(pidFile),
+      capture: captureWriting(() => canvas(30, 60, 90)),
+    });
+
+    expect(report.verdict).toBe("capture_failed");
+    expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
+    expect(existsSync(pidFile)).toBe(true);
+    expect(stillRunning(pidFile)).toBe(false);
+  } finally {
+    endWedged(pidFile);
+  }
+}, 15_000);
+
+test("an FFmpeg that never exits while drawing the contact sheet is ended by the deadline", async () => {
+  const pidFile = join(workspace, "sheet.pid");
+  const wedged = wedgedFfmpeg(pidFile);
+  try {
+    const report = await verifyRelease(IDENTITY, artifacts, {
+      releaseRoot,
+      environment: REFERENCE,
+      deadlineMs: 4000,
+      // Every frame decodes; only the sheet's scaled cells never come back.
+      ffmpeg: (args, stdin, signal) =>
+        args.some((arg) => arg.startsWith("scale=")) ? wedged(args, stdin, signal) : real(args, stdin, signal),
+      capture: captureWriting(() => canvas(30, 60, 90)),
+    });
+
+    expect(report.verdict).toBe("capture_failed");
+    expect(report.frames).toHaveLength(1);
+    expect(existsSync(join(runDirectory(report), "report.json"))).toBe(true);
+    expect(existsSync(pidFile)).toBe(true);
+    expect(stillRunning(pidFile)).toBe(false);
+  } finally {
+    endWedged(pidFile);
+  }
+}, 15_000);
+
 /** Wait for something a capture does on its own clock, without a fixed sleep. */
 async function until(ready: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 400 && !ready(); attempt += 1) {

@@ -2,7 +2,7 @@
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -238,3 +238,37 @@ test("the contact sheet lays every frame out as preview, render, and diff", asyn
   expect(laid.width).toBe(laid.cell.width * 3);
   expect(laid.height).toBe(laid.cell.height * 2);
 });
+
+test("an FFmpeg that never exits is ended when its caller stops waiting", async () => {
+  const pidFile = join(workspace, "wedged.pid");
+  const stop = new AbortController();
+  const outcome = ffmpegRunner(process.execPath)(
+    ["-e", `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`],
+    undefined,
+    stop.signal,
+  ).then(
+    () => "answered",
+    (error: Error) => error.constructor.name,
+  );
+  for (let attempt = 0; attempt < 400 && !existsSync(pidFile); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const pid = Number(readFileSync(pidFile, "utf8"));
+
+  try {
+    stop.abort();
+    expect(await outcome).toBe("ImageUnreadable");
+    expect(alive(pid)).toBe(false);
+  } finally {
+    if (alive(pid)) process.kill(pid, "SIGKILL");
+  }
+});
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

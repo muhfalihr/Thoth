@@ -70,8 +70,17 @@ export type ContactSheet = {
   readonly cell: Geometry;
 };
 
-/** One FFmpeg run: an argument array in, its standard output back. */
-export type RunFfmpeg = (args: readonly string[], stdin?: Uint8Array) => Promise<Uint8Array>;
+/**
+ * One FFmpeg run: an argument array in, its standard output back.
+ *
+ * A caller that stops waiting aborts `signal`, and the run is killed rather than
+ * left decoding for nobody.
+ */
+export type RunFfmpeg = (
+  args: readonly string[],
+  stdin?: Uint8Array,
+  signal?: AbortSignal,
+) => Promise<Uint8Array>;
 
 /**
  * The container's FFmpeg, reached the way this service already reaches ffprobe.
@@ -80,11 +89,13 @@ export type RunFfmpeg = (args: readonly string[], stdin?: Uint8Array) => Promise
  * not a setting, and no caller supplies one at runtime.
  */
 export function ffmpegRunner(binary = "ffmpeg"): RunFfmpeg {
-  return async (args: readonly string[], stdin?: Uint8Array) => {
+  return async (args: readonly string[], stdin?: Uint8Array, signal?: AbortSignal) => {
     const child = Bun.spawn([binary, ...args], {
       stdin: stdin ?? "ignore",
       stdout: "pipe",
       stderr: "ignore",
+      signal,
+      killSignal: "SIGKILL",
     });
     const [output, code] = await Promise.all([
       new Response(child.stdout).arrayBuffer(),

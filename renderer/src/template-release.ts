@@ -251,8 +251,9 @@ export async function verifyRelease(
   }
   const canvas = canvasOf(capsule);
 
-  // Neither a wedged browser nor an operator's stop leaves the run open: both
-  // are the one abort the capture is handed and this phase races against.
+  // Neither a wedged browser, a wedged FFmpeg, nor an operator's stop leaves the
+  // run open: all are the one abort the capture races against and every FFmpeg
+  // run after it is killed by.
   // Its own controller rather than AbortSignal.timeout: that timer is unref'd,
   // so a capture that answers nothing at all is exactly the case it sleeps through.
   const deadline = new AbortController();
@@ -266,6 +267,8 @@ export async function verifyRelease(
   const rows: ContactRow[] = [];
   let verdict: ReleaseVerdict = capsule.goldens === null ? "golden_missing" : "pass";
 
+  const bounded: RunFfmpeg = (args, stdin) => ffmpeg(args, stdin, signal);
+
   let session: CaptureSession | undefined;
   try {
     session = capture({ capsule, run });
@@ -276,19 +279,19 @@ export async function verifyRelease(
       const preview = await facts(entry.preview, canvas);
       const render = await facts(entry.render, canvas);
       const drawn = {
-        preview: await decodeCanonicalRgba(entry.preview, canvas, ffmpeg),
-        render: await decodeCanonicalRgba(entry.render, canvas, ffmpeg),
+        preview: await decodeCanonicalRgba(entry.preview, canvas, bounded),
+        render: await decodeCanonicalRgba(entry.render, canvas, bounded),
       };
 
       const pair = comparePixels(drawn.preview, drawn.render);
       let diff: string | null = null;
       if (pair.verdict !== "pass") {
         diff = run.diffFrame(entry.frame);
-        await writeDiffImage(drawn.preview, drawn.render, canvas, diff, ffmpeg);
+        await writeDiffImage(drawn.preview, drawn.render, canvas, diff, bounded);
       }
       verdict = worse(verdict, pair.verdict);
 
-      const golden = await compareGoldens(capsule, entry.frame, drawn, canvas, ffmpeg);
+      const golden = await compareGoldens(capsule, entry.frame, drawn, canvas, bounded);
       if (golden !== null) {
         verdict = worse(verdict, worse(golden.preview.verdict, golden.render.verdict));
       }
@@ -298,7 +301,7 @@ export async function verifyRelease(
     }
 
     // Phase six: one sheet for the operator who has to look at all of it.
-    await writeContactSheet(rows, canvas, run.contactSheet, ffmpeg);
+    await writeContactSheet(rows, canvas, run.contactSheet, bounded);
   } catch (error) {
     verdict = worse(verdict, failureOf(error));
   } finally {
