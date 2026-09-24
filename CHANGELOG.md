@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Studio header names the document's project; scene labels find the text heading (F3 Plan A review correction)
+
+Offline correction on `codex/stage1-container-ci` after `a74fc12`, dashboard only.
+
+- The Studio header shows the open document's own `project_id` and saved revision in every job, even after the global project switcher selects another project. EditDocument carries no project name, so none is shown.
+- A scene is labelled by the first non-blank text heading in its clip order, so a leading media clip no longer hides it; without one the label stays "Scene N".
+
+Verification: the three new tests failed first and now pass; dashboard `bun test` 573 pass / 0 fail; `tsc --noEmit` 0 errors; lint 0 errors (pre-existing warnings only); `vite build` succeeded; `build_cuda.bat` exit 0 with a fresh log; `git diff --check` clean. The earlier one-off offline-recovery failure in `GuidedStudio.final-fix.test.tsx` did not reproduce in 12 focused and 10 full runs; its root cause is not established and it remains open.
+
 ## 2026-09-24 - Creator Studio workspace is organized around four creator jobs (F3 Plan A)
 
 Offline Plan A slice on `codex/stage1-container-ci` after `7c46843`, dashboard only; no API, schema, renderer, EditDocument operation, or Rust change. The F3 first-mode migration (Content Set import, scene reordering) is not part of this slice.
