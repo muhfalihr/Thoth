@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import functools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -36,6 +37,7 @@ from thoth_control_plane.application import (
 )
 from thoth_control_plane.application.edit_documents import EditDocumentService
 from thoth_control_plane.application.editor_asset_ports import EditorAssetRepository
+from thoth_control_plane.application.editor_asset_uploads import EditorAssetUploadService
 from thoth_control_plane.application.editor_assets import EditorAssetService
 from thoth_control_plane.application.ports import (
     EditDocumentRepository,
@@ -63,6 +65,7 @@ from thoth_control_plane.infrastructure.editor_asset_repository import (
 )
 from thoth_control_plane.infrastructure.editor_preview import EditorPreviewSigner
 from thoth_control_plane.infrastructure.editor_repository import PostgresEditDocumentRepository
+from thoth_control_plane.infrastructure.media_probe import probe_media
 from thoth_control_plane.infrastructure.prompt_proposal_gateway import (
     TemporalPromptProposalGateway,
 )
@@ -256,6 +259,11 @@ def create_app(
     app.state.workflow_service = WorkflowService(gateway or UnavailableWorkflowGateway())
     app.state.edit_document_service = EditDocumentService(editor_repository)
     app.state.editor_asset_service = EditorAssetService(editor_asset_repository)
+    app.state.editor_asset_upload_service = EditorAssetUploadService(
+        editor_asset_repository,
+        LocalArtifactRoot(settings.THOTH_CONTROL_PLANE_ARTIFACT_ROOT),
+        functools.partial(probe_media, settings.THOTH_FFPROBE),
+    )
     app.state.editor_preview_signer = _preview_signer(settings)
     app.state.prompt_lab_service = PromptLabService(prompt_repository)
     app.state.prompt_proposal_service = prompt_proposal_service

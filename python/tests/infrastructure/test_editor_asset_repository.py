@@ -8,7 +8,11 @@ from typing import Any
 import pytest
 
 from thoth_control_plane.application.editor_asset_ports import EditorAssetPersistenceError
-from thoth_control_plane.domain.editor_assets import ASSET_PAGE_LIMIT_MAX
+from thoth_control_plane.domain.editor_assets import (
+    ASSET_PAGE_LIMIT_MAX,
+    EditorAsset,
+    EditorAssetRecord,
+)
 from thoth_control_plane.infrastructure.editor_asset_repository import (
     PostgresEditorAssetRepository,
 )
@@ -306,3 +310,59 @@ async def test_get_ready_records_never_leaks_the_database_url(
         await PostgresEditorAssetRepository("postgresql://redacted").get_ready_records(
             project_id="project_001", asset_ids=("asset_main",)
         )
+
+
+def upload_record() -> EditorAssetRecord:
+    return EditorAssetRecord(
+        asset=EditorAsset(
+            asset_id="asset_new",
+            project_id="project_001",
+            kind="image",
+            media_type="image/png",
+            width=64,
+            height=32,
+            has_audio=False,
+            validation_state="ready",
+            checksum="sha256:" + "b" * 64,
+        ),
+        artifact_location="uploads/project_001/asset_new.png",
+        provenance="studio_upload",
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_ready_inserts_one_project_scoped_parameterized_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = Cursor()
+
+    await patched(monkeypatch, cursor).register_ready(upload_record())
+
+    [(query, params)] = cursor.calls
+    assert "INSERT INTO editor_assets" in query
+    assert "%s" in query and "asset_new" not in query
+    assert params == (
+        "project_001",
+        "asset_new",
+        "image",
+        "image/png",
+        "uploads/project_001/asset_new.png",
+        None,
+        64,
+        32,
+        None,
+        False,
+        "ready",
+        "sha256:" + "b" * 64,
+        "studio_upload",
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_ready_hides_a_database_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingCursor(Cursor):
+        async def execute(self, query: str, params: tuple[object, ...]) -> None:
+            raise RuntimeError("postgresql://secret@db/violates constraint")
+
+    with pytest.raises(EditorAssetPersistenceError, match=r"^editor asset unavailable$"):
+        await patched(monkeypatch, FailingCursor()).register_ready(upload_record())

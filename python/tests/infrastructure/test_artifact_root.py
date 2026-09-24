@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from thoth_control_plane.application.editor_asset_ports import EditorAssetUploadTooLarge
 from thoth_control_plane.application.render_job_ports import (
     ArtifactPathInvalid,
     ArtifactUnavailable,
@@ -470,3 +471,104 @@ def test_resolve_source_refuses_a_directory(tmp_path: Path) -> None:
 
     with pytest.raises(ArtifactUnavailable):
         LocalArtifactRoot(tmp_path).resolve_source("project_001")
+
+
+async def chunks_of(*parts: bytes):
+    for part in parts:
+        yield part
+
+
+async def disconnecting():
+    yield b"\x89PNG\r\n\x1a\n"
+    raise ConnectionResetError("client went away")
+
+
+def leftovers(root: Path) -> list[str]:
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
+
+
+async def test_receive_upload_streams_hashes_and_keeps_the_head(tmp_path: Path) -> None:
+    received = await LocalArtifactRoot(tmp_path).receive_upload(
+        asset_id="asset_1", chunks=chunks_of(b"\x89PNG", b"\r\n\x1a\n", b"rest"), max_bytes=64
+    )
+
+    assert received.size_bytes == 12
+    assert received.checksum == checksum_of(b"\x89PNG\r\n\x1a\nrest")
+    assert received.head.startswith(b"\x89PNG\r\n\x1a\n")
+    assert received.location == "temp/uploads/asset_1.part"
+    assert received.path.read_bytes() == b"\x89PNG\r\n\x1a\nrest"
+
+
+async def test_receive_upload_over_the_ceiling_leaves_nothing(tmp_path: Path) -> None:
+    with pytest.raises(EditorAssetUploadTooLarge):
+        await LocalArtifactRoot(tmp_path).receive_upload(
+            asset_id="asset_1", chunks=chunks_of(b"a" * 40, b"b" * 40), max_bytes=64
+        )
+
+    assert leftovers(tmp_path) == []
+
+
+async def test_an_interrupted_upload_leaves_no_temporary_file(tmp_path: Path) -> None:
+    with pytest.raises(ConnectionResetError):
+        await LocalArtifactRoot(tmp_path).receive_upload(
+            asset_id="asset_1", chunks=disconnecting(), max_bytes=64
+        )
+
+    assert leftovers(tmp_path) == []
+
+
+@pytest.mark.parametrize("make_root", ["missing", "file"])
+async def test_receive_upload_refuses_a_missing_or_unusable_root(
+    tmp_path: Path, make_root: str
+) -> None:
+    root = tmp_path / "artifacts"
+    if make_root == "file":
+        root.write_bytes(b"not a directory")
+
+    with pytest.raises(ArtifactUnavailable):
+        await LocalArtifactRoot(root).receive_upload(
+            asset_id="asset_1", chunks=chunks_of(b"x"), max_bytes=64
+        )
+
+    assert not (tmp_path / "artifacts").is_dir()
+
+
+async def test_publish_upload_moves_atomically_to_a_project_scoped_locator(
+    tmp_path: Path,
+) -> None:
+    root = LocalArtifactRoot(tmp_path)
+    received = await root.receive_upload(
+        asset_id="asset_1", chunks=chunks_of(b"media"), max_bytes=64
+    )
+
+    location = root.publish_upload(received, project_id="project_001", suffix=".png")
+
+    assert location == "uploads/project_001/asset_1.png"
+    assert root.resolve_source(location).read_bytes() == b"media"
+    assert leftovers(tmp_path) == [str(Path("uploads/project_001/asset_1.png"))]
+
+
+@pytest.mark.parametrize("project_id", ["../escape", "a/b", "C:\\x", ".hidden", ""])
+async def test_publish_upload_refuses_an_unsafe_project_segment(
+    tmp_path: Path, project_id: str
+) -> None:
+    root = LocalArtifactRoot(tmp_path)
+    received = await root.receive_upload(
+        asset_id="asset_1", chunks=chunks_of(b"media"), max_bytes=64
+    )
+
+    with pytest.raises(ArtifactPathInvalid):
+        root.publish_upload(received, project_id=project_id, suffix=".png")
+
+
+async def test_discard_removes_a_temporary_or_published_upload(tmp_path: Path) -> None:
+    root = LocalArtifactRoot(tmp_path)
+    first = await root.receive_upload(asset_id="asset_1", chunks=chunks_of(b"a"), max_bytes=64)
+    second = await root.receive_upload(asset_id="asset_2", chunks=chunks_of(b"b"), max_bytes=64)
+    published = root.publish_upload(second, project_id="project_001", suffix=".png")
+
+    root.discard(first.location)
+    root.discard(published)
+    root.discard(published)
+
+    assert leftovers(tmp_path) == []

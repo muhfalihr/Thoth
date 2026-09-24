@@ -1,5 +1,7 @@
 """Typed outbound port for project-scoped editor asset storage."""
 
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from thoth_control_plane.domain.editor_assets import EditorAssetPage, EditorAssetRecord
@@ -10,6 +12,29 @@ class EditorAssetPersistenceError(Exception):
 
     def __init__(self) -> None:
         super().__init__("editor asset unavailable")
+
+
+class EditorAssetUploadTooLarge(Exception):
+    """An upload crossed the fixed byte ceiling; nothing of it was kept."""
+
+
+class EditorAssetMediaInvalid(Exception):
+    """The upload is not media this project can use; ``code`` says which rule refused it."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class ReceivedUpload:
+    """One fully received upload, still in temporary storage below the artifact root."""
+
+    location: str
+    path: Path
+    size_bytes: int
+    checksum: str
+    head: bytes
 
 
 class EditorAssetRepository(Protocol):
@@ -27,4 +52,8 @@ class EditorAssetRepository(Protocol):
         self, *, project_id: str, asset_ids: tuple[str, ...]
     ) -> tuple[EditorAssetRecord, ...]:
         """Read one bounded batch of ready records, in the requested order."""
+        ...
+
+    async def register_ready(self, record: EditorAssetRecord) -> None:
+        """Insert one validated record; a failure must leave no row behind."""
         ...

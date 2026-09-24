@@ -134,3 +134,36 @@ class PostgresEditorAssetRepository:
         # Answer in the caller's order and stay silent about anything missing:
         # the caller decides what an absent asset means.
         return tuple(records[asset_id] for asset_id in wanted if asset_id in records)
+
+    async def register_ready(self, record: EditorAssetRecord) -> None:
+        """Insert one validated upload in a single statement: all of it, or no row."""
+        asset = record.asset
+        try:
+            connection = await AsyncConnection.connect(self._database_url)
+            async with connection:
+                await connection.cursor().execute(
+                    """
+                    INSERT INTO editor_assets
+                        (project_id, asset_id, kind, media_type, artifact_location,
+                         duration_in_frames, width, height, fps, has_audio,
+                         validation_state, checksum, provenance)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        asset.project_id,
+                        asset.asset_id,
+                        asset.kind,
+                        asset.media_type,
+                        record.artifact_location,
+                        asset.duration_in_frames,
+                        asset.width,
+                        asset.height,
+                        asset.fps,
+                        asset.has_audio,
+                        asset.validation_state,
+                        asset.checksum,
+                        record.provenance,
+                    ),
+                )
+        except Exception as error:
+            raise EditorAssetPersistenceError() from error

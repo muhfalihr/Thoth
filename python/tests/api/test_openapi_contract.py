@@ -22,7 +22,14 @@ def schema(gateway) -> dict[str, object]:
 
 def test_schema_publishes_the_upgrade_and_asset_catalog_operations(schema) -> None:
     assert list(schema["paths"][UPGRADE_PATH]) == ["post"]
-    assert list(schema["paths"][ASSETS_PATH]) == ["get"]
+    assert sorted(schema["paths"][ASSETS_PATH]) == ["get", "post"]
+
+
+def test_asset_upload_accepts_only_a_raw_media_body(schema) -> None:
+    content = schema["paths"][ASSETS_PATH]["post"]["requestBody"]["content"]
+
+    assert all(media_type.split("/")[0] in {"image", "video", "audio"} for media_type in content)
+    assert {entry["schema"]["format"] for entry in content.values()} == {"binary"}
 
 
 def test_upgrade_operation_declares_a_required_idempotency_key_header(schema) -> None:

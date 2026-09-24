@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     THOTH_CONTROL_PLANE_API_KEY: SecretStr
     THOTH_CONTROL_PLANE_CORS_ORIGINS: list[str] = Field(default_factory=list)
     THOTH_CONTROL_PLANE_ARTIFACT_ROOT: Path = Path(".thoth-artifacts")
+    THOTH_FFPROBE: str = "ffprobe"
     THOTH_TEMPORAL_TARGET: str = "localhost:7233"
     THOTH_TEMPORAL_NAMESPACE: str = "default"
     THOTH_LEGACY_API_BASE_URL: str | None = None

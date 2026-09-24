@@ -5,6 +5,8 @@ Layout below the configured artifact root::
     renders/<render_job_id>/{output.mp4,metadata.json,diagnostics.json}
     work/<render_job_id>/{bundle.json,assets/}
     temp/<render_job_id>/
+    temp/uploads/<asset_id>.part
+    uploads/<project_id>/<asset_id>.<ext>
 
 Identifiers are validated before they become path segments, and every resolved
 target is re-checked for canonical ancestry with no symlink, junction, or other
@@ -20,8 +22,13 @@ import os
 import re
 import shutil
 import stat
+from collections.abc import AsyncIterator
 from pathlib import Path
 
+from thoth_control_plane.application.editor_asset_ports import (
+    EditorAssetUploadTooLarge,
+    ReceivedUpload,
+)
 from thoth_control_plane.application.render_job_ports import (
     ArtifactPathInvalid,
     ArtifactUnavailable,
@@ -39,6 +46,8 @@ _SUFFIX = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
 _LOCATOR_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _CHUNK_BYTES = 1024 * 1024
+#: Enough leading bytes to recognize every accepted media signature.
+_HEAD_BYTES = 16
 _OUTPUT_NAME = "output.mp4"
 #: A bundle is one document revision and its staged names; far below this.
 _MAX_BUNDLE_BYTES = 8 * 1024 * 1024
@@ -214,6 +223,67 @@ class LocalArtifactRoot:
         if not target.is_file():
             raise ArtifactUnavailable()
         return target
+
+    async def receive_upload(
+        self, *, asset_id: str, chunks: AsyncIterator[bytes], max_bytes: int
+    ) -> ReceivedUpload:
+        """Stream one upload into temporary storage, hashing it as it lands.
+
+        The root must already exist: a missing mount is refused, never created.
+        Any failure, including a client that disconnects, removes the partial file.
+        """
+        asset = _valid_identifier(asset_id)
+        if _is_link(self._root) or not self._root.is_dir():
+            raise ArtifactUnavailable()
+        self._contained("temp", "uploads").mkdir(parents=True, exist_ok=True)
+        partial = self._contained("temp", "uploads", f"{asset}.part")
+        digest = hashlib.sha256()
+        head = b""
+        written = 0
+        # Opened exclusively and outside the cleanup, so a clash never deletes another file.
+        writer = partial.open("xb")
+        try:
+            with writer:
+                async for chunk in chunks:
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise EditorAssetUploadTooLarge()
+                    if len(head) < _HEAD_BYTES:
+                        head = (head + chunk)[:_HEAD_BYTES]
+                    digest.update(chunk)
+                    writer.write(chunk)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
+        return ReceivedUpload(
+            location=f"temp/uploads/{partial.name}",
+            path=partial,
+            size_bytes=written,
+            checksum=f"sha256:{digest.hexdigest()}",
+            head=head,
+        )
+
+    def publish_upload(self, received: ReceivedUpload, *, project_id: str, suffix: str) -> str:
+        """Atomically move a received upload to its project-scoped locator."""
+        if not _LOCATOR_SEGMENT.match(project_id) or not _SUFFIX.match(suffix):
+            raise ArtifactPathInvalid()
+        source = self._contained(*received.location.split("/"))
+        if _is_link(source) or not source.is_file():
+            raise ArtifactUnavailable()
+        name = f"{source.name.removesuffix('.part')}{suffix}"
+        self._contained("uploads", project_id).mkdir(parents=True, exist_ok=True)
+        os.replace(source, self._contained("uploads", project_id, name))
+        return f"uploads/{project_id}/{name}"
+
+    def discard(self, relative_location: str) -> None:
+        """Remove one contained upload file; an already absent file is fine."""
+        segments = relative_location.split("/")
+        if any(not _LOCATOR_SEGMENT.match(segment) for segment in segments):
+            raise ArtifactPathInvalid()
+        target = self._contained(*segments)
+        if _is_link(target):
+            raise ArtifactPathInvalid()
+        target.unlink(missing_ok=True)
 
     def cleanup(self, render_job_id: str) -> None:
         job = _valid_identifier(render_job_id)

@@ -145,7 +145,11 @@ export interface paths {
         /** List Editor Assets */
         get: operations["list_editor_assets_api_v1_projects__project_id__editor_assets_get"];
         put?: never;
-        post?: never;
+        /**
+         * Upload Editor Asset
+         * @description Accept one streamed media body; never a URL, a path, or a multipart form.
+         */
+        post: operations["upload_editor_asset_api_v1_projects__project_id__editor_assets_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3183,6 +3187,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EditorAssetPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_editor_asset_api_v1_projects__project_id__editor_assets_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "audio/mpeg": string;
+                "audio/wav": string;
+                "image/jpeg": string;
+                "image/png": string;
+                "image/webp": string;
+                "video/mp4": string;
+                "video/webm": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditorAsset"];
                 };
             };
             /** @description Validation Error */

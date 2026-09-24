@@ -9,10 +9,19 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from thoth_control_plane.api.dependencies import current_actor
+from thoth_control_plane.application.editor_asset_ports import (
+    EditorAssetMediaInvalid,
+    EditorAssetUploadTooLarge,
+)
+from thoth_control_plane.application.editor_asset_uploads import (
+    UPLOAD_MAX_BYTES,
+    UPLOAD_TYPES,
+    EditorAssetUploadService,
+)
 from thoth_control_plane.application.editor_assets import (
     DEFAULT_ASSET_PAGE_LIMIT,
     EditorAssetNotFound,
@@ -21,8 +30,12 @@ from thoth_control_plane.application.editor_assets import (
     ListEditorAssetsRequest,
 )
 from thoth_control_plane.domain import Actor
-from thoth_control_plane.domain.editor_assets import ASSET_PAGE_LIMIT_MAX, EditorAssetPage
-from thoth_control_plane.domain.models import StrictModel
+from thoth_control_plane.domain.editor_assets import (
+    ASSET_PAGE_LIMIT_MAX,
+    EditorAsset,
+    EditorAssetPage,
+)
+from thoth_control_plane.domain.models import PROJECT_ID_PATTERN, StrictModel
 from thoth_control_plane.infrastructure.editor_preview import (
     PREVIEW_COOKIE_NAME,
     EditorPreviewSigner,
@@ -79,6 +92,51 @@ async def list_editor_assets(
         )
     except EditorAssetsUnavailable as error:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE) from error
+
+
+def get_editor_asset_upload_service(request: Request) -> EditorAssetUploadService:
+    return request.app.state.editor_asset_upload_service
+
+
+def _refused(status_code: int, code: str) -> HTTPException:
+    return HTTPException(status_code=status_code, detail={"code": code})
+
+
+@router.post(
+    "/projects/{project_id}/editor-assets",
+    response_model=EditorAsset,
+    status_code=status.HTTP_201_CREATED,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                media_type: {"schema": {"type": "string", "format": "binary"}}
+                for media_type in UPLOAD_TYPES
+            },
+        }
+    },
+)
+async def upload_editor_asset(
+    project_id: Annotated[str, Path(pattern=PROJECT_ID_PATTERN)],
+    request: Request,
+    _: Annotated[Actor, Depends(current_actor)],
+    service: Annotated[EditorAssetUploadService, Depends(get_editor_asset_upload_service)],
+) -> EditorAsset:
+    """Accept one streamed media body; never a URL, a path, or a multipart form."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > UPLOAD_MAX_BYTES:
+        raise _refused(status.HTTP_413_CONTENT_TOO_LARGE, "upload_too_large")
+    media_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    try:
+        return await service.upload(project_id, media_type, request.stream())
+    except EditorAssetUploadTooLarge as error:
+        raise _refused(status.HTTP_413_CONTENT_TOO_LARGE, "upload_too_large") from error
+    except EditorAssetMediaInvalid as error:
+        if error.code == "unsupported_media_type":
+            raise _refused(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, error.code) from error
+        raise _refused(status.HTTP_422_UNPROCESSABLE_CONTENT, error.code) from error
+    except EditorAssetsUnavailable as error:
+        raise _refused(status.HTTP_503_SERVICE_UNAVAILABLE, "asset_storage_unavailable") from error
 
 
 def get_preview_signer(request: Request) -> EditorPreviewSigner:
