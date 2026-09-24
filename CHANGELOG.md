@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-24 - Studio review orders history exactly and shows load and Retry state (F2 review correction)
+
+Offline review correction on `codex/stage1-container-ci` after `e63cef8`,
+dashboard only; no API, schema, server ordering, or Rust change.
+
+- History merges compare `created_at` in whole microseconds, as the control
+  plane does, before the event ID, so the newer of two decisions in one
+  millisecond stays current whatever its ID.
+- Comment and decision history loads fail and recover separately. One list
+  loading can no longer hide the other's failure, the loaded list stays
+  visible, and Reload re-requests only the failed list.
+- Retry of a frame-pinned comment states the original frame it resends, even
+  after the playhead moved. Operation ID, payload, and idempotency are
+  unchanged; nothing is resent without the click.
+
+Verification: 5 of 7 new reducer and component tests failed first (the two
+success-first load orders are guards that passed first) and all 7 now pass;
+focused F2 files 56/56; dashboard `bun test` 555 pass / 0 fail;
+`tsc --noEmit` 0 errors; lint 0 errors (pre-existing warnings only);
+`vite build` succeeded; `build_cuda.bat` exit 0 with a fresh log;
+`git diff --check` clean.
+
 ## 2026-09-24 - Studio review keeps late-loaded history and newer drafts (F2 corrective)
 
 Offline corrective round on `codex/stage1-container-ci` after `1b146ce`,

@@ -82,6 +82,8 @@ export function StudioReviewPanel({
   const gate = reviewGate(state, { savedRevision, saveStatus, isOffline, blockingIssues });
   const current = currentDecision(state.decisions, savedRevision);
   const timecode = formatTimecode(currentFrame, savedDocument.canvas.fps);
+  // Retry replays the frame the comment was pinned to, never the moved playhead.
+  const retryFrame = state.retryable?.kind === "comment" ? state.retryable.request.frame : null;
   const staleActive = state.staleRevision !== null && savedRevision < state.staleRevision;
   const commentId = useId();
   const reasonId = useId();
@@ -103,7 +105,7 @@ export function StudioReviewPanel({
           dispatch({ type: "comments_loaded", comments: page.comments, nextCursor: page.next_cursor ?? null });
         })
         .catch(() => {
-          if (requestGeneration === generation.current) dispatch({ type: "load_failed" });
+          if (requestGeneration === generation.current) dispatch({ type: "load_failed", list: "comments" });
         });
     },
     [client, documentId, projectId],
@@ -119,7 +121,7 @@ export function StudioReviewPanel({
           dispatch({ type: "decisions_loaded", decisions: page.decisions, nextCursor: page.next_cursor ?? null });
         })
         .catch(() => {
-          if (requestGeneration === generation.current) dispatch({ type: "load_failed" });
+          if (requestGeneration === generation.current) dispatch({ type: "load_failed", list: "decisions" });
         });
     },
     [client, documentId, projectId],
@@ -237,6 +239,9 @@ export function StudioReviewPanel({
       {state.error ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-2 text-sm">
           <p>{ERROR_TEXT[state.error]}</p>
+          {retryFrame !== null && retryFrame !== undefined ? (
+            <p>{`Retry resends this comment pinned at ${formatTimecode(retryFrame, savedDocument.canvas.fps)}, not the current frame.`}</p>
+          ) : null}
           {state.retryable ? (
             <button
               type="button"
@@ -344,15 +349,15 @@ export function StudioReviewPanel({
         ) : null}
       </div>
 
-      {state.loadStatus === "failed" ? (
+      {state.historyFailed.comments || state.historyFailed.decisions ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 text-sm">
           <p>Could not load review history.</p>
           <button
             type="button"
             className={actionButton}
             onClick={() => {
-              loadComments();
-              loadDecisions();
+              if (state.historyFailed.comments) loadComments();
+              if (state.historyFailed.decisions) loadDecisions();
             }}
           >
             Reload review

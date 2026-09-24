@@ -383,3 +383,66 @@ test("a draft edited while its request is pending survives success and is never 
   expect(screen.queryByRole("button", { name: "Retry" }) === null).toBe(true);
   expect(client.createStudioReviewDecision).toHaveBeenCalledTimes(1);
 });
+
+test.each([
+  ["comments fail before decisions load", "comments", true],
+  ["comments fail after decisions load", "comments", false],
+  ["decisions fail before comments load", "decisions", true],
+  ["decisions fail after comments load", "decisions", false],
+] as const)("keeps the history failure visible when %s", async (_name, failing, failFirst) => {
+  const { client, comments, decisions } = withLateHistory();
+  render(<StudioReviewPanel {...props(client)} />);
+  const fail = () =>
+    failing === "comments"
+      ? comments.reject(new StudioReviewRequestError("review_request_failed"))
+      : decisions.reject(new StudioReviewRequestError("review_request_failed"));
+  const succeed = () =>
+    failing === "comments"
+      ? decisions.resolve({ decisions: [decision("d1", 3)], next_cursor: null })
+      : comments.resolve({ comments: [comment("c1", 3)], next_cursor: null });
+
+  await act(async () => (failFirst ? fail() : succeed()));
+  await act(async () => (failFirst ? succeed() : fail()));
+  expect(screen.getByText("Could not load review history.")).toBeDefined();
+  expect(
+    failing === "comments"
+      ? screen.getByText("Current decision: Approved on revision 3")
+      : screen.getByText("Comment c1"),
+  ).toBeDefined();
+});
+
+test("Reload recovers the failed history list and keeps the loaded one", async () => {
+  const { client, comments, decisions } = withLateHistory();
+  render(<StudioReviewPanel {...props(client)} />);
+  await act(async () => comments.reject(new StudioReviewRequestError("review_request_failed")));
+  await act(async () => decisions.resolve({ decisions: [decision("d1", 3)], next_cursor: null }));
+
+  client.listStudioReviewComments.mockImplementationOnce(async () => ({ comments: [comment("c1", 3)], next_cursor: null }));
+  fireEvent.click(button("Reload review"));
+  await screen.findByText("Comment c1");
+  expect(screen.queryByText("Could not load review history.") === null).toBe(true);
+  expect(screen.getByText("Current decision: Approved on revision 3")).toBeDefined();
+  expect(client.listStudioReviewDecisions).toHaveBeenCalledTimes(1);
+});
+
+test("Retry of a pinned comment names the original frame after the playhead moves", async () => {
+  const client = makeClient();
+  client.createStudioReviewComment.mockImplementationOnce(async () => {
+    throw new StudioReviewRequestError("review_request_failed");
+  });
+  const view = await renderPanel(client);
+  typeComment("Adjust opening");
+  fireEvent.click(button("Post comment"));
+  await screen.findByText(/Could not reach Studio/);
+
+  view.rerender(<StudioReviewPanel {...props(client, { currentFrame: 60 })} />);
+  await act(async () => {});
+  expect(screen.getByText("Retry resends this comment pinned at 0:00:29, not the current frame.")).toBeDefined();
+  expect(client.createStudioReviewComment).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(button("Retry"));
+  await screen.findByText("Comment posted.");
+  const [first, second] = client.createStudioReviewComment.mock.calls.map((call) => call[2]);
+  expect(second).toEqual(first!);
+  expect(second!.frame).toBe(29);
+});

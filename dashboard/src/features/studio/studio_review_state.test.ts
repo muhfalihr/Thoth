@@ -70,7 +70,7 @@ test("pages merge by identity and keep their cursor", () => {
   });
   expect(state.comments.map((item) => item.comment_id)).toEqual(["c1", "c2"]);
   expect(state.commentCursor).toBeNull();
-  expect(state.loadStatus).toBe("loaded");
+  expect(state.historyFailed).toEqual({ comments: false, decisions: false });
 });
 
 test("a created comment appears from the server response and clears only its own text", () => {
@@ -252,4 +252,17 @@ test("a transport failure offers no Retry once the decision reason changed while
   unchanged = reviewReducer(unchanged, { type: "submitted", submission: decisionSubmission("Looks right") });
   unchanged = reviewReducer(unchanged, { type: "submit_failed", code: "review_request_failed", latestRevision: null });
   expect(unchanged.retryable).toEqual(decisionSubmission("Looks right"));
+});
+
+test("history keeps the server's microsecond order inside one millisecond", () => {
+  // The newer decision has the lexically smaller id, so a millisecond clock would demote it.
+  const newer = at(decision("d_a", 3, "changes_requested"), "2026-09-24T10:00:00.123900Z");
+  const older = at(decision("d_b", 3), "2026-09-24T10:00:00.1234Z");
+  let state = reviewReducer(createReviewState(), { type: "decisions_loaded", decisions: [newer, older], nextCursor: null });
+  expect(state.decisions.map((item) => item.decision_id)).toEqual(["d_a", "d_b"]);
+  expect(currentDecision(state.decisions, 3)?.decision_id).toBe("d_a");
+
+  state = reviewReducer(createReviewState(), { type: "decisions_loaded", decisions: [older], nextCursor: null });
+  state = reviewReducer(state, { type: "decision_created", decision: newer });
+  expect(currentDecision(state.decisions, 3)?.decision_id).toBe("d_a");
 });

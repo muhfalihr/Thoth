@@ -25,7 +25,8 @@ export type ReviewState = {
   decisions: ReviewDecision[];
   commentCursor: string | null;
   decisionCursor: string | null;
-  loadStatus: "loading" | "loaded" | "failed";
+  /** Each list fails and recovers alone, so one success never hides the other's failure. */
+  historyFailed: Record<ReviewHistoryList, boolean>;
   /** Unsent text survives every failure; only the server's answer clears it. */
   commentText: string;
   pinToFrame: boolean;
@@ -42,11 +43,13 @@ export type ReviewState = {
   notice: string | null;
 };
 
+export type ReviewHistoryList = "comments" | "decisions";
+
 export type ReviewAction =
   | { type: "reset" }
   | { type: "comments_loaded"; comments: ReviewComment[]; nextCursor: string | null }
   | { type: "decisions_loaded"; decisions: ReviewDecision[]; nextCursor: string | null }
-  | { type: "load_failed" }
+  | { type: "load_failed"; list: ReviewHistoryList }
   | { type: "comment_edited"; text: string }
   | { type: "pin_toggled"; pinned: boolean }
   | { type: "reason_edited"; reason: string }
@@ -77,7 +80,7 @@ export function createReviewState(): ReviewState {
     decisions: [],
     commentCursor: null,
     decisionCursor: null,
-    loadStatus: "loading",
+    historyFailed: { comments: false, decisions: false },
     commentText: "",
     pinToFrame: true,
     reason: "",
@@ -93,10 +96,14 @@ export function createReviewState(): ReviewState {
 /** The reason a decision sends: blank text means no reason. */
 export const reasonPayload = (reason: string): string | null => (reason.trim() ? reason : null);
 
+/** An ISO instant in whole microseconds, the control plane's precision; Date keeps only milliseconds. */
+function microseconds(stamp: string): number {
+  const fraction = /\.(\d+)/.exec(stamp)?.[1] ?? "";
+  return Date.parse(stamp.replace(/\.\d+/, "")) * 1000 + Number(fraction.padEnd(6, "0").slice(0, 6));
+}
+
 // History is append-only, so a page never removes a record: it is a union with
 // what is already held, re-sorted into the control plane's (created_at, id) order.
-// ponytail: Date.parse keeps milliseconds; two events in one millisecond fall back
-// to id order, where the server would compare microseconds first.
 function merge<T extends { created_at: string }>(
   current: T[],
   page: T[],
@@ -106,7 +113,7 @@ function merge<T extends { created_at: string }>(
   const byKey = new Map(current.map((item) => [key(item), item]));
   for (const item of page) if (!byKey.has(key(item))) byKey.set(key(item), item);
   const order = (a: T, b: T) =>
-    Date.parse(a.created_at) - Date.parse(b.created_at) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+    microseconds(a.created_at) - microseconds(b.created_at) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
   return [...byKey.values()].sort((a, b) => (newestFirst ? order(b, a) : order(a, b)));
 }
 
@@ -131,17 +138,17 @@ export function reviewReducer(state: ReviewState, action: ReviewAction): ReviewS
         ...state,
         comments: merge(state.comments, action.comments, (item) => item.comment_id),
         commentCursor: action.nextCursor,
-        loadStatus: "loaded",
+        historyFailed: { ...state.historyFailed, comments: false },
       };
     case "decisions_loaded":
       return {
         ...state,
         decisions: merge(state.decisions, action.decisions, (item) => item.decision_id, true),
         decisionCursor: action.nextCursor,
-        loadStatus: "loaded",
+        historyFailed: { ...state.historyFailed, decisions: false },
       };
     case "load_failed":
-      return { ...state, loadStatus: "failed" };
+      return { ...state, historyFailed: { ...state.historyFailed, [action.list]: true } };
     case "comment_edited":
       return {
         ...state,
