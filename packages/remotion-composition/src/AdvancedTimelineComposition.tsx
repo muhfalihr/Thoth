@@ -137,6 +137,9 @@ const CAPTION_STYLES: Record<string, CSSProperties> = {
   source: { ...CAPTION_BASE, fontSize: 30, color: "#e4e4e7" },
 };
 
+/** The caption styles a document may name; Studio offers exactly these. */
+export const CAPTION_STYLE_IDS = Object.keys(CAPTION_STYLES);
+
 /** Identity crop and placement, used when a clip stores neither. */
 const FULL_CROP = { left: 0, top: 0, width: 1, height: 1 };
 const NO_POSITION = { x: 0, y: 0, scale: 1 };

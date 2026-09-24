@@ -3,7 +3,9 @@
 import { afterEach, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { EditDocumentOperation, EditDocumentV2 } from "@/api/control-plane";
+import { CAPTION_STYLE_IDS } from "@thoth/remotion-composition";
 import { CaptionTextInspector } from "./CaptionTextInspector";
+import { CAPTION_STYLE_LABELS } from "./timeline_domain";
 import { typedTimelineDocument } from "./timeline-test-fixtures";
 
 afterEach(() => cleanup());
@@ -96,4 +98,97 @@ test("a scene without captions says so", () => {
   document.clips = document.clips!.filter((clip) => clip.kind !== "caption");
   renderInspector(document);
   expect(screen.getByText("No captions in this scene.")).toBeDefined();
+});
+
+test("style labels cover exactly the caption styles the composition renders", () => {
+  expect(Object.keys(CAPTION_STYLE_LABELS).sort()).toEqual([...CAPTION_STYLE_IDS].sort());
+});
+
+test("choosing a caption style emits a style operation for that caption", () => {
+  const onOperation = renderInspector();
+  const style = screen.getByLabelText("Caption style") as HTMLSelectElement;
+  expect(style.value).toBe("caption_default");
+
+  fireEvent.change(style, { target: { value: "source" } });
+
+  expect(onOperation.mock.calls[0]![0]).toEqual({
+    kind: "set_caption_style",
+    operation_id: expect.any(String),
+    clip_id: "clip_caption",
+    style_slot: "source",
+  });
+});
+
+test("cue times are edited in timeline seconds and saved relative to the caption", () => {
+  const onOperation = renderInspector(twoSceneDocument(), "scene_002");
+  const start = screen.getByLabelText("Caption cue 1 start (seconds)") as HTMLInputElement;
+  expect(start.value).toBe("12");
+
+  fireEvent.change(start, { target: { value: "12.5" } });
+  fireEvent.blur(start);
+
+  expect(onOperation.mock.calls[0]![0]).toEqual({
+    kind: "set_caption_cue_timing",
+    operation_id: expect.any(String),
+    clip_id: "clip_caption_late",
+    cue_index: 0,
+    from_frame: 15,
+    duration_in_frames: 15,
+  });
+});
+
+test("a cue time outside its caption is refused with a visible reason", () => {
+  const onOperation = renderInspector(twoSceneDocument(), "scene_002");
+  const end = screen.getByLabelText("Caption cue 1 end (seconds)") as HTMLInputElement;
+
+  fireEvent.change(end, { target: { value: "20" } });
+  fireEvent.keyDown(end, { key: "Enter" });
+
+  expect(onOperation).toHaveBeenCalledTimes(0);
+  expect(screen.getByRole("alert").textContent).toContain("caption cues must stay inside their clip");
+});
+
+test("a scene without captions can add one on the caption lane", () => {
+  const document = twoSceneDocument();
+  document.clips = document.clips!.filter((clip) => clip.clip_id !== "clip_caption_late");
+  document.tracks.find((track) => track.track_id === "track_captions")!.clip_ids = ["clip_caption"];
+  const onOperation = renderInspector(document, "scene_002");
+  const add = screen.getByRole("button", { name: "Add caption" }) as HTMLButtonElement;
+  expect(add.disabled).toBe(true);
+
+  fireEvent.change(screen.getByLabelText("New caption"), { target: { value: "Hello" } });
+  fireEvent.click(add);
+
+  expect(onOperation.mock.calls[0]![0]).toEqual({
+    kind: "add_caption_clip",
+    operation_id: expect.any(String),
+    clip_id: expect.stringMatching(/^clip_/),
+    track_id: "track_captions",
+    scene_id: "scene_002",
+    text: "Hello",
+  });
+});
+
+test("a scene without a usable caption lane says why it cannot add one", () => {
+  const document = twoSceneDocument();
+  document.clips = document.clips!.filter((clip) => clip.kind !== "caption");
+  document.tracks.find((track) => track.track_id === "track_captions")!.locked = true;
+  renderInspector(document);
+  expect(screen.getByText("The caption lane is locked. Unlock it on a desktop timeline to add a caption.")).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Add caption" }) === null).toBe(true);
+
+  cleanup();
+  document.tracks = document.tracks.filter((track) => track.kind !== "caption");
+  renderInspector(document);
+  expect(screen.getByText("This draft has no caption lane.")).toBeDefined();
+});
+
+test("a locked caption keeps its style and timing read-only", () => {
+  const document = twoSceneDocument();
+  (document.clips!.find((clip) => clip.clip_id === "clip_caption") as CaptionClip).locked = true;
+  renderInspector(document);
+
+  expect((screen.getByLabelText("Caption style") as HTMLSelectElement).disabled).toBe(true);
+  expect((screen.getByLabelText("Caption cue 1 start (seconds)") as HTMLInputElement).readOnly).toBe(true);
+  expect((screen.getByLabelText("Caption cue 1 end (seconds)") as HTMLInputElement).readOnly).toBe(true);
 });

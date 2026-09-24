@@ -1077,3 +1077,60 @@ test("moves a scene later from Simple mode through one persisted reorder", async
     operations: [expect.objectContaining({ kind: "reorder_scene", scene_id: "scene_001", to_index: 1 })],
   });
 });
+
+test("captions and scene audio added in Simple mode persist in one autosave", async () => {
+  const { sceneStripDocument } = await import("./timeline-test-fixtures");
+  const strip = sceneStripDocument();
+  strip.tracks.push({ ...strip.tracks[0]!, track_id: "track_caption", kind: "caption", label: "Captions", order: 4, clip_ids: [] });
+  const voice = { ...assetPage("asset_voice", null).assets[0]!, kind: "audio" as const, media_type: "audio/mpeg", duration_in_frames: 20 };
+  const listEditorAssets = mock(async () => ({ assets: [voice], next_cursor: null }));
+  const createEditorPreviewCapability = mock(async () => ({
+    preview_url: "/api/v1/projects/project_001/editor-assets/asset_voice/preview",
+    expires_at: "2026-09-20T00:00:00Z",
+  }));
+  const patchEditDocument = mock(
+    async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+      kind: "saved" as const,
+      document: strip as EditDocument,
+    }),
+  );
+  const { GuidedStudio } = await import("./GuidedStudio");
+  render(
+    <GuidedStudio
+      client={{
+        ...promptClientBase,
+        ...advancedClientBase,
+        listEditorAssets,
+        createEditorPreviewCapability,
+        getEditDocument: mock(async () => strip as EditDocument),
+        patchEditDocument,
+      }}
+      projectId="project_001"
+      documentId="document_002"
+      onBack={() => {}}
+    />,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Simple" }));
+  const addAudio = await screen.findByRole("button", { name: "Add audio to scene" });
+
+  fireEvent.change(screen.getByLabelText("New caption"), { target: { value: "Hello" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add caption" }));
+  fireEvent.click(addAudio);
+  await act(async () => {});
+  await completeAutosave(() => fireEvent.click(screen.getByLabelText("Mute Music lane")));
+
+  expect(listEditorAssets).toHaveBeenCalledWith("project_001", undefined, 50);
+  expect(createEditorPreviewCapability).toHaveBeenCalledWith("project_001", "asset_voice");
+  expect(patchEditDocument.mock.calls[0]![2].operations).toEqual([
+    expect.objectContaining({ kind: "add_caption_clip", scene_id: "scene_001", track_id: "track_caption", text: "Hello" }),
+    expect.objectContaining({
+      kind: "add_clip_from_asset",
+      asset_id: "asset_voice",
+      track_id: "track_music",
+      scene_id: "scene_001",
+      from_frame: 0,
+      duration_in_frames: 20,
+    }),
+    expect.objectContaining({ kind: "set_track_muted", track_id: "track_music", muted: true }),
+  ]);
+});

@@ -38,6 +38,53 @@
         "title": "ActorSnapshot",
         "type": "object"
       },
+      "AddCaptionClip": {
+        "additionalProperties": false,
+        "description": "A caption spanning its scene, with one cue across the whole clip.",
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "add_caption_clip",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "scene_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "track_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Track Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "track_id",
+          "scene_id",
+          "text"
+        ],
+        "title": "AddCaptionClip",
+        "type": "object"
+      },
       "AddClipFromAsset": {
         "additionalProperties": false,
         "properties": {
@@ -846,6 +893,7 @@
             "items": {
               "discriminator": {
                 "mapping": {
+                  "add_caption_clip": "#/components/schemas/AddCaptionClip",
                   "add_clip_from_asset": "#/components/schemas/AddClipFromAsset",
                   "add_track": "#/components/schemas/AddTrack",
                   "move_clip": "#/components/schemas/MoveClip",
@@ -855,6 +903,8 @@
                   "reorder_track": "#/components/schemas/ReorderTrack",
                   "replace_text": "#/components/schemas/ReplaceText",
                   "set_caption_cue_text": "#/components/schemas/SetCaptionCueText",
+                  "set_caption_cue_timing": "#/components/schemas/SetCaptionCueTiming",
+                  "set_caption_style": "#/components/schemas/SetCaptionStyle",
                   "set_clip_hidden": "#/components/schemas/SetClipHidden",
                   "set_clip_locked": "#/components/schemas/SetClipLocked",
                   "set_clip_volume": "#/components/schemas/SetClipVolume",
@@ -920,6 +970,15 @@
                 },
                 {
                   "$ref": "#/components/schemas/SetCaptionCueText"
+                },
+                {
+                  "$ref": "#/components/schemas/AddCaptionClip"
+                },
+                {
+                  "$ref": "#/components/schemas/SetCaptionCueTiming"
+                },
+                {
+                  "$ref": "#/components/schemas/SetCaptionStyle"
                 },
                 {
                   "$ref": "#/components/schemas/SetTrackVisibility"
@@ -3331,6 +3390,88 @@
           "text"
         ],
         "title": "SetCaptionCueText",
+        "type": "object"
+      },
+      "SetCaptionCueTiming": {
+        "additionalProperties": false,
+        "description": "Cue frames are relative to the start of the caption clip.",
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "cue_index": {
+            "minimum": 0.0,
+            "title": "Cue Index",
+            "type": "integer"
+          },
+          "duration_in_frames": {
+            "exclusiveMinimum": 0.0,
+            "title": "Duration In Frames",
+            "type": "integer"
+          },
+          "from_frame": {
+            "minimum": 0.0,
+            "title": "From Frame",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "set_caption_cue_timing",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "cue_index",
+          "from_frame",
+          "duration_in_frames"
+        ],
+        "title": "SetCaptionCueTiming",
+        "type": "object"
+      },
+      "SetCaptionStyle": {
+        "additionalProperties": false,
+        "properties": {
+          "clip_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "set_caption_style",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "style_slot": {
+            "enum": [
+              "caption_default",
+              "source"
+            ],
+            "title": "Style Slot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "clip_id",
+          "style_slot"
+        ],
+        "title": "SetCaptionStyle",
         "type": "object"
       },
       "SetClipHidden": {

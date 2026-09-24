@@ -46,6 +46,15 @@ export const TRACK_CLIP_KINDS: Record<TimelineTrack["kind"], readonly TimelineCl
   sfx: ["audio"],
 };
 
+/** One label per caption style the shared composition renders; a test keeps the two in step. */
+export const CAPTION_STYLE_LABELS: Record<
+  Extract<EditDocumentOperation, { kind: "set_caption_style" }>["style_slot"],
+  string
+> = {
+  caption_default: "Standard",
+  source: "Source quote",
+};
+
 /** Which asset kinds a media-backed clip kind accepts. */
 const CLIP_ASSET_KINDS: Record<string, readonly EditorAsset["kind"][]> = {
   video: ["video", "image"],
@@ -265,6 +274,26 @@ export function applyTimelineOperation(
       cue.text = operation.text;
       break;
     }
+    case "add_caption_clip":
+      addCaptionClip(next, operation);
+      break;
+    case "set_caption_cue_timing": {
+      const clip = unlockedClip(next, operation.clip_id);
+      const cue = clip.kind === "caption" ? clip.cues[operation.cue_index] : undefined;
+      if (!cue) throw new Error("caption cue unavailable");
+      if (operation.from_frame + operation.duration_in_frames > clip.duration_in_frames) {
+        throw new Error("caption cues must stay inside their clip");
+      }
+      cue.from_frame = operation.from_frame;
+      cue.duration_in_frames = operation.duration_in_frames;
+      break;
+    }
+    case "set_caption_style": {
+      const clip = unlockedClip(next, operation.clip_id);
+      if (clip.kind !== "caption") throw new Error("caption style applies only to caption clips");
+      clip.style_slot = operation.style_slot;
+      break;
+    }
     case "set_track_visibility":
       unlockedTrack(next, operation.track_id).hidden = operation.hidden;
       break;
@@ -373,7 +402,44 @@ export function carrySceneClips(
       clip.duration_in_frames,
       scene.start_frame + scene.duration_in_frames - clip.from_frame,
     );
+    // Cues are relative to the clip, so a trimmed caption pulls its cues in.
+    for (const cue of clip.kind === "caption" ? clip.cues : []) {
+      cue.from_frame = Math.min(cue.from_frame, clip.duration_in_frames - 1);
+      cue.duration_in_frames = Math.min(cue.duration_in_frames, clip.duration_in_frames - cue.from_frame);
+    }
   }
+}
+
+function addCaptionClip(
+  document: EditDocumentV2,
+  operation: Extract<EditDocumentOperation, { kind: "add_caption_clip" }>,
+): void {
+  const target = unlockedTrack(document, operation.track_id);
+  const scene = document.scenes.find((entry) => entry.scene_id === operation.scene_id);
+  if (!scene) throw new Error("operation references an unknown scene");
+  if ((document.clips ?? []).some((clip) => clip.clip_id === operation.clip_id)) {
+    throw new Error("operation reuses an existing clip ID");
+  }
+  if (!TRACK_CLIP_KINDS[target.kind].includes("caption")) {
+    throw new Error("clip kind is incompatible with track");
+  }
+  document.clips = [
+    ...(document.clips ?? []),
+    {
+      kind: "caption",
+      clip_id: operation.clip_id,
+      track_id: target.track_id,
+      scene_id: scene.scene_id,
+      from_frame: scene.start_frame,
+      duration_in_frames: scene.duration_in_frames,
+      ownership: "user_edited",
+      hidden: false,
+      locked: false,
+      style_slot: "caption_default",
+      cues: [{ from_frame: 0, duration_in_frames: scene.duration_in_frames, text: operation.text }],
+    },
+  ];
+  target.clip_ids = [...(target.clip_ids ?? []), operation.clip_id];
 }
 
 function reorderScene(

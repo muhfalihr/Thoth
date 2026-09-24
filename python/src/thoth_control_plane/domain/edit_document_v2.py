@@ -28,6 +28,8 @@ AssetKind: TypeAlias = Literal["video", "image", "audio"]
 ValidationState: TypeAlias = Literal["ready", "rejected", "pending"]
 FitMode: TypeAlias = Literal["cover", "contain", "fill"]
 OverlayPreset: TypeAlias = Literal["lower_third", "badge", "progress_bar"]
+#: The caption styles `CAPTION_STYLES` in @thoth/remotion-composition renders.
+CaptionStyle: TypeAlias = Literal["caption_default", "source"]
 
 PositiveInt = Annotated[int, Field(gt=0)]
 NormalizedUnit = Annotated[float, Field(ge=0.0, le=1.0)]

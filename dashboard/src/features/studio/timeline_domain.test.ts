@@ -8,6 +8,7 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   applyTimelineOperation,
+  carrySceneClips,
   clampZoom,
   compatibleTrackIds,
   createAddClipFromAssetOperation,
@@ -616,4 +617,110 @@ test("an asset added to a scene stays bound to that scene", () => {
   );
 
   expect(next.clips!.at(-1)!.scene_id).toBe("scene_001");
+});
+
+/** The scene strip plus an empty caption lane, as every upgraded draft has. */
+function captionReadyStrip(): EditDocumentV2 {
+  const document = sceneStripDocument();
+  document.tracks.push({
+    track_id: "track_caption",
+    kind: "caption",
+    label: "Captions",
+    order: 4,
+    hidden: false,
+    muted: false,
+    locked: false,
+    clip_ids: [],
+  });
+  return document;
+}
+
+const addCaption = (overrides: Partial<{ scene_id: string; clip_id: string; track_id: string }> = {}) =>
+  ({
+    kind: "add_caption_clip",
+    operation_id: "op_caption",
+    clip_id: "clip_cap",
+    track_id: "track_caption",
+    scene_id: "scene_002",
+    text: "Hello",
+    ...overrides,
+  }) as const;
+
+const cueTiming = (fromFrame: number, duration: number, cueIndex = 0) =>
+  ({
+    kind: "set_caption_cue_timing",
+    operation_id: "op_timing",
+    clip_id: "clip_cap",
+    cue_index: cueIndex,
+    from_frame: fromFrame,
+    duration_in_frames: duration,
+  }) as const;
+
+const captionStyle = (clipId: string) =>
+  ({ kind: "set_caption_style", operation_id: "op_style", clip_id: clipId, style_slot: "source" }) as const;
+
+const captioned = () => applyTimelineOperation(captionReadyStrip(), addCaption(), {});
+
+test("a caption added to a scene spans it with one default cue", () => {
+  const next = captioned();
+
+  expect(next.clips!.at(-1)).toEqual({
+    kind: "caption",
+    clip_id: "clip_cap",
+    track_id: "track_caption",
+    scene_id: "scene_002",
+    from_frame: 30,
+    duration_in_frames: 60,
+    ownership: "user_edited",
+    hidden: false,
+    locked: false,
+    style_slot: "caption_default",
+    cues: [{ from_frame: 0, duration_in_frames: 60, text: "Hello" }],
+  });
+  expect(next.tracks.find((track) => track.track_id === "track_caption")!.clip_ids).toEqual(["clip_cap"]);
+});
+
+test.each([
+  ["an unknown scene", addCaption({ scene_id: "scene_missing" }), "unknown scene"],
+  ["a reused clip ID", addCaption({ clip_id: "clip_001" }), "reuses an existing clip ID"],
+  ["a non-caption track", addCaption({ track_id: "track_music" }), "clip kind is incompatible with track"],
+] as const)("a caption naming %s is refused", (_label, operation, message) => {
+  expect(() => applyTimelineOperation(captionReadyStrip(), operation, {})).toThrow(message);
+});
+
+test("cue timing moves a cue inside its caption and refuses one outside it", () => {
+  const next = applyTimelineOperation(captioned(), cueTiming(10, 20), {});
+  const caption = next.clips!.at(-1)!;
+
+  expect(caption.kind === "caption" && caption.cues[0]).toEqual({ from_frame: 10, duration_in_frames: 20, text: "Hello" });
+  expect(() => applyTimelineOperation(captioned(), cueTiming(50, 20), {})).toThrow(
+    "caption cues must stay inside their clip",
+  );
+  expect(() => applyTimelineOperation(captioned(), cueTiming(0, 10, 1), {})).toThrow("caption cue unavailable");
+});
+
+test("a caption style applies only to an unlocked caption", () => {
+  const styled = applyTimelineOperation(captioned(), captionStyle("clip_cap"), {});
+  expect(styled.clips!.at(-1)).toMatchObject({ style_slot: "source" });
+
+  expect(() => applyTimelineOperation(captioned(), captionStyle("clip_001"), {})).toThrow(
+    "caption style applies only to caption clips",
+  );
+  const locked = captioned();
+  locked.clips!.at(-1)!.locked = true;
+  expect(() => applyTimelineOperation(locked, captionStyle("clip_cap"), {})).toThrow("clip is locked");
+});
+
+test("a scene-bound caption keeps its cues inside the caption when the scene shrinks", () => {
+  const document = applyTimelineOperation(captioned(), cueTiming(50, 10), {});
+  const previousStarts = new Map(document.scenes.map((scene) => [scene.scene_id, scene.start_frame]));
+  document.scenes[1]!.duration_in_frames = 30;
+  document.scenes[2]!.start_frame = 60;
+
+  carrySceneClips(document, previousStarts);
+
+  expect(document.clips!.at(-1)).toMatchObject({
+    duration_in_frames: 30,
+    cues: [{ from_frame: 29, duration_in_frames: 1, text: "Hello" }],
+  });
 });

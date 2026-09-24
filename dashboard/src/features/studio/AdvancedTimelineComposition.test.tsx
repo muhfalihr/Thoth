@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 
 import type { EditDocumentV2 } from "@/api/control-plane";
 import { previewComposition } from "./preview";
+import { applyTimelineOperation } from "./timeline_domain";
 import { typedTimelineDocument } from "./timeline-test-fixtures";
 
 /** Props the media primitives received, in render order, per test. */
@@ -463,6 +464,17 @@ test("caption cues use a trusted style and stay timed inside their clip", () => 
     [0, 30],
     [30, 60],
   ]);
+});
+
+test("a caption style chosen in Studio reaches every cue the composition renders", () => {
+  const document = applyTimelineOperation(
+    typedTimelineDocument(),
+    { kind: "set_caption_style", operation_id: "op_style", clip_id: "clip_caption", style_slot: "source" },
+    {},
+  );
+  render(<AdvancedTimelineComposition document={document} previewSources={TYPED_SOURCES} />);
+  const cues = screen.getAllByTestId("caption-cue") as HTMLElement[];
+  expect(cues.map((cue) => cue.getAttribute("data-caption-style"))).toEqual(["source", "source"]);
 });
 
 test("an unregistered caption style falls back instead of taking the raw string", () => {

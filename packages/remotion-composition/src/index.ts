@@ -5,7 +5,11 @@
  * approves in the browser is what the server renders.
  */
 
-export { AdvancedTimelineComposition, type PreviewSources } from "./AdvancedTimelineComposition";
+export {
+  AdvancedTimelineComposition,
+  CAPTION_STYLE_IDS,
+  type PreviewSources,
+} from "./AdvancedTimelineComposition";
 export { safePreviewSource } from "./media";
 // One projection for both surfaces: Studio's Player and the parity harness are
 // only comparable while they take their props and geometry from here.

@@ -27,6 +27,7 @@ from thoth_control_plane.domain.edit_document_v2 import AssetRef, EditDocumentV2
 from thoth_control_plane.domain.edit_documents import EditDocumentV1
 from thoth_control_plane.domain.studio_imports import StudioSourceProjection
 from thoth_control_plane.domain.timeline_operations import (
+    AddCaptionClip,
     AddClipFromAsset,
     AddTrack,
     MoveClip,
@@ -35,6 +36,8 @@ from thoth_control_plane.domain.timeline_operations import (
     ReorderScene,
     ReorderTrack,
     SetCaptionCueText,
+    SetCaptionCueTiming,
+    SetCaptionStyle,
     SetClipHidden,
     SetClipLocked,
     SetClipVolume,
@@ -215,6 +218,28 @@ def trim_end(clip_id: str, end_frame: int) -> TrimClipEnd:
             "clip_id": "clip_001",
             "field": "heading",
             "value": "New",
+        },
+        {
+            "kind": "add_caption_clip",
+            "operation_id": "op_1",
+            "clip_id": "clip_caption",
+            "track_id": "track_caption",
+            "scene_id": "scene_001",
+            "text": "Hello",
+        },
+        {
+            "kind": "set_caption_cue_timing",
+            "operation_id": "op_1",
+            "clip_id": "clip_caption",
+            "cue_index": 0,
+            "from_frame": 0,
+            "duration_in_frames": 30,
+        },
+        {
+            "kind": "set_caption_style",
+            "operation_id": "op_1",
+            "clip_id": "clip_caption",
+            "style_slot": "source",
         },
     ],
 )
@@ -1023,3 +1048,188 @@ def test_attached_media_keeps_its_scene_binding() -> None:
     clip = find_clip(mixed_studio_draft(), "clip_still_scene_003")
 
     assert (clip.kind, clip.track_id, clip.scene_id) == ("video", "track_b_roll", "scene_003")
+
+
+def add_caption(
+    scene_id: str = "scene_002", *, clip_id: str = "clip_cap", track_id: str = "track_caption"
+) -> AddCaptionClip:
+    return AddCaptionClip(
+        kind="add_caption_clip",
+        operation_id=f"op_{clip_id}",
+        clip_id=clip_id,
+        track_id=track_id,
+        scene_id=scene_id,
+        text="Hello",
+    )
+
+
+def cue_timing(from_frame: int, duration: int, *, cue_index: int = 0) -> SetCaptionCueTiming:
+    return SetCaptionCueTiming(
+        kind="set_caption_cue_timing",
+        operation_id="op_timing",
+        clip_id="clip_cap",
+        cue_index=cue_index,
+        from_frame=from_frame,
+        duration_in_frames=duration,
+    )
+
+
+def caption_style(clip_id: str, style_slot: str) -> SetCaptionStyle:
+    return SetCaptionStyle.model_validate(
+        {
+            "kind": "set_caption_style",
+            "operation_id": "op_style",
+            "clip_id": clip_id,
+            "style_slot": style_slot,
+        }
+    )
+
+
+def captioned_draft() -> EditDocumentV2:
+    return apply_edit_operations(mixed_studio_draft(), [add_caption()])
+
+
+def test_add_caption_clip_spans_its_scene_with_one_default_cue() -> None:
+    result = captioned_draft()
+
+    assert find_clip(result, "clip_cap").model_dump() == {
+        "kind": "caption",
+        "clip_id": "clip_cap",
+        "track_id": "track_caption",
+        "scene_id": "scene_002",
+        "from_frame": 150,
+        "duration_in_frames": 45,
+        "ownership": "user_edited",
+        "hidden": False,
+        "locked": False,
+        "style_slot": "caption_default",
+        "cues": [{"from_frame": 0, "duration_in_frames": 45, "text": "Hello"}],
+    }
+    assert find_track(result, "track_caption").clip_ids == ["clip_cap"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (add_caption("scene_missing"), "unknown scene"),
+        (add_caption(clip_id="clip_001"), "reuses an existing clip ID"),
+        (add_caption(track_id="track_music"), "clip kind is incompatible with track"),
+    ],
+)
+def test_add_caption_clip_rejects_an_invalid_target(operation: Any, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        apply_edit_operations(mixed_studio_draft(), [operation])
+
+
+def test_add_caption_clip_respects_a_locked_caption_track() -> None:
+    draft = mixed_studio_draft()
+    find_track(draft, "track_caption").locked = True
+
+    with pytest.raises(ValueError, match="track is locked"):
+        apply_edit_operations(draft, [add_caption()])
+
+
+def test_set_caption_cue_timing_moves_a_cue_inside_its_clip() -> None:
+    result = apply_edit_operations(captioned_draft(), [cue_timing(10, 20)])
+
+    assert find_clip(result, "clip_cap").cues[0].model_dump() == {
+        "from_frame": 10,
+        "duration_in_frames": 20,
+        "text": "Hello",
+    }
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (cue_timing(40, 10), "caption cues must stay inside their clip"),
+        (cue_timing(0, 10, cue_index=1), "caption cue unavailable"),
+    ],
+)
+def test_set_caption_cue_timing_rejects_an_invalid_cue(operation: Any, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        apply_edit_operations(captioned_draft(), [operation])
+
+
+def test_set_caption_cue_timing_and_style_respect_a_locked_caption() -> None:
+    draft = captioned_draft()
+    find_clip(draft, "clip_cap").locked = True
+
+    for operation in (cue_timing(0, 10), caption_style("clip_cap", "source")):
+        with pytest.raises(ValueError, match="clip is locked"):
+            apply_edit_operations(draft, [operation])
+
+
+def test_set_caption_style_switches_between_allowlisted_styles() -> None:
+    result = apply_edit_operations(captioned_draft(), [caption_style("clip_cap", "source")])
+
+    assert find_clip(result, "clip_cap").style_slot == "source"
+
+
+def test_set_caption_style_rejects_an_unknown_style_at_parse_time() -> None:
+    with pytest.raises(ValidationError):
+        caption_style("clip_cap", "neon_glow")
+
+
+def test_set_caption_style_applies_only_to_caption_clips() -> None:
+    with pytest.raises(ValueError, match="caption style applies only to caption clips"):
+        apply_edit_operations(captioned_draft(), [caption_style("clip_001", "source")])
+
+
+def test_caption_and_audio_edits_survive_a_save_round_trip() -> None:
+    audio = AssetRef(
+        asset_id="asset_voice",
+        project_id="project_001",
+        kind="audio",
+        duration_in_frames=40,
+        has_audio=True,
+        validation_state="ready",
+    )
+    result = apply_edit_operations(
+        captioned_draft(),
+        [
+            cue_timing(5, 30),
+            caption_style("clip_cap", "source"),
+            AddClipFromAsset(
+                kind="add_clip_from_asset",
+                operation_id="op_voice",
+                clip_id="clip_voice",
+                track_id="track_narration",
+                asset_id="asset_voice",
+                from_frame=150,
+                duration_in_frames=40,
+                scene_id="scene_002",
+            ),
+            SetClipVolume(
+                kind="set_clip_volume", operation_id="op_vol", clip_id="clip_voice", volume=0.4
+            ),
+            SetTrackMuted(
+                kind="set_track_muted", operation_id="op_mute", track_id="track_music", muted=True
+            ),
+        ],
+        resolved_assets={"asset_voice": audio},
+    )
+
+    assert EditDocumentV2.model_validate_json(result.model_dump_json()) == result
+    assert find_clip(result, "clip_voice").volume == 0.4
+    assert find_track(result, "track_music").muted is True
+
+
+def test_shrinking_a_captioned_scene_keeps_every_cue_inside_the_caption() -> None:
+    timed = apply_edit_operations(captioned_draft(), [cue_timing(40, 5)])
+
+    result = apply_edit_operations(timed, [resize("scene_002", 30)])
+
+    caption = find_clip(result, "clip_cap")
+    assert caption.duration_in_frames == 30
+    assert caption.cues[0].model_dump() == {
+        "from_frame": 29,
+        "duration_in_frames": 1,
+        "text": "Hello",
+    }
+
+
+def test_reordering_a_captioned_scene_carries_its_caption() -> None:
+    result = apply_edit_operations(captioned_draft(), [reorder("scene_002", 0)])
+
+    assert (find_clip(result, "clip_cap").from_frame, result.scenes[0].scene_id) == (0, "scene_002")

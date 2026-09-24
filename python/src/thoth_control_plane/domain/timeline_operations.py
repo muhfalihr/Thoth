@@ -17,7 +17,10 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import Field
 
 from thoth_control_plane.domain.edit_document_v2 import (
+    TRACK_CLIP_KINDS,
     AssetRef,
+    CaptionCue,
+    CaptionStyle,
     EditDocumentV2,
     TimelineAudioClip,
     TimelineCaptionClip,
@@ -140,6 +143,35 @@ class SetCaptionCueText(StrictModel):
     text: ShortText
 
 
+class AddCaptionClip(StrictModel):
+    """A caption spanning its scene, with one cue across the whole clip."""
+
+    kind: Literal["add_caption_clip"]
+    operation_id: OpaqueId
+    clip_id: OpaqueId
+    track_id: OpaqueId
+    scene_id: OpaqueId
+    text: ShortText
+
+
+class SetCaptionCueTiming(StrictModel):
+    """Cue frames are relative to the start of the caption clip."""
+
+    kind: Literal["set_caption_cue_timing"]
+    operation_id: OpaqueId
+    clip_id: OpaqueId
+    cue_index: Annotated[int, Field(ge=0)]
+    from_frame: FrameStart
+    duration_in_frames: Frame
+
+
+class SetCaptionStyle(StrictModel):
+    kind: Literal["set_caption_style"]
+    operation_id: OpaqueId
+    clip_id: OpaqueId
+    style_slot: CaptionStyle
+
+
 class SetTrackVisibility(StrictModel):
     kind: Literal["set_track_visibility"]
     operation_id: OpaqueId
@@ -176,6 +208,9 @@ TimelineOperation: TypeAlias = Annotated[
     | SetClipLocked
     | SetClipVolume
     | SetCaptionCueText
+    | AddCaptionClip
+    | SetCaptionCueTiming
+    | SetCaptionStyle
     | SetTrackVisibility
     | SetTrackMuted
     | SetTrackLocked,
@@ -221,6 +256,15 @@ def apply_timeline_operation(
             if not isinstance(clip, TimelineCaptionClip) or operation.cue_index >= len(clip.cues):
                 raise ValueError("caption cue unavailable")
             clip.cues[operation.cue_index].text = operation.text
+        case AddCaptionClip():
+            _add_caption_clip(document, operation)
+        case SetCaptionCueTiming():
+            _set_caption_cue_timing(document, operation)
+        case SetCaptionStyle():
+            clip = _unlocked_clip(document, operation.clip_id)
+            if not isinstance(clip, TimelineCaptionClip):
+                raise ValueError("caption style applies only to caption clips")
+            clip.style_slot = operation.style_slot
         case SetTrackVisibility():
             _unlocked_track(document, operation.track_id).hidden = operation.hidden
         case SetTrackMuted():
@@ -284,6 +328,54 @@ def carry_scene_clips(
         clip.duration_in_frames = min(
             clip.duration_in_frames, scene.start_frame + scene.duration_in_frames - clip.from_frame
         )
+        if isinstance(clip, TimelineCaptionClip):
+            # Cues are relative to the clip, so a trimmed caption pulls its cues in.
+            for cue in clip.cues:
+                cue.from_frame = min(cue.from_frame, clip.duration_in_frames - 1)
+                cue.duration_in_frames = min(
+                    cue.duration_in_frames, clip.duration_in_frames - cue.from_frame
+                )
+
+
+def _add_caption_clip(document: EditDocumentV2, operation: AddCaptionClip) -> None:
+    track = _unlocked_track(document, operation.track_id)
+    scene = next((s for s in document.scenes if s.scene_id == operation.scene_id), None)
+    if scene is None:
+        raise ValueError("operation references an unknown scene")
+    if any(clip.clip_id == operation.clip_id for clip in document.clips):
+        raise ValueError("operation reuses an existing clip ID")
+    if "caption" not in TRACK_CLIP_KINDS[track.kind]:
+        raise ValueError("clip kind is incompatible with track")
+
+    document.clips.append(
+        TimelineCaptionClip(
+            kind="caption",
+            clip_id=operation.clip_id,
+            track_id=track.track_id,
+            scene_id=scene.scene_id,
+            from_frame=scene.start_frame,
+            duration_in_frames=scene.duration_in_frames,
+            ownership="user_edited",
+            style_slot="caption_default",
+            cues=[
+                CaptionCue(
+                    from_frame=0, duration_in_frames=scene.duration_in_frames, text=operation.text
+                )
+            ],
+        )
+    )
+    track.clip_ids.append(operation.clip_id)
+
+
+def _set_caption_cue_timing(document: EditDocumentV2, operation: SetCaptionCueTiming) -> None:
+    clip = _unlocked_clip(document, operation.clip_id)
+    if not isinstance(clip, TimelineCaptionClip) or operation.cue_index >= len(clip.cues):
+        raise ValueError("caption cue unavailable")
+    if operation.from_frame + operation.duration_in_frames > clip.duration_in_frames:
+        raise ValueError("caption cues must stay inside their clip")
+    cue = clip.cues[operation.cue_index]
+    cue.from_frame = operation.from_frame
+    cue.duration_in_frames = operation.duration_in_frames
 
 
 def _reorder_scene(document: EditDocumentV2, operation: ReorderScene) -> None:

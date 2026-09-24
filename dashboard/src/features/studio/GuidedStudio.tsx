@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
 
-import type { ControlPlaneClient, EditDocument, EditorAsset } from "@/api/control-plane";
+import type { ControlPlaneClient, EditDocument, EditDocumentOperation, EditorAsset } from "@/api/control-plane";
 import type { PreviewSources } from "./AdvancedTimelineComposition";
 import { AssetLibrary } from "./AssetLibrary";
 import { CaptionTextInspector } from "./CaptionTextInspector";
@@ -18,6 +18,7 @@ import { Inspector } from "./Inspector";
 import { IssuesPanel } from "./IssuesPanel";
 import { PromptLab, type PromptLabClient } from "./PromptLab";
 import { RenderPanel, type RenderPanelClient } from "./RenderPanel";
+import { SceneAudioInspector } from "./SceneAudioInspector";
 import { SceneBoard } from "./SceneBoard";
 import { Timeline } from "./Timeline";
 import { TimelineInspector } from "./TimelineInspector";
@@ -263,6 +264,37 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         }
       })
       .catch(() => {});
+  };
+
+  // Simple mode attaches audio from the project's ready assets; Advanced loads them through its library.
+  // ponytail: first page only (50 assets); page through when projects outgrow it.
+  const [simpleAssetsFailed, setSimpleAssetsFailed] = useState(false);
+  const hasTimeline = Boolean(timeline);
+  useEffect(() => {
+    if (!hasTimeline || advanced || !assetClient) return;
+    const requestGeneration = generation.current;
+    void assetClient.listEditorAssets(projectId, undefined, 50).then(
+      (page) => {
+        if (requestGeneration !== generation.current) return;
+        setSimpleAssetsFailed(false);
+        dispatch({ type: "assets_loaded", assets: page.assets, replace: true });
+      },
+      () => requestGeneration === generation.current && setSimpleAssetsFailed(true),
+    );
+  }, [hasTimeline, advanced, assetClient, projectId]);
+
+  const commitSceneOperation = (operation: EditDocumentOperation) => {
+    dispatch({ type: "commit_timeline_operation", operation });
+    if (operation.kind !== "add_clip_from_asset" || !assetClient) return;
+    // Attached audio should play in the preview without a trip to the Advanced library.
+    const requestGeneration = generation.current;
+    void assetClient.createEditorPreviewCapability(projectId, operation.asset_id).then(
+      (capability) => {
+        if (requestGeneration !== generation.current) return;
+        setPreviewSources((current) => ({ ...current, [operation.asset_id]: capability.preview_url }));
+      },
+      () => {},
+    );
   };
 
   const addAsset = (asset: EditorAsset) => {
@@ -636,12 +668,22 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                   }
                 />
                 {timeline && viewport !== "phone" ? (
-                  <CaptionTextInspector
-                    document={timeline}
-                    selectedSceneId={state.selectedSceneId}
-                    disabled={upgrading}
-                    onOperation={(operation) => dispatch({ type: "commit_timeline_operation", operation })}
-                  />
+                  <>
+                    <CaptionTextInspector
+                      document={timeline}
+                      selectedSceneId={state.selectedSceneId}
+                      disabled={upgrading}
+                      onOperation={(operation) => dispatch({ type: "commit_timeline_operation", operation })}
+                    />
+                    <SceneAudioInspector
+                      document={timeline}
+                      selectedSceneId={state.selectedSceneId}
+                      assets={Object.values(state.assets)}
+                      loadFailed={simpleAssetsFailed}
+                      disabled={upgrading}
+                      onOperation={commitSceneOperation}
+                    />
+                  </>
                 ) : null}
               </div>
             )}

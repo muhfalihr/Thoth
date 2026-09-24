@@ -848,6 +848,27 @@ export interface components {
             /** Display Name */
             display_name?: string | null;
         };
+        /**
+         * AddCaptionClip
+         * @description A caption spanning its scene, with one cue across the whole clip.
+         */
+        AddCaptionClip: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "add_caption_clip";
+            /** Operation Id */
+            operation_id: string;
+            /** Scene Id */
+            scene_id: string;
+            /** Text */
+            text: string;
+            /** Track Id */
+            track_id: string;
+        };
         /** AddClipFromAsset */
         AddClipFromAsset: {
             /** Asset Id */
@@ -1155,7 +1176,7 @@ export interface components {
             /** Base Revision */
             base_revision: number;
             /** Operations */
-            operations: (components["schemas"]["ReplaceText"] | components["schemas"]["SetOwnership"] | components["schemas"]["SetSceneDuration"] | components["schemas"]["AddTrack"] | components["schemas"]["RemoveEmptyTrack"] | components["schemas"]["ReorderTrack"] | components["schemas"]["ReorderScene"] | components["schemas"]["AddClipFromAsset"] | components["schemas"]["RemoveClip"] | components["schemas"]["MoveClip"] | components["schemas"]["TrimClipStart"] | components["schemas"]["TrimClipEnd"] | components["schemas"]["SplitClip"] | components["schemas"]["SetClipHidden"] | components["schemas"]["SetClipLocked"] | components["schemas"]["SetClipVolume"] | components["schemas"]["SetCaptionCueText"] | components["schemas"]["SetTrackVisibility"] | components["schemas"]["SetTrackMuted"] | components["schemas"]["SetTrackLocked"])[];
+            operations: (components["schemas"]["ReplaceText"] | components["schemas"]["SetOwnership"] | components["schemas"]["SetSceneDuration"] | components["schemas"]["AddTrack"] | components["schemas"]["RemoveEmptyTrack"] | components["schemas"]["ReorderTrack"] | components["schemas"]["ReorderScene"] | components["schemas"]["AddClipFromAsset"] | components["schemas"]["RemoveClip"] | components["schemas"]["MoveClip"] | components["schemas"]["TrimClipStart"] | components["schemas"]["TrimClipEnd"] | components["schemas"]["SplitClip"] | components["schemas"]["SetClipHidden"] | components["schemas"]["SetClipLocked"] | components["schemas"]["SetClipVolume"] | components["schemas"]["SetCaptionCueText"] | components["schemas"]["AddCaptionClip"] | components["schemas"]["SetCaptionCueTiming"] | components["schemas"]["SetCaptionStyle"] | components["schemas"]["SetTrackVisibility"] | components["schemas"]["SetTrackMuted"] | components["schemas"]["SetTrackLocked"])[];
         };
         /**
          * EditDocumentV1
@@ -2005,6 +2026,44 @@ export interface components {
             operation_id: string;
             /** Text */
             text: string;
+        };
+        /**
+         * SetCaptionCueTiming
+         * @description Cue frames are relative to the start of the caption clip.
+         */
+        SetCaptionCueTiming: {
+            /** Clip Id */
+            clip_id: string;
+            /** Cue Index */
+            cue_index: number;
+            /** Duration In Frames */
+            duration_in_frames: number;
+            /** From Frame */
+            from_frame: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_caption_cue_timing";
+            /** Operation Id */
+            operation_id: string;
+        };
+        /** SetCaptionStyle */
+        SetCaptionStyle: {
+            /** Clip Id */
+            clip_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "set_caption_style";
+            /** Operation Id */
+            operation_id: string;
+            /**
+             * Style Slot
+             * @enum {string}
+             */
+            style_slot: "caption_default" | "source";
         };
         /** SetClipHidden */
         SetClipHidden: {
