@@ -16,18 +16,23 @@ from tests.domain.edit_document_v2_fixtures import (
     track_by_id,
 )
 from tests.domain.test_edit_documents import valid_document
+from tests.domain.test_studio_imports import projection_payload
+from thoth_control_plane.application.studio_imports import build_studio_draft
 from thoth_control_plane.domain.edit_document_operations import (
     EditDocumentOperation,
+    SetSceneDuration,
     apply_edit_operations,
 )
 from thoth_control_plane.domain.edit_document_v2 import AssetRef, EditDocumentV2
 from thoth_control_plane.domain.edit_documents import EditDocumentV1
+from thoth_control_plane.domain.studio_imports import StudioSourceProjection
 from thoth_control_plane.domain.timeline_operations import (
     AddClipFromAsset,
     AddTrack,
     MoveClip,
     RemoveClip,
     RemoveEmptyTrack,
+    ReorderScene,
     ReorderTrack,
     SetCaptionCueText,
     SetClipHidden,
@@ -149,7 +154,9 @@ def trim_end(clip_id: str, end_frame: int) -> TrimClipEnd:
             "from_frame": 0,
             "duration_in_frames": 60,
             "source_from_frame": 0,
+            "scene_id": None,
         },
+        {"kind": "reorder_scene", "operation_id": "op_1", "scene_id": "scene_001", "to_index": 0},
         {"kind": "remove_clip", "operation_id": "op_1", "clip_id": "clip_main"},
         {
             "kind": "move_clip",
@@ -288,6 +295,7 @@ def test_timeline_operations_carry_no_locator_field_in_their_schema() -> None:
         "from_frame",
         "duration_in_frames",
         "source_from_frame",
+        "scene_id",
     }
 
 
@@ -833,3 +841,185 @@ def test_timeline_operations_are_refused_on_a_version_one_document() -> None:
             EditDocumentV1.model_validate(valid_document()),
             [RemoveClip(kind="remove_clip", operation_id="op_1", clip_id="clip_001")],
         )
+
+
+# --------------------------------------------------------------------------
+# Scene reorder and scene-bound media
+# --------------------------------------------------------------------------
+
+
+def still_asset() -> AssetRef:
+    return AssetRef(
+        asset_id="asset_still",
+        project_id="project_001",
+        kind="image",
+        duration_in_frames=None,
+        width=64,
+        height=32,
+        fps=None,
+        has_audio=False,
+        validation_state="ready",
+        checksum=None,
+    )
+
+
+def attach_still(scene_id: str, from_frame: int, duration: int) -> AddClipFromAsset:
+    return AddClipFromAsset(
+        kind="add_clip_from_asset",
+        operation_id=f"op_attach_{scene_id}",
+        clip_id=f"clip_still_{scene_id}",
+        track_id="track_b_roll",
+        asset_id="asset_still",
+        from_frame=from_frame,
+        duration_in_frames=duration,
+        scene_id=scene_id,
+    )
+
+
+def resize(scene_id: str, duration: int) -> SetSceneDuration:
+    return SetSceneDuration(
+        kind="set_scene_duration",
+        operation_id=f"op_len_{scene_id}",
+        scene_id=scene_id,
+        duration_in_frames=duration,
+    )
+
+
+def reorder(scene_id: str, to_index: int) -> ReorderScene:
+    return ReorderScene(
+        kind="reorder_scene", operation_id="op_move", scene_id=scene_id, to_index=to_index
+    )
+
+
+def mixed_studio_draft() -> EditDocumentV2:
+    """Seven text scenes of unequal length; scene_003 also holds an offset still."""
+    draft = build_studio_draft(
+        "project_001", "edoc_1", StudioSourceProjection.model_validate(projection_payload())
+    )
+    unequal = apply_edit_operations(draft, [resize("scene_002", 45)])
+    start = next(scene for scene in unequal.scenes if scene.scene_id == "scene_003").start_frame
+    return apply_edit_operations(
+        unequal,
+        [attach_still("scene_003", start + 10, 20)],
+        resolved_assets={"asset_still": still_asset()},
+    )
+
+
+def scene_membership(document: EditDocumentV2) -> dict[str, tuple[str | None, int, int, int]]:
+    """Each scene-bound clip's scene, offset inside it, length, and source trim."""
+    starts = {scene.scene_id: scene.start_frame for scene in document.scenes}
+    return {
+        clip.clip_id: (
+            clip.scene_id,
+            clip.from_frame - starts[clip.scene_id],
+            clip.duration_in_frames,
+            getattr(clip, "source_from_frame", 0),
+        )
+        for clip in document.clips
+        if clip.scene_id is not None
+    }
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "to_index", "expected"),
+    [
+        ("scene_003", 0, ["003", "001", "002", "004", "005", "006", "007"]),
+        ("scene_001", 6, ["002", "003", "004", "005", "006", "007", "001"]),
+        ("scene_006", 2, ["001", "002", "006", "003", "004", "005", "007"]),
+    ],
+)
+def test_reorder_scene_moves_a_scene_and_its_clips_as_a_unit(
+    scene_id: str, to_index: int, expected: list[str]
+) -> None:
+    document = mixed_studio_draft()
+
+    result = apply_edit_operations(document, [reorder(scene_id, to_index)])
+
+    assert [scene.scene_id for scene in result.scenes] == [f"scene_{n}" for n in expected]
+    assert result.canvas.duration_in_frames == document.canvas.duration_in_frames
+    assert sorted(scene.duration_in_frames for scene in result.scenes) == sorted(
+        scene.duration_in_frames for scene in document.scenes
+    )
+    assert scene_membership(result) == scene_membership(document)
+    assert [ref.asset_id for ref in result.asset_refs] == ["asset_still"]
+
+
+def test_reorder_scene_to_its_own_index_changes_nothing() -> None:
+    document = mixed_studio_draft()
+
+    result = apply_edit_operations(document, [reorder("scene_004", 3)])
+
+    assert result.model_dump() == document.model_dump()
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (lambda: reorder("scene_999", 0), "unknown scene"),
+        (lambda: reorder("scene_001", 7), "scene index is out of range"),
+    ],
+)
+def test_reorder_scene_rejects_an_unknown_scene_or_index(operation: Any, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        apply_edit_operations(mixed_studio_draft(), [operation()])
+
+
+def test_reorder_scene_rejects_a_negative_index_at_parse_time() -> None:
+    with pytest.raises(ValidationError):
+        OPERATION_ADAPTER.validate_python(
+            {
+                "kind": "reorder_scene",
+                "operation_id": "op_1",
+                "scene_id": "scene_001",
+                "to_index": -1,
+            }
+        )
+
+
+def test_reorder_scene_refuses_to_move_a_locked_clip() -> None:
+    document = apply_edit_operations(
+        mixed_studio_draft(),
+        [
+            SetClipLocked(
+                kind="set_clip_locked",
+                operation_id="op_lock",
+                clip_id="clip_still_scene_003",
+                locked=True,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="clip is locked"):
+        apply_edit_operations(document, [reorder("scene_003", 0)])
+
+
+def test_reorder_scene_is_refused_on_a_version_one_document() -> None:
+    with pytest.raises(ValueError, match="requires a version 2 document"):
+        apply_edit_operations(
+            EditDocumentV1.model_validate(valid_document()), [reorder("scene_001", 0)]
+        )
+
+
+def test_resizing_an_earlier_scene_carries_later_scene_media_along() -> None:
+    document = mixed_studio_draft()
+
+    result = apply_edit_operations(document, [resize("scene_001", 120)])
+
+    assert scene_membership(result)["clip_still_scene_003"] == (
+        "scene_003",
+        10,
+        20,
+        0,
+    )
+
+
+def test_shrinking_a_scene_trims_its_media_to_fit() -> None:
+    result = apply_edit_operations(mixed_studio_draft(), [resize("scene_003", 25)])
+
+    assert scene_membership(result)["clip_still_scene_003"] == ("scene_003", 10, 15, 0)
+
+
+def test_attached_media_keeps_its_scene_binding() -> None:
+    clip = find_clip(mixed_studio_draft(), "clip_still_scene_003")
+
+    assert (clip.kind, clip.track_id, clip.scene_id) == ("video", "track_b_roll", "scene_003")

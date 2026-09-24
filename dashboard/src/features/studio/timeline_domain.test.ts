@@ -20,6 +20,7 @@ import {
   timelineIssues,
   visibleLanes,
 } from "./timeline_domain";
+import { sceneStripDocument } from "./timeline-test-fixtures";
 
 function documentV2(): EditDocumentV2 {
   return {
@@ -545,4 +546,74 @@ test.each([
 test("lane selection has one implementation, shared with the renderer", async () => {
   const shared = await import("@thoth/remotion-composition");
   expect(visibleLanes).toBe(shared.visibleLanes);
+});
+
+const reorder = (sceneId: string, toIndex: number) =>
+  ({ kind: "reorder_scene", operation_id: "op_reorder", scene_id: sceneId, to_index: toIndex }) as const;
+
+/** Each scene-bound clip as its scene and its offset inside that scene. */
+function sceneMembership(document: EditDocumentV2): Record<string, [string, number]> {
+  const starts = new Map(document.scenes.map((scene) => [scene.scene_id, scene.start_frame]));
+  return Object.fromEntries(
+    (document.clips ?? []).map((clip) => [
+      clip.clip_id,
+      [clip.scene_id!, clip.from_frame - starts.get(clip.scene_id!)!],
+    ]),
+  );
+}
+
+test.each([
+  ["the last scene to the front", "scene_003", 0, ["scene_003", "scene_001", "scene_002"]],
+  ["the first scene to the end", "scene_001", 2, ["scene_002", "scene_003", "scene_001"]],
+  ["a middle scene to the front", "scene_002", 0, ["scene_002", "scene_001", "scene_003"]],
+] as const)("moving %s carries its clips without drift", (_label, sceneId, toIndex, order) => {
+  const source = sceneStripDocument();
+
+  const next = applyTimelineOperation(source, reorder(sceneId, toIndex), {});
+
+  expect(next.scenes.map((scene) => scene.scene_id)).toEqual([...order]);
+  let frame = 0;
+  for (const scene of next.scenes) {
+    expect(scene.start_frame).toBe(frame);
+    frame += scene.duration_in_frames;
+  }
+  expect(next.canvas.duration_in_frames).toBe(source.canvas.duration_in_frames);
+  expect(sceneMembership(next)).toEqual(sceneMembership(source));
+  expect(next.clips!.map((clip) => clip.duration_in_frames)).toEqual(
+    source.clips!.map((clip) => clip.duration_in_frames),
+  );
+});
+
+test.each([
+  ["an unknown scene", reorder("scene_missing", 0), "unknown scene"],
+  ["an index past the end", reorder("scene_001", 3), "scene index is out of range"],
+] as const)("a scene reorder naming %s is refused", (_label, operation, message) => {
+  expect(() => applyTimelineOperation(sceneStripDocument(), operation, {})).toThrow(message);
+});
+
+test("a scene reorder that would move a locked clip is refused", () => {
+  const source = sceneStripDocument();
+  source.clips!.find((clip) => clip.clip_id === "clip_still")!.locked = true;
+
+  expect(() => applyTimelineOperation(source, reorder("scene_002", 0), {})).toThrow("clip is locked");
+});
+
+test("an asset added to a scene stays bound to that scene", () => {
+  const next = applyTimelineOperation(
+    documentV2(),
+    {
+      kind: "add_clip_from_asset",
+      operation_id: "op_asset",
+      clip_id: "clip_asset",
+      track_id: "track_main",
+      asset_id: "asset_new",
+      from_frame: 0,
+      duration_in_frames: 30,
+      source_from_frame: 0,
+      scene_id: "scene_001",
+    },
+    { asset_new: READY_ASSET },
+  );
+
+  expect(next.clips!.at(-1)!.scene_id).toBe("scene_001");
 });

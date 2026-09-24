@@ -12,9 +12,10 @@ import {
   canStartUpgrade,
   createEditorState,
   editorReducer,
+  sceneTextClip,
   toEditDocumentPatch,
 } from "./editor_state";
-import { upgradedTextDocument } from "./timeline-test-fixtures";
+import { sceneStripDocument, upgradedTextDocument } from "./timeline-test-fixtures";
 import { timelineIssues } from "./timeline_domain";
 
 const document = {
@@ -876,4 +877,47 @@ test("upgrade is offered only for a settled version 1 document", () => {
   expect(previewing.preview).toBeDefined();
   expect(canStartUpgrade(previewing)).toBe(false);
   expect(editorReducer(previewing, { type: "upgrade_started" })).toEqual(previewing);
+});
+
+const moveLastSceneFirst: EditDocumentOperation = {
+  kind: "reorder_scene",
+  operation_id: "op_reorder",
+  scene_id: "scene_003",
+  to_index: 0,
+};
+
+test("a scene reorder kept after a conflict replays on the newer revision", () => {
+  let state = createEditorState(sceneStripDocument());
+  state = editorReducer(state, { type: "commit_timeline_operation", operation: moveLastSceneFirst });
+  expect(state.draft.scenes[0].scene_id).toBe("scene_003");
+
+  const latest = { ...sceneStripDocument(), revision: 7 };
+  state = editorReducer(state, { type: "save_conflicted", latest });
+  const kept = editorReducer(state, { type: "keep_editing_locally", operationIdPrefix: "op_rebase" });
+
+  expect(kept.pendingOperations).toEqual([moveLastSceneFirst]);
+  expect(toEditDocumentPatch(kept)).toEqual({ base_revision: 7, operations: [moveLastSceneFirst] });
+});
+
+test("resizing an earlier scene carries a later scene's media with it", () => {
+  const resized = editorReducer(createEditorState(sceneStripDocument()), {
+    type: "edit_duration",
+    sceneId: "scene_001",
+    durationInFrames: 45,
+    operationId: "op_resize",
+  });
+  const still = resized.draft.clips!.find((clip) => clip.clip_id === "clip_still")!;
+
+  expect(resized.draft.scenes[1].start_frame).toBe(45);
+  expect(still).toMatchObject({ from_frame: 55, duration_in_frames: 20 });
+  expect(timelineIssues(resized.draft as EditDocumentV2)).toEqual([]);
+});
+
+test("a media-first scene still names its first text clip for guided edits", () => {
+  const document = sceneStripDocument();
+  const scene = document.scenes[1];
+  scene.clip_ids = ["clip_still"];
+
+  expect(sceneTextClip(document, scene)?.clip_id).toBe("clip_002");
+  expect(sceneTextClip(document, { ...scene, scene_id: "scene_empty" })).toBeUndefined();
 });

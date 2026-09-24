@@ -16,6 +16,7 @@ from thoth_control_plane.domain.models import OpaqueId, StrictModel
 from thoth_control_plane.domain.timeline_operations import (
     TimelineOperation,
     apply_timeline_operation,
+    carry_scene_clips,
 )
 
 
@@ -115,6 +116,7 @@ def _set_scene_duration(document: EditDocument, operation: SetSceneDuration) -> 
         raise ValueError("operation references an unknown scene")
 
     start_field = _start_frame_field(document)
+    previous_starts = {scene.scene_id: scene.start_frame for scene in document.scenes}
     start_frame = 0
     for scene in document.scenes:
         if scene.scene_id == operation.scene_id:
@@ -124,6 +126,11 @@ def _set_scene_duration(document: EditDocument, operation: SetSceneDuration) -> 
         setattr(clip, start_field, start_frame)
         clip.duration_in_frames = scene.duration_in_frames
         start_frame += scene.duration_in_frames
+    if isinstance(document, EditDocumentV2):
+        # The scene's own clip was laid out above; its other clips keep their offsets.
+        carry_scene_clips(
+            document, previous_starts, frozenset(scene.clip_ids[0] for scene in document.scenes)
+        )
 
     # A version 2 canvas also has to hold every clip outside the scene strip.
     document.canvas.duration_in_frames = max(

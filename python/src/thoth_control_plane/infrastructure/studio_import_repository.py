@@ -16,7 +16,8 @@ from thoth_control_plane.application.ports import (
     StudioImportItemNotFound,
     StudioImportItemResolved,
 )
-from thoth_control_plane.domain.edit_document_v2 import EditDocumentV2
+from thoth_control_plane.domain.edit_document_operations import apply_edit_operations
+from thoth_control_plane.domain.edit_document_v2 import EditDocument, EditDocumentV2
 from thoth_control_plane.domain.studio_imports import (
     AttachImportAsset,
     ExcludeImportItem,
@@ -24,6 +25,7 @@ from thoth_control_plane.domain.studio_imports import (
     StudioImportInventory,
     StudioImportItem,
 )
+from thoth_control_plane.domain.timeline_operations import AddClipFromAsset
 from thoth_control_plane.infrastructure.editor_repository import (
     DOCUMENT_ADAPTER,
     EditDocumentPersistenceError,
@@ -180,11 +182,10 @@ class PostgresStudioImportRepository:
                     raise StudioImportItemNotFound()
                 if entry.disposition != "unresolved":
                     raise StudioImportItemResolved()
-                if isinstance(decision, AttachImportAsset):
-                    if entry.media_kind == "none":
-                        raise StudioImportDecisionRejected("item_not_attachable")
-                    # ponytail: attaching lands with the project-scoped upload path (Task 4).
-                    raise StudioImportDecisionRejected("attach_unavailable")
+                asset_id = decision.asset_id if isinstance(decision, AttachImportAsset) else None
+                disposition = "excluded" if asset_id is None else "attached"
+                if asset_id and (entry.media_kind == "none" or entry.scene_id is None):
+                    raise StudioImportDecisionRejected("item_not_attachable")
 
                 await cursor.execute(
                     """
@@ -203,8 +204,13 @@ class PostgresStudioImportRepository:
                 if latest.revision != base_revision:
                     raise EditDocumentRevisionConflict(latest)
                 # Excluding changes no content; the new revision records when it was decided.
+                updated = (
+                    latest
+                    if asset_id is None
+                    else await self._attached(cursor, latest, entry, asset_id)
+                )
                 result = DOCUMENT_ADAPTER.validate_python(
-                    {**latest.model_dump(mode="json"), "revision": latest.revision + 1}
+                    {**updated.model_dump(mode="json"), "revision": latest.revision + 1}
                 )
                 await PostgresEditDocumentRepository._insert_revision(cursor, result)
                 await cursor.execute(
@@ -213,13 +219,22 @@ class PostgresStudioImportRepository:
                         (project_id, document_id, item_id, revision, disposition, asset_id)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (project_id, document_id, item_id, result.revision, "excluded", None),
+                    (
+                        project_id,
+                        document_id,
+                        item_id,
+                        result.revision,
+                        disposition,
+                        asset_id,
+                    ),
                 )
                 return current.model_copy(
                     update={
                         "revision": result.revision,
                         "items": [
-                            item.model_copy(update={"disposition": "excluded"})
+                            item.model_copy(
+                                update={"disposition": disposition, "asset_id": asset_id}
+                            )
                             if item.item_id == item_id
                             else item
                             for item in current.items
@@ -232,6 +247,41 @@ class PostgresStudioImportRepository:
             raise
         except Exception as error:
             raise EditDocumentPersistenceError() from error
+
+    @staticmethod
+    async def _attached(
+        cursor: Any, latest: EditDocument, entry: StudioImportItem, asset_id: str
+    ) -> EditDocument:
+        """``latest`` with the item's ready asset spanning its scene, capped at the asset length.
+
+        The main item fills the main video track; every other item is b-roll over its scene.
+        """
+        asset = (
+            await PostgresEditDocumentRepository.ready_assets(cursor, latest.project_id, [asset_id])
+        ).get(asset_id)
+        if asset is None:
+            raise StudioImportDecisionRejected("asset_unavailable")
+        if asset.kind != entry.media_kind:
+            raise StudioImportDecisionRejected("asset_kind_mismatch")
+        scene = next((scene for scene in latest.scenes if scene.scene_id == entry.scene_id), None)
+        if scene is None:
+            raise StudioImportDecisionRejected("item_not_attachable")
+        operation = AddClipFromAsset(
+            kind="add_clip_from_asset",
+            operation_id=f"attach_{entry.item_id}",
+            clip_id=f"clip_{entry.item_id}",
+            track_id="track_main_video" if entry.role == "main" else "track_b_roll",
+            asset_id=asset_id,
+            from_frame=scene.start_frame,
+            duration_in_frames=min(
+                scene.duration_in_frames, asset.duration_in_frames or scene.duration_in_frames
+            ),
+            scene_id=scene.scene_id,
+        )
+        try:
+            return apply_edit_operations(latest, [operation], resolved_assets={asset_id: asset})
+        except ValueError as error:
+            raise StudioImportDecisionRejected("attach_rejected") from error
 
     @staticmethod
     async def _inventory(

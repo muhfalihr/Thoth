@@ -217,6 +217,9 @@ export function applyTimelineOperation(
     case "reorder_track":
       unlockedTrack(next, operation.track_id).order = operation.order;
       break;
+    case "reorder_scene":
+      reorderScene(next, operation);
+      break;
     case "add_clip_from_asset":
       addClipFromAsset(next, operation, resolvedAssets);
       break;
@@ -338,6 +341,7 @@ function addClipFromAsset(
     duration_in_frames: operation.duration_in_frames,
     source_from_frame: operation.source_from_frame,
     asset_id: asset.asset_id,
+    scene_id: operation.scene_id ?? null,
     ownership: "user_edited" as const,
     hidden: false,
     locked: false,
@@ -349,6 +353,50 @@ function addClipFromAsset(
       : { ...shared, kind: "video" as const, fit: "cover" as const },
   ];
   target.clip_ids = [...(target.clip_ids ?? []), operation.clip_id];
+}
+
+/**
+ * Keep every scene-bound clip at its offset after the scene strip is laid out
+ * again. A clip that no longer fits a shortened scene is trimmed at its end.
+ */
+export function carrySceneClips(
+  document: Pick<EditDocumentV2, "scenes" | "clips">,
+  previousStarts: ReadonlyMap<string, number>,
+  skip: ReadonlySet<string> = new Set(),
+): void {
+  const scenes = new Map(document.scenes.map((scene) => [scene.scene_id, scene]));
+  for (const clip of document.clips ?? []) {
+    const scene = scenes.get(clip.scene_id ?? "");
+    if (!scene || skip.has(clip.clip_id)) continue;
+    clip.from_frame += scene.start_frame - previousStarts.get(scene.scene_id)!;
+    clip.duration_in_frames = Math.min(
+      clip.duration_in_frames,
+      scene.start_frame + scene.duration_in_frames - clip.from_frame,
+    );
+  }
+}
+
+function reorderScene(
+  document: EditDocumentV2,
+  operation: Extract<EditDocumentOperation, { kind: "reorder_scene" }>,
+): void {
+  const moving = document.scenes.find((scene) => scene.scene_id === operation.scene_id);
+  if (!moving) throw new Error("operation references an unknown scene");
+  if (operation.to_index < 0 || operation.to_index >= document.scenes.length) throw new Error("scene index is out of range");
+
+  const previousStarts = new Map(document.scenes.map((scene) => [scene.scene_id, scene.start_frame]));
+  document.scenes.splice(document.scenes.indexOf(moving), 1);
+  document.scenes.splice(operation.to_index, 0, moving);
+  let startFrame = 0;
+  for (const scene of document.scenes) {
+    scene.start_frame = startFrame;
+    startFrame += scene.duration_in_frames;
+  }
+  for (const clip of document.clips ?? []) {
+    const scene = document.scenes.find((entry) => entry.scene_id === clip.scene_id);
+    if (scene && scene.start_frame !== previousStarts.get(scene.scene_id)) unlockedClip(document, clip.clip_id);
+  }
+  carrySceneClips(document, previousStarts);
 }
 
 /** Copy only the document-embeddable fields; the catalog projection carries more. */

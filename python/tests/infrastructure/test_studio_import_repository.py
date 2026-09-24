@@ -328,3 +328,177 @@ async def test_an_unsupported_field_cannot_be_attached(monkeypatch) -> None:
         )
     assert raised.value.code == "item_not_attachable"
     assert not cursor.ran(INSERT_DECISION)
+
+
+ASSET = "FROM editor_assets"
+
+
+def asset_row(asset_id: str = "asset_clip", kind: str = "video", duration: int | None = 60):
+    width, height = (None, None) if kind == "audio" else (1080, 1920)
+    return (asset_id, kind, duration, width, height, 30.0, kind != "image", None)
+
+
+def attach_cursor(
+    rows: list[object], *, revision: int = 1, document: dict[str, Any] | None = None, **kwargs: Any
+) -> Cursor:
+    return Cursor(
+        {
+            MANIFEST: [manifest_row(revision)],
+            DECISIONS: [[]],
+            LATEST: [(document,) if document else document_row(revision)],
+            ASSET: [rows],
+        },
+        **kwargs,
+    )
+
+
+def attach(asset_id: str = "asset_clip") -> AttachImportAsset:
+    return AttachImportAsset(kind="attach_asset", asset_id=asset_id)
+
+
+def saved_document(cursor: Cursor) -> dict[str, Any]:
+    return cursor.params_of(INSERT_REVISION)[3].obj
+
+
+def scene_of(document: dict[str, Any], scene_id: str) -> dict[str, Any]:
+    return next(scene for scene in document["scenes"] if scene["scene_id"] == scene_id)
+
+
+@pytest.mark.asyncio
+async def test_attach_inserts_the_media_clip_into_its_scene_with_the_decision(
+    monkeypatch,
+) -> None:
+    cursor = attach_cursor([asset_row()])
+    repository, opened = store(monkeypatch, cursor)
+
+    result = await resolve(repository, "footage_001", attach())
+
+    entry = next(item for item in result.items if item.item_id == "footage_001")
+    assert (entry.disposition, entry.asset_id, result.revision) == ("attached", "asset_clip", 2)
+    document = saved_document(cursor)
+    scene = scene_of(document, "scene_003")
+    clip = next(clip for clip in document["clips"] if clip["clip_id"] == "clip_footage_001")
+    assert (clip["kind"], clip["track_id"], clip["scene_id"], clip["asset_id"]) == (
+        "video",
+        "track_b_roll",
+        "scene_003",
+        "asset_clip",
+    )
+    assert (clip["from_frame"], clip["duration_in_frames"]) == (
+        scene["start_frame"],
+        min(60, scene["duration_in_frames"]),
+    )
+    assert [ref["asset_id"] for ref in document["asset_refs"]] == ["asset_clip"]
+    assert cursor.params_of(ASSET) == (PROJECT, ["asset_clip"])
+    assert cursor.params_of(INSERT_DECISION) == (
+        PROJECT,
+        DOCUMENT,
+        "footage_001",
+        2,
+        "attached",
+        "asset_clip",
+    )
+    assert opened[0].exited_with is None
+
+
+@pytest.mark.asyncio
+async def test_the_main_item_attaches_to_the_main_video_track(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row(duration=900)])
+    repository, _ = store(monkeypatch, cursor)
+
+    await resolve(repository, "main_000", attach())
+
+    document = saved_document(cursor)
+    clip = next(clip for clip in document["clips"] if clip["clip_id"] == "clip_main_000")
+    assert (clip["track_id"], clip["scene_id"]) == ("track_main_video", "scene_001")
+    assert clip["duration_in_frames"] == scene_of(document, "scene_001")["duration_in_frames"]
+
+
+@pytest.mark.asyncio
+async def test_an_image_item_takes_a_still_for_the_whole_scene(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row("asset_still", "image", None)])
+    repository, _ = store(monkeypatch, cursor)
+
+    await resolve(repository, "comment_000", attach("asset_still"))
+
+    document = saved_document(cursor)
+    clip = next(clip for clip in document["clips"] if clip["clip_id"] == "clip_comment_000")
+    assert clip["duration_in_frames"] == scene_of(document, "scene_006")["duration_in_frames"]
+
+
+@pytest.mark.asyncio
+async def test_attach_refuses_an_asset_that_is_not_ready_in_this_project(monkeypatch) -> None:
+    # The lookup is project-scoped and ready-only, so another project's asset,
+    # an unready one, and an invalidated one all come back as nothing.
+    cursor = attach_cursor([])
+    repository, _ = store(monkeypatch, cursor)
+
+    with pytest.raises(StudioImportDecisionRejected) as raised:
+        await resolve(repository, "footage_001", attach("asset_elsewhere"))
+
+    assert raised.value.code == "asset_unavailable"
+    assert cursor.params_of(ASSET)[0] == PROJECT
+    assert not cursor.ran(INSERT_REVISION)
+    assert not cursor.ran(INSERT_DECISION)
+
+
+@pytest.mark.asyncio
+async def test_attach_refuses_an_asset_of_another_media_kind(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row("asset_voice", "audio", 60)])
+    repository, _ = store(monkeypatch, cursor)
+
+    with pytest.raises(StudioImportDecisionRejected) as raised:
+        await resolve(repository, "footage_001", attach("asset_voice"))
+
+    assert raised.value.code == "asset_kind_mismatch"
+    assert not cursor.ran(INSERT_REVISION)
+
+
+@pytest.mark.asyncio
+async def test_attach_refuses_a_document_that_cannot_take_the_clip(monkeypatch) -> None:
+    locked = {**DRAFT.model_dump(mode="json"), "revision": 1}
+    for track in locked["tracks"]:
+        track["locked"] = track["locked"] or track["track_id"] == "track_b_roll"
+    cursor = attach_cursor([asset_row()], document=locked)
+    repository, _ = store(monkeypatch, cursor)
+
+    with pytest.raises(StudioImportDecisionRejected) as raised:
+        await resolve(repository, "footage_001", attach())
+
+    assert raised.value.code == "attach_rejected"
+    assert not cursor.ran(INSERT_REVISION)
+
+
+@pytest.mark.asyncio
+async def test_an_attached_item_cannot_be_resolved_again(monkeypatch) -> None:
+    cursor = resolve_cursor(decided=[("footage_001", "attached", "asset_clip")])
+    repository, _ = store(monkeypatch, cursor)
+
+    with pytest.raises(StudioImportItemResolved):
+        await resolve(repository, "footage_001", attach("asset_other"))
+    assert not cursor.ran(ASSET)
+
+
+@pytest.mark.asyncio
+async def test_attach_at_a_stale_revision_is_a_conflict(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row()], revision=4)
+    repository, _ = store(monkeypatch, cursor)
+
+    with pytest.raises(EditDocumentRevisionConflict) as raised:
+        await resolve(repository, "footage_001", attach())
+
+    assert raised.value.latest.revision == 4
+    assert not cursor.ran(INSERT_REVISION)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_decision_insert_rolls_back_the_attached_clip(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row()], error_on=INSERT_DECISION)
+    repository, opened = store(monkeypatch, cursor)
+
+    with pytest.raises(EditDocumentPersistenceError) as raised:
+        await resolve(repository, "footage_001", attach())
+
+    assert cursor.ran(INSERT_REVISION)
+    assert opened[0].exited_with is RuntimeError
+    assert "postgresql" not in str(raised.value)

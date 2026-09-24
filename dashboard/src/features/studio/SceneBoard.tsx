@@ -11,9 +11,12 @@ type Props = {
   document: SceneBoardDocument;
   selectedSceneId: string;
   onSelect: (sceneId: string) => void;
+  /** Offered only where the document can persist a scene reorder. */
+  onMove?: (sceneId: string, toIndex: number) => void;
+  moveDisabled?: boolean;
 };
 
-export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
+export function SceneBoard({ document, selectedSceneId, onSelect, onMove, moveDisabled = false }: Props) {
   return (
     <aside className="min-h-0 min-w-0 overflow-auto border-t border-border bg-card/60 p-3" aria-label="Scene board">
       <h2 className="mb-3 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
@@ -27,6 +30,7 @@ export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
             .map((clipId) => document.clips?.find((candidate) => candidate.clip_id === clipId)?.heading?.trim())
             .find(Boolean);
           const selected = scene.scene_id === selectedSceneId;
+          const label = heading || `Scene ${index + 1}`;
           return (
             <li key={scene.scene_id} className="w-40 shrink-0">
               <button
@@ -40,7 +44,7 @@ export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
                 }`}
               >
                 <span className="block truncate text-sm font-medium text-foreground">
-                  {heading || `Scene ${index + 1}`}
+                  {label}
                 </span>
                 <span className="mt-1 flex items-center justify-between gap-2 text-xs">
                   <span className="capitalize">{scene.role}</span>
@@ -50,6 +54,28 @@ export function SceneBoard({ document, selectedSceneId, onSelect }: Props) {
                   {clip?.ownership === "user_edited" ? "Edited" : clip?.ownership?.replace("_", " ")}
                 </span>
               </button>
+              {onMove && (
+                <span className="mt-1 flex gap-1">
+                  {([
+                    ["earlier", -1, "←"],
+                    ["later", 1, "→"],
+                  ] as const).map(([direction, step, arrow]) => {
+                    const toIndex = index + step;
+                    return (
+                      <button
+                        key={direction}
+                        type="button"
+                        aria-label={`Move ${label} ${direction}`}
+                        disabled={moveDisabled || toIndex < 0 || toIndex >= document.scenes.length}
+                        onClick={() => onMove(scene.scene_id, toIndex)}
+                        className="min-h-8 flex-1 rounded border border-border text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+                      >
+                        {arrow}
+                      </button>
+                    );
+                  })}
+                </span>
+              )}
             </li>
           );
         })}

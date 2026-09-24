@@ -3,11 +3,13 @@ import type {
   EditDocumentOperation,
   EditDocumentPatch,
   EditDocumentV1,
+  EditDocumentV2,
   EditorAsset,
 } from "@/api/control-plane";
 
 import {
   applyTimelineOperation,
+  carrySceneClips,
   clampZoom,
   isTimelineDocument,
   timelineIssues,
@@ -193,6 +195,7 @@ function resizeScene(
   const startField = isTimelineDocument(document) ? "from_frame" : "start_frame";
   const clips = documentClips(document).map((clip) => ({ ...clip }));
   const byId = new Map(clips.map((clip) => [clip.clip_id, clip]));
+  const previousStarts = new Map(document.scenes.map((scene) => [scene.scene_id, scene.start_frame]));
   let startFrame = 0;
   const scenes = document.scenes.map((scene) => {
     const duration = scene.scene_id === sceneId ? durationInFrames : scene.duration_in_frames;
@@ -205,6 +208,11 @@ function resizeScene(
     startFrame += duration;
     return resized;
   });
+  if (isTimelineDocument(document)) {
+    // The scene's own clip was laid out above; its other clips keep their offsets.
+    const laidOut = new Set(scenes.map((scene) => scene.clip_ids[0]!));
+    carrySceneClips({ scenes, clips } as unknown as EditDocumentV2, previousStarts, laidOut);
+  }
   // A version 2 canvas also has to hold every clip outside the scene strip.
   const lastFrame = clips.reduce(
     (end, clip) => Math.max(end, Number(clip[startField] ?? 0) + clip.duration_in_frames),
@@ -294,6 +302,18 @@ export function findTextClip(
 ): EditableTextClip | undefined {
   const clip = documentClips(document).find((candidate) => candidate.clip_id === clipId);
   return clip?.kind === "text" ? (clip as unknown as EditableTextClip) : undefined;
+}
+
+/** The text a guided edit targets: the scene's first text clip, listed or bound. */
+export function sceneTextClip(
+  document: EditDocument,
+  scene: EditDocument["scenes"][number] | undefined,
+): EditableTextClip | undefined {
+  if (!scene) return undefined;
+  const bound = documentClips(document).filter((clip) => clip.scene_id === scene.scene_id);
+  return [...scene.clip_ids, ...bound.map((clip) => clip.clip_id)]
+    .map((clipId) => findTextClip(document, clipId))
+    .find(Boolean);
 }
 
 /** Every text clip carries a heading the backend refuses to store empty. */

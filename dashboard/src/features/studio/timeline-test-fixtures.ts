@@ -357,3 +357,60 @@ export function typedTimelineDocument(): EditDocumentV2 {
     ],
   };
 }
+
+/** Three text scenes of unequal length; scene_002 also holds a still at an offset. */
+export function sceneStripDocument(): EditDocumentV2 {
+  const base = upgradedTextDocument();
+  const text = (index: number, fromFrame: number, duration: number) => ({
+    kind: "text" as const,
+    clip_id: `clip_00${index}`,
+    track_id: "track_overlay",
+    scene_id: `scene_00${index}`,
+    from_frame: fromFrame,
+    duration_in_frames: duration,
+    ownership: "ai_managed" as const,
+    hidden: false,
+    locked: false,
+    heading: `Heading ${index}`,
+    body: "",
+    style_slot: index === 1 ? ("title" as const) : ("source" as const),
+  });
+  return {
+    ...base,
+    canvas: { ...base.canvas, duration_in_frames: 180 },
+    scenes: [
+      { scene_id: "scene_001", role: "title", start_frame: 0, duration_in_frames: 30, clip_ids: ["clip_001"] },
+      { scene_id: "scene_002", role: "source", start_frame: 30, duration_in_frames: 60, clip_ids: ["clip_002"] },
+      { scene_id: "scene_003", role: "source", start_frame: 90, duration_in_frames: 90, clip_ids: ["clip_003"] },
+    ],
+    asset_refs: [
+      { asset_id: "asset_still", project_id: "project_001", kind: "image", has_audio: false, validation_state: "ready" },
+    ],
+    tracks: base.tracks.map((entry) =>
+      entry.track_id === "track_overlay"
+        ? { ...entry, clip_ids: ["clip_001", "clip_002", "clip_003"] }
+        : entry.track_id === "track_broll"
+          ? { ...entry, clip_ids: ["clip_still"] }
+          : entry,
+    ),
+    clips: [
+      text(1, 0, 30),
+      text(2, 30, 60),
+      text(3, 90, 90),
+      {
+        kind: "video",
+        clip_id: "clip_still",
+        track_id: "track_broll",
+        scene_id: "scene_002",
+        asset_id: "asset_still",
+        from_frame: 40,
+        duration_in_frames: 20,
+        source_from_frame: 0,
+        ownership: "user_edited",
+        hidden: false,
+        locked: false,
+        fit: "cover",
+      },
+    ],
+  };
+}

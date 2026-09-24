@@ -62,6 +62,15 @@ class AddClipFromAsset(StrictModel):
     from_frame: FrameStart
     duration_in_frames: Frame
     source_from_frame: FrameStart = 0
+    #: Binds the clip to a scene, so it moves with the scene and stays inside it.
+    scene_id: OpaqueId | None = None
+
+
+class ReorderScene(StrictModel):
+    kind: Literal["reorder_scene"]
+    operation_id: OpaqueId
+    scene_id: OpaqueId
+    to_index: Annotated[int, Field(ge=0)]
 
 
 class RemoveClip(StrictModel):
@@ -156,6 +165,7 @@ TimelineOperation: TypeAlias = Annotated[
     AddTrack
     | RemoveEmptyTrack
     | ReorderTrack
+    | ReorderScene
     | AddClipFromAsset
     | RemoveClip
     | MoveClip
@@ -186,6 +196,8 @@ def apply_timeline_operation(
             _remove_empty_track(document, operation)
         case ReorderTrack():
             _unlocked_track(document, operation.track_id).order = operation.order
+        case ReorderScene():
+            _reorder_scene(document, operation)
         case AddClipFromAsset():
             _add_clip_from_asset(document, operation, resolved_assets)
         case RemoveClip():
@@ -252,6 +264,52 @@ def _unlocked_clip(document: EditDocumentV2, clip_id: str) -> TimelineClip:
 
 
 # --------------------------------------------------------------------------
+# Scene strip
+# --------------------------------------------------------------------------
+
+
+def carry_scene_clips(
+    document: EditDocumentV2, previous_starts: dict[str, int], skip: frozenset[str] = frozenset()
+) -> None:
+    """Keep every scene-bound clip at its offset after the scene strip is laid out again.
+
+    A clip that no longer fits a shortened scene is trimmed at its end.
+    """
+    scenes = {scene.scene_id: scene for scene in document.scenes}
+    for clip in document.clips:
+        scene = scenes.get(clip.scene_id or "")
+        if scene is None or clip.clip_id in skip:
+            continue
+        clip.from_frame += scene.start_frame - previous_starts[scene.scene_id]
+        clip.duration_in_frames = min(
+            clip.duration_in_frames, scene.start_frame + scene.duration_in_frames - clip.from_frame
+        )
+
+
+def _reorder_scene(document: EditDocumentV2, operation: ReorderScene) -> None:
+    moving = next(
+        (scene for scene in document.scenes if scene.scene_id == operation.scene_id), None
+    )
+    if moving is None:
+        raise ValueError("operation references an unknown scene")
+    if operation.to_index >= len(document.scenes):
+        raise ValueError("scene index is out of range")
+
+    previous_starts = {scene.scene_id: scene.start_frame for scene in document.scenes}
+    document.scenes.remove(moving)
+    document.scenes.insert(operation.to_index, moving)
+    start_frame = 0
+    for scene in document.scenes:
+        scene.start_frame = start_frame
+        start_frame += scene.duration_in_frames
+    starts = {scene.scene_id: scene.start_frame for scene in document.scenes}
+    for clip in document.clips:
+        if clip.scene_id in starts and starts[clip.scene_id] != previous_starts[clip.scene_id]:
+            _unlocked_clip(document, clip.clip_id)
+    carry_scene_clips(document, previous_starts)
+
+
+# --------------------------------------------------------------------------
 # Track lifecycle
 # --------------------------------------------------------------------------
 
@@ -303,6 +361,7 @@ def _add_clip_from_asset(
     fields = {
         "clip_id": operation.clip_id,
         "track_id": track.track_id,
+        "scene_id": operation.scene_id,
         "from_frame": operation.from_frame,
         "duration_in_frames": operation.duration_in_frames,
         "ownership": "user_edited",

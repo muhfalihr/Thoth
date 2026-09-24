@@ -1029,3 +1029,51 @@ test("names the document's own project and its saved revision in every job", asy
     jest.useRealTimers();
   }
 });
+
+test("edits the first text clip of a scene whose first clip is media", async () => {
+  const { sceneStripDocument } = await import("./timeline-test-fixtures");
+  const mediaFirst = sceneStripDocument();
+  mediaFirst.scenes[0]!.clip_ids = ["clip_still"];
+  mediaFirst.clips!.find((clip) => clip.clip_id === "clip_still")!.scene_id = "scene_001";
+  const patchEditDocument = mock(
+    async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+      kind: "saved" as const,
+      document: mediaFirst as EditDocument,
+    }),
+  );
+  await renderTimelineStudio(mediaFirst as EditDocument, patchEditDocument);
+
+  fireEvent.click(screen.getByRole("button", { name: "Simple" }));
+  const heading = screen.getByLabelText("Heading") as HTMLInputElement;
+  expect(heading.value).toBe("Heading 1");
+
+  jest.useFakeTimers();
+  fireEvent.change(heading, { target: { value: "Media-first heading" } });
+  act(() => jest.advanceTimersByTime(500));
+
+  expect(patchEditDocument.mock.calls[0]![2].operations).toEqual([
+    expect.objectContaining({ kind: "replace_text", clip_id: "clip_001", value: "Media-first heading" }),
+  ]);
+});
+
+test("moves a scene later from Simple mode through one persisted reorder", async () => {
+  const { sceneStripDocument } = await import("./timeline-test-fixtures");
+  const strip = sceneStripDocument() as EditDocument;
+  const patchEditDocument = mock(
+    async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+      kind: "saved" as const,
+      document: strip,
+    }),
+  );
+  await renderTimelineStudio(strip, patchEditDocument);
+
+  fireEvent.click(screen.getByRole("button", { name: "Simple" }));
+  jest.useFakeTimers();
+  fireEvent.click(screen.getByRole("button", { name: "Move Heading 1 later" }));
+  act(() => jest.advanceTimersByTime(500));
+
+  expect(patchEditDocument.mock.calls[0]![2]).toEqual({
+    base_revision: strip.revision,
+    operations: [expect.objectContaining({ kind: "reorder_scene", scene_id: "scene_001", to_index: 1 })],
+  });
+});

@@ -9,7 +9,7 @@ import {
   canStartUpgrade,
   createEditorState,
   editorReducer,
-  findTextClip,
+  sceneTextClip,
   hasValidText,
   toEditDocumentPatch,
   type EditorState,
@@ -91,7 +91,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   // wider screen brings the Advanced workspace back.
   const effectiveMode = compact ? "simple" : state.mode;
   const advanced = Boolean(timeline) && effectiveMode === "advanced";
-  const selectedClip = findTextClip(state.draft, selectedScene?.clip_ids[0]);
+  const selectedClip = sceneTextClip(state.draft, selectedScene);
   const [previewSources, setPreviewSources] = useState<PreviewSources>({});
   const upgradeReasonId = useId();
   const modeGroupId = useId();
@@ -522,6 +522,16 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                 document={state.draft}
                 selectedSceneId={state.selectedSceneId}
                 onSelect={(sceneId) => dispatch({ type: "select_scene", sceneId })}
+                onMove={
+                  timeline
+                    ? (sceneId, toIndex) =>
+                        dispatch({
+                          type: "commit_timeline_operation",
+                          operation: { kind: "reorder_scene", operation_id: makeOperationId(), scene_id: sceneId, to_index: toIndex },
+                        })
+                    : undefined
+                }
+                moveDisabled={upgrading}
               />
             )}
           </div>

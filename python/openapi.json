@@ -71,6 +71,18 @@
             "title": "Operation Id",
             "type": "string"
           },
+          "scene_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
           "source_from_frame": {
             "default": 0,
             "minimum": 0.0,
@@ -839,6 +851,7 @@
                   "move_clip": "#/components/schemas/MoveClip",
                   "remove_clip": "#/components/schemas/RemoveClip",
                   "remove_empty_track": "#/components/schemas/RemoveEmptyTrack",
+                  "reorder_scene": "#/components/schemas/ReorderScene",
                   "reorder_track": "#/components/schemas/ReorderTrack",
                   "replace_text": "#/components/schemas/ReplaceText",
                   "set_caption_cue_text": "#/components/schemas/SetCaptionCueText",
@@ -874,6 +887,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/ReorderTrack"
+                },
+                {
+                  "$ref": "#/components/schemas/ReorderScene"
                 },
                 {
                   "$ref": "#/components/schemas/AddClipFromAsset"
@@ -2614,6 +2630,39 @@
           "has_audio"
         ],
         "title": "RenderOutputView",
+        "type": "object"
+      },
+      "ReorderScene": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "reorder_scene",
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "scene_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "to_index": {
+            "minimum": 0.0,
+            "title": "To Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "scene_id",
+          "to_index"
+        ],
+        "title": "ReorderScene",
         "type": "object"
       },
       "ReorderTrack": {

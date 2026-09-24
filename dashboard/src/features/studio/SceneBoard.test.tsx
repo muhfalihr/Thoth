@@ -65,3 +65,31 @@ test("labels a scene by its first text heading even when media comes first", () 
   fireEvent.click(buttons[2]!);
   expect(onSelect.mock.calls).toEqual([["scene_003"]]);
 });
+
+test("moves a scene earlier or later through named buttons that stop at the ends", () => {
+  const onMove = mock((_sceneId: string, _toIndex: number) => {});
+  render(<SceneBoard document={document} selectedSceneId="scene_001" onSelect={() => {}} onMove={onMove} />);
+
+  const earlierFirst = screen.getByRole("button", { name: "Move Original heading earlier" });
+  const laterFirst = screen.getByRole("button", { name: "Move Original heading later" });
+  const earlierSecond = screen.getByRole("button", { name: "Move Scene 2 earlier" });
+  const laterSecond = screen.getByRole("button", { name: "Move Scene 2 later" });
+  expect([earlierFirst, laterFirst, earlierSecond, laterSecond].map((button) => button.hasAttribute("disabled"))).toEqual([
+    true,
+    false,
+    false,
+    true,
+  ]);
+  fireEvent.click(laterFirst);
+  fireEvent.click(earlierSecond);
+  expect(onMove.mock.calls).toEqual([
+    ["scene_001", 1],
+    ["scene_002", 0],
+  ]);
+});
+
+test("disables every move while the strip is busy", () => {
+  render(<SceneBoard document={document} selectedSceneId="scene_001" onSelect={() => {}} onMove={() => {}} moveDisabled />);
+
+  expect(screen.getAllByRole("button", { name: /^Move / }).every((button) => button.hasAttribute("disabled"))).toBe(true);
+});

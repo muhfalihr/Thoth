@@ -290,6 +290,13 @@ class PostgresEditDocumentRepository:
                 if isinstance(operation, AddClipFromAsset)
             }
         )
+        return await PostgresEditDocumentRepository.ready_assets(cursor, project_id, asset_ids)
+
+    @staticmethod
+    async def ready_assets(
+        cursor: Any, project_id: str, asset_ids: list[str]
+    ) -> dict[str, AssetRef]:
+        """The safe projection of each listed asset this project owns and has ready."""
         if not asset_ids:
             return {}
 
