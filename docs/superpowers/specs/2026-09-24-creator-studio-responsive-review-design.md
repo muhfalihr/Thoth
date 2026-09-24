@@ -1,6 +1,6 @@
 # Creator Studio F2 Responsive Review Design
 
-**Status:** Proposed for written-spec approval
+**Status:** Approved by operator on 2026-09-24; implementation pending
 
 ## 1. Purpose and boundary
 
