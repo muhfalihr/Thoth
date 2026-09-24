@@ -1,6 +1,7 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 
 import type { EditableTextClip } from "./editor_state";
+import { formatSceneSeconds, parseSceneSeconds } from "./studio_time";
 
 /** Only the fields the guided controls read, so both document versions fit. */
 type Scene = { scene_id: string; duration_in_frames: number };
@@ -13,6 +14,8 @@ type Props = {
   onTextChange: (clipId: string, field: "heading" | "body", value: string) => void;
   onOwnershipChange: (clipId: string, ownership: Ownership) => void;
   onDurationChange: (sceneId: string, durationInFrames: number) => void;
+  /** The document's frame rate, for showing durations in seconds. */
+  fps: number;
   /** True while another request owns the document, such as a running upgrade. */
   disabled?: boolean;
   /** Phone light edits: heading and body only. */
@@ -28,6 +31,7 @@ export function Inspector({
   onTextChange,
   onOwnershipChange,
   onDurationChange,
+  fps,
   disabled = false,
   textOnly = false,
 }: Props) {
@@ -35,7 +39,6 @@ export function Inspector({
   const headingErrorId = useId();
   const bodyId = useId();
   const ownershipId = useId();
-  const durationId = useId();
   const headingInvalid = Boolean(clip && !clip.heading.trim());
 
   return (
@@ -91,22 +94,13 @@ export function Inspector({
                 <option value="locked">Locked</option>
               </select>
             </div>
-            <div>
-              <label htmlFor={durationId} className="text-sm font-medium">Duration (frames)</label>
-              <input
-                id={durationId}
-                type="number"
-                min={1}
-                step={1}
-                className={fieldClass}
-                value={scene.duration_in_frames}
-                disabled={disabled}
-                onChange={(event) => {
-                  const value = event.target.valueAsNumber;
-                  if (Number.isInteger(value) && value > 0) onDurationChange(scene.scene_id, value);
-                }}
-              />
-            </div>
+            <DurationField
+              key={scene.scene_id}
+              scene={scene}
+              fps={fps}
+              disabled={disabled}
+              onDurationChange={onDurationChange}
+            />
             </>
           )}
         </div>
@@ -114,5 +108,66 @@ export function Inspector({
         <p className="mt-4 text-sm text-muted-foreground">Select a scene to edit.</p>
       )}
     </aside>
+  );
+}
+
+/** Holds typed seconds until an explicit commit, so no keystroke or echo edits the document. */
+function DurationField({
+  scene,
+  fps,
+  disabled,
+  onDurationChange,
+}: {
+  scene: Scene;
+  fps: number;
+  disabled: boolean;
+  onDurationChange: Props["onDurationChange"];
+}) {
+  const inputId = useId();
+  const errorId = useId();
+  const [input, setInput] = useState(() => formatSceneSeconds(scene.duration_in_frames, fps));
+  const [durationError, setDurationError] = useState<string | null>(null);
+  // A duration changed elsewhere (undo, redo, reload) replaces what is shown.
+  const [shownFrames, setShownFrames] = useState(scene.duration_in_frames);
+  if (shownFrames !== scene.duration_in_frames) {
+    setShownFrames(scene.duration_in_frames);
+    setInput(formatSceneSeconds(scene.duration_in_frames, fps));
+    setDurationError(null);
+  }
+
+  const commit = () => {
+    const frames = parseSceneSeconds(input, fps);
+    if (frames === null) {
+      setDurationError("Enter a duration greater than zero seconds.");
+    } else {
+      setDurationError(null);
+      if (frames !== scene.duration_in_frames) onDurationChange(scene.scene_id, frames);
+    }
+  };
+
+  return (
+    <div>
+      <label htmlFor={inputId} className="text-sm font-medium">Duration (seconds)</label>
+      <input
+        id={inputId}
+        type="text"
+        inputMode="decimal"
+        className={fieldClass}
+        value={input}
+        disabled={disabled}
+        aria-invalid={durationError !== null}
+        aria-describedby={durationError ? errorId : undefined}
+        onChange={(event) => setInput(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+        }}
+      />
+      {durationError ? (
+        <p id={errorId} role="alert" className="mt-1 text-xs text-destructive">
+          {durationError}
+        </p>
+      ) : null}
+    </div>
   );
 }

@@ -76,7 +76,7 @@ test("renders labelled Inspector fields and keyboard-visible editing controls", 
   expect(await screen.findByLabelText("Heading")).toBeDefined();
   expect(screen.getByLabelText("Body")).toBeDefined();
   expect(screen.getByLabelText("Ownership")).toBeDefined();
-  expect(screen.getByLabelText("Duration (frames)")).toBeDefined();
+  expect(screen.getByLabelText("Duration (seconds)")).toBeDefined();
   expect(screen.getByRole("button", { name: "Undo" })).toBeDefined();
   expect(screen.getByRole("button", { name: "Redo" })).toBeDefined();
   expect(screen.getByText("Saved")).toBeDefined();

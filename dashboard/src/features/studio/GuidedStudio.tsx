@@ -111,13 +111,16 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   // An upgrade replaces the document, so nothing may edit it until it settles.
   const upgrading = state.upgradeStatus === "running";
   const editing = job === "edit";
+  // Simple desktop editing lays the scenes out as a strip under the preview.
+  const stripLayout = !compact && !advanced;
   const workstationStyle = compact
     ? undefined
     : ({
         "--scene-board-width": `${sceneBoardWidth}rem`,
         "--inspector-width": `${inspectorWidth}rem`,
+        gridTemplateRows: stripLayout ? "minmax(0,1fr) auto" : undefined,
         gridTemplateColumns: [
-          editing && sceneRegionOpen && "var(--scene-board-width)",
+          editing && sceneRegionOpen && !stripLayout && "var(--scene-board-width)",
           "minmax(0,1fr)",
           editing && inspectorRegionOpen && "var(--inspector-width)",
         ]
@@ -387,7 +390,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                 Scene board panel
               </button>
             ) : null}
-            {sceneRegionOpen ? (
+            {sceneRegionOpen && !stripLayout ? (
               <>
                 <label htmlFor={sceneWidthId}>Scene board width</label>
                 <input
@@ -494,7 +497,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         >
           <div
             id="studio-region-scenes"
-            className="contents"
+            className={stripLayout ? "col-start-1 row-start-2 min-w-0" : "contents"}
             hidden={!editing || (compact ? editPane !== "scenes" : !sceneRegionOpen)}
           >
             {advanced ? (
@@ -520,7 +523,9 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           </div>
           <main
             hidden={!previewVisible}
-            className={`flex min-w-0 flex-col gap-3 bg-black/40 p-4 ${compact ? "min-h-[28rem]" : "min-h-0"}`}
+            className={`flex min-w-0 flex-col gap-3 bg-black/40 p-4 ${compact ? "min-h-[28rem]" : "min-h-0"} ${
+              stripLayout ? "col-start-1 row-start-1" : ""
+            }`}
           >
             {reviewing ? (
               <p className="text-sm text-muted-foreground">Reviewing saved revision {base.revision}</p>
@@ -594,10 +599,13 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               />
             ) : (
               // One grid cell: the caption editor stacks under the copy inspector.
-              <div className="flex min-h-0 flex-col overflow-auto">
+              <div
+                className={`flex min-h-0 flex-col overflow-auto ${stripLayout ? "col-start-2 row-span-2 row-start-1" : ""}`}
+              >
                 <Inspector
                   scene={selectedScene}
                   clip={selectedClip}
+                  fps={state.draft.canvas.fps}
                   disabled={upgrading}
                   textOnly={viewport === "phone"}
                   onTextChange={(clipId, field, value) =>

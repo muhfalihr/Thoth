@@ -273,7 +273,7 @@ test("retains pending edits offline and resumes dirty autosave on reconnect", as
   expect(patchEditDocument).toHaveBeenCalledTimes(1);
 });
 
-test("exposes native labelled controls for the resizable three-region workstation", async () => {
+test("exposes native labelled controls for the resizable simple workstation with its scene strip", async () => {
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
@@ -290,17 +290,16 @@ test("exposes native labelled controls for the resizable three-region workstatio
 
   await screen.findByLabelText("Heading");
   const workstation = screen.getByLabelText("Guided editing workstation");
-  const sceneWidth = screen.getByLabelText("Scene board width") as HTMLInputElement;
+  // The scene strip sits under the preview, so it has no column width to set.
+  expect(screen.queryByLabelText("Scene board width") === null).toBe(true);
   const inspectorWidth = screen.getByLabelText("Inspector width") as HTMLInputElement;
-  expect(sceneWidth.type).toBe("range");
   expect(inspectorWidth.type).toBe("range");
   expect(screen.getByLabelText("Draft preview")).toBeDefined();
 
-  fireEvent.change(sceneWidth, { target: { value: "18" } });
   fireEvent.change(inspectorWidth, { target: { value: "24" } });
 
-  expect(workstation.getAttribute("style")).toContain("--scene-board-width: 18rem");
   expect(workstation.getAttribute("style")).toContain("--inspector-width: 24rem");
+  expect(workstation.getAttribute("style")).toContain("grid-template-rows: minmax(0,1fr) auto");
   expect(screen.getByLabelText("Draft preview")).toBeDefined();
 });
 
@@ -469,7 +468,7 @@ test("disables document-mutating controls while an upgrade request runs", async 
   const heading = (await screen.findByLabelText("Heading")) as HTMLInputElement;
   const body = screen.getByLabelText("Body") as HTMLTextAreaElement;
   const ownership = screen.getByLabelText("Ownership") as HTMLSelectElement;
-  const duration = screen.getByLabelText("Duration (frames)") as HTMLInputElement;
+  const duration = screen.getByLabelText("Duration (seconds)") as HTMLInputElement;
   const undo = screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement;
 
   fireEvent.click(screen.getByRole("button", { name: "Enable advanced timeline" }));

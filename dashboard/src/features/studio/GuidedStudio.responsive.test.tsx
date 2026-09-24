@@ -128,7 +128,9 @@ test("offers the four jobs at every width and compact Edit panes only below desk
   expect(screen.queryByRole("navigation", { name: "Studio panes" }) === null).toBe(true);
   expect(screen.getByRole("navigation", { name: "Studio jobs" })).toBeDefined();
   expect(screen.queryByRole("tablist") === null).toBe(true);
-  expect(screen.getByLabelText("Scene board width")).toBeDefined();
+  // Simple mode's scene strip sits under the preview: it collapses but has no width.
+  expect(screen.queryByLabelText("Scene board width") === null).toBe(true);
+  expect(screen.getByRole("button", { name: "Scene board panel" })).toBeDefined();
 
   resize(1440);
   expect(screen.getByLabelText("Inspector width")).toBeDefined();
@@ -323,7 +325,7 @@ test("edits caption text on a tablet through the shared draft and keeps phone ed
   expect(isHidden(screen.getByLabelText("Heading"))).toBe(false);
   expect(isHidden(screen.getByLabelText("Body"))).toBe(false);
   expect(screen.queryByLabelText("Ownership") === null).toBe(true);
-  expect(screen.queryByLabelText("Duration (frames)") === null).toBe(true);
+  expect(screen.queryByLabelText("Duration (seconds)") === null).toBe(true);
 
   resize(900);
   expect((screen.getByLabelText("Caption cue 1 text") as HTMLTextAreaElement).value).toBe("New subtitle");
