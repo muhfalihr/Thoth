@@ -166,6 +166,25 @@ test("renders stage buttons, template list, and labelled editor controls", async
   expect(screen.getByLabelText("Resolved prompt preview").textContent).toContain("Write a hook");
 });
 
+test("compact text-only mode keeps saved prompt text but hides proposals, locks, and providers", async () => {
+  const { PromptLab } = await import("./PromptLab");
+  const promptClient = client();
+  const { rerender } = render(<PromptLab client={promptClient} projectId="project_a" compactTextOnly />);
+
+  expect((await screen.findByDisplayValue("Use Indonesian")).getAttribute("id")).toBe(
+    screen.getByLabelText("Project override").getAttribute("id"),
+  );
+  expect(screen.getByLabelText("Template body")).toBeDefined();
+  expect(screen.getByRole("button", { name: "Save binding" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Improve with AI" }) === null).toBe(true);
+  expect(screen.queryByRole("region", { name: "AI proposals" }) === null).toBe(true);
+  const panel = screen.getByLabelText("AI proposals");
+
+  rerender(<PromptLab client={promptClient} projectId="project_a" />);
+  expect(screen.getByRole("button", { name: "Improve with AI" })).toBeDefined();
+  expect(screen.getByLabelText("AI proposals") === panel).toBe(true);
+});
+
 test("renders the resolved preview as escaped plain text", async () => {
   const { PromptLab } = await import("./PromptLab");
   const hostile = {

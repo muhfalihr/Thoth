@@ -15,6 +15,8 @@ type Props = {
   onDurationChange: (sceneId: string, durationInFrames: number) => void;
   /** True while another request owns the document, such as a running upgrade. */
   disabled?: boolean;
+  /** Phone light edits: heading and body only. */
+  textOnly?: boolean;
 };
 
 const fieldClass =
@@ -27,6 +29,7 @@ export function Inspector({
   onOwnershipChange,
   onDurationChange,
   disabled = false,
+  textOnly = false,
 }: Props) {
   const headingId = useId();
   const headingErrorId = useId();
@@ -72,36 +75,40 @@ export function Inspector({
               onChange={(event) => onTextChange(clip.clip_id, "body", event.target.value)}
             />
           </div>
-          <div>
-            <label htmlFor={ownershipId} className="text-sm font-medium">Ownership</label>
-            <select
-              id={ownershipId}
-              className={fieldClass}
-              value={clip.ownership}
-              disabled={disabled}
-              onChange={(event) => onOwnershipChange(clip.clip_id, event.target.value as Ownership)}
-            >
-              <option value="ai_managed">AI managed</option>
-              <option value="user_edited">User edited</option>
-              <option value="locked">Locked</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor={durationId} className="text-sm font-medium">Duration (frames)</label>
-            <input
-              id={durationId}
-              type="number"
-              min={1}
-              step={1}
-              className={fieldClass}
-              value={scene.duration_in_frames}
-              disabled={disabled}
-              onChange={(event) => {
-                const value = event.target.valueAsNumber;
-                if (Number.isInteger(value) && value > 0) onDurationChange(scene.scene_id, value);
-              }}
-            />
-          </div>
+          {textOnly ? null : (
+            <>
+            <div>
+              <label htmlFor={ownershipId} className="text-sm font-medium">Ownership</label>
+              <select
+                id={ownershipId}
+                className={fieldClass}
+                value={clip.ownership}
+                disabled={disabled}
+                onChange={(event) => onOwnershipChange(clip.clip_id, event.target.value as Ownership)}
+              >
+                <option value="ai_managed">AI managed</option>
+                <option value="user_edited">User edited</option>
+                <option value="locked">Locked</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor={durationId} className="text-sm font-medium">Duration (frames)</label>
+              <input
+                id={durationId}
+                type="number"
+                min={1}
+                step={1}
+                className={fieldClass}
+                value={scene.duration_in_frames}
+                disabled={disabled}
+                onChange={(event) => {
+                  const value = event.target.valueAsNumber;
+                  if (Number.isInteger(value) && value > 0) onDurationChange(scene.scene_id, value);
+                }}
+              />
+            </div>
+            </>
+          )}
         </div>
       ) : (
         <p className="mt-4 text-sm text-muted-foreground">Select a scene to edit.</p>

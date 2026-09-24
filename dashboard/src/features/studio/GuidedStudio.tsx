@@ -3,6 +3,7 @@ import { useEffect, useId, useMemo, useReducer, useRef, useState, type CSSProper
 import type { ControlPlaneClient, EditDocument, EditorAsset } from "@/api/control-plane";
 import type { PreviewSources } from "./AdvancedTimelineComposition";
 import { AssetLibrary } from "./AssetLibrary";
+import { CaptionTextInspector } from "./CaptionTextInspector";
 import { CompactStudioNav } from "./CompactStudioNav";
 import {
   canStartUpgrade,
@@ -571,20 +572,32 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                 onOperation={(operation) => dispatch({ type: "commit_timeline_operation", operation })}
               />
             ) : (
-              <Inspector
-                scene={selectedScene}
-                clip={selectedClip}
-                disabled={upgrading}
-                onTextChange={(clipId, field, value) =>
-                  dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
-                }
-                onOwnershipChange={(clipId, ownership) =>
-                  dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
-                }
-                onDurationChange={(sceneId, durationInFrames) =>
-                  dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
-                }
-              />
+              // One grid cell: the caption editor stacks under the copy inspector.
+              <div className="flex min-h-0 flex-col overflow-auto">
+                <Inspector
+                  scene={selectedScene}
+                  clip={selectedClip}
+                  disabled={upgrading}
+                  textOnly={viewport === "phone"}
+                  onTextChange={(clipId, field, value) =>
+                    dispatch({ type: "edit_text", clipId, field, value, operationId: makeOperationId() })
+                  }
+                  onOwnershipChange={(clipId, ownership) =>
+                    dispatch({ type: "edit_ownership", clipId, ownership, operationId: makeOperationId() })
+                  }
+                  onDurationChange={(sceneId, durationInFrames) =>
+                    dispatch({ type: "edit_duration", sceneId, durationInFrames, operationId: makeOperationId() })
+                  }
+                />
+                {timeline && viewport !== "phone" ? (
+                  <CaptionTextInspector
+                    document={timeline}
+                    selectedSceneId={state.selectedSceneId}
+                    disabled={upgrading}
+                    onOperation={(operation) => dispatch({ type: "commit_timeline_operation", operation })}
+                  />
+                ) : null}
+              </div>
             )}
           </div>
         </div>
@@ -619,7 +632,9 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         hidden={pane !== "prompts"}
         className="flex min-h-0 flex-1 flex-col"
       >
-        {promptLabVisited ? <PromptLab client={client} projectId={projectId} /> : null}
+        {promptLabVisited ? (
+          <PromptLab client={client} projectId={projectId} compactTextOnly={viewport === "phone"} />
+        ) : null}
       </div>
     </section>
   );

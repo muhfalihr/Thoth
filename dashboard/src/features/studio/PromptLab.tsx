@@ -37,6 +37,8 @@ export type PromptLabClient = Pick<
 type Props = {
   client: PromptLabClient;
   projectId: string;
+  /** Phone surface: saved template and override text only; proposals stay mounted but hidden. */
+  compactTextOnly?: boolean;
 };
 
 const toolbarButton =
@@ -57,7 +59,7 @@ const statusLabel: Record<PromptLabState["saveStatus"], string> = {
   offline: "Offline",
 };
 
-export function PromptLab({ client, projectId }: Props) {
+export function PromptLab({ client, projectId, compactTextOnly = false }: Props) {
   const [state, dispatch] = useReducer(
     promptLabReducer,
     undefined,
@@ -412,25 +414,32 @@ export function PromptLab({ client, projectId }: Props) {
             )}
           </div>
 
-          <PromptProposalPanel
-            client={client}
-            projectId={projectId}
-            stageId={state.selectedStageId}
-            savedTemplateId={serverBinding?.template_id ?? null}
-            savedTemplateRevision={serverBinding?.template_revision ?? null}
-            savedBindingRevision={serverBinding?.revision ?? null}
-            savedOverrideText={serverBinding?.project_override ?? ""}
-            formDirty={hasDirtyDraft(state)}
-            online={!state.isOffline}
-            hasBinding={state.binding !== null}
-            onApplied={() => setAttempt((value) => value + 1)}
-            onUseStarter={(body, language) => {
-              dispatch({ type: "new_template" });
-              dispatch({ type: "edit_language", value: language });
-              dispatch({ type: "edit_template_body", value: body });
-            }}
-            onCreateScratch={() => dispatch({ type: "new_template" })}
-          />
+          {compactTextOnly ? (
+            <p className="text-xs text-muted-foreground">
+              AI proposals, locks, and provider settings need a wider screen.
+            </p>
+          ) : null}
+          <div className="contents" hidden={compactTextOnly}>
+            <PromptProposalPanel
+              client={client}
+              projectId={projectId}
+              stageId={state.selectedStageId}
+              savedTemplateId={serverBinding?.template_id ?? null}
+              savedTemplateRevision={serverBinding?.template_revision ?? null}
+              savedBindingRevision={serverBinding?.revision ?? null}
+              savedOverrideText={serverBinding?.project_override ?? ""}
+              formDirty={hasDirtyDraft(state)}
+              online={!state.isOffline}
+              hasBinding={state.binding !== null}
+              onApplied={() => setAttempt((value) => value + 1)}
+              onUseStarter={(body, language) => {
+                dispatch({ type: "new_template" });
+                dispatch({ type: "edit_language", value: language });
+                dispatch({ type: "edit_template_body", value: body });
+              }}
+              onCreateScratch={() => dispatch({ type: "new_template" })}
+            />
+          </div>
         </div>
 
         <aside className="flex min-h-0 min-w-0 flex-col gap-2">

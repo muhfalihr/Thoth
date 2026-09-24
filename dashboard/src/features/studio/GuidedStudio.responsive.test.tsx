@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useEffect } from "react";
 import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
 import { createC2ClientFixtureBase } from "./prompt-proposal-test-fixtures";
-import { FakePlayer, timelineDocument } from "./timeline-test-fixtures";
+import { FakePlayer, timelineDocument, upgradedTextDocument } from "./timeline-test-fixtures";
 import type { PlayerTimelineRef } from "./usePlayerTimeline";
 
 let previewPlayer: FakePlayer | null = null;
@@ -209,6 +209,72 @@ test("keeps Advanced mode, a pending timeline edit, and the selection through a 
   act(() => jest.advanceTimersByTime(500));
   expect(saved).toHaveBeenCalledTimes(1);
   expect(saved.mock.calls[0]![2].operations.map((operation) => operation.kind)).toEqual(["set_track_muted"]);
+});
+
+/** The upgraded text story plus one caption clip over its only scene. */
+function captionDocument(): EditDocument {
+  const document = upgradedTextDocument();
+  document.tracks.push({
+    track_id: "track_captions",
+    kind: "caption",
+    label: "Captions",
+    order: 4,
+    hidden: false,
+    muted: false,
+    locked: false,
+    clip_ids: ["clip_caption"],
+  });
+  document.clips!.push({
+    kind: "caption",
+    clip_id: "clip_caption",
+    track_id: "track_captions",
+    from_frame: 0,
+    duration_in_frames: 90,
+    ownership: "ai_managed",
+    hidden: false,
+    locked: false,
+    style_slot: "caption_default",
+    cues: [{ from_frame: 0, duration_in_frames: 90, text: "First cue" }],
+  });
+  return document;
+}
+
+test("edits caption text on a tablet through the shared draft and keeps phone edits to copy", async () => {
+  const saved = mock(async (_projectId: string, _documentId: string, _patch: EditDocumentPatch) => ({
+    kind: "saved" as const,
+    document: captionDocument(),
+  }));
+  await renderStudio(900, captionDocument(), saved);
+  jest.useFakeTimers();
+  pane("Edit");
+  fireEvent.change(screen.getByLabelText("Caption cue 1 text"), { target: { value: "New subtitle" } });
+  expect(screen.getByText("Unsaved changes")).toBeDefined();
+
+  resize(375);
+  expect(screen.queryByLabelText("Caption cue 1 text") === null).toBe(true);
+  expect(isHidden(screen.getByLabelText("Heading"))).toBe(false);
+  expect(isHidden(screen.getByLabelText("Body"))).toBe(false);
+  expect(screen.queryByLabelText("Ownership") === null).toBe(true);
+  expect(screen.queryByLabelText("Duration (frames)") === null).toBe(true);
+
+  resize(900);
+  expect((screen.getByLabelText("Caption cue 1 text") as HTMLTextAreaElement).value).toBe("New subtitle");
+  act(() => jest.advanceTimersByTime(500));
+  expect(saved).toHaveBeenCalledTimes(1);
+  expect(saved.mock.calls[0]![2].operations.map((operation) => operation.kind)).toEqual(["set_caption_cue_text"]);
+});
+
+test("offers only saved prompt text on a phone and keeps the draft when the screen widens", async () => {
+  await renderStudio(375);
+  pane("Prompt Lab");
+  const override = (await screen.findByLabelText("Project override")) as HTMLTextAreaElement;
+  fireEvent.change(override, { target: { value: "Phone draft" } });
+  expect(screen.queryByRole("button", { name: "Improve with AI" }) === null).toBe(true);
+  expect(screen.getByText(/AI proposals, locks, and provider settings need a wider screen/)).toBeDefined();
+
+  resize(900);
+  expect(screen.getByRole("button", { name: "Improve with AI" })).toBeDefined();
+  expect((screen.getByLabelText("Project override") as HTMLTextAreaElement).value).toBe("Phone draft");
 });
 
 test("collapses a compact-desktop side region from a trigger that keeps focus", async () => {
