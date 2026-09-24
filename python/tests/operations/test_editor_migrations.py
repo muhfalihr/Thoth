@@ -19,6 +19,7 @@ def test_editor_migrations_stay_explicit_forward_only_files_without_a_framework(
         "0003_prompt_lab_ai_proposals.sql",
         "0004_advanced_timeline_foundation.sql",
         "0005_revision_bound_render_jobs.sql",
+        "0006_studio_review_events.sql",
     ]
     for name in MIGRATION_FILES:
         sql = migration(name).lower()
@@ -269,4 +270,67 @@ def test_render_job_migration_stores_no_secret_endpoint_or_absolute_path() -> No
     sql = migration("0005_revision_bound_render_jobs.sql").lower()
 
     for forbidden in ("secret", "token", "cookie", "credential", "password", "http", "queue"):
+        assert forbidden not in sql
+
+
+def test_studio_review_events_are_one_append_only_revision_bound_table() -> None:
+    sql = " ".join(migration("0006_studio_review_events.sql").split())
+
+    assert sql.count("CREATE TABLE") == 1
+    assert "CREATE TABLE studio_review_events" in sql
+    assert (
+        "CREATE UNIQUE INDEX edit_document_revisions_project_document_revision_key "
+        "ON edit_document_revisions (project_id, document_id, revision)" in sql
+    )
+    assert (
+        "FOREIGN KEY (project_id, document_id, revision) "
+        "REFERENCES edit_document_revisions (project_id, document_id, revision)" in sql
+    )
+    assert "UNIQUE (project_id, document_id, operation_id)" in sql
+    assert "request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$')" in sql
+    for statement in ("UPDATE ", "DELETE ", "ALTER TABLE", "DROP "):
+        assert statement not in sql.upper()
+
+
+def test_studio_review_events_close_kind_specific_columns() -> None:
+    sql = " ".join(migration("0006_studio_review_events.sql").split())
+
+    assert "event_kind TEXT NOT NULL CHECK (event_kind IN ('comment', 'decision'))" in sql
+    assert (
+        "decision TEXT CHECK (decision IS NULL OR decision IN ('approved', 'changes_requested'))"
+        in sql
+    )
+    assert "frame INTEGER CHECK (frame IS NULL OR frame >= 0)" in sql
+    assert (
+        "comment_text TEXT CHECK (comment_text IS NULL "
+        "OR length(btrim(comment_text)) BETWEEN 1 AND 2000)" in sql
+    )
+    assert "reason TEXT CHECK (reason IS NULL OR length(btrim(reason)) BETWEEN 1 AND 2000)" in sql
+    assert (
+        "(event_kind = 'comment' AND comment_text IS NOT NULL "
+        "AND decision IS NULL AND reason IS NULL) "
+        "OR (event_kind = 'decision' AND decision IS NOT NULL "
+        "AND comment_text IS NULL AND frame IS NULL)" in sql
+    )
+    assert "actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'service'))" in sql
+
+
+def test_studio_review_listing_indexes_follow_each_kinds_order() -> None:
+    sql = " ".join(migration("0006_studio_review_events.sql").split())
+
+    assert (
+        "CREATE INDEX studio_review_comments_idx ON studio_review_events "
+        "(project_id, document_id, created_at, event_id) WHERE event_kind = 'comment'" in sql
+    )
+    assert (
+        "CREATE INDEX studio_review_decisions_idx ON studio_review_events "
+        "(project_id, document_id, created_at DESC, event_id DESC) "
+        "WHERE event_kind = 'decision'" in sql
+    )
+
+
+def test_studio_review_migration_stores_no_secret_path_or_workflow_approval() -> None:
+    sql = migration("0006_studio_review_events.sql").lower()
+
+    for forbidden in ("secret", "token", "cookie", "http", "workflow", "approval_id", "path"):
         assert forbidden not in sql
