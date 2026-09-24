@@ -8,12 +8,18 @@
  */
 
 import { Buffer } from "node:buffer";
-import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
 
 import type { TemplateReleaseRun } from "./artifact-root";
-import { loadReleaseCapsule, releaseIdentityOf, type ReleaseCapsule } from "./release-capsule";
+import {
+  ReleaseCapsuleInvalid,
+  loadReleaseCapsule,
+  releaseIdentityOf,
+  type ReleaseCapsule,
+} from "./release-capsule";
 import {
   COMPOSITION_ENTRY_POINT,
   RENDER_CHROMIUM_OPTIONS,
@@ -130,8 +136,14 @@ export async function captureReleaseFrames(options: {
 
   try {
     signal.throwIfAborted();
+    // Each asset is read once and staged from the bytes that were checked, so a
+    // file changed on disk after the capsule was validated is never served.
     for (const asset of capsule.assets) {
-      await copyFile(asset.path, join(publicDir, basename(asset.file)));
+      const bytes = await readFile(asset.path);
+      if (`sha256:${createHash("sha256").update(bytes).digest("hex")}` !== asset.sha256) {
+        throw new ReleaseCapsuleInvalid();
+      }
+      await writeFile(join(publicDir, basename(asset.file)), bytes);
     }
 
     const canvas = capsule.document.canvas as {

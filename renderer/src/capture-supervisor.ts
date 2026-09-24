@@ -16,7 +16,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { TemplateReleaseRun } from "./artifact-root";
 import type { CapturedFrame } from "./release-capture";
@@ -67,9 +67,9 @@ export function superviseCapture(options: {
   writeFileSync(
     request,
     JSON.stringify({
-      release: options.capsule.identity,
-      // Derived rather than configured: the child validates the same capsule.
-      release_root: dirname(options.capsule.directory),
+      // The capsule itself, as validated here: the child captures exactly this
+      // document and these asset digests, and never reads the release again.
+      capsule: options.capsule,
       answer,
       frames: asked,
     }),
@@ -103,6 +103,39 @@ export function superviseCapture(options: {
     workDir,
     frames,
     stop: (): Promise<void> => (ending ??= end(child, exited, workDir, grace)),
+  };
+}
+
+type CaptureRequest = {
+  readonly capsule: ReleaseCapsule;
+  readonly answer: string;
+  readonly frames: readonly CapturedFrame[];
+};
+
+/** What the child is asked to capture, read back from the request it was handed. */
+export async function captureRequestOf(requestPath: string): Promise<{
+  capsule: ReleaseCapsule;
+  run: Pick<TemplateReleaseRun, "previewFrame" | "renderFrame">;
+  answer: string;
+}> {
+  const request = JSON.parse(await readFile(requestPath, "utf8")) as CaptureRequest;
+
+  // Where each frame may be written, decided by the run and not by the child.
+  const wanted = new Map(request.frames.map((entry) => [entry.frame, entry]));
+  const named = (frame: number): CapturedFrame => {
+    const entry = wanted.get(frame);
+    if (entry === undefined) {
+      throw new Error(`frame ${frame} was not requested`);
+    }
+    return entry;
+  };
+  return {
+    capsule: request.capsule,
+    run: {
+      previewFrame: (frame) => named(frame).preview,
+      renderFrame: (frame) => named(frame).render,
+    },
+    answer: request.answer,
   };
 }
 

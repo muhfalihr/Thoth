@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -16,7 +16,7 @@ import {
   captureReleaseFrames,
   type SurfaceRequest,
 } from "./release-capture";
-import { loadReleaseCapsule, type ReleaseCapsule } from "./release-capsule";
+import { canonicalReleaseRoot, loadReleaseCapsule, type ReleaseCapsule } from "./release-capsule";
 
 let root: string;
 let run: TemplateReleaseRun;
@@ -124,6 +124,25 @@ test("serves both surfaces the capsule's own assets and nothing else", async () 
   expect(recorded.staged).toEqual([expected, expected]);
   // Staging is the harness's own scratch space, not an artifact of the run.
   expect(readdirSync(run.directory).sort()).toEqual(["diff", "preview", "render"]);
+});
+
+test("an asset that changed after the capsule was validated is never served", async () => {
+  const releases = join(root, "releases");
+  cpSync(join(canonicalReleaseRoot(), "vertical_text_story-v1"), join(releases, "vertical_text_story-v1"), {
+    recursive: true,
+  });
+  const copied = await loadReleaseCapsule("vertical_text_story-v1", { releaseRoot: releases });
+  const asset = copied.assets.find((entry) => entry.file.endsWith(".png"))!;
+  writeFileSync(asset.path, Buffer.concat([png, Buffer.from("tampered")]));
+  const { recorded, deps } = fakeDeps();
+
+  const outcome = await captureReleaseFrames({ capsule: copied, run, deps }).then(
+    () => "captured",
+    (error: Error) => error.constructor.name,
+  );
+
+  expect(outcome).toBe("ReleaseCapsuleInvalid");
+  expect(recorded.requests).toEqual([]);
 });
 
 test("a surface that wrote no frame cannot finish one", async () => {

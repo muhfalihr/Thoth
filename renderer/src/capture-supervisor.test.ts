@@ -1,13 +1,13 @@
 /// <reference types="bun-types" />
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { superviseCapture } from "./capture-supervisor";
-import type { ReleaseCapsule } from "./release-capsule";
+import { captureRequestOf, superviseCapture } from "./capture-supervisor";
+import { canonicalReleaseRoot, loadReleaseCapsule, type ReleaseCapsule } from "./release-capsule";
 
 let workspace: string;
 let entries = 0;
@@ -107,5 +107,32 @@ test("a capture ended twice is ended once", async () => {
   await session.stop();
 
   expect(existsSync(session.workDir)).toBe(false);
+  expect(await ended).toBe("CaptureProcessEnded");
+});
+
+test("the child captures the document the parent validated, not the one on disk now", async () => {
+  const releases = join(workspace, "releases");
+  const directory = join(releases, "vertical_text_story-v1");
+  cpSync(join(canonicalReleaseRoot(), "vertical_text_story-v1"), directory, { recursive: true });
+  const validated = await loadReleaseCapsule("vertical_text_story-v1", { releaseRoot: releases });
+  // The child never starts capturing: this test reads the request it was handed.
+  const session = superviseCapture({ capsule: validated, run, entry: entryThat("setInterval(() => {}, 1000);") });
+  const ended = outcomeOf(session.frames);
+
+  try {
+    const document = join(directory, "document.json");
+    writeFileSync(
+      document,
+      readFileSync(document, "utf8").replace('"project_template_release"', '"project_swapped"'),
+    );
+
+    const { capsule: handed } = await captureRequestOf(join(session.workDir, "request.json"));
+
+    expect(handed.document_sha256).toBe(validated.document_sha256);
+    expect(handed.document).toEqual(validated.document);
+    expect(handed.assets).toEqual(validated.assets);
+  } finally {
+    await session.stop();
+  }
   expect(await ended).toBe("CaptureProcessEnded");
 });
