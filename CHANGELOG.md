@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Content Set drafts open, resolve, edit, and render in Studio (F3 Plan B)
+
+Offline Plan B slice on `codex/stage1-container-ci` after `ded3697`; control plane and dashboard, no renderer or Rust change, not pushed.
+
+- Open in Studio lists the Content Set's source items and offers Resume of an existing draft or an explicit Create; nothing is created on open. Each item is attached, excluded, or shown as unsupported.
+- Media reaches a draft only as an explicit streamed upload (PNG, JPEG, WebP, MP4, WebM, MP3, WAV; 512 MiB cap) that is size-bounded, hashed, signature- and ffprobe-checked, and published under `THOTH_CONTROL_PLANE_ARTIFACT_ROOT/uploads/<project_id>/`, or as an already ready project asset. No URL or caller path is accepted or fetched.
+- Scene reorder, caption text/style, and per-scene audio controls persist as EditDocument revisions through the existing operations and one preview.
+- The server refuses a Studio render of a source-linked draft while any import item is unresolved (409 `render_import_unresolved`) or the revision is not the latest (409 `render_revision_stale`). The Render job names the blocking items and reopens the import gate once the draft is saved. The legacy "Send render" action is unchanged.
+- The dashboard topbar wraps instead of overflowing at tablet, phone, and 200% zoom.
+
+Verification: every task's new tests failed first and now pass. Python non-live suite (run from `python/`) 1821 passed / 1 failed / 32 skipped; the failure, `test_route_modules_do_not_depend_on_a_process_runner`, already fails at `ded3697`. Ruff clean; OpenAPI and TypeScript contracts regenerate identically with no diff; dashboard `bun test` 644 pass / 0 fail, `tsc --noEmit` 0, lint 0 errors (pre-existing warnings only), `vite build` 0; compose config 0; `build_cuda.bat` exit 0 with a fresh log; `git diff --check` clean. An offline headless-Edge journey passed at 1440, 820, and 375 px and 200% zoom. Final review was a self-review; the Codex end-of-feature review is still owed.
+
 ## 2026-09-25 - Studio header names the document's project; scene labels find the text heading (F3 Plan A review correction)
 
 Offline correction on `codex/stage1-container-ci` after `a74fc12`, dashboard only.
