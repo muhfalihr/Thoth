@@ -27,6 +27,7 @@ import {
   timelineIssues,
 } from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
+import { StudioReviewPanel, type StudioReviewClient } from "./StudioReviewPanel";
 import { useStudioViewport, type StudioPane } from "./studio_viewport";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
 
@@ -48,6 +49,10 @@ type Props = {
         | "retryRenderJob"
         | "downloadRenderOutput"
         | "cleanupRenderArtifacts"
+        | "listStudioReviewComments"
+        | "createStudioReviewComment"
+        | "listStudioReviewDecisions"
+        | "createStudioReviewDecision"
       >
     >;
   projectId: string;
@@ -223,6 +228,35 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
       cleanupRenderArtifacts,
     ],
   );
+
+  const {
+    listStudioReviewComments,
+    createStudioReviewComment,
+    listStudioReviewDecisions,
+    createStudioReviewDecision,
+  } = client;
+  // Review appears only where the whole review API is present, as a stable slice.
+  const reviewClient = useMemo<StudioReviewClient | undefined>(
+    () =>
+      listStudioReviewComments && createStudioReviewComment && listStudioReviewDecisions && createStudioReviewDecision
+        ? { listStudioReviewComments, createStudioReviewComment, listStudioReviewDecisions, createStudioReviewDecision }
+        : undefined,
+    [listStudioReviewComments, createStudioReviewComment, listStudioReviewDecisions, createStudioReviewDecision],
+  );
+
+  // A stale review write names a newer saved revision; fetching it hands the
+  // choice to the existing conflict banner, so no local draft is ever dropped.
+  const loadNewerRevision = () => {
+    const requestGeneration = generation.current;
+    void client
+      .getEditDocument(projectId, documentId)
+      .then((latest) => {
+        if (requestGeneration === generation.current && latest.revision > base.revision) {
+          dispatch({ type: "save_conflicted", latest });
+        }
+      })
+      .catch(() => {});
+  };
 
   const addAsset = (asset: EditorAsset) => {
     if (!timeline) return;
@@ -559,6 +593,23 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                   dispatch={dispatch}
                 />
               </>
+            ) : null}
+            {reviewClient ? (
+              // Beside the one shared preview; compact panes hide it without unmounting unsent text.
+              <div hidden={compact && pane !== "review"} className={compact ? undefined : "max-h-[40%] shrink-0 overflow-y-auto"}>
+                <StudioReviewPanel
+                  client={reviewClient}
+                  projectId={projectId}
+                  documentId={documentId}
+                  savedDocument={base}
+                  saveStatus={saveStatus}
+                  isOffline={state.isOffline}
+                  // The saved revision's own validity, the same facts the server checks.
+                  blockingIssues={(isTimelineDocument(base) ? timelineIssues(base).length : 0) + (hasValidText(base) ? 0 : 1)}
+                  currentFrame={state.playheadFrame}
+                  onLoadRevision={loadNewerRevision}
+                />
+              </div>
             ) : null}
           </main>
           <div

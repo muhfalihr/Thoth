@@ -78,12 +78,17 @@ const pendingSave = mock(
     new Promise<{ kind: "saved"; document: EditDocument }>(() => {}),
 );
 
-async function renderStudio(width: number, editDocument: EditDocument = document, patchEditDocument = pendingSave) {
+async function renderStudio(
+  width: number,
+  editDocument: EditDocument = document,
+  patchEditDocument = pendingSave,
+  extraClient: object = {},
+) {
   resize(width);
   const { GuidedStudio } = await import("./GuidedStudio");
   render(
     <GuidedStudio
-      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument }}
+      client={{ ...promptClientBase, getEditDocument: mock(async () => editDocument), patchEditDocument, ...extraClient }}
       projectId="project_001"
       documentId={editDocument.document_id}
       onBack={() => {}}
@@ -326,4 +331,47 @@ test("monitors renders on a phone without offering render mutations", async () =
 
   resize(900);
   expect(screen.getByRole("button", { name: "Render video" })).toBeDefined();
+});
+
+function reviewClient() {
+  return {
+    listStudioReviewComments: mock(async () => ({ comments: [], next_cursor: null })),
+    listStudioReviewDecisions: mock(async () => ({ decisions: [], next_cursor: null })),
+    createStudioReviewComment: mock(async () => { throw new Error("unused"); }),
+    createStudioReviewDecision: mock(async () => { throw new Error("unused"); }),
+  };
+}
+
+test("reviews the saved preview on a phone and blocks review while a draft is unsaved", async () => {
+  await renderStudio(375, document, pendingSave, reviewClient());
+  pane("Edit");
+  fireEvent.change(screen.getByLabelText("Heading"), { target: { value: "Draft heading" } });
+
+  pane("Review");
+  const panel = await screen.findByRole("region", { name: "Review" });
+  expect(isHidden(panel)).toBe(false);
+  expect(screen.getByLabelText("Draft preview").textContent).toBe("Original heading");
+  expect(screen.getByText("Review applies to saved revision 1.")).toBeDefined();
+  fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Phone note" } });
+  expect((screen.getByRole("button", { name: "Post comment" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Wait for your changes to save/)).toBeDefined();
+});
+
+test("keeps unsent review text across pane and viewport changes beside one preview", async () => {
+  await renderStudio(375, document, pendingSave, reviewClient());
+  pane("Review");
+  const panel = await screen.findByRole("region", { name: "Review" });
+  fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Phone note" } });
+
+  pane("Preview");
+  expect(isHidden(panel)).toBe(true);
+  pane("Review");
+  expect((screen.getByLabelText("Review comment") as HTMLTextAreaElement).value).toBe("Phone note");
+
+  resize(1440);
+  expect(isHidden(screen.getByRole("region", { name: "Review" }))).toBe(false);
+  expect((screen.getByLabelText("Review comment") as HTMLTextAreaElement).value).toBe("Phone note");
+  expect(screen.getAllByLabelText("Draft preview").length).toBe(1);
+  expect(previewMounts).toBe(1);
 });
