@@ -91,7 +91,7 @@ def build_edit_document(
     """Build the deterministic, text-only schema-v1 document without side effects."""
 
     clips: list[TextClip] = [
-        _text_clip(
+        text_clip(
             index=1,
             role="title",
             heading=request.main.title or "Untitled video",
@@ -102,13 +102,20 @@ def build_edit_document(
         if len(clips) == 4:
             break
         clips.append(
-            _text_clip(
+            text_clip(
                 index=len(clips) + 1,
                 role="source",
                 heading=footage.title,
                 body=footage.platform or "",
             )
         )
+    return document_from_text_clips(project_id, document_id, clips)
+
+
+def document_from_text_clips(
+    project_id: ProjectId, document_id: OpaqueId, clips: list[TextClip]
+) -> EditDocumentV1:
+    """Wrap consecutive one-per-scene text clips in a revision-1 v1 document."""
     scenes = [
         Scene(
             scene_id=f"scene_{index:03d}",
@@ -139,9 +146,7 @@ def build_edit_document(
     )
 
 
-def _text_clip(
-    *, index: int, role: Literal["title", "source"], heading: str, body: str
-) -> TextClip:
+def text_clip(*, index: int, role: Literal["title", "source"], heading: str, body: str) -> TextClip:
     return TextClip(
         kind="text",
         clip_id=f"clip_{index:03d}",

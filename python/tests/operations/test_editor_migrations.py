@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations" / "editor"
@@ -20,6 +21,7 @@ def test_editor_migrations_stay_explicit_forward_only_files_without_a_framework(
         "0004_advanced_timeline_foundation.sql",
         "0005_revision_bound_render_jobs.sql",
         "0006_studio_review_events.sql",
+        "0007_studio_import_sources.sql",
     ]
     for name in MIGRATION_FILES:
         sql = migration(name).lower()
@@ -77,6 +79,54 @@ def test_earlier_editor_migrations_remain_byte_identical() -> None:
     assert "ALTER TABLE" not in migration("0003_prompt_lab_ai_proposals.sql").upper()
     assert "ALTER TABLE" not in migration("0004_advanced_timeline_foundation.sql").upper()
     assert "ALTER TABLE" not in migration("0005_revision_bound_render_jobs.sql").upper()
+
+
+#: SHA-256 of each shipped migration with line endings normalized to LF, so a
+#: checkout with CRLF endings still compares the bytes that were applied.
+SHIPPED_MIGRATION_DIGESTS = {
+    "0001_edit_document_revisions.sql": (
+        "516d2c3a6c23bab218870ed6804a4ef534e81b4bc1bdff9f01b088b8afe87152"
+    ),
+    "0002_prompt_lab_foundation.sql": (
+        "4defcffec2c92234974bbc038951f29392849ba1e2a66d1158b3fc18883f662b"
+    ),
+    "0003_prompt_lab_ai_proposals.sql": (
+        "0921ce53c1d38617c69ee38ba075c94df19c78df86c62bf84a19fca2a504040e"
+    ),
+    "0004_advanced_timeline_foundation.sql": (
+        "1b0db489c1ba358db87bbee11a46a9fcfccbd6432a0fb78d2ba3e367c0757587"
+    ),
+    "0005_revision_bound_render_jobs.sql": (
+        "36d3d230d6949c6ac5f6e084c79cce85fcec2c485c40eb83bb56c3de8265638e"
+    ),
+    "0006_studio_review_events.sql": (
+        "8e5ced985574bd03609b007a4691ecfd1f08281235ea175bc37e43cd318d5726"
+    ),
+}
+
+
+def test_shipped_editor_migrations_keep_their_exact_bytes() -> None:
+    for name, digest in SHIPPED_MIGRATION_DIGESTS.items():
+        content = (MIGRATIONS / name).read_bytes().replace(b"\r\n", b"\n")
+        assert hashlib.sha256(content).hexdigest() == digest, name
+
+
+def test_studio_import_sources_are_append_only_and_bound_to_saved_revisions() -> None:
+    sql = " ".join(migration("0007_studio_import_sources.sql").split())
+
+    assert "CREATE TABLE studio_import_drafts" in sql
+    assert "CREATE TABLE studio_import_decisions" in sql
+    assert "UNIQUE (project_id, idempotency_key)" in sql
+    assert "PRIMARY KEY (project_id, document_id, item_id)" in sql
+    assert "REFERENCES edit_document_revisions (project_id, document_id, revision)" in sql
+    assert (
+        "FOREIGN KEY (project_id, asset_id) REFERENCES editor_assets (project_id, asset_id)" in sql
+    )
+    assert "CHECK ((disposition = 'attached') = (asset_id IS NOT NULL))" in sql
+    for statement in ("UPDATE ", "DELETE ", "ALTER TABLE", "DROP "):
+        assert statement not in sql.upper()
+    for forbidden in ("source_url", "locator", "path", "http"):
+        assert forbidden not in sql.lower()
 
 
 def test_editor_assets_table_is_project_scoped_with_bounded_media_metadata() -> None:

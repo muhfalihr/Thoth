@@ -504,6 +504,103 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/studio-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Studio Import
+         * @description Create one draft per key; replaying the key returns the same draft.
+         */
+        post: operations["create_studio_import_api_v1_projects__project_id__studio_imports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/studio-imports/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Studio Import Inventory */
+        get: operations["get_studio_import_inventory_api_v1_projects__project_id__studio_imports_documents__document_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/studio-imports/documents/{document_id}/items/{item_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Studio Import Item
+         * @description Record one explicit attach or exclude decision against the saved revision.
+         */
+        post: operations["resolve_studio_import_item_api_v1_projects__project_id__studio_imports_documents__document_id__items__item_id__resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/studio-imports/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect Studio Import
+         * @description Read-only: the inventory to import and the drafts already made from this source.
+         */
+        post: operations["inspect_studio_import_api_v1_projects__project_id__studio_imports_inspect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/studio-imports/{source_key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Studio Import Drafts
+         * @description The newest drafts made from one source, for Resume.
+         */
+        get: operations["list_studio_import_drafts_api_v1_projects__project_id__studio_imports__source_key__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/prompt-providers": {
         parameters: {
             query?: never;
@@ -883,6 +980,16 @@ export interface components {
             /** Width */
             width?: number | null;
         };
+        /** AttachImportAsset */
+        AttachImportAsset: {
+            /** Asset Id */
+            asset_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "attach_asset";
+        };
         /** Canvas */
         Canvas: {
             /** Duration In Frames */
@@ -990,6 +1097,15 @@ export interface components {
             document_id: string;
             /** Document Revision */
             document_revision: number;
+        };
+        /**
+         * CreateStudioImport
+         * @description Create a draft from a projected source; the server recomputes ``source_key``.
+         */
+        CreateStudioImport: {
+            source: components["schemas"]["StudioSourceProjection"];
+            /** Source Key */
+            source_key: string;
         };
         /** Crop */
         Crop: {
@@ -1139,6 +1255,14 @@ export interface components {
          * @enum {string}
          */
         EventKind: "workflow.queued" | "workflow.started" | "workflow.completed" | "workflow.failed" | "workflow.cancelled" | "stage.started" | "stage.progress" | "stage.completed" | "approval.required" | "approval.recorded" | "artifact.created" | "diagnostic.recorded";
+        /** ExcludeImportItem */
+        ExcludeImportItem: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "exclude";
+        };
         /** FootageImport */
         FootageImport: {
             /** Platform */
@@ -1655,6 +1779,16 @@ export interface components {
             /** Value */
             value: string;
         };
+        /**
+         * ResolveStudioImportItem
+         * @description One explicit decision for one inventory item, bound to the saved revision.
+         */
+        ResolveStudioImportItem: {
+            /** Base Revision */
+            base_revision: number;
+            /** Decision */
+            decision: components["schemas"]["ExcludeImportItem"] | components["schemas"]["AttachImportAsset"];
+        };
         /** ResolvedPromptDraft */
         ResolvedPromptDraft: {
             /** Sections */
@@ -2018,6 +2152,152 @@ export interface components {
              * @enum {string}
              */
             status: "queued" | "running" | "completed" | "waiting" | "failed" | "cancelled";
+        };
+        /**
+         * StudioDraft
+         * @description One Studio draft created from a source, with its latest saved revision.
+         */
+        StudioDraft: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Document Id */
+            document_id: string;
+            /** Revision */
+            revision: number;
+            /** Source Key */
+            source_key: string;
+        };
+        /**
+         * StudioDraftList
+         * @description The newest drafts made from one source; ``more_drafts`` says the list was cut.
+         */
+        StudioDraftList: {
+            /** Drafts */
+            drafts: components["schemas"]["StudioDraft"][];
+            /** More Drafts */
+            more_drafts: boolean;
+            /** Source Key */
+            source_key: string;
+        };
+        /**
+         * StudioImportInventory
+         * @description The decisions still owed, and already made, for one draft at its latest revision.
+         */
+        StudioImportInventory: {
+            /** Document Id */
+            document_id: string;
+            /** Items */
+            items: components["schemas"]["StudioImportItem"][];
+            /** Revision */
+            revision: number;
+            /** Source Key */
+            source_key: string;
+        };
+        /**
+         * StudioImportItem
+         * @description Public inventory entry: a media item to attach or a field to exclude. Never an address.
+         */
+        StudioImportItem: {
+            /** Asset Id */
+            asset_id?: string | null;
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "unresolved" | "attached" | "excluded";
+            /** Item Id */
+            item_id: string;
+            /** Label */
+            label: string;
+            /**
+             * Media Kind
+             * @enum {string}
+             */
+            media_kind: "video" | "image" | "none";
+            /** Order */
+            order: number | null;
+            /** Platform */
+            platform: string | null;
+            /** Reason */
+            reason: string | null;
+            /** Role */
+            role: ("main" | "main_footage" | "footage" | "comment") | null;
+            /** Scene Id */
+            scene_id: string | null;
+        };
+        /**
+         * StudioSourceInspection
+         * @description What opening a source in Studio would import, before anything is created.
+         */
+        StudioSourceInspection: {
+            /** Drafts */
+            drafts?: components["schemas"]["StudioDraft"][];
+            /** Items */
+            items: components["schemas"]["StudioImportItem"][];
+            /**
+             * More Drafts
+             * @default false
+             */
+            more_drafts: boolean;
+            /** Project Id */
+            project_id: string;
+            /** Source Key */
+            source_key: string;
+        };
+        /**
+         * StudioSourceItem
+         * @description One ordered creative input of a Content Set, without host paths or signed queries.
+         */
+        StudioSourceItem: {
+            /**
+             * Media Kind
+             * @enum {string}
+             */
+            media_kind: "video" | "image" | "none";
+            /** Order */
+            order: number;
+            /** Platform */
+            platform: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "main" | "main_footage" | "footage" | "comment";
+            /** Source Url */
+            source_url: string | null;
+            /** Text */
+            text: string | null;
+            /** Title */
+            title: string | null;
+            /** Trim Start Seconds */
+            trim_start_seconds: number | null;
+        };
+        /**
+         * StudioSourceProjection
+         * @description The whole first-mode source: one main item, then main footage, footage, and comments.
+         */
+        StudioSourceProjection: {
+            /** Items */
+            items: components["schemas"]["StudioSourceItem"][];
+            /** Unsupported */
+            unsupported: components["schemas"]["StudioUnsupportedField"][];
+        };
+        /**
+         * StudioUnsupportedField
+         * @description A creative field Studio cannot represent, named by where it came from.
+         */
+        StudioUnsupportedField: {
+            /** Field */
+            field: string;
+            /** Order */
+            order: number | null;
+            /** Reason */
+            reason: string;
+            /** Role */
+            role: ("main" | "main_footage" | "footage" | "comment") | null;
         };
         /** StyleChoice */
         StyleChoice: {
@@ -3789,6 +4069,197 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RenderJobView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_studio_import_api_v1_projects__project_id__studio_imports_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateStudioImport"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_studio_import_inventory_api_v1_projects__project_id__studio_imports_documents__document_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioImportInventory"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_studio_import_item_api_v1_projects__project_id__studio_imports_documents__document_id__items__item_id__resolve_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                document_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveStudioImportItem"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioImportInventory"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentRevisionConflictBody"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_studio_import_api_v1_projects__project_id__studio_imports_inspect_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StudioSourceProjection"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioSourceInspection"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_studio_import_drafts_api_v1_projects__project_id__studio_imports__source_key__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                source_key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioDraftList"];
                 };
             };
             /** @description Validation Error */

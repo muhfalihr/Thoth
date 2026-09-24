@@ -21,6 +21,7 @@ from thoth_control_plane.api.routes.internal_render_jobs import router as intern
 from thoth_control_plane.api.routes.prompt_lab import router as prompt_lab_router
 from thoth_control_plane.api.routes.prompt_proposals import router as prompt_proposal_router
 from thoth_control_plane.api.routes.render_jobs import router as render_job_router
+from thoth_control_plane.api.routes.studio_imports import router as studio_import_router
 from thoth_control_plane.api.routes.studio_review import router as studio_review_router
 from thoth_control_plane.api.routes.workflows import router as workflow_router
 from thoth_control_plane.application import (
@@ -36,7 +37,11 @@ from thoth_control_plane.application import (
 from thoth_control_plane.application.edit_documents import EditDocumentService
 from thoth_control_plane.application.editor_asset_ports import EditorAssetRepository
 from thoth_control_plane.application.editor_assets import EditorAssetService
-from thoth_control_plane.application.ports import EditDocumentRepository, PromptLabRepository
+from thoth_control_plane.application.ports import (
+    EditDocumentRepository,
+    PromptLabRepository,
+    StudioImportRepository,
+)
 from thoth_control_plane.application.prompt_lab import PromptLabService
 from thoth_control_plane.application.prompt_proposal_ports import (
     PromptProposalRepository as C2ProposalRepository,
@@ -47,6 +52,7 @@ from thoth_control_plane.application.prompt_proposal_ports import (
 from thoth_control_plane.application.prompt_proposals import PromptProposalService
 from thoth_control_plane.application.render_bundles import RenderPresetSettings
 from thoth_control_plane.application.render_jobs import RenderJobService
+from thoth_control_plane.application.studio_imports import StudioImportService
 from thoth_control_plane.application.studio_review import StudioReviewService
 from thoth_control_plane.application.studio_review_ports import StudioReviewRepository
 from thoth_control_plane.config import Settings
@@ -71,6 +77,9 @@ from thoth_control_plane.infrastructure.render_job_repository import PostgresRen
 from thoth_control_plane.infrastructure.renderer_gateway import (
     HttpRendererGateway,
     UnavailableRendererGateway,
+)
+from thoth_control_plane.infrastructure.studio_import_repository import (
+    PostgresStudioImportRepository,
 )
 from thoth_control_plane.infrastructure.studio_review_repository import (
     PostgresStudioReviewRepository,
@@ -152,6 +161,7 @@ def create_app(
     editor_asset_repository: EditorAssetRepository | None = None,
     render_job_service: RenderJobService | None = None,
     studio_review_repository: StudioReviewRepository | None = None,
+    studio_import_repository: StudioImportRepository | None = None,
 ) -> FastAPI:
     """Create an isolated v1 API application for the supplied workflow gateway."""
     settings = settings or Settings()  # type: ignore[call-arg]
@@ -173,6 +183,10 @@ def create_app(
         )
     if studio_review_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
         studio_review_repository = PostgresStudioReviewRepository(
+            settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
+        )
+    if studio_import_repository is None and settings.THOTH_EDITOR_DATABASE_URL is not None:
+        studio_import_repository = PostgresStudioImportRepository(
             settings.THOTH_EDITOR_DATABASE_URL.get_secret_value()
         )
     effective_catalog = (
@@ -247,6 +261,7 @@ def create_app(
     app.state.prompt_proposal_service = prompt_proposal_service
     app.state.render_job_service = render_service
     app.state.studio_review_service = StudioReviewService(studio_review_repository)
+    app.state.studio_import_service = StudioImportService(studio_import_repository)
 
     app.add_middleware(
         CORSMiddleware,
@@ -286,7 +301,13 @@ def create_app(
     # token, which would otherwise be reflected verbatim into the error body.
     # Rewrite only those cases to a stable safe code; every other validation
     # error keeps FastAPI's default handling untouched.
-    idempotent_suffixes = ("/prompt-lab/proposals", "/upgrade-timeline", "/render-jobs", "/retry")
+    idempotent_suffixes = (
+        "/prompt-lab/proposals",
+        "/upgrade-timeline",
+        "/render-jobs",
+        "/retry",
+        "/studio-imports",
+    )
 
     @app.exception_handler(RequestValidationError)
     async def safe_validation_error_handler(
@@ -320,6 +341,7 @@ def create_app(
     app.include_router(prompt_proposal_router, prefix="/api/v1")
     app.include_router(render_job_router, prefix="/api/v1")
     app.include_router(studio_review_router, prefix="/api/v1")
+    app.include_router(studio_import_router, prefix="/api/v1")
     # Unversioned and unpublished: only the private renderer ever calls these.
     app.include_router(internal_render_router)
     return app

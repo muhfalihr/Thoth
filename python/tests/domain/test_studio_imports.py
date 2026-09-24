@@ -164,3 +164,36 @@ def test_rejects_malformed_or_oversize_projections(mutate: Any) -> None:
     mutate(payload)
     with pytest.raises(ValidationError):
         StudioSourceProjection.model_validate(payload)
+
+
+def test_every_item_with_content_gets_a_scene_and_media_points_at_it() -> None:
+    payload = projection_payload()
+    payload["items"].append(
+        item("comment", 2, title=None, text=None, platform=None, source_url=None, media_kind="none")
+    )
+    inspection = inspect_source("project_001", StudioSourceProjection.model_validate(payload))
+    scenes = {entry.item_id: entry.scene_id for entry in inspection.items}
+
+    assert scenes["main_000"] == "scene_001"
+    assert scenes["main_footage_000"] == "scene_001"
+    assert scenes["footage_000"] == "scene_002"
+    assert scenes["footage_003"] == "scene_005"
+    assert scenes["comment_000"] == "scene_006"
+    assert scenes["unsupported_000"] is None
+
+
+def test_scenes_beyond_the_document_limit_are_reported_not_dropped() -> None:
+    payload = projection_payload()
+    payload["items"] = [
+        payload["items"][0],
+        *(item("footage", index) for index in range(120)),
+    ]
+    inspection = inspect_source("project_001", StudioSourceProjection.model_validate(payload))
+    by_id = {entry.item_id: entry for entry in inspection.items}
+
+    assert by_id["footage_098"].scene_id == "scene_100"
+    assert by_id["footage_099"].scene_id is None
+    overflow = by_id["scene_overflow"]
+    assert overflow.disposition == "unresolved"
+    assert overflow.label == "21 items beyond the 100-scene limit"
+    assert overflow.reason == "Studio documents hold at most 100 scenes"

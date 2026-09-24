@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, Field, model_validator
 
 from thoth_control_plane.domain.edit_documents import BodyText, ShortText
-from thoth_control_plane.domain.models import ProjectId, StrictModel
+from thoth_control_plane.domain.models import OpaqueId, ProjectId, StrictModel
 
 SourceRole: TypeAlias = Literal["main", "main_footage", "footage", "comment"]
 MediaKind: TypeAlias = Literal["video", "image", "none"]
@@ -19,6 +20,8 @@ Disposition: TypeAlias = Literal["unresolved", "attached", "excluded"]
 ROLE_ORDER: tuple[SourceRole, ...] = ("main", "main_footage", "footage", "comment")
 MAX_SOURCE_ITEMS = 400
 MAX_UNSUPPORTED_FIELDS = 400
+SCENE_LIMIT = 100
+DRAFT_LIST_LIMIT = 20
 SourceKey = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 ItemOrder = Annotated[int, Field(ge=0, lt=MAX_SOURCE_ITEMS)]
 Reason = Annotated[str, Field(min_length=1, max_length=200)]
@@ -93,8 +96,19 @@ class StudioImportItem(StrictModel):
     label: Annotated[str, Field(min_length=1, max_length=300)]
     platform: str | None
     media_kind: MediaKind
+    scene_id: OpaqueId | None
     reason: Reason | None
     disposition: Disposition
+    asset_id: OpaqueId | None = None
+
+
+class StudioDraft(StrictModel):
+    """One Studio draft created from a source, with its latest saved revision."""
+
+    document_id: OpaqueId
+    source_key: SourceKey
+    revision: Annotated[int, Field(gt=0)]
+    created_at: datetime
 
 
 class StudioSourceInspection(StrictModel):
@@ -103,6 +117,50 @@ class StudioSourceInspection(StrictModel):
     project_id: ProjectId
     source_key: SourceKey
     items: list[StudioImportItem]
+    drafts: Annotated[list[StudioDraft], Field(max_length=DRAFT_LIST_LIMIT)] = Field(
+        default_factory=list
+    )
+    more_drafts: bool = False
+
+
+class StudioDraftList(StrictModel):
+    """The newest drafts made from one source; ``more_drafts`` says the list was cut."""
+
+    source_key: SourceKey
+    drafts: Annotated[list[StudioDraft], Field(max_length=DRAFT_LIST_LIMIT)]
+    more_drafts: bool
+
+
+class StudioImportInventory(StrictModel):
+    """The decisions still owed, and already made, for one draft at its latest revision."""
+
+    document_id: OpaqueId
+    source_key: SourceKey
+    revision: Annotated[int, Field(gt=0)]
+    items: list[StudioImportItem]
+
+
+class CreateStudioImport(StrictModel):
+    """Create a draft from a projected source; the server recomputes ``source_key``."""
+
+    source: StudioSourceProjection
+    source_key: SourceKey
+
+
+class ExcludeImportItem(StrictModel):
+    kind: Literal["exclude"]
+
+
+class AttachImportAsset(StrictModel):
+    kind: Literal["attach_asset"]
+    asset_id: OpaqueId
+
+
+class ResolveStudioImportItem(StrictModel):
+    """One explicit decision for one inventory item, bound to the saved revision."""
+
+    base_revision: Annotated[int, Field(gt=0)]
+    decision: Annotated[ExcludeImportItem | AttachImportAsset, Field(discriminator="kind")]
 
 
 def source_key(projection: StudioSourceProjection) -> str:
@@ -111,6 +169,19 @@ def source_key(projection: StudioSourceProjection) -> str:
         projection.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def scene_items(projection: StudioSourceProjection) -> list[StudioSourceItem]:
+    """Every item that carries text or media, in source order: one scene each.
+
+    Main footage is context for the main scene, never a scene of its own.
+    """
+    return [
+        item
+        for item in projection.items
+        if item.role != "main_footage"
+        and (item.role == "main" or item.title or item.text or item.media_kind != "none")
+    ]
 
 
 def _media_label(item: StudioSourceItem) -> str:
@@ -123,6 +194,12 @@ def _media_label(item: StudioSourceItem) -> str:
 
 def inventory(projection: StudioSourceProjection) -> list[StudioImportItem]:
     """Every media item and unsupported field, each awaiting an attach or exclude decision."""
+    ordered = scene_items(projection)
+    scenes = {
+        (item.role, item.order): f"scene_{index:03d}"
+        for index, item in enumerate(ordered[:SCENE_LIMIT], start=1)
+    }
+    scenes[("main_footage", 0)] = "scene_001"
     media = [
         StudioImportItem(
             item_id=f"{item.role}_{item.order:03d}",
@@ -131,6 +208,7 @@ def inventory(projection: StudioSourceProjection) -> list[StudioImportItem]:
             label=_media_label(item),
             platform=item.platform,
             media_kind=item.media_kind,
+            scene_id=scenes.get((item.role, item.order)),
             reason=None,
             disposition="unresolved",
         )
@@ -145,11 +223,27 @@ def inventory(projection: StudioSourceProjection) -> list[StudioImportItem]:
             label=field.field,
             platform=None,
             media_kind="none",
+            scene_id=None,
             reason=field.reason,
             disposition="unresolved",
         )
         for index, field in enumerate(projection.unsupported)
     ]
+    overflow = len(ordered) - SCENE_LIMIT
+    if overflow > 0:
+        unsupported.append(
+            StudioImportItem(
+                item_id="scene_overflow",
+                role=None,
+                order=None,
+                label=f"{overflow} items beyond the {SCENE_LIMIT}-scene limit",
+                platform=None,
+                media_kind="none",
+                scene_id=None,
+                reason=f"Studio documents hold at most {SCENE_LIMIT} scenes",
+                disposition="unresolved",
+            )
+        )
     return media + unsupported
 
 

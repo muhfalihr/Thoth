@@ -13,12 +13,19 @@ from thoth_control_plane.domain import (
     WorkflowSummary,
 )
 from thoth_control_plane.domain.edit_document_operations import EditDocumentOperation
-from thoth_control_plane.domain.edit_document_v2 import EditDocument
+from thoth_control_plane.domain.edit_document_v2 import EditDocument, EditDocumentV2
 from thoth_control_plane.domain.prompts import (
     ProjectPromptBinding,
     PromptStageId,
     PromptTemplateRevision,
     SaveProjectPromptBindingRequest,
+)
+from thoth_control_plane.domain.studio_imports import (
+    AttachImportAsset,
+    ExcludeImportItem,
+    StudioDraft,
+    StudioImportInventory,
+    StudioImportItem,
 )
 
 
@@ -132,6 +139,64 @@ class EditDocumentRepository(Protocol):
         base_revision: int,
         operations: list[EditDocumentOperation],
     ) -> EditDocument: ...
+
+
+class StudioImportConflict(Exception):
+    """The idempotency key already created a draft from a different source."""
+
+
+class StudioImportSourceMismatch(Exception):
+    """The caller's source key is not the one the server derives from the source."""
+
+
+class StudioImportItemNotFound(Exception):
+    """The draft's inventory has no item with this ID."""
+
+
+class StudioImportItemResolved(Exception):
+    """The item already carries its one final decision."""
+
+
+class StudioImportDecisionRejected(Exception):
+    """The decision cannot apply to this item; ``code`` says why."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class StudioImportRepository(Protocol):
+    """Append-only storage for Studio drafts, their source inventory, and its decisions."""
+
+    async def create_draft(
+        self,
+        *,
+        project_id: str,
+        source_key: str,
+        idempotency_key: str,
+        document: EditDocumentV2,
+        inventory: list[StudioImportItem],
+    ) -> StudioDraft:
+        """Write the first revision and its inventory together, or replay a known key."""
+        ...
+
+    async def list_drafts(
+        self, *, project_id: str, source_key: str, limit: int
+    ) -> list[StudioDraft]: ...
+
+    async def get_inventory(
+        self, *, project_id: str, document_id: str
+    ) -> StudioImportInventory | None: ...
+
+    async def resolve_item(
+        self,
+        *,
+        project_id: str,
+        document_id: str,
+        item_id: str,
+        base_revision: int,
+        decision: ExcludeImportItem | AttachImportAsset,
+    ) -> StudioImportInventory: ...
 
 
 class PromptTemplateNotFound(Exception):

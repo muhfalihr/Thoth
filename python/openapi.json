@@ -429,6 +429,27 @@
         "title": "AssetRef",
         "type": "object"
       },
+      "AttachImportAsset": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "attach_asset",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "asset_id"
+        ],
+        "title": "AttachImportAsset",
+        "type": "object"
+      },
       "Canvas": {
         "additionalProperties": false,
         "properties": {
@@ -716,6 +737,26 @@
           "document_revision"
         ],
         "title": "CreateRenderJobRequest",
+        "type": "object"
+      },
+      "CreateStudioImport": {
+        "additionalProperties": false,
+        "description": "Create a draft from a projected source; the server recomputes ``source_key``.",
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/StudioSourceProjection"
+          },
+          "source_key": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "source_key"
+        ],
+        "title": "CreateStudioImport",
         "type": "object"
       },
       "Crop": {
@@ -1222,6 +1263,21 @@
         ],
         "title": "EventKind",
         "type": "string"
+      },
+      "ExcludeImportItem": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "exclude",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ExcludeImportItem",
+        "type": "object"
       },
       "FootageImport": {
         "additionalProperties": false,
@@ -2635,6 +2691,41 @@
         "title": "ReplaceText",
         "type": "object"
       },
+      "ResolveStudioImportItem": {
+        "additionalProperties": false,
+        "description": "One explicit decision for one inventory item, bound to the saved revision.",
+        "properties": {
+          "base_revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "decision": {
+            "discriminator": {
+              "mapping": {
+                "attach_asset": "#/components/schemas/AttachImportAsset",
+                "exclude": "#/components/schemas/ExcludeImportItem"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExcludeImportItem"
+              },
+              {
+                "$ref": "#/components/schemas/AttachImportAsset"
+              }
+            ],
+            "title": "Decision"
+          }
+        },
+        "required": [
+          "base_revision",
+          "decision"
+        ],
+        "title": "ResolveStudioImportItem",
+        "type": "object"
+      },
       "ResolvedPromptDraft": {
         "additionalProperties": false,
         "properties": {
@@ -3598,6 +3689,465 @@
           "status"
         ],
         "title": "StageSummary",
+        "type": "object"
+      },
+      "StudioDraft": {
+        "additionalProperties": false,
+        "description": "One Studio draft created from a source, with its latest saved revision.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "source_key": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "source_key",
+          "revision",
+          "created_at"
+        ],
+        "title": "StudioDraft",
+        "type": "object"
+      },
+      "StudioDraftList": {
+        "additionalProperties": false,
+        "description": "The newest drafts made from one source; ``more_drafts`` says the list was cut.",
+        "properties": {
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/StudioDraft"
+            },
+            "maxItems": 20,
+            "title": "Drafts",
+            "type": "array"
+          },
+          "more_drafts": {
+            "title": "More Drafts",
+            "type": "boolean"
+          },
+          "source_key": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_key",
+          "drafts",
+          "more_drafts"
+        ],
+        "title": "StudioDraftList",
+        "type": "object"
+      },
+      "StudioImportInventory": {
+        "additionalProperties": false,
+        "description": "The decisions still owed, and already made, for one draft at its latest revision.",
+        "properties": {
+          "document_id": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudioImportItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "source_key": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id",
+          "source_key",
+          "revision",
+          "items"
+        ],
+        "title": "StudioImportInventory",
+        "type": "object"
+      },
+      "StudioImportItem": {
+        "additionalProperties": false,
+        "description": "Public inventory entry: a media item to attach or a field to exclude. Never an address.",
+        "properties": {
+          "asset_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "disposition": {
+            "enum": [
+              "unresolved",
+              "attached",
+              "excluded"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "item_id": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Item Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "media_kind": {
+            "enum": [
+              "video",
+              "image",
+              "none"
+            ],
+            "title": "Media Kind",
+            "type": "string"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 400.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "main",
+                  "main_footage",
+                  "footage",
+                  "comment"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "scene_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          }
+        },
+        "required": [
+          "item_id",
+          "role",
+          "order",
+          "label",
+          "platform",
+          "media_kind",
+          "scene_id",
+          "reason",
+          "disposition"
+        ],
+        "title": "StudioImportItem",
+        "type": "object"
+      },
+      "StudioSourceInspection": {
+        "additionalProperties": false,
+        "description": "What opening a source in Studio would import, before anything is created.",
+        "properties": {
+          "drafts": {
+            "items": {
+              "$ref": "#/components/schemas/StudioDraft"
+            },
+            "maxItems": 20,
+            "title": "Drafts",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudioImportItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "more_drafts": {
+            "default": false,
+            "title": "More Drafts",
+            "type": "boolean"
+          },
+          "project_id": {
+            "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{0,127}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_key": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "source_key",
+          "items"
+        ],
+        "title": "StudioSourceInspection",
+        "type": "object"
+      },
+      "StudioSourceItem": {
+        "additionalProperties": false,
+        "description": "One ordered creative input of a Content Set, without host paths or signed queries.",
+        "properties": {
+          "media_kind": {
+            "enum": [
+              "video",
+              "image",
+              "none"
+            ],
+            "title": "Media Kind",
+            "type": "string"
+          },
+          "order": {
+            "exclusiveMaximum": 400.0,
+            "minimum": 0.0,
+            "title": "Order",
+            "type": "integer"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "role": {
+            "enum": [
+              "main",
+              "main_footage",
+              "footage",
+              "comment"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "trim_start_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 86400.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trim Start Seconds"
+          }
+        },
+        "required": [
+          "role",
+          "order",
+          "title",
+          "text",
+          "platform",
+          "source_url",
+          "media_kind",
+          "trim_start_seconds"
+        ],
+        "title": "StudioSourceItem",
+        "type": "object"
+      },
+      "StudioSourceProjection": {
+        "additionalProperties": false,
+        "description": "The whole first-mode source: one main item, then main footage, footage, and comments.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudioSourceItem"
+            },
+            "maxItems": 400,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "unsupported": {
+            "items": {
+              "$ref": "#/components/schemas/StudioUnsupportedField"
+            },
+            "maxItems": 400,
+            "title": "Unsupported",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "unsupported"
+        ],
+        "title": "StudioSourceProjection",
+        "type": "object"
+      },
+      "StudioUnsupportedField": {
+        "additionalProperties": false,
+        "description": "A creative field Studio cannot represent, named by where it came from.",
+        "properties": {
+          "field": {
+            "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+            "title": "Field",
+            "type": "string"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "exclusiveMaximum": 400.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
+          },
+          "reason": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "main",
+                  "main_footage",
+                  "footage",
+                  "comment"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "required": [
+          "field",
+          "role",
+          "order",
+          "reason"
+        ],
+        "title": "StudioUnsupportedField",
         "type": "object"
       },
       "StyleChoice": {
@@ -7327,6 +7877,371 @@
           }
         },
         "summary": "Retry Render Job"
+      }
+    },
+    "/api/v1/projects/{project_id}/studio-imports": {
+      "post": {
+        "description": "Create one draft per key; replaying the key returns the same draft.",
+        "operationId": "create_studio_import_api_v1_projects__project_id__studio_imports_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateStudioImport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Studio Import"
+      }
+    },
+    "/api/v1/projects/{project_id}/studio-imports/documents/{document_id}": {
+      "get": {
+        "operationId": "get_studio_import_inventory_api_v1_projects__project_id__studio_imports_documents__document_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioImportInventory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Studio Import Inventory"
+      }
+    },
+    "/api/v1/projects/{project_id}/studio-imports/documents/{document_id}/items/{item_id}/resolve": {
+      "post": {
+        "description": "Record one explicit attach or exclude decision against the saved revision.",
+        "operationId": "resolve_studio_import_item_api_v1_projects__project_id__studio_imports_documents__document_id__items__item_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveStudioImportItem"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioImportInventory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentRevisionConflictBody"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Studio Import Item"
+      }
+    },
+    "/api/v1/projects/{project_id}/studio-imports/inspect": {
+      "post": {
+        "description": "Read-only: the inventory to import and the drafts already made from this source.",
+        "operationId": "inspect_studio_import_api_v1_projects__project_id__studio_imports_inspect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudioSourceProjection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioSourceInspection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect Studio Import"
+      }
+    },
+    "/api/v1/projects/{project_id}/studio-imports/{source_key}": {
+      "get": {
+        "description": "The newest drafts made from one source, for Resume.",
+        "operationId": "list_studio_import_drafts_api_v1_projects__project_id__studio_imports__source_key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "source_key",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Source Key",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioDraftList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Studio Import Drafts"
       }
     },
     "/api/v1/prompt-providers": {
