@@ -27,8 +27,9 @@ import {
   timelineIssues,
 } from "./timeline_domain";
 import { StudioPreview } from "./StudioPreview";
+import { StudioJobNav } from "./StudioJobNav";
 import { StudioReviewPanel, type StudioReviewClient } from "./StudioReviewPanel";
-import { useStudioViewport, type StudioPane } from "./studio_viewport";
+import { useStudioViewport, type StudioEditPane, type StudioJob } from "./studio_viewport";
 import { usePlayerTimeline, type PlayerTimelineRef } from "./usePlayerTimeline";
 
 type Props = {
@@ -65,9 +66,10 @@ const toolbarButton =
 
 function Editor({ client, projectId, documentId, onBack, document }: Props & { document: EditDocument }) {
   const [state, dispatch] = useReducer(editorReducer, document, createEditorState);
-  // One pane choice serves every surface: desktop shows Prompt Lab or the
-  // workstation, compact screens show exactly the chosen pane.
-  const [pane, setPane] = useState<StudioPane>("preview");
+  // The job is the destination at every width; compact screens also pick one
+  // Edit pane at a time.
+  const [job, setJob] = useState<StudioJob>("edit");
+  const [editPane, setEditPane] = useState<StudioEditPane>("preview");
   const [promptLabVisited, setPromptLabVisited] = useState(false);
   const viewport = useStudioViewport();
   const compact = viewport === "phone" || viewport === "tablet";
@@ -108,21 +110,22 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
   const backDisabled = saveStatus !== "saved";
   // An upgrade replaces the document, so nothing may edit it until it settles.
   const upgrading = state.upgradeStatus === "running";
+  const editing = job === "edit";
   const workstationStyle = compact
     ? undefined
     : ({
         "--scene-board-width": `${sceneBoardWidth}rem`,
         "--inspector-width": `${inspectorWidth}rem`,
         gridTemplateColumns: [
-          sceneRegionOpen && "var(--scene-board-width)",
+          editing && sceneRegionOpen && "var(--scene-board-width)",
           "minmax(0,1fr)",
-          inspectorRegionOpen && "var(--inspector-width)",
+          editing && inspectorRegionOpen && "var(--inspector-width)",
         ]
           .filter(Boolean)
           .join(" "),
       } as CSSProperties);
-  const reviewing = compact && pane === "review";
-  const previewVisible = compact ? pane === "preview" || pane === "review" : pane !== "prompts";
+  const reviewing = job === "review";
+  const previewVisible = reviewing || (editing && (!compact || editPane === "preview"));
   const { pause } = player;
 
   // A hidden preview must not keep playing; showing it again never resumes it.
@@ -130,9 +133,9 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
     if (!previewVisible) pause();
   }, [pause, previewVisible]);
 
-  const selectPane = (next: StudioPane) => {
-    if (next === "prompts") setPromptLabVisited(true);
-    setPane(next);
+  const selectJob = (next: StudioJob) => {
+    if (next === "prompt") setPromptLabVisited(true);
+    setJob(next);
   };
 
   useEffect(() => {
@@ -312,6 +315,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         <span id={backDescriptionId} className="sr-only">
           Back is available after changes are saved and Studio is online.
         </span>
+        <StudioJobNav selected={job} onSelect={selectJob} />
         <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
         <button
           type="button"
@@ -370,7 +374,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               : "Enabling the advanced timeline needs a desktop-width screen."}
           </p>
         ) : null}
-        {compact ? null : (
+        {compact || !editing ? null : (
           <div className="flex flex-wrap items-center gap-3 px-2 text-xs text-muted-foreground" aria-label="Workspace layout">
             {collapsible ? (
               <button
@@ -468,70 +472,30 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
         </div>
       )}
 
-      {compact ? (
+      {compact && editing ? (
         <CompactStudioNav
           panes={[
             { id: "scenes", label: "Scenes" },
             { id: "preview", label: "Preview" },
-            { id: "edit", label: "Edit" },
-            { id: "prompts", label: "Prompt Lab" },
-            { id: "review", label: "Review" },
-            ...(renderClient ? [{ id: "renders" as const, label: "Renders" }] : []),
+            { id: "controls", label: "Controls" },
           ]}
-          selected={pane}
-          onSelect={selectPane}
+          selected={editPane}
+          onSelect={setEditPane}
         />
-      ) : (
-        <div
-          role="tablist"
-          aria-label="Studio workspace"
-          className="flex gap-2 border-b border-border bg-card px-4 py-1"
-        >
-          <button
-            type="button"
-            role="tab"
-            id="studio-tab-scenes"
-            aria-selected={pane !== "prompts"}
-            aria-controls="studio-panel-scenes"
-            className={`${toolbarButton} ${pane !== "prompts" ? "bg-accent" : ""}`}
-            onClick={() => {
-              if (pane === "prompts") setPane("preview");
-            }}
-          >
-            Scenes
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="studio-tab-prompts"
-            aria-selected={pane === "prompts"}
-            aria-controls="studio-panel-prompts"
-            className={`${toolbarButton} ${pane === "prompts" ? "bg-accent" : ""}`}
-            onClick={() => selectPane("prompts")}
-          >
-            Prompt Lab
-          </button>
-        </div>
-      )}
+      ) : null}
 
-      <div
-        role={compact ? undefined : "tabpanel"}
-        id="studio-panel-scenes"
-        aria-label="Scenes"
-        hidden={pane === "prompts"}
-        className="flex min-h-0 flex-1 flex-col"
-      >
+      <div id="studio-panel-scenes" hidden={job === "prompt"} className="flex min-h-0 flex-1 flex-col">
         <div
           aria-label="Guided editing workstation"
-          // The Renders pane shows nothing from the workstation, so it yields the space.
-          hidden={compact && pane === "renders"}
+          // Render shows nothing from the workstation, so it yields the space.
+          hidden={job === "render"}
           style={workstationStyle}
           className={`grid min-h-0 flex-1 ${compact ? "grid-cols-1 overflow-auto" : "overflow-hidden"}`}
         >
           <div
             id="studio-region-scenes"
             className="contents"
-            hidden={compact ? pane !== "scenes" : !sceneRegionOpen}
+            hidden={!editing || (compact ? editPane !== "scenes" : !sceneRegionOpen)}
           >
             {advanced ? (
               assetClient ? (
@@ -555,14 +519,14 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
             )}
           </div>
           <main
-            hidden={compact && !previewVisible}
+            hidden={!previewVisible}
             className={`flex min-w-0 flex-col gap-3 bg-black/40 p-4 ${compact ? "min-h-[28rem]" : "min-h-0"}`}
           >
             {reviewing ? (
               <p className="text-sm text-muted-foreground">Reviewing saved revision {base.revision}</p>
             ) : null}
             <StudioPreview
-              // Review shows what was saved; every other pane shows the draft.
+              // Review shows what was saved; Edit shows the draft.
               document={reviewing ? base : state.draft}
               onPlayer={setAttachedPlayer}
               embedded
@@ -578,7 +542,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               }
             />
             {advanced && timeline ? (
-              <>
+              <div className="contents" hidden={reviewing}>
                 <Timeline
                   state={state}
                   dispatch={dispatch}
@@ -592,11 +556,11 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                   mode={state.mode}
                   dispatch={dispatch}
                 />
-              </>
+              </div>
             ) : null}
             {reviewClient ? (
-              // Beside the one shared preview; compact panes hide it without unmounting unsent text.
-              <div hidden={compact && pane !== "review"} className={compact ? undefined : "max-h-[40%] shrink-0 overflow-y-auto"}>
+              // Beside the one shared preview; other jobs hide it without unmounting unsent text.
+              <div hidden={!reviewing} className={compact ? undefined : "max-h-[40%] shrink-0 overflow-y-auto"}>
                 <StudioReviewPanel
                   client={reviewClient}
                   projectId={projectId}
@@ -610,12 +574,16 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
                   onLoadRevision={loadNewerRevision}
                 />
               </div>
-            ) : null}
+            ) : (
+              <p role="status" hidden={!reviewing} className="text-sm text-muted-foreground">
+                Review is not available in this Studio session. Your draft is unaffected.
+              </p>
+            )}
           </main>
           <div
             id="studio-region-inspector"
             className="contents"
-            hidden={compact ? pane !== "edit" : !inspectorRegionOpen}
+            hidden={!editing || (compact ? editPane !== "controls" : !inspectorRegionOpen)}
           >
             {advanced && timeline ? (
               <TimelineInspector
@@ -655,7 +623,7 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
           </div>
         </div>
         {renderClient ? (
-          <div className="contents" hidden={compact && pane !== "renders"}>
+          <div className="contents" hidden={job !== "render"}>
             <RenderPanel
               client={renderClient}
               projectId={projectId}
@@ -676,16 +644,14 @@ function Editor({ client, projectId, documentId, onBack, document }: Props & { d
               }}
             />
           </div>
-        ) : null}
+        ) : (
+          <p role="status" hidden={job !== "render"} className="px-4 py-3 text-sm text-muted-foreground">
+            Rendering is not available in this Studio session. Your draft is unaffected.
+          </p>
+        )}
       </div>
 
-      <div
-        role={compact ? undefined : "tabpanel"}
-        id="studio-panel-prompts"
-        aria-label="Prompt Lab"
-        hidden={pane !== "prompts"}
-        className="flex min-h-0 flex-1 flex-col"
-      >
+      <div id="studio-panel-prompts" hidden={job !== "prompt"} className="flex min-h-0 flex-1 flex-col">
         {promptLabVisited ? (
           <PromptLab client={client} projectId={projectId} compactTextOnly={viewport === "phone"} />
         ) : null}

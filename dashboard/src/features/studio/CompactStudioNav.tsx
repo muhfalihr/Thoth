@@ -1,9 +1,9 @@
-import type { StudioPane } from "./studio_viewport";
+import type { StudioEditPane } from "./studio_viewport";
 
 type CompactStudioNavProps = {
-  panes: readonly { id: StudioPane; label: string }[];
-  selected: StudioPane;
-  onSelect: (pane: StudioPane) => void;
+  panes: readonly { id: StudioEditPane; label: string }[];
+  selected: StudioEditPane;
+  onSelect: (pane: StudioEditPane) => void;
 };
 
 export function CompactStudioNav({ panes, selected, onSelect }: CompactStudioNavProps) {

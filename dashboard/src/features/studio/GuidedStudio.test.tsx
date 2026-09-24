@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, expect, jest, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect } from "react";
 import userEvent from "@testing-library/user-event";
 import type { EditDocument, EditDocumentPatch } from "@/api/control-plane";
@@ -30,6 +30,9 @@ mock.module("./StudioPreview", () => ({
 }));
 
 const promptClientBase = createC2ClientFixtureBase();
+const jobButton = (name: string) =>
+  within(screen.getByRole("navigation", { name: "Studio jobs" })).getByRole("button", { name });
+const job = (name: string) => fireEvent.click(jobButton(name));
 
 const document = {
   schema_version: 1,
@@ -193,7 +196,7 @@ test("associates a safe inline validation message with a blank heading", async (
   }
 });
 
-test("switches between Scenes and Prompt Lab tabs and preserves both drafts", async () => {
+test("switches between the Edit and Prompt jobs and preserves both drafts", async () => {
   const { GuidedStudio } = await import("./GuidedStudio");
   const user = userEvent.setup();
   const patchEditDocument = mock(async (_projectId: string, _documentId: string, patch: EditDocumentPatch) => {
@@ -225,19 +228,19 @@ test("switches between Scenes and Prompt Lab tabs and preserves both drafts", as
     />,
   );
   const heading = await screen.findByLabelText("Heading");
-  const scenesTab = screen.getByRole("tab", { name: "Scenes" });
-  const promptTab = screen.getByRole("tab", { name: "Prompt Lab" });
+  const scenesTab = jobButton("Edit");
+  const promptTab = jobButton("Prompt");
 
-  expect(scenesTab.getAttribute("aria-selected")).toBe("true");
-  expect(promptTab.getAttribute("aria-selected")).toBe("false");
+  expect(scenesTab.getAttribute("aria-current")).toBe("page");
+  expect(promptTab.hasAttribute("aria-current")).toBe(false);
   expect(scenesTab.tagName).toBe("BUTTON");
   expect(promptTab.tagName).toBe("BUTTON");
 
   await user.type(heading, "Kept heading");
   await user.click(promptTab);
 
-  expect(promptTab.getAttribute("aria-selected")).toBe("true");
-  expect(scenesTab.getAttribute("aria-selected")).toBe("false");
+  expect(promptTab.getAttribute("aria-current")).toBe("page");
+  expect(scenesTab.hasAttribute("aria-current")).toBe(false);
   const override = (await screen.findByLabelText(
     "Project override",
   )) as HTMLTextAreaElement;
@@ -251,7 +254,7 @@ test("switches between Scenes and Prompt Lab tabs and preserves both drafts", as
   expect((screen.getByLabelText("Project override") as HTMLTextAreaElement).value).toBe("Keep it concise");
 });
 
-test("keeps both tab panels mounted and toggles only the native hidden attribute", async () => {
+test("keeps the Edit and Prompt destinations mounted and toggles only the native hidden attribute", async () => {
   const { GuidedStudio } = await import("./GuidedStudio");
   const user = userEvent.setup();
   render(
@@ -267,7 +270,7 @@ test("keeps both tab panels mounted and toggles only the native hidden attribute
     />,
   );
   await screen.findByLabelText("Heading");
-  const scenesPanel = screen.getByRole("tabpanel", { name: "Scenes", hidden: true });
+  const scenesPanel = globalThis.document.getElementById("studio-panel-scenes") as HTMLElement;
   const promptPanel = globalThis.document.getElementById(
     "studio-panel-prompts",
   ) as HTMLElement;
@@ -277,7 +280,7 @@ test("keeps both tab panels mounted and toggles only the native hidden attribute
   expect(globalThis.document.getElementById("studio-panel-scenes")).toBe(scenesPanel);
   expect(globalThis.document.getElementById("studio-panel-prompts")).toBe(promptPanel);
 
-  await user.click(screen.getByRole("tab", { name: "Prompt Lab" }));
+  await user.click(jobButton("Prompt"));
 
   expect(scenesPanel.hidden).toBe(true);
   expect(promptPanel.hidden).toBe(false);
@@ -424,8 +427,8 @@ test("keeps Prompt Lab reachable from an advanced document", async () => {
 
   expect(await screen.findByLabelText("Timeline")).toBeDefined();
   expect(screen.queryByRole("button", { name: "Enable advanced timeline" })).toBeNull();
-  fireEvent.click(screen.getByRole("tab", { name: "Prompt Lab" }));
-  expect(screen.getByRole("tabpanel", { name: "Prompt Lab" }).hasAttribute("hidden")).toBe(false);
+  job("Prompt");
+  expect((await screen.findByRole("region", { name: "Prompt Lab" })).closest("[hidden]") === null).toBe(true);
 });
 
 /** Mount an advanced document with a client that always answers. */
@@ -478,8 +481,8 @@ test("autosaves a timeline edit through the same patch path", async () => {
 test("keeps an unsaved timeline edit across a Prompt Lab round trip", async () => {
   await mountAdvanced();
   fireEvent.click(screen.getByRole("button", { name: "Mute Music" }));
-  fireEvent.click(screen.getByRole("tab", { name: "Prompt Lab" }));
-  fireEvent.click(screen.getByRole("tab", { name: "Scenes" }));
+  job("Prompt");
+  job("Edit");
 
   expect(screen.getByRole("button", { name: "Unmute Music" })).toBeDefined();
   expect(screen.getByText("Unsaved changes")).toBeDefined();
@@ -614,8 +617,8 @@ test("keeps unsaved version 2 edits across Simple, Advanced, and Prompt Lab", as
   fireEvent.change(screen.getByLabelText("Heading"), { target: { value: "Round trip heading" } });
 
   fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
-  fireEvent.click(screen.getByRole("tab", { name: "Prompt Lab" }));
-  fireEvent.click(screen.getByRole("tab", { name: "Scenes" }));
+  job("Prompt");
+  job("Edit");
   fireEvent.click(screen.getByRole("button", { name: "Simple" }));
 
   expect((screen.getByLabelText("Heading") as HTMLInputElement).value).toBe("Round trip heading");
@@ -829,10 +832,12 @@ test("offers render controls only where the control plane supports rendering", a
       onBack={() => {}}
     />,
   );
+  expect(await screen.findByLabelText("Heading")).toBeDefined();
+  job("Render");
   expect(await screen.findByRole("button", { name: "Render video" })).toBeDefined();
-  // The editor, Prompt Lab tab, and preview are untouched by the new surface.
+  // The editor, Prompt job, and preview are untouched by the new surface.
   expect(screen.getByLabelText("Heading")).toBeDefined();
-  expect(screen.getByRole("tab", { name: "Prompt Lab" })).toBeDefined();
+  expect(jobButton("Prompt")).toBeDefined();
   expect(screen.getByLabelText("Draft preview")).toBeDefined();
 });
 
@@ -849,6 +854,7 @@ test("an unsaved draft cannot be rendered and says so", async () => {
     <GuidedStudio client={client} projectId="project_001" documentId="document_001" onBack={() => {}} />,
   );
   const heading = await screen.findByLabelText("Heading");
+  job("Render");
   const button = await screen.findByRole("button", { name: "Render video" });
   expect(button).toHaveProperty("disabled", false);
 
@@ -901,6 +907,7 @@ test("a saved revision is what gets rendered, and the draft never leaves the edi
   // A new saved revision is a new render generation: the panel re-reads.
   await waitFor(() => expect(client.listRenderJobs).toHaveBeenCalledTimes(2));
 
+  job("Render");
   fireEvent.click(screen.getByRole("button", { name: "Render video" }));
   const confirmation = screen.getByRole("group", { name: "Render this version?" });
   expect(confirmation.textContent).not.toContain("Edited heading");
@@ -934,6 +941,8 @@ test("the render confirmation names the template the saved document carries", as
   render(
     <GuidedStudio client={client} projectId="project_001" documentId="document_001" onBack={() => {}} />,
   );
+  await screen.findByLabelText("Draft preview");
+  job("Render");
   const button = await screen.findByRole("button", { name: "Render video" });
   await waitFor(() => expect(button).toHaveProperty("disabled", false));
   fireEvent.click(button);
@@ -965,6 +974,8 @@ test("a blocking timeline issue stops a render whose text is valid", async () =>
   render(
     <GuidedStudio client={client} projectId="project_001" documentId="document_002" onBack={() => {}} />,
   );
+  await screen.findByLabelText("Draft preview");
+  job("Render");
   const button = await screen.findByRole("button", { name: "Render video" });
 
   expect(button).toHaveProperty("disabled", true);

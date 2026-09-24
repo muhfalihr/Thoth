@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 
 import { afterEach, expect, jest, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useEffect } from "react";
 import {
   StudioReviewRequestError,
@@ -106,12 +106,17 @@ async function renderStudio(
 
 // Bun pretty-prints a mismatched DOM node without bound, so assertions compare booleans.
 const isHidden = (element: Element) => element.closest("[hidden]") !== null;
-const pane = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+const job = (name: string) =>
+  fireEvent.click(within(screen.getByRole("navigation", { name: "Studio jobs" })).getByRole("button", { name }));
+const pane = (name: string) =>
+  fireEvent.click(within(screen.getByRole("navigation", { name: "Studio panes" })).getByRole("button", { name }));
 
-test("offers compact panes only below desktop width and keeps width controls on desktop", async () => {
+test("offers the four jobs at every width and compact Edit panes only below desktop width", async () => {
   await renderStudio(375);
-  expect(screen.getByRole("navigation", { name: "Studio panes" })).toBeDefined();
-  expect(screen.queryByRole("tablist", { name: "Studio workspace" }) === null).toBe(true);
+  expect(screen.getByRole("navigation", { name: "Studio jobs" })).toBeDefined();
+  const panes = within(screen.getByRole("navigation", { name: "Studio panes" })).getAllByRole("button");
+  expect(panes.map((button) => button.textContent)).toEqual(["Scenes", "Preview", "Controls"]);
+  expect(screen.queryByRole("tablist") === null).toBe(true);
   expect(screen.queryByLabelText("Scene board width") === null).toBe(true);
   expect(screen.getByText("Saved")).toBeDefined();
 
@@ -121,7 +126,8 @@ test("offers compact panes only below desktop width and keeps width controls on 
 
   resize(1024);
   expect(screen.queryByRole("navigation", { name: "Studio panes" }) === null).toBe(true);
-  expect(screen.getByRole("tablist", { name: "Studio workspace" })).toBeDefined();
+  expect(screen.getByRole("navigation", { name: "Studio jobs" })).toBeDefined();
+  expect(screen.queryByRole("tablist") === null).toBe(true);
   expect(screen.getByLabelText("Scene board width")).toBeDefined();
 
   resize(1440);
@@ -137,6 +143,37 @@ test("keeps one preview mounted across every viewport", async () => {
   expect(previewMounts).toBe(1);
 });
 
+test("reaches every job at phone and desktop widths", async () => {
+  await renderStudio(375);
+  for (const width of [375, 1440]) {
+    resize(width);
+    job("Prompt");
+    expect(isHidden(await screen.findByRole("region", { name: "Prompt Lab" }))).toBe(false);
+    expect(isHidden(screen.getByLabelText("Draft preview"))).toBe(true);
+    job("Review");
+    expect(isHidden(screen.getByText("Reviewing saved revision 1"))).toBe(false);
+    expect(isHidden(screen.getByLabelText("Draft preview"))).toBe(false);
+    job("Render");
+    expect(isHidden(screen.getByText(/Rendering is not available/))).toBe(false);
+    expect(isHidden(screen.getByLabelText("Draft preview"))).toBe(true);
+    job("Edit");
+    expect(isHidden(screen.getByLabelText("Draft preview"))).toBe(false);
+    const current = within(screen.getByRole("navigation", { name: "Studio jobs" }))
+      .getAllByRole("button")
+      .filter((button) => button.getAttribute("aria-current") === "page");
+    expect(current.map((button) => button.textContent)).toEqual(["Edit"]);
+  }
+  expect(previewMounts).toBe(1);
+});
+
+test("explains a missing review or render capability instead of hiding the job", async () => {
+  await renderStudio(1440);
+  job("Review");
+  expect(screen.getByRole("status").textContent).toContain("Review is not available");
+  job("Render");
+  expect(screen.getByRole("status").textContent).toContain("Rendering is not available");
+});
+
 test("shows one pane at a time on a phone and keeps hidden panes out of the tab order", async () => {
   await renderStudio(375);
   const heading = screen.getByLabelText("Heading");
@@ -144,23 +181,24 @@ test("shows one pane at a time on a phone and keeps hidden panes out of the tab 
   expect(isHidden(heading)).toBe(true);
   expect(isHidden(screen.getByLabelText("Draft preview"))).toBe(false);
 
-  pane("Edit");
+  pane("Controls");
   expect(isHidden(heading)).toBe(false);
   expect(isHidden(screen.getByLabelText("Draft preview"))).toBe(true);
 });
 
 test("keeps an unsaved Prompt Lab edit across pane and viewport changes", async () => {
   await renderStudio(375);
-  pane("Prompt Lab");
+  job("Prompt");
   const override = (await screen.findByLabelText("Project override")) as HTMLTextAreaElement;
   fireEvent.change(override, { target: { value: "Local draft" } });
 
-  pane("Preview");
-  pane("Prompt Lab");
+  job("Edit");
+  job("Review");
+  job("Prompt");
   expect((screen.getByLabelText("Project override") as HTMLTextAreaElement).value).toBe("Local draft");
 
   resize(1440);
-  expect(screen.getByRole("tab", { name: "Prompt Lab" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("button", { name: "Prompt" }).getAttribute("aria-current")).toBe("page");
   expect((screen.getByLabelText("Project override") as HTMLTextAreaElement).value).toBe("Local draft");
 });
 
@@ -169,25 +207,43 @@ test("pauses the preview when its pane is hidden and does not resume on return",
   await renderStudio(375);
   const player = previewPlayer;
 
-  pane("Edit");
+  pane("Controls");
   expect(player.calls).toEqual(["pause"]);
   pane("Preview");
-  pane("Review");
+  job("Review");
   expect(player.calls).toEqual(["pause"]);
+  job("Render");
+  expect(player.calls).toEqual(["pause", "pause"]);
 });
 
 test("reviews the saved revision while the draft keeps its unsaved edit", async () => {
   await renderStudio(375);
-  pane("Edit");
+  pane("Controls");
   fireEvent.change(screen.getByLabelText("Heading"), { target: { value: "Draft heading" } });
   expect(screen.getByText("Unsaved changes")).toBeDefined();
 
-  pane("Review");
+  job("Review");
   expect(screen.getByLabelText("Draft preview").textContent).toBe("Original heading");
   expect(screen.getByText("Reviewing saved revision 1")).toBeDefined();
 
+  job("Edit");
   pane("Preview");
   expect(screen.getByLabelText("Draft preview").textContent).toBe("Draft heading");
+});
+
+test("reviews the saved revision on desktop and returns to the draft heading in Edit", async () => {
+  await renderStudio(1440);
+  fireEvent.change(screen.getByLabelText("Heading"), { target: { value: "Draft heading" } });
+
+  job("Review");
+  expect(screen.getByLabelText("Draft preview").textContent).toBe("Original heading");
+  expect(isHidden(screen.getByLabelText("Heading"))).toBe(true);
+  expect(isHidden(screen.getByLabelText("Scene board"))).toBe(true);
+
+  job("Edit");
+  expect(screen.getByLabelText("Draft preview").textContent).toBe("Draft heading");
+  expect((screen.getByLabelText("Heading") as HTMLInputElement).value).toBe("Draft heading");
+  expect(previewMounts).toBe(1);
 });
 
 test("keeps Advanced mode, a pending timeline edit, and the selection through a phone round trip", async () => {
@@ -258,7 +314,7 @@ test("edits caption text on a tablet through the shared draft and keeps phone ed
   }));
   await renderStudio(900, captionDocument(), saved);
   jest.useFakeTimers();
-  pane("Edit");
+  pane("Controls");
   fireEvent.change(screen.getByLabelText("Caption cue 1 text"), { target: { value: "New subtitle" } });
   expect(screen.getByText("Unsaved changes")).toBeDefined();
 
@@ -278,7 +334,7 @@ test("edits caption text on a tablet through the shared draft and keeps phone ed
 
 test("offers only saved prompt text on a phone and keeps the draft when the screen widens", async () => {
   await renderStudio(375);
-  pane("Prompt Lab");
+  job("Prompt");
   const override = (await screen.findByLabelText("Project override")) as HTMLTextAreaElement;
   fireEvent.change(override, { target: { value: "Phone draft" } });
   expect(screen.queryByRole("button", { name: "Improve with AI" }) === null).toBe(true);
@@ -326,9 +382,9 @@ test("monitors renders on a phone without offering render mutations", async () =
     />,
   );
   await screen.findByLabelText("Draft preview");
-  const trigger = screen.getByRole("button", { name: "Renders" });
+  const trigger = screen.getByRole("button", { name: "Render" });
   trigger.focus();
-  pane("Renders");
+  job("Render");
   await screen.findByText("Starting, retrying, cancelling, and deleting renders need a wider screen.");
   expect(window.document.activeElement === trigger).toBe(true);
   expect(screen.queryByRole("button", { name: "Render video" }) === null).toBe(true);
@@ -351,10 +407,10 @@ function reviewClient() {
 
 test("reviews the saved preview on a phone and blocks review while a draft is unsaved", async () => {
   await renderStudio(375, document, pendingSave, reviewClient());
-  pane("Edit");
+  pane("Controls");
   fireEvent.change(screen.getByLabelText("Heading"), { target: { value: "Draft heading" } });
 
-  pane("Review");
+  job("Review");
   const panel = await screen.findByRole("region", { name: "Review" });
   expect(isHidden(panel)).toBe(false);
   expect(screen.getByLabelText("Draft preview").textContent).toBe("Original heading");
@@ -367,13 +423,13 @@ test("reviews the saved preview on a phone and blocks review while a draft is un
 
 test("keeps unsent review text across pane and viewport changes beside one preview", async () => {
   await renderStudio(375, document, pendingSave, reviewClient());
-  pane("Review");
+  job("Review");
   const panel = await screen.findByRole("region", { name: "Review" });
   fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Phone note" } });
 
-  pane("Preview");
+  job("Edit");
   expect(isHidden(panel)).toBe(true);
-  pane("Review");
+  job("Review");
   expect((screen.getByLabelText("Review comment") as HTMLTextAreaElement).value).toBe("Phone note");
 
   resize(1440);
@@ -414,7 +470,7 @@ test("keeps a stale review comment until the newer revision is loaded, then resu
   const revisions = [document, { ...document, revision: 2 }];
   const getEditDocument = mock(async () => revisions.shift() ?? document);
   await renderStudio(375, document, pendingSave, { ...review, createStudioReviewComment: posted, getEditDocument });
-  pane("Review");
+  job("Review");
   await screen.findByText("Current decision: Approved on revision 1");
   fireEvent.change(screen.getByLabelText("Review comment"), { target: { value: "Phone note" } });
   fireEvent.click(screen.getByRole("button", { name: "Post comment" }));

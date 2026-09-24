@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from "react";
 
 export type StudioViewport = "phone" | "tablet" | "compact_desktop" | "full_desktop";
-export type StudioPane = "scenes" | "preview" | "edit" | "prompts" | "review" | "renders";
 export type StudioJob = "edit" | "prompt" | "review" | "render";
 export type StudioEditPane = "scenes" | "preview" | "controls";
 
