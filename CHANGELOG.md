@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Studio upload tests run in CI's pytest mode
+
+Pushed as `8069804` on `codex/stage1-container-ci` with operator authorization.
+
+- CI runs pytest from the repository root, where `python/pyproject.toml` and its `asyncio_mode = "auto"` are not read, so 38 async upload, artifact-root, and media-probe tests from F3 Plan B failed under strict mode in runs for `b89ebf6` and `6b9f2a7`. They now carry the explicit `@pytest.mark.asyncio` marker the rest of the suite uses.
+
+Verification: the full suite under `-o asyncio_mode=strict` went from 38 failed to 1834 passed, 32 skipped; Ruff check and format clean; `git diff --check` clean. CI run `36101392867` for `8069804` succeeded on every job, and Template release parity verified `pass` against the approved golden set, which completes F1.
+
 ## 2026-09-25 - Template release goldens approved (F1 Task 7)
 
 Offline promotion on `codex/stage1-container-ci` after `b89ebf6`, with the operator's approval to regenerate the candidate at HEAD and promote it; not pushed.
