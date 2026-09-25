@@ -300,6 +300,56 @@ def test_ignores_index_rows_for_other_gates(tmp_path: Path) -> None:
     check_controlled_fallback_inputs(**kwargs)
 
 
+_F1_HARNESS_AMENDMENT = {
+    "record_type": "classification_amendment",
+    "target_gate_id": "f1",
+    "failure_attribution": "gate_harness_defect",
+}
+
+
+def _f2_inputs(tmp_path: Path, index_rows: list[dict[str, object]]) -> dict[str, object]:
+    kwargs = _valid_inputs(tmp_path)
+    kwargs["sample"] = _gate(tmp_path, name="f2")
+    index = kwargs["sample"].parent / INDEX_NAME
+    index.write_text("".join(json.dumps(row) + "\n" for row in index_rows), encoding="utf-8")
+    return kwargs
+
+
+def test_f2_passes_preflight_after_a_recorded_f1_harness_defect(tmp_path: Path) -> None:
+    kwargs = _f2_inputs(tmp_path, [{"gate_id": "f1"}, _F1_HARNESS_AMENDMENT])
+    check_controlled_fallback_inputs(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"gate_id": "f1"}],
+        [{"gate_id": "f1"}, {**_F1_HARNESS_AMENDMENT, "failure_attribution": "other"}],
+        [{"gate_id": "f1"}, {**_F1_HARNESS_AMENDMENT, "target_gate_id": "f2"}],
+    ],
+)
+def test_f2_requires_a_recorded_f1_harness_defect(
+    tmp_path: Path, rows: list[dict[str, object]]
+) -> None:
+    kwargs = _f2_inputs(tmp_path, rows)
+    with pytest.raises(Stage1PreflightError):
+        check_controlled_fallback_inputs(**kwargs)
+
+
+def test_f2_does_not_retry_itself(tmp_path: Path) -> None:
+    kwargs = _f2_inputs(tmp_path, [{"gate_id": "f1"}, _F1_HARNESS_AMENDMENT, {"gate_id": "f2"}])
+    with pytest.raises(Stage1PreflightError):
+        check_controlled_fallback_inputs(**kwargs)
+
+
+def test_f1_stays_non_retryable_after_its_amendment(tmp_path: Path) -> None:
+    kwargs = _valid_inputs(tmp_path)
+    index = kwargs["sample"].parent / INDEX_NAME
+    index.write_text(json.dumps(_F1_HARNESS_AMENDMENT) + "\n", encoding="utf-8")
+    with pytest.raises(Stage1PreflightError):
+        check_controlled_fallback_inputs(**kwargs)
+
+
 def test_no_failure_message_contains_the_fixture_value(tmp_path: Path) -> None:
     kwargs = _valid_inputs(tmp_path)
     (kwargs["sample"] / "url.txt").write_text("https://example.test/post/1\n", encoding="utf-8")
@@ -404,6 +454,22 @@ def test_reserve_attempt_rejects_a_malformed_revision(tmp_path: Path) -> None:
             harness_revision=VALID_HARNESS_REVISION,
             occurred_at=OCCURRED_AT,
         )
+
+
+def test_reserve_and_finalize_carry_the_gate_directory_id(tmp_path: Path) -> None:
+    sample = tmp_path / "f2"
+    sample.mkdir()
+    _reserve(sample)
+    assert json.loads((sample / ATTEMPT_NAME).read_text(encoding="utf-8"))["gate_id"] == "f2"
+    assert finalize_attempt(sample, _facts(), _INTEGRITY).gate_id == "f2"
+
+
+def test_reserve_refuses_an_unknown_gate_directory(tmp_path: Path) -> None:
+    sample = tmp_path / "f3"
+    sample.mkdir()
+    with pytest.raises(ControlledFallbackEvidenceError):
+        _reserve(sample)
+    assert not (sample / ATTEMPT_NAME).exists()
 
 
 def test_finalize_requires_a_prior_reservation(tmp_path: Path) -> None:

@@ -158,6 +158,53 @@ or index row.
 The append-only index receives exactly one sample row for `f1`. Corrections use a separate
 amendment row targeting that sample; existing bytes are never rewritten.
 
+## Amendment 2026-09-25: explicit `f2` retry after a gate-harness defect
+
+`f1` completed on 2026-09-25 with `verdict=failed`: the supervisor exited `0`, but Scout wrote its
+media under its fixed output root `/opt/thoth/scout/output`, which the gate did not mount, so the
+media died with the container and artifact validation failed. That is a defect in this gate's
+harness, not evidence about the supervisor. Commit `e258b58` mounts the gate `output` directory at
+that root as well and adds `scout_output_retained` to the offline proof.
+
+The operator authorized one explicit retry under a new gate id. `f1` stays final and is never run
+again; its row is never rewritten. The retry is recorded in two steps:
+
+1. One amendment row is appended to the index, targeting the `f1` sample row. Its closed shape and
+   field order, serialized as compact UTF-8 JSON with one terminal LF:
+
+   ```json
+   {
+     "schema_version": 1,
+     "record_type": "classification_amendment",
+     "amendment_id": "amend_<32 lowercase hex characters>",
+     "target_gate_id": "f1",
+     "target_record_sha256": "sha256:<64 lowercase hex characters>",
+     "previous_verdict": "failed",
+     "effective_verdict": "failed",
+     "failure_attribution": "gate_harness_defect",
+     "reason_codes": ["scout_media_outside_gate_mount", "artifact_not_validated"],
+     "harness_fix_revision": "<40 lowercase hex characters>",
+     "retry_gate_id": "f2",
+     "recorded_by": "claude-executor",
+     "recorded_at": "<RFC 3339 UTC timestamp ending in Z>"
+   }
+   ```
+
+   `target_record_sha256` hashes the exact bytes of the `f1` line without its terminal LF.
+   `amendment_id` is `amend_` plus the first 32 hex characters of
+   SHA-256(`target_record_sha256` + `"\n"` + `failure_attribution` + `"\n"` + comma-joined
+   `reason_codes`). The effective verdict stays `failed`: the amendment attributes the failure, it
+   grants no activation credit. It records no approval; approval stays with the operator.
+2. Gate `f2` then runs once, with everything above applying to it unchanged: its own mode-`0700`
+   directory named `f2`, its own fixture (byte-distinct from p1-p6; it may equal `f1`'s), its own
+   single-use authorization, and one sample row with `gate_id: "f2"`.
+
+Preflight admits `f2` only when the index holds an amendment row with
+`record_type: "classification_amendment"`, `target_gate_id: "f1"`, and
+`failure_attribution: "gate_harness_defect"`, and holds no row whose `gate_id` or `target_gate_id`
+is `f2`. A row whose `gate_id` or `target_gate_id` is `f1` still blocks `f1`. There is no `f3`: a
+failed `f2` is final and needs a new design decision, not another id.
+
 ## Safe result schema
 
 `controlled-fallback-attempt.json` contains only these fields:

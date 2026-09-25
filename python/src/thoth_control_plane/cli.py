@@ -18,7 +18,7 @@ from thoth_control_plane.config import Settings
 from thoth_control_plane.domain import WorkflowEvent, WorkflowRequest
 from thoth_control_plane.operations.editor_migrations import apply_editor_migrations
 from thoth_control_plane.operations.stage1_controlled_fallback import (
-    GATE_ID,
+    GATE_IDS,
     ControlledFallbackEvidenceError,
 )
 from thoth_control_plane.operations.stage1_controlled_fallback_runner import (
@@ -361,9 +361,10 @@ def stage1_controlled_fallback_run(
     command_timeout: Annotated[float, typer.Option("--command-timeout")] = 30.0,
     wait_timeout: Annotated[float, typer.Option("--wait-timeout")] = 300.0,
 ) -> None:
-    """Run exactly one `f1` controlled fallback attempt against the live deployment.
+    """Run exactly one controlled fallback attempt against the live deployment.
 
-    `--gate-id` must be the literal `f1`; this gate never retries. This is the
+    `--gate-id` must be `f1` or `f2` and name the `--sample` directory; no gate
+    ever runs twice, and `f2` runs only after `f1`'s recorded harness defect. This is the
     only command that starts a container from operator-supplied inputs. Output
     is fixed lines only, never a Docker error, child output, fixture value,
     evidence path, container ID, or provider value:
@@ -373,8 +374,8 @@ def stage1_controlled_fallback_run(
     controlled_fallback_completed=true|false
     verdict=passed|failed|inconclusive
     """
-    if gate_id != GATE_ID:
-        raise typer.BadParameter(f"--gate-id must be the literal {GATE_ID!r}")
+    if gate_id not in GATE_IDS or sample.name != gate_id:
+        raise typer.BadParameter("--gate-id must be f1 or f2 and name the --sample directory")
     config = _controlled_fallback_config(
         sample=sample,
         provider=provider,

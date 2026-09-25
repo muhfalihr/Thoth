@@ -135,9 +135,12 @@ def test_controlled_fallback_help_exits_zero_without_touching_docker(command: st
     assert "f1" in result.stdout
 
 
-def test_controlled_fallback_run_rejects_a_non_literal_gate_id(tmp_path) -> None:
-    """`--gate-id` must be the literal `f1`; the guard must fire before any Docker call."""
-    sample = tmp_path / "not-f1"
+@pytest.mark.parametrize(("gate_id", "directory"), [("not-f1", "not-f1"), ("f2", "f1")])
+def test_controlled_fallback_run_rejects_an_unknown_or_mismatched_gate_id(
+    tmp_path, gate_id: str, directory: str
+) -> None:
+    """`--gate-id` must be a known gate naming its directory; checked before any Docker call."""
+    sample = tmp_path / directory
     sample.mkdir()
 
     result = runner.invoke(
@@ -146,7 +149,7 @@ def test_controlled_fallback_run_rejects_a_non_literal_gate_id(tmp_path) -> None
             "operations",
             "stage1-controlled-fallback-run",
             "--gate-id",
-            "not-f1",
+            gate_id,
             "--sample",
             str(sample),
             "--provider",
@@ -169,10 +172,11 @@ def test_controlled_fallback_run_rejects_a_non_literal_gate_id(tmp_path) -> None
     assert "verdict=" not in result.stdout
 
 
+@pytest.mark.parametrize("gate_id", ["f1", "f2"])
 def test_controlled_fallback_run_preflights_before_consuming_the_attempt(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, gate_id: str
 ) -> None:
-    """An input the preflight rejects must never reserve the one `f1` attempt."""
+    """An input the preflight rejects must never reserve the gate's one attempt."""
 
     class RefusingExecutor:
         def run(self, *args, **kwargs):
@@ -182,7 +186,7 @@ def test_controlled_fallback_run_preflights_before_consuming_the_attempt(
             raise AssertionError("no container may start after a failed preflight")
 
     monkeypatch.setattr(cli, "SubprocessCommandExecutor", RefusingExecutor)
-    sample = tmp_path / "f1"
+    sample = tmp_path / gate_id
     sample.mkdir()
 
     result = runner.invoke(
@@ -191,7 +195,7 @@ def test_controlled_fallback_run_preflights_before_consuming_the_attempt(
             "operations",
             "stage1-controlled-fallback-run",
             "--gate-id",
-            "f1",
+            gate_id,
             "--sample",
             str(sample),
             "--provider",

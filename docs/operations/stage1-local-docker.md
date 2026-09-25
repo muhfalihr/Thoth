@@ -437,6 +437,17 @@ Artifact validation reuses the parity integrity contract: report schema, exactly
 artifact contained beneath `f1/output`, MP4 signature and minimum size, and byte-count and checksum
 agreement. It does not compare Python and Scout output and cannot set `parity_passed`.
 
+### Retry gate (`f2`)
+
+`f1` failed on 2026-09-25 because of a gate-harness defect (Scout media outside the gate mount,
+fixed in `e258b58`). The operator authorized one explicit retry under gate id `f2`; the amendment in
+the design spec defines it. `f1` is never run again. Before `f2` can pass preflight, one
+`classification_amendment` row targeting `f1` with `failure_attribution: "gate_harness_defect"`
+must be appended to the index; its shape is fixed by the spec. Then `f2` follows every rule above
+with `f2` in place of `f1`: the directory `/home/mfr/thoth-stage1-fallback/f2` (mode `0700`), its
+own `url.txt` (mode `0600`, byte-distinct from p1-p6, may equal `f1`'s), `--gate-id f2`, and its
+own single-use authorization. A failed `f2` is final; there is no `f3`.
+
 ### Offline proof
 
 `docker/test-controlled-fallback-offline.sh IMAGE` proves the same staging, reclaim, and teardown

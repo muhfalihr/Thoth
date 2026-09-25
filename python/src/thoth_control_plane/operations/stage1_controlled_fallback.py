@@ -1,7 +1,9 @@
-"""Fail-closed inputs and append-only evidence for the `f1` controlled fallback gate.
+"""Fail-closed inputs and append-only evidence for the controlled fallback gates.
 
-The gate is a single, non-retryable, operator-authorized activation of the deployed
-legacy fallback supervisor against one real fixture. `check_controlled_fallback_inputs`
+Each gate is a single, non-retryable, operator-authorized activation of the deployed
+legacy fallback supervisor against one real fixture. `f2` is the one explicit retry
+of `f1`, admitted only after an index amendment attributes `f1`'s failure to a gate
+harness defect; neither gate ever runs twice. `check_controlled_fallback_inputs`
 is the preflight Compose cannot be: it runs before any container is created and
 rejects a mutable image tag, a sample outside its own directory, a reused or
 malformed fixture, an unsafe permission, or a gate that has already recorded a
@@ -39,6 +41,9 @@ from thoth_control_plane.operations.stage1_local_preflight import (
 from thoth_control_plane.operations.stage1_provider_preflight import check_stage1_provider_file
 
 GATE_ID = "f1"
+# A retry gate names the gate it retries and runs only after that gate's recorded harness defect.
+RETRY_OF = {"f2": GATE_ID}
+GATE_IDS = (GATE_ID, *RETRY_OF)
 ATTEMPT_NAME = "controlled-fallback-attempt.json"
 PRIVATE_INTEGRITY_NAME = "artifact-integrity.private.json"
 INDEX_NAME = "controlled-fallback-record.jsonl"
@@ -82,7 +87,7 @@ def check_controlled_fallback_inputs(
     _check_no_symlink(resolved)
     check_stage1_provider_file(provider, repository_root=repository_root)
     _check_absent_attempt_evidence(resolved)
-    _check_absent_index_row(resolved.parent)
+    _check_index(resolved.parent, resolved.name)
 
 
 def _check_image(image: str) -> None:
@@ -124,9 +129,9 @@ def _is_inside(candidate: Path, root: Path) -> bool:
 
 
 def _check_gate_directory_name(sample: Path) -> None:
-    if sample.name != GATE_ID:
+    if sample.name not in GATE_IDS:
         raise Stage1PreflightError(
-            f"the controlled fallback gate directory must be named {GATE_ID}"
+            "the controlled fallback gate directory must be named after a known gate"
         )
 
 
@@ -188,7 +193,7 @@ def _check_fixture_distinct_from_parity(fixture: Path, parity_root: Path) -> Non
         if hmac.compare_digest(fixture_bytes, other_bytes):
             raise Stage1PreflightError(
                 "the controlled fallback fixture must be byte-distinct from every "
-                "retained parity fixture; f1 is independent of p1-p6"
+                "retained parity fixture; each gate is independent of p1-p6"
             )
 
 
@@ -209,25 +214,34 @@ def _check_absent_attempt_evidence(sample: Path) -> None:
     if (sample / ATTEMPT_NAME).exists():
         raise Stage1PreflightError(
             "the controlled fallback gate directory already holds an attempt record; "
-            "f1 does not retry, so use a fresh gate directory"
+            "a gate does not retry, so use a fresh gate directory"
         )
     if (sample / PRIVATE_INTEGRITY_NAME).exists():
         raise Stage1PreflightError(
             "the controlled fallback gate directory already holds a private integrity "
-            "record; f1 does not retry, so use a fresh gate directory"
+            "record; a gate does not retry, so use a fresh gate directory"
         )
     # The staging helper creates both; a leftover output could validate as this attempt's.
     if (sample / "output").exists() or (sample / "reference-input").exists():
         raise Stage1PreflightError(
             "the controlled fallback gate directory already holds staged output or "
-            "input; f1 does not retry, so use a fresh gate directory"
+            "input; a gate does not retry, so use a fresh gate directory"
         )
 
 
-def _check_absent_index_row(root: Path) -> None:
-    """Reject a prior sample or amendment row for this gate anywhere in the index."""
+def _check_index(root: Path, gate_id: str) -> None:
+    """Reject a prior sample or amendment row for this gate anywhere in the index.
+
+    A retry gate additionally requires an amendment attributing the retried
+    gate's failure to a gate harness defect.
+    """
+    retried = RETRY_OF.get(gate_id)
     index_path = root / INDEX_NAME
     if not index_path.is_file():
+        if retried is not None:
+            raise Stage1PreflightError(
+                "the controlled fallback retry gate requires a recorded harness defect"
+            )
         return
     try:
         lines = index_path.read_text(encoding="utf-8").splitlines()
@@ -242,11 +256,23 @@ def _check_absent_index_row(root: Path) -> None:
             raise Stage1PreflightError(
                 "the controlled fallback index contains a malformed row"
             ) from error
-        if isinstance(row, dict) and row.get("gate_id") == GATE_ID:
+        if not isinstance(row, dict):
+            continue
+        if gate_id in (row.get("gate_id"), row.get("target_gate_id")):
             raise Stage1PreflightError(
-                "the controlled fallback index already records an f1 attempt; a "
+                "the controlled fallback index already records this gate; a "
                 "correction is a separate amendment, not a new run"
             )
+        if (
+            row.get("record_type") == "classification_amendment"
+            and row.get("target_gate_id") == retried
+            and row.get("failure_attribution") == "gate_harness_defect"
+        ):
+            retried = None
+    if retried is not None:
+        raise Stage1PreflightError(
+            "the controlled fallback retry gate requires a recorded harness defect"
+        )
 
 
 class ControlledFallbackFacts(BaseModel):
@@ -273,12 +299,12 @@ class ControlledFallbackFacts(BaseModel):
 
 
 class ControlledFallbackAttempt(BaseModel):
-    """The one safe, finalized `f1` result. Fixed fields only, extras forbidden."""
+    """The one safe, finalized result of a gate. Fixed fields only, extras forbidden."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: Literal[1] = 1
-    gate_id: Literal["f1"] = GATE_ID
+    gate_id: Literal["f1", "f2"]
     status: Literal["completed"] = "completed"
     occurred_at: str
     acquisition_digest: str = Field(pattern=SHA256_PATTERN)
@@ -368,6 +394,10 @@ def reserve_attempt(
     Exclusive creation is the entire guard: a stale pending record from a
     prior run blocks a new one rather than being silently overwritten.
     """
+    if sample.name not in GATE_IDS:
+        raise ControlledFallbackEvidenceError(
+            "controlled fallback attempt must be reserved in a known gate directory"
+        )
     if not _DIGEST_PATTERN.fullmatch(digest):
         raise ControlledFallbackEvidenceError(
             "controlled fallback digest must be a pinned sha256 image reference"
@@ -382,7 +412,7 @@ def reserve_attempt(
             )
     payload = {
         "schema_version": 1,
-        "gate_id": GATE_ID,
+        "gate_id": sample.name,
         "status": "pending",
         "occurred_at": _format_timestamp(occurred_at),
         "acquisition_digest": digest,
@@ -435,6 +465,7 @@ def finalize_attempt(
     """
     pending = _read_pending_attempt(sample)
     attempt = ControlledFallbackAttempt(
+        gate_id=pending["gate_id"],
         occurred_at=pending["occurred_at"],
         acquisition_digest=pending["acquisition_digest"],
         acquisition_revision=pending["acquisition_revision"],
