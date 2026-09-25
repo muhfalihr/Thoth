@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations" / "editor"
 MIGRATION_FILES = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
 
@@ -13,7 +16,20 @@ def migration(name: str) -> str:
     return (MIGRATIONS / name).read_text(encoding="utf-8")
 
 
-def test_editor_migrations_stay_explicit_forward_only_files_without_a_framework() -> None:
+def test_each_sql_file_is_one_revision_of_a_linear_alembic_chain() -> None:
+    config = Config()
+    config.set_main_option("script_location", str(MIGRATIONS / "alembic"))
+    script = ScriptDirectory.from_config(config)
+    chain = list(reversed(list(script.walk_revisions())))
+
+    assert [Path(revision.path).stem for revision in chain] == [
+        Path(name).stem for name in MIGRATION_FILES
+    ]
+    assert [revision.revision for revision in chain] == [name[:4] for name in MIGRATION_FILES]
+    assert script.get_heads() == [MIGRATION_FILES[-1][:4]]
+
+
+def test_editor_migrations_stay_explicit_forward_only_sql_files() -> None:
     assert MIGRATION_FILES == [
         "0001_edit_document_revisions.sql",
         "0002_prompt_lab_foundation.sql",

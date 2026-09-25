@@ -150,8 +150,10 @@ to a user other than `10001:10001`.
 ## Non-live infrastructure preflight
 
 Start only PostgreSQL, the isolated Creator Studio PostgreSQL, Temporal, and Temporal UI. Apply the
-editor migration explicitly before starting API. The migration prints only its applied-file count and
-must not be replaced with startup-time schema creation.
+editor migration explicitly before starting API. Alembic records the schema revision, so the migration
+is safe to rerun: it prints only the number of revisions it applied (`0` when already at head) and
+must not be replaced with startup-time schema creation. A database migrated before Alembic is adopted
+from its existing tables; a schema that is not a prefix of the chain is refused unchanged.
 Do not run `docker compose up` for `legacy-cdp` or `worker` without explicit live approval.
 
 ```bash

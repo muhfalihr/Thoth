@@ -330,7 +330,10 @@ jobs:
         run: docker compose ${COMPOSE_FILE_ARGS} up -d --wait postgresql editor-postgresql temporal temporal-ui api
 
       - name: Apply Creator Studio editor migration
-        run: docker compose ${COMPOSE_FILE_ARGS} run --rm --no-deps api thoth-control editor migrate
+        run: |
+          set -euo pipefail
+          test "$(docker compose ${COMPOSE_FILE_ARGS} run --rm --no-deps api thoth-control editor migrate | tail -1)" = "7"
+          test "$(docker compose ${COMPOSE_FILE_ARGS} run --rm --no-deps api thoth-control editor migrate | tail -1)" = "0"
 
       - name: Verify identity, storage, and loopback isolation
         run: |
