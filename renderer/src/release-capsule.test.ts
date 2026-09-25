@@ -539,7 +539,7 @@ describe("loadReleaseCapsule", () => {
  * release nobody can compare a render against.
  */
 describe("the tracked release capsule", () => {
-  test("loads from the canonical release root with no golden set yet", async () => {
+  test("loads from the canonical release root with its approved golden set", async () => {
     const capsule = await loadReleaseCapsule(IDENTITY);
 
     expect(capsule.identity).toBe(IDENTITY);
@@ -552,8 +552,11 @@ describe("the tracked release capsule", () => {
     expect(capsule.frames.at(0)).toBe(0);
     expect(capsule.frames.at(-1)).toBe(duration - 1);
     expect(capsule.frames.length).toBeGreaterThan(2);
-    // A tracked golden set is an operator's approval, not a build product.
-    expect(capsule.goldens).toBeNull();
+    // A tracked golden set is an operator's approval, not a build product: it
+    // covers every declared frame, under the name its own pixels address.
+    const manifest = JSON.parse(readFileSync(join(capsule.directory, "golden-manifest.json"), "utf8"));
+    expect(capsule.goldens?.golden_set).toBe(manifest.golden_set);
+    expect(capsule.goldens?.frames.map((entry) => entry.frame)).toEqual([...capsule.frames]);
   });
 
   test("names no source the composition would have to fetch", async () => {

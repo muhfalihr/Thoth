@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Template release goldens approved (F1 Task 7)
+
+Offline promotion on `codex/stage1-container-ci` after `b89ebf6`, with the operator's approval to regenerate the candidate at HEAD and promote it; not pushed.
+
+- `vertical_text_story-v1` now tracks `golden-manifest.json` and the immutable set `golden-sets/sha256-397c0d99354c4fadffc36cbe4388de37191e0c8a23b2f857eeff606752d4dceb`, promoted from `run_72e8e9f37d0dde36`. That run was drawn at HEAD by a freshly built reference image with no network; its contact sheet (`sha256:34459383…`) and all ten frames are byte-identical to the visually approved `run_851806939a6cdd59`.
+- The renderer tests that copy the tracked capsule now start from an unapproved copy, and the tracked-capsule test asserts the approved set covers every declared frame.
+
+Verification: promotion exited 0 inside the reference image; two fresh containers on fresh artifact roots, from an image built with the goldens, both verified `pass` (exit 0). Renderer 203 tests (0 fail, 5 skip) and tsc clean; deployment contract tests 290 pass, 29 skip; the production renderer image builds with no release fixtures in it, and the isolated render smoke on both production images built from this tree passes; `git diff --check` clean.
+
 ## 2026-09-25 - Studio source keys ignore the order of unsupported fields (F3 Plan B correction)
 
 Offline correction on `codex/stage1-container-ci` after `a891665`; dashboard only, not pushed.

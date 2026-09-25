@@ -52,6 +52,9 @@ beforeEach(async () => {
   // A copy of the tracked capsule, so a test can narrow its frames or give it
   // goldens without touching the repository fixture it came from.
   await cp(join(canonicalReleaseRoot(), IDENTITY), capsule, { recursive: true });
+  // Each test starts unapproved; the tracked approval covers other frames.
+  await rm(join(capsule, "golden-manifest.json"), { force: true });
+  await rm(join(capsule, "golden-sets"), { recursive: true, force: true });
   const release = JSON.parse(await readFile(join(capsule, "release.json"), "utf8"));
   release.frames = [0];
   await writeFile(join(capsule, "release.json"), JSON.stringify(release, null, 2));
