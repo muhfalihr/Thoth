@@ -152,6 +152,9 @@ export async function projectStudioSource(content: unknown): Promise<StudioSourc
     if (trim !== undefined && trim !== null && (typeof trim !== "number" || !Number.isFinite(trim) || trim < 0)) {
       throw new StudioSourceError(`${role} ${order + 1} has an invalid trim`);
     }
+    const mediaKind = record.is_video === true ? "video" : imagePath || url ? "image" : "none";
+    const trimmed = typeof trim === "number" && trim > 0;
+    if (trimmed && mediaKind !== "video") report("trim_start", role, order, "Only a video can start at a trim", trim);
     items.push({
       role,
       order,
@@ -159,8 +162,8 @@ export async function projectStudioSource(content: unknown): Promise<StudioSourc
       text,
       platform,
       source_url: canonicalUrl(url),
-      media_kind: record.is_video === true ? "video" : imagePath || url ? "image" : "none",
-      trim_start_seconds: typeof trim === "number" && trim > 0 ? trim : null,
+      media_kind: mediaKind,
+      trim_start_seconds: trimmed && mediaKind === "video" ? trim : null,
     });
   };
 

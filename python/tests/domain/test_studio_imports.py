@@ -93,6 +93,7 @@ def test_inventory_names_every_media_item_and_unsupported_field() -> None:
     assert inspection.items[7].label == "mute_audio"
     assert inspection.items[7].reason == "Per-clip mute is not supported"
     assert inspection.items[0].reason is None
+    assert [entry.trim_start_seconds for entry in inspection.items[:3]] == [1.5, None, None]
 
 
 def test_public_inspection_never_contains_a_source_address() -> None:
@@ -170,6 +171,7 @@ def test_rejects_a_source_address_that_is_not_a_canonical_web_url(source_url: st
         lambda payload: payload["items"].extend(item("footage", index) for index in range(4, 400)),
         lambda payload: payload["unsupported"][0].update(field="C:\\path"),
         lambda payload: payload["unsupported"].extend([payload["unsupported"][1]] * 400),
+        lambda payload: payload["items"][6].update(trim_start_seconds=2.0),
     ],
 )
 def test_rejects_malformed_or_oversize_projections(mutate: Any) -> None:

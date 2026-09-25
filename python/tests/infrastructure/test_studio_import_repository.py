@@ -415,6 +415,76 @@ async def test_the_main_item_attaches_to_the_main_video_track(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_the_main_item_starts_at_its_trim_and_keeps_its_source_length(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row(duration=900)])
+    repository, _ = store(monkeypatch, cursor)
+
+    await resolve(repository, "main_000", attach())
+
+    document = saved_document(cursor)
+    clip = next(clip for clip in document["clips"] if clip["clip_id"] == "clip_main_000")
+    # The source skips its first 1.5 s: 45 frames at 30 fps, leaving 855 to play.
+    assert (clip["source_from_frame"], clip["duration_in_frames"]) == (45, 855)
+    assert scene_of(document, "scene_001")["duration_in_frames"] == 855
+    assert scene_of(document, "scene_002")["start_frame"] == 855
+
+
+@pytest.mark.asyncio
+async def test_a_footage_scene_takes_the_length_of_its_source(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row(duration=240)])
+    repository, _ = store(monkeypatch, cursor)
+
+    await resolve(repository, "footage_001", attach())
+
+    document = saved_document(cursor)
+    scene = scene_of(document, "scene_003")
+    clip = next(clip for clip in document["clips"] if clip["clip_id"] == "clip_footage_001")
+    assert (clip["source_from_frame"], clip["duration_in_frames"]) == (0, 240)
+    assert scene["duration_in_frames"] == 240
+    assert scene_of(document, "scene_004")["start_frame"] == scene["start_frame"] + 240
+
+
+@pytest.mark.asyncio
+async def test_main_footage_stays_within_the_main_scene(monkeypatch) -> None:
+    cursor = attach_cursor([asset_row(duration=900)])
+    repository, _ = store(monkeypatch, cursor)
+
+    await resolve(repository, "main_footage_000", attach())
+
+    document = saved_document(cursor)
+    scene = scene_of(document, "scene_001")
+    clip = next(clip for clip in document["clips"] if clip["clip_id"] == "clip_main_footage_000")
+    assert scene["duration_in_frames"] == DRAFT.scenes[0].duration_in_frames
+    assert (clip["track_id"], clip["duration_in_frames"]) == (
+        "track_b_roll",
+        scene["duration_in_frames"],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("item_id", "duration", "code"),
+    [
+        ("main_000", 45, "trim_exceeds_asset"),
+        ("main_000", None, "asset_duration_unknown"),
+        ("footage_001", None, "asset_duration_unknown"),
+    ],
+)
+async def test_a_source_range_the_asset_cannot_hold_leaves_the_item_unresolved(
+    monkeypatch, item_id: str, duration: int | None, code: str
+) -> None:
+    cursor = attach_cursor([asset_row(duration=duration)])
+    repository, _ = store(monkeypatch, cursor)
+
+    with pytest.raises(StudioImportDecisionRejected) as raised:
+        await resolve(repository, item_id, attach())
+
+    assert raised.value.code == code
+    assert not cursor.ran(INSERT_REVISION)
+    assert not cursor.ran(INSERT_DECISION)
+
+
+@pytest.mark.asyncio
 async def test_an_image_item_takes_a_still_for_the_whole_scene(monkeypatch) -> None:
     cursor = attach_cursor([asset_row("asset_still", "image", None)])
     repository, _ = store(monkeypatch, cursor)

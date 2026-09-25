@@ -44,6 +44,8 @@ const MESSAGES: Record<string, string> = {
   asset_kind_mismatch: "That asset is the wrong kind for this item.",
   attach_rejected: "Studio could not place that asset in its scene.",
   item_not_attachable: "This item has no media to attach.",
+  trim_exceeds_asset: "This item's trim starts after that asset ends. Choose a longer asset or exclude the item.",
+  asset_duration_unknown: "The length of that asset is unknown, so its source range cannot be kept.",
 };
 
 function failure(error: unknown, fallback: string): string {

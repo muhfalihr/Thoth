@@ -4091,6 +4091,19 @@
               }
             ],
             "title": "Scene Id"
+          },
+          "trim_start_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 86400.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trim Start Seconds"
           }
         },
         "required": [

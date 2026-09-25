@@ -2306,6 +2306,8 @@ export interface components {
             role: ("main" | "main_footage" | "footage" | "comment") | null;
             /** Scene Id */
             scene_id: string | null;
+            /** Trim Start Seconds */
+            trim_start_seconds?: number | null;
         };
         /**
          * StudioSourceInspection

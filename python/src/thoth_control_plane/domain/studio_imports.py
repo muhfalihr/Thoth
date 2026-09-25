@@ -25,6 +25,7 @@ DRAFT_LIST_LIMIT = 20
 SourceKey = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 ItemOrder = Annotated[int, Field(ge=0, lt=MAX_SOURCE_ITEMS)]
 Reason = Annotated[str, Field(min_length=1, max_length=200)]
+TrimSeconds = Annotated[float, Field(gt=0, le=86_400)]
 
 
 def _canonical_web_url(value: str) -> str:
@@ -55,7 +56,13 @@ class StudioSourceItem(StrictModel):
     platform: Annotated[str, Field(min_length=1, max_length=64)] | None
     source_url: CanonicalUrl | None
     media_kind: MediaKind
-    trim_start_seconds: Annotated[float, Field(gt=0, le=86_400)] | None
+    trim_start_seconds: TrimSeconds | None
+
+    @model_validator(mode="after")
+    def _trim_needs_video(self) -> StudioSourceItem:
+        if self.trim_start_seconds is not None and self.media_kind != "video":
+            raise ValueError("only a video item can start at a trim")
+        return self
 
 
 class StudioUnsupportedField(StrictModel):
@@ -102,6 +109,8 @@ class StudioImportItem(StrictModel):
     reason: Reason | None
     disposition: Disposition
     asset_id: OpaqueId | None = None
+    # Seconds of source media to skip when attached; drafts made before trims were kept have none.
+    trim_start_seconds: TrimSeconds | None = None
 
 
 class StudioDraft(StrictModel):
@@ -213,6 +222,7 @@ def inventory(projection: StudioSourceProjection) -> list[StudioImportItem]:
             scene_id=scenes.get((item.role, item.order)),
             reason=None,
             disposition="unresolved",
+            trim_start_seconds=item.trim_start_seconds,
         )
         for item in projection.items
         if item.media_kind != "none"

@@ -189,3 +189,13 @@ test("reports main footage package details as unsupported instead of mapped", as
   expect(footage.map((item) => item.field)).toEqual(["mode", "package_manifest", "coverage_target"]);
   expect(footage.every((item) => /not supported/.test(item.reason) && /^[0-9a-f]{64}$/.test(item.value_digest))).toBe(true);
 });
+
+test("reports a trim on a still instead of carrying it", async () => {
+  const projection = await projectStudioSource({
+    main: { url: "https://example.com/p", title: "Photo post", is_video: false, trim_start: 2 },
+  });
+  expect(projection.items[0]).toMatchObject({ media_kind: "image", trim_start_seconds: null });
+  expect(projection.unsupported.map((item) => [item.field, item.reason])).toEqual([
+    ["trim_start", "Only a video can start at a trim"],
+  ]);
+});

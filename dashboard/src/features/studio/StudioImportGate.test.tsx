@@ -285,6 +285,24 @@ test("a ready asset of the item's kind can be attached", async () => {
   expect(await row("City loop").findByText("Attached · asset_clip")).toBeDefined();
 });
 
+test.each([
+  ["trim_exceeds_asset", "starts after that asset ends"],
+  ["asset_duration_unknown", "length of that asset is unknown"],
+])("a source range the asset cannot hold (%s) is stated and leaves the item unresolved", async (code, text) => {
+  const resolveStudioImportItem = mock(async () => {
+    throw new StudioImportRequestError(422, code);
+  });
+  const { user } = renderGate(fakeClient({ resolveStudioImportItem }));
+  await resumeNewest(user);
+
+  await user.click(row("City loop").getByRole("button", { name: "Attach…" }));
+  await row("City loop").findByLabelText("Ready asset");
+  await user.click(row("City loop").getByRole("button", { name: "Attach selected asset" }));
+
+  expect((await screen.findByRole("alert")).textContent).toContain(text);
+  expect(row("City loop").getByText("Unresolved")).toBeDefined();
+});
+
 test("an uploaded file is attached to the item it was chosen for", async () => {
   const { client, user } = renderGate();
   await resumeNewest(user);

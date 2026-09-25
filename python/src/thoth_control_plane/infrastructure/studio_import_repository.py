@@ -16,7 +16,11 @@ from thoth_control_plane.application.ports import (
     StudioImportItemNotFound,
     StudioImportItemResolved,
 )
-from thoth_control_plane.domain.edit_document_operations import apply_edit_operations
+from thoth_control_plane.domain.edit_document_operations import (
+    EditDocumentOperation,
+    SetSceneDuration,
+    apply_edit_operations,
+)
 from thoth_control_plane.domain.edit_document_v2 import EditDocument, EditDocumentV2
 from thoth_control_plane.domain.studio_imports import (
     AttachImportAsset,
@@ -252,9 +256,11 @@ class PostgresStudioImportRepository:
     async def _attached(
         cursor: Any, latest: EditDocument, entry: StudioImportItem, asset_id: str
     ) -> EditDocument:
-        """``latest`` with the item's ready asset spanning its scene, capped at the asset length.
+        """``latest`` with the item's ready asset placed in its scene.
 
         The main item fills the main video track; every other item is b-roll over its scene.
+        A video plays from its trim to its end and its scene takes that length; main footage
+        stays within the main scene, and a still fills its scene.
         """
         asset = (
             await PostgresEditDocumentRepository.ready_assets(cursor, latest.project_id, [asset_id])
@@ -266,20 +272,44 @@ class PostgresStudioImportRepository:
         scene = next((scene for scene in latest.scenes if scene.scene_id == entry.scene_id), None)
         if scene is None:
             raise StudioImportDecisionRejected("item_not_attachable")
-        operation = AddClipFromAsset(
-            kind="add_clip_from_asset",
-            operation_id=f"attach_{entry.item_id}",
-            clip_id=f"clip_{entry.item_id}",
-            track_id="track_main_video" if entry.role == "main" else "track_b_roll",
-            asset_id=asset_id,
-            from_frame=scene.start_frame,
-            duration_in_frames=min(
-                scene.duration_in_frames, asset.duration_in_frames or scene.duration_in_frames
-            ),
-            scene_id=scene.scene_id,
+        operations: list[EditDocumentOperation] = []
+        source_from = 0
+        duration = scene.duration_in_frames
+        if entry.media_kind == "video":
+            # Asset lengths are on the canvas clock, so the trim converts at the same rate.
+            if asset.duration_in_frames is None:
+                raise StudioImportDecisionRejected("asset_duration_unknown")
+            source_from = round((entry.trim_start_seconds or 0) * latest.canvas.fps)
+            if source_from >= asset.duration_in_frames:
+                raise StudioImportDecisionRejected("trim_exceeds_asset")
+            duration = asset.duration_in_frames - source_from
+            if entry.role == "main_footage":
+                duration = min(duration, scene.duration_in_frames)
+            elif duration != scene.duration_in_frames:
+                operations.append(
+                    SetSceneDuration(
+                        kind="set_scene_duration",
+                        operation_id=f"fit_{entry.item_id}",
+                        scene_id=scene.scene_id,
+                        duration_in_frames=duration,
+                    )
+                )
+        operations.append(
+            AddClipFromAsset(
+                kind="add_clip_from_asset",
+                operation_id=f"attach_{entry.item_id}",
+                clip_id=f"clip_{entry.item_id}",
+                track_id="track_main_video" if entry.role == "main" else "track_b_roll",
+                asset_id=asset_id,
+                # Resizing a scene never moves its own start.
+                from_frame=scene.start_frame,
+                duration_in_frames=duration,
+                source_from_frame=source_from,
+                scene_id=scene.scene_id,
+            )
         )
         try:
-            return apply_edit_operations(latest, [operation], resolved_assets={asset_id: asset})
+            return apply_edit_operations(latest, operations, resolved_assets={asset_id: asset})
         except ValueError as error:
             raise StudioImportDecisionRejected("attach_rejected") from error
 
