@@ -19,6 +19,8 @@ export type StudioUnsupportedField = {
   role: StudioSourceRole | null;
   order: number | null;
   reason: string;
+  // SHA-256 of the field's value, so distinct choices never share an identity; the value itself never leaves.
+  value_digest: string;
 };
 
 export type StudioSourceProjection = { items: StudioSourceItem[]; unsupported: StudioUnsupportedField[] };
@@ -36,7 +38,7 @@ const FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 // Fields Studio maps onto an item, per role.
 const MAPPED: Record<StudioSourceRole, readonly string[]> = {
   main: ["url", "platform", "title", "description", "is_video", "image_path", "trim_start"],
-  main_footage: ["mode", "package_manifest", "external_sources_manifest", "coverage_target"],
+  main_footage: [],
   footage: ["url", "platform", "title", "description", "is_video", "image_path", "trim_start"],
   comment: ["author", "text", "image_path"],
 };
@@ -48,7 +50,12 @@ const REPORTED: Record<StudioSourceRole, Readonly<Record<string, string>>> = {
     mute_audio: "Per-clip mute is not supported",
     subtitle_blur: "Subtitle blur is not supported",
   },
-  main_footage: {},
+  main_footage: {
+    mode: "Main footage modes are not supported",
+    package_manifest: "Main footage packages are not supported",
+    external_sources_manifest: "External footage sources are not supported",
+    coverage_target: "Footage coverage targets are not supported",
+  },
   footage: {
     mute_audio: "Per-clip mute is not supported",
     subtitle_blur: "Subtitle blur is not supported",
@@ -107,18 +114,23 @@ function canonicalUrl(raw: string | null): string | null {
   return url.toString();
 }
 
-export function projectStudioSource(content: unknown): StudioSourceProjection {
+async function digest(value: unknown): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function projectStudioSource(content: unknown): Promise<StudioSourceProjection> {
   if (!isRecord(content) || !isRecord(content.main)) throw new StudioSourceError("Content Set has no main post");
   const items: StudioSourceItem[] = [];
-  const unsupported: StudioUnsupportedField[] = [];
-  const report = (field: string, role: StudioSourceRole | null, order: number | null, reason: string) =>
-    unsupported.push({ field: FIELD_NAME.test(field) ? field : "unnamed_field", role, order, reason });
+  const reported: { field: string; role: StudioSourceRole | null; order: number | null; reason: string; value: unknown }[] = [];
+  const report = (field: string, role: StudioSourceRole | null, order: number | null, reason: string, value: unknown) =>
+    reported.push({ field: FIELD_NAME.test(field) ? field : "unnamed_field", role, order, reason, value });
 
   const add = (role: StudioSourceRole, order: number, record: unknown) => {
     if (!isRecord(record)) throw new StudioSourceError(`${role} ${order + 1} is not an object`);
     for (const [key, value] of Object.entries(record)) {
       if (MAPPED[role].includes(key) || METADATA.has(key) || key.startsWith("ocr_") || isBlank(value)) continue;
-      report(key, role, order, REPORTED[role][key] ?? UNRECOGNIZED);
+      report(key, role, order, REPORTED[role][key] ?? UNRECOGNIZED, value);
     }
     if (role === "main_footage") {
       items.push({ role, order, title: null, text: null, platform: null, source_url: null, media_kind: "video", trim_start_seconds: null });
@@ -128,7 +140,7 @@ export function projectStudioSource(content: unknown): StudioSourceProjection {
     const bounded = (key: string, limit: number) => {
       const value = optionalString(record, key);
       if (value === null || value.length <= limit) return value;
-      report(key, role, order, `Longer than ${limit} characters`);
+      report(key, role, order, `Longer than ${limit} characters`, value);
       return null;
     };
     const title = bounded(comment ? "author" : "title", TITLE_LIMIT);
@@ -165,10 +177,13 @@ export function projectStudioSource(content: unknown): StudioSourceProjection {
   list("comments").forEach((record, index) => add("comment", index, record));
   for (const [key, value] of Object.entries(content)) {
     if (TOP_LEVEL[key] === null || isBlank(value)) continue;
-    report(key, null, null, TOP_LEVEL[key] ?? UNRECOGNIZED);
+    report(key, null, null, TOP_LEVEL[key] ?? UNRECOGNIZED, value);
   }
-  if (items.length > MAX_ITEMS || unsupported.length > MAX_UNSUPPORTED) {
+  if (items.length > MAX_ITEMS || reported.length > MAX_UNSUPPORTED) {
     throw new StudioSourceError("Content Set is too large for Studio import");
   }
+  const unsupported = await Promise.all(
+    reported.map(async ({ value, ...field }) => ({ ...field, value_digest: await digest(value) })),
+  );
   return { items, unsupported };
 }

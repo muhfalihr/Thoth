@@ -186,11 +186,11 @@ export function ContentSet({
     onSendToRender(data.path, content.main_footage?.mode === "forced_url_pool");
   };
 
-  const openInStudio = () => {
+  const openInStudio = async () => {
     if (!content || !projectId || running) return;
     setNotice(null);
     try {
-      onOpenInStudio(projectStudioSource(content));
+      onOpenInStudio(await projectStudioSource(content));
     } catch (error) {
       setNotice(
         error instanceof StudioSourceError

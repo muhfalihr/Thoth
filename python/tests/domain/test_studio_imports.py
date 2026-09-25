@@ -125,6 +125,19 @@ def test_source_key_is_a_stable_sha256_of_the_canonical_projection() -> None:
     assert source_key(StudioSourceProjection.model_validate(swapped)) != key
 
 
+def test_distinct_unsupported_values_give_distinct_source_keys() -> None:
+    def keyed(digest: str) -> str:
+        payload = projection_payload()
+        payload["unsupported"][0]["value_digest"] = digest
+        return source_key(StudioSourceProjection.model_validate(payload))
+
+    assert keyed("a" * 64) != keyed("b" * 64)
+    payload = projection_payload()
+    payload["unsupported"][0]["value_digest"] = "C:\\Users\\operator\\manifest.json"
+    with pytest.raises(ValidationError):
+        StudioSourceProjection.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     "source_url",
     [

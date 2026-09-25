@@ -80,8 +80,8 @@ const contentSetWithFourFootageItems = {
   unknown_creative_field: { color: "red" },
 };
 
-test("keeps every first-mode source item in stable role order", () => {
-  const projection = projectStudioSource(contentSetWithFourFootageItems);
+test("keeps every first-mode source item in stable role order", async () => {
+  const projection = await projectStudioSource(contentSetWithFourFootageItems);
   expect(projection.items.filter((item) => item.role === "footage")).toHaveLength(4);
   expect(projection.items.some((item) => item.role === "main_footage")).toBe(true);
   expect(projection.unsupported.map((item) => item.field)).toContain("unknown_creative_field");
@@ -112,12 +112,15 @@ test("keeps every first-mode source item in stable role order", () => {
   expect(projection.items[7]).toMatchObject({ title: "viewer_two", media_kind: "none" });
 });
 
-test("reports every creative field Studio cannot represent", () => {
-  const { unsupported } = projectStudioSource(contentSetWithFourFootageItems);
+test("reports every creative field Studio cannot represent", async () => {
+  const { unsupported } = await projectStudioSource(contentSetWithFourFootageItems);
   expect(unsupported.map((item) => [item.role, item.order, item.field])).toEqual([
     ["main", 0, "profile"],
     ["main", 0, "mute_audio"],
     ["main", 0, "subtitle_blur"],
+    ["main_footage", 0, "mode"],
+    ["main_footage", 0, "package_manifest"],
+    ["main_footage", 0, "coverage_target"],
     ["comment", 0, "likes"],
     ["comment", 0, "avatar_url"],
     ["comment", 0, "context"],
@@ -127,28 +130,28 @@ test("reports every creative field Studio cannot represent", () => {
   expect(unsupported.every((item) => item.reason.length > 0)).toBe(true);
 });
 
-test("never carries a host path or signed query into the projection", () => {
-  const serialized = JSON.stringify(projectStudioSource(contentSetWithFourFootageItems));
+test("never carries a host path or signed query into the projection", async () => {
+  const serialized = JSON.stringify(await projectStudioSource(contentSetWithFourFootageItems));
   for (const secret of ["C:\\", "operator", "manifest.json", "x-signature", "sig=", "sqp=", "#t=", "?"]) {
     expect(serialized.includes(secret)).toBe(false);
   }
 });
 
-test("drops a non-web source address instead of passing a path through", () => {
+test("drops a non-web source address instead of passing a path through", async () => {
   const content = { main: { url: "C:\\Users\\operator\\main.mp4", title: "Local", is_video: true } };
-  expect(projectStudioSource(content).items[0]).toMatchObject({ source_url: null, media_kind: "video" });
+  expect((await projectStudioSource(content)).items[0]).toMatchObject({ source_url: null, media_kind: "video" });
 });
 
-test("reports an overlong caption instead of truncating it", () => {
+test("reports an overlong caption instead of truncating it", async () => {
   const long = "x".repeat(2001);
-  const projection = projectStudioSource({ main: { url: "https://example.com/v", title: "T", description: long } });
+  const projection = await projectStudioSource({ main: { url: "https://example.com/v", title: "T", description: long } });
   expect(projection.items[0]!.text).toBeNull();
   expect(projection.unsupported).toEqual([
-    { field: "description", role: "main", order: 0, reason: "Longer than 2000 characters" },
+    { field: "description", role: "main", order: 0, reason: "Longer than 2000 characters", value_digest: expect.stringMatching(/^[0-9a-f]{64}$/) },
   ]);
 });
 
-test("fails closed on malformed or oversize input", () => {
+test("fails closed on malformed or oversize input", async () => {
   for (const bad of [
     null,
     [],
@@ -161,6 +164,28 @@ test("fails closed on malformed or oversize input", () => {
     { main: { title: "T" }, comments: [{ author: "a", text: 5 }] },
     { main: { title: "T" }, footage: Array.from({ length: 401 }, () => ({ title: "F" })) },
   ]) {
-    expect(() => projectStudioSource(bad)).toThrow(StudioSourceError);
+    await expect(projectStudioSource(bad)).rejects.toThrow(StudioSourceError);
   }
+});
+
+test("gives distinct main footage choices distinct projections without naming their paths", async () => {
+  const choose = (main_footage: Record<string, unknown>) =>
+    projectStudioSource({ ...contentSetWithFourFootageItems, main_footage });
+  const base = { mode: "forced_url_pool", package_manifest: "C:\\Users\\operator\\out\\pkg_a\\manifest.json", coverage_target: 0.8 };
+  const variants = await Promise.all([
+    choose(base),
+    choose({ ...base, package_manifest: "C:\\Users\\operator\\out\\pkg_b\\manifest.json" }),
+    choose({ ...base, coverage_target: 0.5 }),
+    choose({ ...base, mode: "forced" }),
+  ]);
+  const serialized = variants.map((projection) => JSON.stringify(projection));
+  expect(new Set(serialized).size).toBe(4);
+  for (const text of serialized) expect(text.includes("pkg_") || text.includes("operator")).toBe(false);
+});
+
+test("reports main footage package details as unsupported instead of mapped", async () => {
+  const { unsupported } = await projectStudioSource(contentSetWithFourFootageItems);
+  const footage = unsupported.filter((item) => item.role === "main_footage");
+  expect(footage.map((item) => item.field)).toEqual(["mode", "package_manifest", "coverage_target"]);
+  expect(footage.every((item) => /not supported/.test(item.reason) && /^[0-9a-f]{64}$/.test(item.value_digest))).toBe(true);
 });

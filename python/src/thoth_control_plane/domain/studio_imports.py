@@ -65,6 +65,8 @@ class StudioUnsupportedField(StrictModel):
     role: SourceRole | None
     order: ItemOrder | None
     reason: Reason
+    # Digest of the dropped value, so distinct choices never share a source_key.
+    value_digest: SourceKey | None = None
 
 
 class StudioSourceProjection(StrictModel):

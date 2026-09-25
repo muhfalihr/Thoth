@@ -2377,6 +2377,8 @@ export interface components {
             reason: string;
             /** Role */
             role: ("main" | "main_footage" | "footage" | "comment") | null;
+            /** Value Digest */
+            value_digest?: string | null;
         };
         /** StyleChoice */
         StyleChoice: {
