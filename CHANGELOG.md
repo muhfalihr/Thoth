@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Controlled fallback `f1` failed on a harness defect; `f2` retry admitted
+
+`f1` ran once against `sha256:b831f376…` (revision `7c64e32`), with harness `86c5f77`.
+It was run by the operator. The attempt record shows `verdict=failed`,
+`supervisor_exit_code=0`, `artifact_present=true`, and `artifact_validated=false`. Every
+isolation fact is true.
+
+Cause: Scout writes media under its fixed output root `/opt/thoth/scout/output` and
+records that absolute path. The gate mounted only its report directory, so the media
+was lost with the container. This is a gate-harness defect, not a supervisor failure.
+
+Changes:
+- `e258b58` mounts the gate `output` directory at Scout's output root as well.
+  - The offline proof asserts `scout_output_retained`.
+  - CI run `36129515247` passed on the first attempt, and so did the WSL harness against the
+    deployed digest.
+  - No redeploy is needed: the change is host-side Compose only.
+- One `classification_amendment` row now targets the `f1` index row.
+  - It records `amend_f5962af47ab8310659c8a990cd91b66a` with
+    `failure_attribution=gate_harness_defect`, `retry_gate_id=f2`, and effective verdict
+    still `failed`.
+  - A timestamped mode-0600 backup was taken before the single `O_APPEND` write. The
+    `f1` row is unchanged.
+- `f5256d1` admits exactly one retry gate, `f2`.
+  - Preflight requires that amendment. It rejects any row whose `gate_id` or
+    `target_gate_id` names the gate being run.
+  - Reserve and finalize carry the directory's gate id.
+  - `--gate-id` must name the `--sample` directory.
+  - The design spec and the runbook are amended to match.
+- Issue #5 received a safe-field summary.
+
+Verification:
+- Python: 1863 passed, 35 skipped.
+- Ruff: clean.
+- CI run `36131874965`: every job succeeded.
+- The amendment writer was tested on a synthetic index in WSL: the first run appends; a
+  second run is refused; afterwards `f2` is admitted and `f1` stays blocked.
+- `uv run --with ./python` serves a cached build of the local package, even with
+  `--reinstall-package`. `~/stage1-f2.sh` therefore uses `--with-editable ./python`.
+  The cached build `f1` used matched the source at `86c5f77` file for file.
+
+`f2` has not run. It needs its own fixture and its own single-use operator authorization.
+
 ## 2026-09-25 - Editor migrations on Alembic; Stage 1 redeployed on `7c64e32`
 
 `thoth-control editor migrate` re-ran every editor SQL file on each call. From
