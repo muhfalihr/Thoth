@@ -47,11 +47,21 @@ class TikTokPost(StrictModel):
     engagement: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
 
 
+class MediaRequestContext(StrictModel):
+    """Browser session a signed media URL is bound to; never serialized or persisted."""
+
+    user_agent: str | None = None
+    referer: str
+    # (cookie domain, name, value); a leading "." domain also matches subdomains.
+    cookies: list[tuple[str, str, SecretStr]] = Field(default_factory=list, repr=False)
+
+
 class ResolvedMedia(StrictModel):
     kind: Literal["video"] = "video"
     ephemeral_url: SecretStr = Field(exclude=True, repr=False)
     media_type: Literal["video/mp4"] = "video/mp4"
     duration_seconds: Annotated[float, Field(ge=0)] | None = None
+    request_context: MediaRequestContext | None = Field(default=None, exclude=True, repr=False)
 
 
 class MaterializedMedia(StrictModel):

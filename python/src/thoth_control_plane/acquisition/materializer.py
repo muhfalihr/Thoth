@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from thoth_control_plane.acquisition.models import (
     AcquisitionStrategy,
     MaterializedMedia,
+    MediaRequestContext,
     ResolvedMedia,
 )
 
@@ -74,6 +75,24 @@ def _validate_public_https_url(url: str) -> str:
     return host
 
 
+def _session_headers(context: MediaRequestContext | None, host: str) -> dict[str, str]:
+    """Replay the browser session per hop; cookies go only to hosts their domain covers."""
+    if context is None:
+        return {}
+    headers = {"Referer": context.referer}
+    if context.user_agent:
+        headers["User-Agent"] = context.user_agent
+    cookie = "; ".join(
+        f"{name}={value.get_secret_value()}"
+        for domain, name, value in context.cookies
+        if host == domain.lstrip(".").lower()
+        or (domain.startswith(".") and host.endswith(domain.lower()))
+    )
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
 async def _ensure_publicly_routable(host: str, resolver: HostResolver) -> None:
     try:
         addresses = await resolver(host)
@@ -121,6 +140,7 @@ class MediaMaterializer:
                     async with self._client.stream(
                         "GET",
                         current_url,
+                        headers=_session_headers(candidate.request_context, host),
                         follow_redirects=False,
                         timeout=DOWNLOAD_TIMEOUT_SECONDS,
                     ) as response:

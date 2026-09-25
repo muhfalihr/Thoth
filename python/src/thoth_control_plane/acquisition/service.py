@@ -201,15 +201,21 @@ class TikTokAcquisitionService:
             identity = _derive_identity(source_url, snapshot)
             headless_post = snapshot.post_candidates[0] if snapshot.post_candidates else None
             if snapshot.post_candidates and snapshot.media_candidates and identity is not None:
-                try:
-                    materialized = await self._materialize(
-                        snapshot.media_candidates[0],
-                        workflow_id,
-                        identity.post_id,
-                        AcquisitionStrategy.SCRAPLING_HEADLESS,
-                        artifact_root,
-                    )
-                except MediaMaterializationError:
+                # Candidates are ordered by preference; one that fails
+                # validation must not hide a later one that would pass.
+                for candidate in snapshot.media_candidates:
+                    try:
+                        materialized = await self._materialize(
+                            candidate,
+                            workflow_id,
+                            identity.post_id,
+                            AcquisitionStrategy.SCRAPLING_HEADLESS,
+                            artifact_root,
+                        )
+                        break
+                    except MediaMaterializationError:
+                        continue
+                if materialized is None:
                     headless_reason = AcquisitionReason.MEDIA_VALIDATION_FAILED
             else:
                 headless_reason = AcquisitionReason.HEADLESS_INCOMPLETE

@@ -538,3 +538,50 @@ async def test_invalid_result_location_is_sanitized_before_atomic_replace(tmp_pa
     assert str(sensitive_location) not in str(exc_info.value)
     assert not destination.exists()
     assert list(tmp_path.rglob("*.part")) == []
+
+
+@pytest.mark.asyncio
+async def test_materializer_replays_the_browser_session_only_to_matching_cookie_domains(
+    tmp_path,
+) -> None:
+    from thoth_control_plane.acquisition.models import MediaRequestContext
+
+    seen: list[tuple[str, str | None, str | None, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (
+                request.url.host,
+                request.headers.get("Cookie"),
+                request.headers.get("User-Agent"),
+                request.headers.get("Referer"),
+            )
+        )
+        if request.url.host == "v16.tiktok.com":
+            return httpx.Response(
+                302, headers={"Location": "https://cdn.example/video.mp4"}, request=request
+            )
+        return httpx.Response(200, content=MP4_BODY, request=request)
+
+    candidate = ResolvedMedia(
+        ephemeral_url=SecretStr("https://v16.tiktok.com/video.mp4"),
+        request_context=MediaRequestContext(
+            user_agent="agent/1",
+            referer="https://www.tiktok.com/",
+            cookies=[
+                (".tiktok.com", "tt_chain_token", SecretStr("a")),
+                ("www.tiktok.com", "host_only", SecretStr("b")),
+            ],
+        ),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await MediaMaterializer(client, public_resolver).materialize(
+            candidate,
+            tmp_path / "v.mp4",
+            PurePosixPath("reports/wf_1/media/v.mp4"),
+            "scrapling_headless",
+        )
+    assert seen == [
+        ("v16.tiktok.com", "tt_chain_token=a", "agent/1", "https://www.tiktok.com/"),
+        ("cdn.example", None, "agent/1", "https://www.tiktok.com/"),
+    ]

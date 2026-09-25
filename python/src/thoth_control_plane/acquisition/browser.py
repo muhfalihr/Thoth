@@ -10,6 +10,7 @@ rest of the control plane) never requires the optional `acquisition` extra.
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,11 +25,14 @@ from thoth_control_plane.acquisition.adapters.tiktok import (
 from thoth_control_plane.acquisition.models import (
     AcquisitionReason,
     BrowserSnapshot,
+    MediaRequestContext,
     ResolvedMedia,
     TikTokPost,
 )
 
 CAPTURE_XHR_PATTERN = r"https://[^\s]+"
+EMBEDDED_DATA_SELECTOR = "script#__UNIVERSAL_DATA_FOR_REHYDRATION__::text"
+MEDIA_REFERER = "https://www.tiktok.com/"
 FETCH_TIMEOUT_MS = 45_000
 FETCH_WAIT_MS = 1_000
 
@@ -84,19 +88,23 @@ def _default_session_factory(**kwargs: Any) -> Any:
     return AsyncStealthySession(**kwargs)
 
 
-def _xhr_item_struct(captured_xhr: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the first `itemStruct` parsed out of captured TikTok XHR bodies."""
-    for entry in captured_xhr:
-        if not isinstance(entry, dict) or entry.get("status") != 200:
-            continue
-        body = entry.get("body")
-        if not isinstance(body, dict):
-            continue
-        item_info = body.get("itemInfo")
-        if not isinstance(item_info, dict):
-            continue
-        item_struct = item_info.get("itemStruct")
-        if isinstance(item_struct, dict):
+def _item_struct(
+    captured_xhr: list[dict[str, Any]], embedded_data: dict[str, Any] | None, post_id: str
+) -> dict[str, Any] | None:
+    """Return the `itemStruct` of `post_id`, from captured XHR bodies first, then from the
+    page's embedded rehydration data (a direct post load embeds it; no item XHR fires)."""
+    bodies = [
+        entry.get("body")
+        for entry in captured_xhr
+        if isinstance(entry, dict) and entry.get("status") == 200
+    ]
+    scope = embedded_data.get("__DEFAULT_SCOPE__") if isinstance(embedded_data, dict) else None
+    if isinstance(scope, dict):
+        bodies.append(scope.get("webapp.video-detail"))
+    for body in bodies:
+        item_info = body.get("itemInfo") if isinstance(body, dict) else None
+        item_struct = item_info.get("itemStruct") if isinstance(item_info, dict) else None
+        if isinstance(item_struct, dict) and str(item_struct.get("id")) == post_id:
             return item_struct
     return None
 
@@ -151,6 +159,8 @@ def extract_browser_snapshot(
     author: str | None,
     video_sources: list[str],
     captured_xhr: list[dict[str, Any]],
+    embedded_data: dict[str, Any] | None = None,
+    request_context: MediaRequestContext | None = None,
 ) -> BrowserSnapshot:
     """Reduce raw headless browser output to a sanitized `BrowserSnapshot`.
 
@@ -170,14 +180,17 @@ def extract_browser_snapshot(
     including posts that carry a long caption, so it holds no caption
     information and must never stand in for one -- an empty caption is a valid
     result, while a fabricated one would poison downstream narration grounding.
+
+    Media candidates are https only (the player's `blob:` src is unfetchable)
+    and come only from the item of this post, never from another video's.
     """
     identity = canonicalize_tiktok_post_url(final_url)
     canonical_handle = _normalize_handle(identity.owner_handle)
 
-    item_struct = _xhr_item_struct(captured_xhr)
+    item_struct = _item_struct(captured_xhr, embedded_data, identity.post_id)
     caption = ""
     xhr_unique_id: str | None = None
-    if item_struct is not None and str(item_struct.get("id")) == identity.post_id:
+    if item_struct is not None:
         xhr_desc = item_struct.get("desc")
         if isinstance(xhr_desc, str):
             caption = xhr_desc
@@ -203,7 +216,11 @@ def extract_browser_snapshot(
         )
 
     media_urls = list(dict.fromkeys([*video_sources, *_xhr_media_urls(item_struct)]))
-    media_candidates = [ResolvedMedia(ephemeral_url=SecretStr(url)) for url in media_urls if url]
+    media_candidates = [
+        ResolvedMedia(ephemeral_url=SecretStr(url), request_context=request_context)
+        for url in media_urls
+        if url.startswith("https://")
+    ]
 
     return BrowserSnapshot(
         final_url=identity.canonical_url,
@@ -217,13 +234,35 @@ def _extract_from_response(response: Any) -> BrowserSnapshot:
     author = response.css('meta[name="author"]::attr(content)').get()
     video_sources = response.css("video::attr(src)").getall()
     captured_xhr = _parse_captured_xhr(getattr(response, "captured_xhr", []))
+    embedded_data: Any = None
+    with contextlib.suppress(ValueError):
+        embedded_data = json.loads(response.css(EMBEDDED_DATA_SELECTOR).get() or "null")
     return extract_browser_snapshot(
         final_url=str(response.url),
         og_title=og_title,
         author=author,
         video_sources=list(video_sources),
         captured_xhr=captured_xhr,
+        embedded_data=embedded_data if isinstance(embedded_data, dict) else None,
+        request_context=_media_request_context(response),
     )
+
+
+def _media_request_context(response: Any) -> MediaRequestContext:
+    """Capture the session TikTok binds its signed media URLs to (context cookies + UA)."""
+    headers = getattr(response, "request_headers", None)
+    user_agent = None
+    if isinstance(headers, dict):
+        user_agent = next(
+            (str(v) for k, v in headers.items() if str(k).lower() == "user-agent"), None
+        )
+    raw_cookies = getattr(response, "cookies", None)
+    cookies = [
+        (str(c.get("domain") or ""), str(c["name"]), SecretStr(str(c.get("value") or "")))
+        for c in (raw_cookies if isinstance(raw_cookies, (list, tuple)) else ())
+        if isinstance(c, dict) and c.get("name") and c.get("domain")
+    ]
+    return MediaRequestContext(user_agent=user_agent, referer=MEDIA_REFERER, cookies=cookies)
 
 
 def _classify_fetch_error(error: Exception) -> AcquisitionReason:

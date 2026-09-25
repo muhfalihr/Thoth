@@ -634,3 +634,31 @@ async def test_tikwm_resolver_maps_transport_errors_to_cdn_unavailable() -> None
         with pytest.raises(TikWmError) as excinfo:
             await resolver.resolve(SOURCE_URL)
     assert excinfo.value.code == "cdn_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_headless_tries_every_media_candidate_before_falling_back(tmp_path) -> None:
+    class FirstCandidateFails(FakeMaterializer):
+        async def materialize(self, candidate, destination, relative_location, strategy):
+            if candidate.ephemeral_url.get_secret_value().endswith("/a.mp4"):
+                self.calls.append("rejected")
+                raise MediaMaterializationError()
+            return await super().materialize(candidate, destination, relative_location, strategy)
+
+    snapshot = complete_snapshot()
+    snapshot.media_candidates.append(
+        ResolvedMedia(ephemeral_url=SecretStr("https://video.example/b.mp4"))
+    )
+    resolver = FakeResolver()
+    materializer = FirstCandidateFails()
+    result = await TikTokAcquisitionService(FakeBrowser(snapshot), resolver, materializer).inspect(
+        workflow_id="wf_second_candidate_001",
+        source_url=SOURCE_URL,
+        artifact_root=tmp_path,
+    )
+    assert result.report is not None
+    assert [attempt.strategy for attempt in result.report.outcome.attempts] == [
+        "scrapling_headless"
+    ]
+    assert materializer.calls == ["rejected", "scrapling_headless"]
+    assert resolver.calls == []

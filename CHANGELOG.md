@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Headless TikTok media no longer depends on TikWM
+
+Every Stage 1 run recorded `scrapling_headless` as `media_validation_failed`
+(p3, p4, p7, and every soak run). As a result, TikWM carried every Python-native
+success, and a single TikWM failure dropped a run to the legacy fallback.
+
+Root causes, both in the headless path:
+- The first media candidate was the player's DOM `<video src>`, which on TikTok
+  is an unfetchable `blob:` MediaSource URL. The materializer's https guard
+  rejected it, and the service never tried the remaining candidates.
+- When a TikTok post is loaded directly, its item data is embedded in the
+  `__UNIVERSAL_DATA_FOR_REHYDRATION__` script and no item XHR fires. The item's
+  `playAddr` and `downloadAddr` were therefore never found. Those signed URLs are
+  also bound to the browser session, and the download used a bare HTTP client.
+
+Fix (branch `fix/headless-media-session`):
+- Media candidates are https only. They come only from the item whose id
+  matches the post, read from captured XHR first and then from the embedded
+  rehydration data.
+- Each candidate carries a never-serialized `MediaRequestContext`: the browser
+  context's user agent, a TikTok referer, and its cookies. The materializer
+  replays these on every hop and sends a cookie only to hosts that the cookie's
+  domain covers.
+- The headless attempt tries every candidate in order before it falls back.
+
+Verification:
+- Six new tests went red first.
+- `pytest -m "not live"`: 1901 passed, 3 skipped.
+- `ruff check` and `ruff format --check`: clean.
+- The offline wiring probe (`--network none`, TikWM disabled) loaded the
+  worktree code.
+- The live headless-only probe has not run; it needs operator authorization.
+
+Not deployed: the acceptance window pins digest `b831f376`, and a new digest
+starts a new window. No `build_cuda.bat` run, because the change is
+Python-only.
+
 ## 2026-09-25 - Stage 1 accelerated acceptance window opened
 
 Both activation gates passed (`f2` controlled fallback, `p7` parity pair). On the

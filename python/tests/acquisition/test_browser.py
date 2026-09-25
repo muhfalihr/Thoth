@@ -9,6 +9,7 @@ import pytest
 from thoth_control_plane.acquisition.browser import (
     HeadlessBrowserError,
     ScraplingHeadlessBrowser,
+    _extract_from_response,
     active_scrapling_session_count,
     check_scrapling_capability,
     extract_browser_snapshot,
@@ -358,3 +359,85 @@ def test_importing_browser_module_does_not_import_scrapling_or_patchright() -> N
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+PLAY_URL = "https://v16-webapp.tiktok.example/play.mp4"
+DOWNLOAD_URL = "https://v16-webapp.tiktok.example/download.mp4"
+
+
+def _item_struct(post_id: str = "1234567890", unique_id: str = "creator") -> dict:
+    return {
+        "id": post_id,
+        "desc": "caption",
+        "author": {"uniqueId": unique_id},
+        "video": {"playAddr": PLAY_URL, "downloadAddr": DOWNLOAD_URL},
+    }
+
+
+def _media_urls(snapshot) -> list[str]:
+    return [media.ephemeral_url.get_secret_value() for media in snapshot.media_candidates]
+
+
+def test_blob_video_source_is_never_a_media_candidate() -> None:
+    # TikTok's player src is a `blob:` MediaSource URL that no HTTP client can fetch.
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title=None,
+        author="creator",
+        video_sources=["blob:https://www.tiktok.com/0f1e2d3c"],
+        captured_xhr=[{"status": 200, "body": {"itemInfo": {"itemStruct": _item_struct()}}}],
+    )
+    assert _media_urls(snapshot) == [PLAY_URL, DOWNLOAD_URL]
+
+
+def test_embedded_page_data_supplies_identity_caption_and_media() -> None:
+    # A direct post load embeds the item in the rehydration script; no item XHR fires.
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title="Creator on TikTok",
+        author=None,
+        video_sources=["blob:https://www.tiktok.com/0f1e2d3c"],
+        captured_xhr=[],
+        embedded_data={
+            "__DEFAULT_SCOPE__": {
+                "webapp.video-detail": {"itemInfo": {"itemStruct": _item_struct()}}
+            }
+        },
+    )
+    assert snapshot.post_candidates[0].caption == "caption"
+    assert _media_urls(snapshot) == [PLAY_URL, DOWNLOAD_URL]
+
+
+def test_media_of_a_different_post_is_never_a_candidate() -> None:
+    snapshot = extract_browser_snapshot(
+        final_url=POST_URL,
+        og_title=None,
+        author="creator",
+        video_sources=[],
+        captured_xhr=[
+            {"status": 200, "body": {"itemInfo": {"itemStruct": _item_struct("9999999999")}}}
+        ],
+    )
+    assert snapshot.media_candidates == []
+
+
+def test_production_adapter_carries_the_browser_session_to_media_without_leaking_it() -> None:
+    response = _response(
+        POST_URL,
+        video_sources=["blob:https://www.tiktok.com/0f1e2d3c"],
+        captured_xhr=[{"status": 200, "body": {"itemInfo": {"itemStruct": _item_struct()}}}],
+    )
+    response.cookies = (
+        {"name": "tt_chain_token", "value": "cookie-secret", "domain": ".tiktok.com"},
+        {"name": "", "value": "ignored", "domain": ".tiktok.com"},
+    )
+    response.request_headers = {"User-Agent": "Mozilla/5.0 test-agent"}
+    snapshot = _extract_from_response(response)
+    context = snapshot.media_candidates[0].request_context
+    assert context is not None
+    assert context.user_agent == "Mozilla/5.0 test-agent"
+    assert [(d, n, v.get_secret_value()) for d, n, v in context.cookies] == [
+        (".tiktok.com", "tt_chain_token", "cookie-secret")
+    ]
+    assert "cookie-secret" not in snapshot.model_dump_json()
+    assert "cookie-secret" not in repr(snapshot)
