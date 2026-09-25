@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Stage 1 redeployed on `0c4e2e8`; `f1` preflight defects fixed
+
+An independent review of the controlled fallback branch found three defects that
+would have blocked or corrupted the one `f1` attempt. `0c4e2e8` fixes all three,
+each with a RED/GREEN test:
+- **Role identity could never match.** Preflight compared each role's
+  `Config.Image` with the bare digest. Docker records the full
+  `ghcr.io/muhfalihr/thoth@sha256:` reference, so preflight would have rejected
+  every correct deployment.
+- **Exited gate containers were missed.** `compose ps -q` omitted `--all`. A
+  supervisor that exited early left its container behind with no logs, yet
+  teardown was still recorded as clean.
+- **Validation errors skipped teardown.** An `OSError` during artifact
+  validation, for example after a failed reclaim, left the fixture and container
+  in place and the attempt pending.
+
+Verification: Python 1851 passed, 35 skipped; the pre-existing
+`test_route_modules_do_not_depend_on_a_process_runner` failure was deselected.
+WSL controlled fallback 91/91. Ruff clean. CI was green on the push, including
+the controlled fallback contract on the published digest.
+
+Deployment identity:
+- Acquisition commit `0c4e2e8e0850da8836eadcafa496d6be669b7196`, published as
+  `sha256:e3b5a5de19fdf5d207a4c3affbf1918e1a5a15bb0c3de73506a28879c243ffa7`.
+- Renderer: `sha256:1f91dd439e24ccef072cc41399bb5fa6f28505f822c57ff36b3aa5d13cf0eddd`,
+  same revision.
+- Provider configuration unchanged since 2026-09-07.
+
+Deployment: the operator ran the redeploy after archiving a stale Chromium
+`SingletonLock` in the browser profile. That lock pointed at a container that no
+longer existed, and the profile listing was unchanged before and after. Result:
+- `api`, `worker` and `legacy-cdp` all run the digest and revision above, as
+  `10001:10001`, with zero restarts and no host binding for 18800.
+- The worker runs in `python_tiktok_with_legacy_fallback`.
+- `api` and `legacy-cdp` are healthy. `healthz` and `readyz` return 200.
+- Persistent state was kept.
+
+`editor migrate` exited 1 and applied nothing. It re-executes every editor
+migration in one transaction, and migrations 0003 onward are not idempotent. So
+on an existing database it rolls back, and `0007_studio_import_sources` is not
+applied. Creator Studio import drafts are unavailable until that migration is
+applied. Stage 1 gates do not depend on it.
+
+`f1` and the activation parity pair have not run. No window is open.
+
 ## 2026-09-25 - Controlled fallback gate `f1` finished offline
 
 Tasks 4 and 5 of the controlled fallback activation plan are done, verified
