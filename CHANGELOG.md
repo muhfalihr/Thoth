@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Stage 1 reconciled and ruled to finish remaining gates
+
+The Python Scout migration program is active again. A read-only reconciliation
+was appended to Issue #5 as a comment. It changed no evidence, deployment, or
+worker mode.
+
+Findings:
+- **Parity.** Activation parity has 0 passes. p1 through p5 are all effectively
+  `evidence_incomparable`, and in every case the Scout reference side is the one
+  that failed. The p6 attempt has no pairing row and stays preserved as failure
+  evidence.
+- **Unrecorded deployment.** The 2026-09-10 deployment of `0bc3d00c` /
+  `c61f578` was never recorded in the issue.
+- **Controlled fallback.** Plan Tasks 1–3 are done. Task 4 is only partly done
+  and Task 5 is missing. `f1` has never run, and no acceptance window has opened
+  since `c9188900` was archived.
+- **Current stack.** The Stage 1 Compose stack now hosts only Creator Studio
+  development. It has no worker and no `legacy-cdp`.
+
+The operator's ruling is to finish the remaining gates. The redeploy waits
+until controlled-fallback Tasks 4–5 are finished and reviewed, so it runs on a
+digest that stays current. `f1` also waits for an operator-provisioned fixture.
+The parity-policy question is still open: should activation parity keep
+requiring a successful live Scout reference?
+
 ## 2026-09-25 - Studio upload tests run in CI's pytest mode
 
 Pushed as `8069804` on `codex/stage1-container-ci` with operator authorization.
