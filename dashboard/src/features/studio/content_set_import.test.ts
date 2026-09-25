@@ -183,6 +183,23 @@ test("gives distinct main footage choices distinct projections without naming th
   for (const text of serialized) expect(text.includes("pkg_") || text.includes("operator")).toBe(false);
 });
 
+test("digests an unsupported value by content, not by its key order", async () => {
+  const choose = (external_sources_manifest: unknown) =>
+    projectStudioSource({ ...contentSetWithFourFootageItems, main_footage: { external_sources_manifest } });
+  const [first, reordered, changed] = await Promise.all([
+    choose({ pool: { min: 2, max: 5 }, sources: [{ a: 1, b: [2, 3] }], label: "x" }),
+    choose({ label: "x", sources: [{ b: [2, 3], a: 1 }], pool: { max: 5, min: 2 } }),
+    choose({ pool: { min: 2, max: 5 }, sources: [{ a: 1, b: [3, 2] }], label: "x" }),
+  ]);
+  const digestOf = (projection: typeof first) =>
+    projection.unsupported.find((item) => item.field === "external_sources_manifest")?.value_digest;
+  expect(digestOf(first)).toMatch(/^[0-9a-f]{64}$/);
+  expect(digestOf(reordered)).toBe(digestOf(first));
+  expect(JSON.stringify(reordered)).toBe(JSON.stringify(first));
+  expect(digestOf(changed)).not.toBe(digestOf(first));
+  expect(JSON.stringify(first).includes("pool")).toBe(false);
+});
+
 test("reports main footage package details as unsupported instead of mapped", async () => {
   const { unsupported } = await projectStudioSource(contentSetWithFourFootageItems);
   const footage = unsupported.filter((item) => item.role === "main_footage");

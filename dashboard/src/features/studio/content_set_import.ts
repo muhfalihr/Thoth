@@ -114,8 +114,14 @@ function canonicalUrl(raw: string | null): string | null {
   return url.toString();
 }
 
+// Sorts object keys at every depth so equal values hash alike; arrays keep their order.
+const sortedKeys = (_key: string, value: unknown) =>
+  isRecord(value)
+    ?Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    : value;
+
 async function digest(value: unknown): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value, sortedKeys)));
   return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 

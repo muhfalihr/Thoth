@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Studio source keys ignore key order in unsupported values (F3 Plan B correction)
+
+Offline correction on `codex/stage1-container-ci` after `2baed5e`; dashboard only, not pushed.
+
+- An unsupported value is digested with its object keys sorted at every depth, so the same Content Set gives the same source key and Resume offer whatever order its fields were written in. Array order and scalar values still count, and raw values still never leave the browser.
+
+Verification: the new key-order test failed first and now passes. Focused import and import-gate tests 31 pass; dashboard 652 tests pass, tsc, lint, and build clean; `git diff --check` clean; `build_cuda.bat` exit 0.
+
 ## 2026-09-25 - Studio imports keep source identity, trim, and render replays (F3 Plan B correction)
 
 Offline correction on `codex/stage1-container-ci` after `2f75310`; control plane and dashboard only, not pushed.
