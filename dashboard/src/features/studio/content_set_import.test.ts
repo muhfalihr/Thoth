@@ -115,15 +115,15 @@ test("keeps every first-mode source item in stable role order", async () => {
 test("reports every creative field Studio cannot represent", async () => {
   const { unsupported } = await projectStudioSource(contentSetWithFourFootageItems);
   expect(unsupported.map((item) => [item.role, item.order, item.field])).toEqual([
-    ["main", 0, "profile"],
     ["main", 0, "mute_audio"],
+    ["main", 0, "profile"],
     ["main", 0, "subtitle_blur"],
+    ["main_footage", 0, "coverage_target"],
     ["main_footage", 0, "mode"],
     ["main_footage", 0, "package_manifest"],
-    ["main_footage", 0, "coverage_target"],
-    ["comment", 0, "likes"],
     ["comment", 0, "avatar_url"],
     ["comment", 0, "context"],
+    ["comment", 0, "likes"],
     [null, null, "references"],
     [null, null, "unknown_creative_field"],
   ]);
@@ -200,10 +200,30 @@ test("digests an unsupported value by content, not by its key order", async () =
   expect(JSON.stringify(first).includes("pool")).toBe(false);
 });
 
+test("lists sibling unsupported fields the same whatever order they were written in", async () => {
+  const main = { url: "https://example.com/v", is_video: true };
+  const [first, swapped, changed] = await Promise.all([
+    projectStudioSource({ main: { ...main, zoom: 1.2, filter: { a: 1 } }, grade: "warm", layout: [1, 2] }),
+    projectStudioSource({ layout: [1, 2], grade: "warm", main: { filter: { a: 1 }, zoom: 1.2, ...main } }),
+    projectStudioSource({ main: { ...main, zoom: 1.3, filter: { a: 1 } }, grade: "warm", layout: [2, 1] }),
+  ]);
+  const digests = (projection: typeof first) => projection.unsupported.map((item) => item.value_digest);
+  expect(first.unsupported.map((item) => [item.role, item.field])).toEqual([
+    ["main", "filter"],
+    ["main", "zoom"],
+    [null, "grade"],
+    [null, "layout"],
+  ]);
+  expect(JSON.stringify(swapped)).toBe(JSON.stringify(first));
+  expect(digests(changed)[1]).not.toBe(digests(first)[1]);
+  expect(digests(changed)[3]).not.toBe(digests(first)[3]);
+  expect(JSON.stringify(first).includes("warm")).toBe(false);
+});
+
 test("reports main footage package details as unsupported instead of mapped", async () => {
   const { unsupported } = await projectStudioSource(contentSetWithFourFootageItems);
   const footage = unsupported.filter((item) => item.role === "main_footage");
-  expect(footage.map((item) => item.field)).toEqual(["mode", "package_manifest", "coverage_target"]);
+  expect(footage.map((item) => item.field)).toEqual(["coverage_target", "mode", "package_manifest"]);
   expect(footage.every((item) => /not supported/.test(item.reason) && /^[0-9a-f]{64}$/.test(item.value_digest))).toBe(true);
 });
 

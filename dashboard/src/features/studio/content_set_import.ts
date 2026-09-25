@@ -114,11 +114,12 @@ function canonicalUrl(raw: string | null): string | null {
   return url.toString();
 }
 
+// Entries in key order, so how a Content Set was written never changes its identity.
+const byKey = (record: Record<string, unknown>) =>
+  Object.entries(record).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
 // Sorts object keys at every depth so equal values hash alike; arrays keep their order.
-const sortedKeys = (_key: string, value: unknown) =>
-  isRecord(value)
-    ?Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-    : value;
+const sortedKeys = (_key: string, value: unknown) => (isRecord(value) ? Object.fromEntries(byKey(value)) : value);
 
 async function digest(value: unknown): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value, sortedKeys)));
@@ -134,7 +135,7 @@ export async function projectStudioSource(content: unknown): Promise<StudioSourc
 
   const add = (role: StudioSourceRole, order: number, record: unknown) => {
     if (!isRecord(record)) throw new StudioSourceError(`${role} ${order + 1} is not an object`);
-    for (const [key, value] of Object.entries(record)) {
+    for (const [key, value] of byKey(record)) {
       if (MAPPED[role].includes(key) || METADATA.has(key) || key.startsWith("ocr_") || isBlank(value)) continue;
       report(key, role, order, REPORTED[role][key] ?? UNRECOGNIZED, value);
     }
@@ -184,7 +185,7 @@ export async function projectStudioSource(content: unknown): Promise<StudioSourc
   if (!isBlank(content.main_footage)) add("main_footage", 0, content.main_footage);
   list("footage").forEach((record, index) => add("footage", index, record));
   list("comments").forEach((record, index) => add("comment", index, record));
-  for (const [key, value] of Object.entries(content)) {
+  for (const [key, value] of byKey(content)) {
     if (TOP_LEVEL[key] === null || isBlank(value)) continue;
     report(key, null, null, TOP_LEVEL[key] ?? UNRECOGNIZED, value);
   }

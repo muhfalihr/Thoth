@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Studio source keys ignore the order of unsupported fields (F3 Plan B correction)
+
+Offline correction on `codex/stage1-container-ci` after `a891665`; dashboard only, not pushed.
+
+- Unsupported fields are listed in key order on each source item and at top level, so a Content Set gives the same source key and Resume offer whatever order its fields were written in. Source item order and array order still count, and raw values still never leave the browser.
+
+Verification: the new sibling-order test failed first and now passes. Focused import and import-gate tests 32 pass; dashboard 653 tests pass, tsc, lint, and build clean; `git diff --check` clean; `build_cuda.bat` exit 0.
+
 ## 2026-09-25 - Studio source keys ignore key order in unsupported values (F3 Plan B correction)
 
 Offline correction on `codex/stage1-container-ci` after `2baed5e`; dashboard only, not pushed.
