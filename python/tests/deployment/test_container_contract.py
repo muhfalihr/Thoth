@@ -660,6 +660,102 @@ def test_cdp_harness_proves_legacy_fallback_target_isolation() -> None:
     assert "console.log" not in runtime_harness.split("async function main", 1)[0]
 
 
+def test_controlled_fallback_overlay_is_a_private_one_shot_gate() -> None:
+    overlay = _repo_text("compose.stage1.controlled-fallback.yml")
+
+    assert "  controlled-fallback:\n" in overlay
+    assert "image: ${THOTH_CONTROLLED_FALLBACK_IMAGE:?" in overlay
+    assert 'user: "10001:10001"' in overlay
+    assert 'restart: "no"' in overlay
+    assert "networks: [stage1-private]" in overlay
+    assert "THOTH_CDP: http://legacy-cdp:18800" in overlay
+    assert "path: ${THOTH_STAGE1_PROVIDER_ENV_FILE:?" in overlay
+    for forbidden in (
+        "ports:",
+        "privileged",
+        "cap_add",
+        "docker.sock",
+        "/var/lib/thoth",
+        "browser-profile",
+        "THOTH_STAGE1_DATA_ROOT",
+        "https://",
+        "API_KEY",
+    ):
+        assert forbidden not in overlay
+    assert overlay.count("${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?") == 2
+    assert overlay.count("create_host_path: false") == 2
+    assert "target: /run/controlled-fallback/url\n        read_only: true" in overlay
+    assert "target: /run/controlled-fallback/output\n" in overlay
+    # The fixture is read inside the container and the supervisor runs exactly once.
+    assert overlay.count("exec bun scout/runtime/legacy_fallback.ts") == 1
+    assert '--url "$(cat /run/controlled-fallback/url)"' in overlay
+    assert "--out /run/controlled-fallback/output/source-report.json" in overlay
+
+
+def test_controlled_fallback_smoke_mirrors_the_gate_offline() -> None:
+    smoke = _repo_text("compose.stage1.controlled-fallback-smoke.yml")
+
+    assert "${THOTH_TEST_IMAGE:?set candidate image}" in smoke
+    assert "  controlled-fallback:\n" in smoke and "  legacy-cdp:\n" in smoke
+    assert "internal: true" in smoke
+    assert "ports:" not in smoke and "env_file" not in smoke and "NOVITA" not in smoke
+    assert smoke.count('user: "10001:10001"') == 2
+    assert 'restart: "no"' in smoke
+    assert "THOTH_CDP: http://legacy-cdp:18800" in smoke
+    assert "--offline-smoke" in smoke
+    assert "bun scout/runtime/legacy_fallback.ts" in smoke
+    assert smoke.count("create_host_path: false") == 2
+    assert "target: /run/controlled-fallback/url\n        read_only: true" in smoke
+    assert "target: /run/controlled-fallback/output\n" in smoke
+    assert smoke.count("seccomp:unconfined") == 1
+
+
+def test_controlled_fallback_harness_owns_everything_and_reuses_runner_scripts() -> None:
+    from thoth_control_plane.operations.stage1_controlled_fallback_runner import (
+        RECLAIM_OUTPUT_SCRIPT,
+        STAGE_FIXTURE_SCRIPT,
+        TEARDOWN_FIXTURE_SCRIPT,
+    )
+
+    harness = _repo_text("docker/test-controlled-fallback-offline.sh")
+
+    assert "set -euo pipefail" in harness
+    assert "trap teardown EXIT" in harness
+    assert "project_prefix=stage1-fallback-smoke" in harness
+    assert '"${project_prefix}"-*)' in harness
+    assert "compose_file=compose.stage1.controlled-fallback-smoke.yml" in harness
+    assert "compose.stage1.local.yml" not in harness
+    assert ".env.stage1" not in harness
+    assert "compose logs" not in harness and "docker logs" not in harness
+    assert "mktemp -d" in harness
+    assert "--network none --user 0:0" in harness
+    # The helper scripts the live runner will run are proved byte-identical here.
+    for script in (STAGE_FIXTURE_SCRIPT, RECLAIM_OUTPUT_SCRIPT, TEARDOWN_FIXTURE_SCRIPT):
+        assert f"'{script}'" in harness
+    for field in (
+        "preflight_contract",
+        "temporary_target_observed",
+        "health_target_preserved",
+        "success_target_removed",
+        "failure_target_removed",
+        "staged_output_reclaimed",
+        "teardown_leaves_nothing",
+    ):
+        assert f'echo "{field}=true"' in harness
+
+
+def test_both_image_jobs_prove_the_controlled_fallback_gate() -> None:
+    workflow = _repo_text(".github/workflows/container-image.yml")
+    validate = workflow[workflow.index("  validate-image:") : workflow.index("  publish-image:")]
+    smoke = workflow[workflow.index("  stack-smoke:") : workflow.index("  template-release-parity:")]
+
+    assert 'bash docker/test-controlled-fallback-offline.sh "${CANDIDATE_IMAGE}"' in validate
+    harness_step = 'bash docker/test-controlled-fallback-offline.sh "${THOTH_IMAGE_REF}"'
+    assert harness_step in smoke
+    assert smoke.index("docker/test-cdp-offline.sh") < smoke.index(harness_step)
+    assert smoke.index(harness_step) < smoke.index("Stop the stack")
+
+
 def test_both_image_jobs_prove_the_reference_owns_its_browser() -> None:
     """Isolation is a property of the image, so both gates must exercise it.
 

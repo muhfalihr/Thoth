@@ -1,0 +1,65 @@
+# Offline twin of `compose.stage1.controlled-fallback.yml`. Not a deployment file.
+#
+# The one-shot service keeps the production gate's shape -- user, restart policy,
+# private CDP endpoint, and the two staged bind mounts -- but runs the supervisor's
+# existing `--offline-smoke` path against a synthetic browser that only ever shows
+# `about:blank`. The network is internal and owned by the harness project, and no
+# provider input, fixture URL, or persistent volume is attached.
+services:
+  legacy-cdp:
+    image: ${THOTH_TEST_IMAGE:?set candidate image}
+    user: "10001:10001"
+    command: ["/opt/thoth/bin/start-legacy-cdp", "--offline-smoke"]
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /var/lib/thoth/browser-profile:uid=10001,gid=10001,mode=0700
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/thoth/python/.venv/bin/python -c "import json, urllib.request;
+          targets = json.load(urllib.request.urlopen('http://127.0.0.1:18800/json', timeout=2));
+          assert any(target.get('type') == 'page' and target.get('url') == 'about:blank'
+          for target in targets)"
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [stage1-private]
+
+  controlled-fallback:
+    image: ${THOTH_TEST_IMAGE:?set candidate image}
+    user: "10001:10001"
+    restart: "no"
+    # Proves the staged input is readable and the staged output writable by the gate
+    # user, then hands over to the supervisor exactly as production does.
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        test -r /run/controlled-fallback/url
+        && touch /run/controlled-fallback/output/write-probe
+        && exec bun scout/runtime/legacy_fallback.ts "$$THOTH_CONTROLLED_FALLBACK_SMOKE_MODE"
+    environment:
+      THOTH_CDP: http://legacy-cdp:18800
+      THOTH_LEGACY_FALLBACK_SMOKE_HOLD_MS: "2000"
+      THOTH_CONTROLLED_FALLBACK_SMOKE_MODE: ${THOTH_CONTROLLED_FALLBACK_SMOKE_MODE:-}
+    volumes:
+      - type: bind
+        source: ${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?set harness sample directory}/reference-input/url
+        target: /run/controlled-fallback/url
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?set harness sample directory}/output
+        target: /run/controlled-fallback/output
+        bind:
+          create_host_path: false
+    networks: [stage1-private]
+
+networks:
+  stage1-private:
+    driver: bridge
+    internal: true

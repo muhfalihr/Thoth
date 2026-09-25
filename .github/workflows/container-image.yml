@@ -133,6 +133,11 @@ jobs:
       - name: Verify parity reference browser isolation
         run: bash docker/test-parity-offline.sh "${CANDIDATE_IMAGE}"
 
+      # The `f1` gate stages its input and output through the runner's own helper
+      # scripts; a wrong owner or mode would burn the single live attempt.
+      - name: Verify the controlled fallback gate contract
+        run: bash docker/test-controlled-fallback-offline.sh "${CANDIDATE_IMAGE}"
+
       # A render crosses both images, so neither candidate is validated until a
       # synthetic document has actually become an MP4 through the pair.
       - name: Verify the isolated render stack
@@ -357,6 +362,9 @@ jobs:
 
       - name: Verify parity reference browser isolation on the published digest
         run: bash docker/test-parity-offline.sh "${THOTH_IMAGE_REF}"
+
+      - name: Verify the controlled fallback gate contract on the published digest
+        run: bash docker/test-controlled-fallback-offline.sh "${THOTH_IMAGE_REF}"
 
       - name: Verify the isolated render stack on the published digests
         run: bash docker/test-renderer-offline.sh "${THOTH_IMAGE_REF}" "${THOTH_RENDERER_IMAGE_REF}"
