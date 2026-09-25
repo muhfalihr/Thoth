@@ -3,6 +3,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from thoth_control_plane.operations.tiktok_parity import DEFAULT_SCOUT_RECORDED_ROOT
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -682,10 +684,12 @@ def test_controlled_fallback_overlay_is_a_private_one_shot_gate() -> None:
         "API_KEY",
     ):
         assert forbidden not in overlay
-    assert overlay.count("${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?") == 2
-    assert overlay.count("create_host_path: false") == 2
+    assert overlay.count("${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?") == 3
+    assert overlay.count("create_host_path: false") == 3
     assert "target: /run/controlled-fallback/url\n        read_only: true" in overlay
     assert "target: /run/controlled-fallback/output\n" in overlay
+    # Scout writes media under its fixed output root; the validator rebases exactly that prefix.
+    assert f"/output\n        target: {DEFAULT_SCOUT_RECORDED_ROOT}\n" in overlay
     # The fixture is read inside the container and the supervisor runs exactly once.
     assert overlay.count("exec bun scout/runtime/legacy_fallback.ts") == 1
     assert '--url "$(cat /run/controlled-fallback/url)"' in overlay
@@ -704,9 +708,10 @@ def test_controlled_fallback_smoke_mirrors_the_gate_offline() -> None:
     assert "THOTH_CDP: http://legacy-cdp:18800" in smoke
     assert "--offline-smoke" in smoke
     assert "bun scout/runtime/legacy_fallback.ts" in smoke
-    assert smoke.count("create_host_path: false") == 2
+    assert smoke.count("create_host_path: false") == 3
     assert "target: /run/controlled-fallback/url\n        read_only: true" in smoke
     assert "target: /run/controlled-fallback/output\n" in smoke
+    assert f"/output\n        target: {DEFAULT_SCOUT_RECORDED_ROOT}\n" in smoke
     assert smoke.count("seccomp:unconfined") == 1
 
 
@@ -739,6 +744,7 @@ def test_controlled_fallback_harness_owns_everything_and_reuses_runner_scripts()
         "success_target_removed",
         "failure_target_removed",
         "staged_output_reclaimed",
+        "scout_output_retained",
         "teardown_leaves_nothing",
     ):
         assert f'echo "{field}=true"' in harness

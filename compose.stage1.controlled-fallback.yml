@@ -46,4 +46,11 @@ services:
         target: /run/controlled-fallback/output
         bind:
           create_host_path: false
+      # Scout writes acquired media under its fixed output root and records that absolute path;
+      # the same gate directory must hold it, or the media dies with the container.
+      - type: bind
+        source: ${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?set external gate sample directory}/output
+        target: /opt/thoth/scout/output
+        bind:
+          create_host_path: false
     networks: [stage1-private]

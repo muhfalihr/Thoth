@@ -136,6 +136,9 @@ helper "$teardown_script" >/dev/null || fail staged_output_reclaimed
     || fail staged_output_reclaimed
 [ ! -e "$sample/reference-input" ] || fail staged_output_reclaimed
 echo "staged_output_reclaimed=true"
+# Scout's media lands under its fixed output root; it must survive the container in the gate directory.
+[ -O "$sample/output/media-probe" ] || fail scout_output_retained
+echo "scout_output_retained=true"
 
 teardown
 trap - EXIT

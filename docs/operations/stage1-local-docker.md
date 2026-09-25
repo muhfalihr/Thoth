@@ -359,7 +359,10 @@ The deployed image runs as UID/GID `10001` and cannot read an operator-owned mod
 the attempt is reserved, a no-network staging helper started from the same pinned digest copies the
 fixture to `f1/reference-input/url` (mode `0400`, in a mode `0500` directory, both owned by
 `10001:10001`) and creates `f1/output` (mode `0700`, owned by `10001:10001`). Only those two paths
-are mounted into the one-shot container. After the supervisor exits, the same helper hands `output`
+are mounted into the one-shot container. `f1/output` is mounted twice: once for the report, and
+once at Scout's fixed output root `/opt/thoth/scout/output`. Scout writes the acquired media there
+and records it as an absolute path, which validation rebases onto the gate directory. Without the
+second mount, the media is lost when the container is removed. After the supervisor exits, the same helper hands `output`
 back to the gate directory's owner with owner-only modes, and teardown removes `reference-input` on
 every terminal path. The operator's `url.txt` stays where it is.
 

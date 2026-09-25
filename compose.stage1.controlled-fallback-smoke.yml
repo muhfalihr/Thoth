@@ -40,6 +40,7 @@ services:
       - >-
         test -r /run/controlled-fallback/url
         && touch /run/controlled-fallback/output/write-probe
+        && touch /opt/thoth/scout/output/media-probe
         && exec bun scout/runtime/legacy_fallback.ts "$$THOTH_CONTROLLED_FALLBACK_SMOKE_MODE"
     environment:
       THOTH_CDP: http://legacy-cdp:18800
@@ -55,6 +56,11 @@ services:
       - type: bind
         source: ${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?set harness sample directory}/output
         target: /run/controlled-fallback/output
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR:?set harness sample directory}/output
+        target: /opt/thoth/scout/output
         bind:
           create_host_path: false
     networks: [stage1-private]

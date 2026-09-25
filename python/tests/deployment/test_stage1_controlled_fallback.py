@@ -838,7 +838,8 @@ def _write_source_report(sample: Path) -> None:
     output = sample / "output"
     output.mkdir(parents=True, exist_ok=True)
     (output / "main.mp4").write_bytes(_mp4(12_000))
-    report = {"main": {"source_local": "main.mp4"}}
+    # Scout records media as an absolute path under its fixed output root, as the live f1 did.
+    report = {"main": {"source_local": "/opt/thoth/scout/output/main.mp4"}}
     (output / "source-report.json").write_text(json.dumps(report), encoding="utf-8")
 
 
