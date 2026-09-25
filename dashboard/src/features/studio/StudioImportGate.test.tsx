@@ -285,6 +285,51 @@ test("a ready asset of the item's kind can be attached", async () => {
   expect(await row("City loop").findByText("Attached · asset_clip")).toBeDefined();
 });
 
+test("ready assets beyond the first page are reached one page at a time", async () => {
+  const listEditorAssets = mock(async (_projectId: string, cursor?: string, _limit?: number) =>
+    cursor
+      ? { assets: [asset("asset_late", "video")], next_cursor: null }
+      : { assets: [asset("asset_clip", "video"), asset("asset_still", "image")], next_cursor: "page_2" },
+  );
+  const { user } = renderGate(fakeClient({ listEditorAssets }));
+  await resumeNewest(user);
+
+  await user.click(row("City loop").getByRole("button", { name: "Attach…" }));
+  const choice = (await row("City loop").findByLabelText("Ready asset")) as HTMLSelectElement;
+  expect([...choice.options].map((option) => option.value)).toEqual(["asset_clip"]);
+  await user.click(row("City loop").getByRole("button", { name: "Load more assets" }));
+
+  await waitFor(() => expect([...choice.options].map((option) => option.value)).toEqual(["asset_clip", "asset_late"]));
+  expect(listEditorAssets.mock.calls.map((call) => call.slice(1))).toEqual([
+    [undefined, 50],
+    ["page_2", 50],
+  ]);
+  expect(row("City loop").queryByRole("button", { name: "Load more assets" }) === null).toBe(true);
+});
+
+test("a ready-asset page announces loading and a failure it can retry", async () => {
+  let fail: (error: Error) => void = () => {};
+  const listEditorAssets = mock(
+    (): Promise<{ assets: EditorAsset[]; next_cursor: string | null }> =>
+      listEditorAssets.mock.calls.length === 1
+        ? new Promise((_resolve, reject) => {
+            fail = reject;
+          })
+        : Promise.resolve({ assets: [asset("asset_clip", "video")], next_cursor: null }),
+  );
+  const { user } = renderGate(fakeClient({ listEditorAssets }));
+  await resumeNewest(user);
+
+  await user.click(row("City loop").getByRole("button", { name: "Attach…" }));
+  expect(row("City loop").getByRole("status").textContent).toContain("Loading ready assets");
+  fail(new Error("offline"));
+
+  expect((await row("City loop").findByRole("alert")).textContent).toContain("could not be loaded");
+  await user.click(row("City loop").getByRole("button", { name: "Retry loading assets" }));
+  expect(await row("City loop").findByLabelText("Ready asset")).toBeDefined();
+  expect(row("City loop").queryByRole("alert") === null).toBe(true);
+});
+
 test.each([
   ["trim_exceeds_asset", "starts after that asset ends"],
   ["asset_duration_unknown", "length of that asset is unknown"],

@@ -34,6 +34,9 @@ type StudioImportGateProps = {
 };
 
 const ROLE_LABELS = { main: "Main", main_footage: "Main footage", footage: "Footage", comment: "Comment" } as const;
+const ASSET_PAGE = 50;
+// Pages may overlap: one asset keeps its first position.
+const uniqueAssets = (list: EditorAsset[]) => [...new Map(list.map((asset) => [asset.asset_id, asset])).values()];
 const UPLOAD_TYPES = { video: "video/mp4,video/webm", image: "image/jpeg,image/png,image/webp" } as const;
 
 // Fixed words for each known failure; the server's own text never reaches the page.
@@ -76,7 +79,9 @@ export function StudioImportGate({ client, projectId, source, resumeDocumentId, 
   // A create that failed keeps its key, so an explicit retry can never make a second draft.
   const [pendingKey, setPendingKey] = useState<string>();
   const [inventory, setInventory] = useState<StudioImportInventory>();
-  const [assets, setAssets] = useState<EditorAsset[] | "failed">();
+  // Ready assets load one bounded page at a time; `next` is the cursor for the page after.
+  const [assets, setAssets] = useState<{ list: EditorAsset[]; next: string | null }>();
+  const [assetLoad, setAssetLoad] = useState<"loading" | "failed">();
   const [attaching, setAttaching] = useState<string>();
   const [choice, setChoice] = useState<string>();
   const [alert, setAlert] = useState<string>();
@@ -250,19 +255,28 @@ export function StudioImportGate({ client, projectId, source, resumeDocumentId, 
       setBusy(false);
       return;
     }
-    setAssets((current) => (Array.isArray(current) ? [uploaded, ...current] : current));
+    setAssets((current) => current && { ...current, list: uniqueAssets([uploaded, ...current.list]) });
     await resolve(item, { kind: "attach_asset", asset_id: uploaded.asset_id });
+  };
+
+  const loadAssets = (cursor?: string) => {
+    setAssetLoad("loading");
+    client.listEditorAssets(projectId, cursor, ASSET_PAGE).then(
+      (page) => {
+        setAssets((current) => ({
+          list: cursor && current ? uniqueAssets([...current.list, ...page.assets]) : page.assets,
+          next: page.next_cursor ?? null,
+        }));
+        setAssetLoad(undefined);
+      },
+      () => setAssetLoad("failed"),
+    );
   };
 
   const toggleAttach = (itemId: string) => {
     setAttaching((current) => (current === itemId ? undefined : itemId));
     setChoice(undefined);
-    if (Array.isArray(assets)) return;
-    // ponytail: first page of 50 assets only; page through when projects hold more.
-    client.listEditorAssets(projectId, undefined, 50).then(
-      (page) => setAssets(page.assets),
-      () => setAssets("failed"),
-    );
+    if (!assets && assetLoad === undefined) loadAssets();
   };
 
   const main = source.items[0];
@@ -274,9 +288,7 @@ export function StudioImportGate({ client, projectId, source, resumeDocumentId, 
 
   const attachPanel = (item: StudioImportItem) => {
     const kind = item.media_kind === "image" ? "image" : "video";
-    const ready = Array.isArray(assets)
-      ? assets.filter((asset) => asset.validation_state === "ready" && asset.kind === kind)
-      : [];
+    const ready = (assets?.list ?? []).filter((asset) => asset.validation_state === "ready" && asset.kind === kind);
     const chosen = choice ?? ready[0]?.asset_id;
     return (
       <div className="col-span-full mt-2 space-y-2 rounded-md border border-border bg-background/60 p-3 text-sm">
@@ -323,15 +335,27 @@ export function StudioImportGate({ client, projectId, source, resumeDocumentId, 
               Attach selected asset
             </button>
           </div>
-        ) : (
+        ) : assets ? (
           <p className="text-xs text-muted-foreground">
-            {assets === undefined
-              ? "Loading ready assets…"
-              : assets === "failed"
-                ? "Ready assets could not be loaded. Close and reopen Attach to try again."
-                : `No ready ${kind} in this project yet.`}
+            {assets.next ? `No ready ${kind} in the assets loaded so far.` : `No ready ${kind} in this project yet.`}
           </p>
-        )}
+        ) : null}
+        {assetLoad === "loading" ? (
+          <p role="status" className="text-xs text-muted-foreground">
+            Loading ready assets…
+          </p>
+        ) : assetLoad === "failed" ? (
+          <div role="alert" className="space-y-2 text-xs text-destructive">
+            <p>Ready assets could not be loaded. Check your connection and try again.</p>
+            <button type="button" className={buttonClass} onClick={() => loadAssets(assets?.next ?? undefined)}>
+              Retry loading assets
+            </button>
+          </div>
+        ) : assets?.next ? (
+          <button type="button" className={buttonClass} onClick={() => loadAssets(assets.next ?? undefined)}>
+            Load more assets
+          </button>
+        ) : null}
       </div>
     );
   };
