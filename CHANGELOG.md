@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Editor migrations on Alembic; Stage 1 redeployed on `7c64e32`
+
+`thoth-control editor migrate` re-ran every editor SQL file on each call. From
+0003 onward the files are not idempotent, so on the live database the one
+transaction rolled back and 0007 was never applied. `7c64e32` moves the runner to
+SQLAlchemy and Alembic:
+- Each shipped `python/migrations/editor/000N_*.sql` is one Alembic revision that
+  runs the file verbatim. The SQL files are byte-identical.
+- `apply_editor_migrations` upgrades to head in one transaction and prints the
+  number of revisions applied. When the schema is already at head it prints `0`.
+- A database migrated before Alembic is adopted by stamping it from marker
+  tables. A schema that is not a prefix of the chain is refused and left
+  unchanged.
+- The CI stack smoke runs migrate twice and expects `7`, then `0`.
+
+Operator direction: new persistence code uses the full SQLAlchemy ORM, and new
+schema changes land as Alembic revisions. Converting the existing psycopg
+repositories is a separate, unscheduled task.
+
+Verification:
+- Python: 1855 passed, 35 skipped, and the same pre-existing
+  `test_route_modules_do_not_depend_on_a_process_runner` failure.
+- Ruff: clean.
+- Disposable Postgres 16.4: a fresh schema reports 7 then 0; a legacy schema at
+  0001–0006 reports 1; a non-prefix schema is refused.
+
+CI run `36115195204`: attempt 1 passed every job except Template release parity.
+That job reported `visual_mismatch` on one rendered frame (frame 90); the preview
+frames and the other four rendered frames were exact. No renderer input changed
+since `0c4e2e8`. Rerunning only that job once (attempt 2) passed. This is the
+first recorded renderer-parity flake.
+
+Deployment identity:
+- Acquisition commit `7c64e32716d3272d7af649f1722809438236804e`, published as
+  `sha256:b831f3761497320fc11dbc0860cf08d7fafc0a2b8e85d825f626cbc6d285dd52`.
+- Renderer: `sha256:2c9c1da7f11d1e8067d47e33914baa79c1196452ec1ae23d103d49caf7fd5c3a`.
+
+The operator ran the redeploy:
+- `editor migrate` printed `1` and exited 0. The live schema is now at
+  revision `0007`, and `studio_import_drafts` exists.
+- `api`, `worker`, and `legacy-cdp` are on the new digest and revision, all
+  running as `10001:10001` with 0 restarts. None publishes host port 18800.
+- The renderer is on its new digest, and the worker is in fallback mode.
+- `healthz` and `readyz` both return 200.
+
 ## 2026-09-25 - Stage 1 redeployed on `0c4e2e8`; `f1` preflight defects fixed
 
 An independent review of the controlled fallback branch found three defects that
