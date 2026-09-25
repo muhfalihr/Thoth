@@ -1,0 +1,332 @@
+{
+  "project": {
+    "id": "p-182",
+    "title": "A Day in Kyoto",
+    "template": "vertical_text_story",
+    "version": "v4",
+    "current_revision": 3,
+    "saved_at": "2026-09-25T01:15:00Z",
+    "fps": 30,
+    "canvas_dimensions": { "width": 1080, "height": 1920, "aspect_ratio": "9:16" }
+  },
+  "scenes": [
+    {
+      "id": "scene-01",
+      "index": 1,
+      "heading": "Morning in Gion",
+      "body": "Quiet streets, wooden houses and a timeless beauty to start the day.",
+      "duration_seconds": 5,
+      "role": "footage",
+      "ownership": "user",
+      "visual": {
+        "bg_gradient": "linear-gradient(180deg, #1c1410 0%, #3a271d 40%, #15110e 100%)",
+        "accent_color": "#d49a79",
+        "tag": "Gion Pagoda · Morning Sunlight",
+        "image": "assets/preview_reference.png"
+      },
+      "media": {
+        "status": "ready",
+        "asset_name": "gion-pagoda-street.mp4",
+        "kind": "video",
+        "unresolved": false
+      },
+      "captions": [
+        { "id": "cap-1", "start": 0.5, "end": 2.5, "text": "A DAY IN KYOTO" },
+        { "id": "cap-2", "start": 2.6, "end": 4.8, "text": "TRADITION LIVES HERE" }
+      ],
+      "audio": {
+        "attached": true,
+        "track_name": "ambient_bamboo_wind.mp3",
+        "volume": 80,
+        "muted": false
+      },
+      "style": "cinematic"
+    },
+    {
+      "id": "scene-02",
+      "index": 2,
+      "heading": "City loop",
+      "body": "Bustling alleys weaving between historic machiya and local artisans.",
+      "duration_seconds": 4,
+      "role": "footage",
+      "ownership": "user",
+      "visual": {
+        "bg_gradient": "linear-gradient(180deg, #181d22 0%, #24333e 45%, #101519 100%)",
+        "accent_color": "#82b1e8",
+        "tag": "Machiya Alleys · Artisan Craft",
+        "image": null
+      },
+      "media": {
+        "status": "unresolved",
+        "asset_name": "city-loop",
+        "kind": "video",
+        "unresolved": true
+      },
+      "captions": [
+        { "id": "cap-3", "start": 0.2, "end": 3.6, "text": "WHISPERS OF HISTORY IN EVERY CORNER" }
+      ],
+      "audio": {
+        "attached": true,
+        "track_name": "city_ambient.mp3",
+        "volume": 65,
+        "muted": false
+      },
+      "style": "modern_bold"
+    },
+    {
+      "id": "scene-03",
+      "index": 3,
+      "heading": "Fushimi Inari",
+      "body": "Thousands of vermillion torii gates winding through sacred mountaintop trails.",
+      "duration_seconds": 5,
+      "role": "footage",
+      "ownership": "ai",
+      "visual": {
+        "bg_gradient": "linear-gradient(180deg, #2b110b 0%, #572014 45%, #180906 100%)",
+        "accent_color": "#f87171",
+        "tag": "Torii Gates · Sacred Mountain",
+        "image": null
+      },
+      "media": {
+        "status": "ready",
+        "asset_name": "fushimi-torii-path.mp4",
+        "kind": "video",
+        "unresolved": false
+      },
+      "captions": [
+        { "id": "cap-4", "start": 0.5, "end": 4.2, "text": "PATHS OF ENDLESS VERMILLION" }
+      ],
+      "audio": {
+        "attached": true,
+        "track_name": "shrine_bells.mp3",
+        "volume": 70,
+        "muted": false
+      },
+      "style": "cinematic"
+    },
+    {
+      "id": "scene-04",
+      "index": 4,
+      "heading": "Sakura by the River",
+      "body": "Soft cherry blossom petals floating gently across the Kamogawa banks at dusk.",
+      "duration_seconds": 5,
+      "role": "image",
+      "ownership": "locked",
+      "visual": {
+        "bg_gradient": "linear-gradient(180deg, #261622 0%, #46273e 45%, #180e15 100%)",
+        "accent_color": "#f472b6",
+        "tag": "Kamogawa River · Twilight Blossom",
+        "image": null
+      },
+      "media": {
+        "status": "ready",
+        "asset_name": "kamogawa-sakura-still.jpg",
+        "kind": "image",
+        "unresolved": false
+      },
+      "captions": [
+        { "id": "cap-5", "start": 0.5, "end": 4.5, "text": "BLOSSOMS DRIFTING WITH THE TIDE" }
+      ],
+      "audio": {
+        "attached": false,
+        "track_name": null,
+        "volume": 0,
+        "muted": true
+      },
+      "style": "minimal_clean"
+    },
+    {
+      "id": "scene-05",
+      "index": 5,
+      "heading": "Night Lights CTA",
+      "body": "Lanterns illuminating Pontocho alley. Explore the full story now.",
+      "duration_seconds": 3,
+      "role": "footage",
+      "ownership": "user",
+      "visual": {
+        "bg_gradient": "linear-gradient(180deg, #1f1325 0%, #3e1e4a 45%, #120a17 100%)",
+        "accent_color": "#c084fc",
+        "tag": "Pontocho Alley · Lantern Glow",
+        "image": null
+      },
+      "media": {
+        "status": "ready",
+        "asset_name": "pontocho-lanterns.mp4",
+        "kind": "video",
+        "unresolved": false
+      },
+      "captions": [
+        { "id": "cap-6", "start": 0.2, "end": 2.8, "text": "DISCOVER YOUR JOURNEY · LINK IN BIO" }
+      ],
+      "audio": {
+        "attached": true,
+        "track_name": "koto_outro.mp3",
+        "volume": 90,
+        "muted": false
+      },
+      "style": "tokyo_neon"
+    }
+  ],
+  "import_manifest": {
+    "source_title": "Neon Nights & Kyoto Stories",
+    "source_key": "src-kyoto-teaser-0925",
+    "existing_drafts": [
+      {
+        "id": "draft-03",
+        "revision": 3,
+        "saved_at": "2026-09-25T01:15:00Z",
+        "unresolved_count": 2,
+        "summary": "Draft · revision 3 · saved 25 Sep 01:15 · 2 items unresolved"
+      },
+      {
+        "id": "draft-01",
+        "revision": 1,
+        "saved_at": "2026-09-24T18:02:00Z",
+        "unresolved_count": 5,
+        "summary": "Draft · revision 1 · saved 24 Sep 18:02 · 5 items unresolved"
+      }
+    ],
+    "inventory_items": [
+      {
+        "id": "item-01",
+        "order": 1,
+        "role": "main_footage",
+        "source_name": "neon-nights-main",
+        "scene_ref": "Scene 1",
+        "kind": "video",
+        "disposition": "unresolved",
+        "attached_asset": null
+      },
+      {
+        "id": "item-02",
+        "order": 2,
+        "role": "footage",
+        "source_name": "city-loop",
+        "scene_ref": "Scene 2",
+        "kind": "video",
+        "disposition": "unresolved",
+        "attached_asset": null
+      },
+      {
+        "id": "item-03",
+        "order": 3,
+        "role": "footage",
+        "source_name": "react-closeup",
+        "scene_ref": "Scene 3",
+        "kind": "video",
+        "disposition": "attached",
+        "attached_asset": "kyoto-pagoda-street.mp4"
+      },
+      {
+        "id": "item-04",
+        "order": 4,
+        "role": "footage",
+        "source_name": "skyline-drone",
+        "scene_ref": "Scene 4",
+        "kind": "video",
+        "disposition": "excluded",
+        "attached_asset": null
+      },
+      {
+        "id": "item-05",
+        "order": 5,
+        "role": "image",
+        "source_name": "poster-frame",
+        "scene_ref": "Scene 4",
+        "kind": "image",
+        "disposition": "attached",
+        "attached_asset": "kamogawa-sakura-still.jpg"
+      },
+      {
+        "id": "item-06",
+        "order": 6,
+        "role": "text_scenes",
+        "source_name": "6 ordered scenes",
+        "scene_ref": "All Scenes",
+        "kind": "text",
+        "disposition": "attached",
+        "attached_asset": "imported from content set"
+      }
+    ],
+    "unsupported_fields": [
+      "crop focal rect (image 5)",
+      "2 comments"
+    ]
+  },
+  "ready_assets": [
+    { "id": "asset-1", "name": "gion-pagoda-street.mp4", "kind": "video", "size_mb": 42.1, "duration": "00:15" },
+    { "id": "asset-2", "name": "fushimi-torii-path.mp4", "kind": "video", "size_mb": 38.6, "duration": "00:12" },
+    { "id": "asset-3", "name": "kamogawa-sakura-still.jpg", "kind": "image", "size_mb": 4.8, "resolution": "1080x1920" },
+    { "id": "asset-4", "name": "pontocho-lanterns.mp4", "kind": "video", "size_mb": 29.4, "duration": "00:08" },
+    { "id": "asset-5", "name": "ambient_bamboo_wind.mp3", "kind": "audio", "size_mb": 3.2, "duration": "01:30" }
+  ],
+  "render_readiness": {
+    "text_complete": true,
+    "timeline_valid": true,
+    "import_resolved": false,
+    "unsaved_changes": false
+  },
+  "recent_render_jobs": [
+    {
+      "id": "#12",
+      "status": "succeeded",
+      "timestamp": "24 Sep 18:31",
+      "template": "vertical_text_story",
+      "duration": "0:22",
+      "progress": 100,
+      "actions": ["Download"]
+    },
+    {
+      "id": "#11",
+      "status": "failed",
+      "timestamp": "24 Sep 17:02",
+      "template": "vertical_text_story",
+      "error_code": "renderer_unavailable",
+      "error_msg": "GPU NVENC encoder session timed out during pass 2 (safe diagnostic: host NVENC pool exhausted)",
+      "progress": 42,
+      "actions": ["Details", "Retry"]
+    },
+    {
+      "id": "#10",
+      "status": "succeeded",
+      "timestamp": "23 Sep 14:15",
+      "template": "vertical_text_story",
+      "duration": "0:22",
+      "progress": 100,
+      "actions": ["Download"]
+    }
+  ],
+  "review_comments": [
+    {
+      "id": "comm-1",
+      "revision": 3,
+      "actor": "Sarah K.",
+      "timecode": "00:02.15",
+      "text": "Can we trim the transition between Gion and Fushimi? 0.5s feels slightly sluggish on mobile.",
+      "timestamp": "12m ago"
+    },
+    {
+      "id": "comm-2",
+      "revision": 2,
+      "actor": "Alex M.",
+      "timecode": null,
+      "text": "Color grading on Kyoto pagoda looks much warmer now, fits the morning sunrise vibe perfectly.",
+      "timestamp": "2h ago"
+    }
+  ],
+  "prompt_lab": {
+    "active_prompt": "Create an evocative 15-second TikTok story highlighting traditional Kyoto morning culture. Focus on sensory details: wooden machiya, stone pavement, morning mist, and vermillion shrine gates.",
+    "system_policy": "Strict brand guardrails: No sensationalist clickbait, no modern vehicle footage, preserve traditional aesthetic tone, max 300 chars per scene heading.",
+    "proposals": [
+      {
+        "id": "prop-1",
+        "provider": "Gemini 1.5 Pro",
+        "headline": "More poetic cadence with tighter hooks",
+        "changes": [
+          { "scene_id": "scene-01", "field": "Heading", "from": "Morning in Gion", "to": "Gion at First Light" },
+          { "scene_id": "scene-01", "field": "Body", "from": "Quiet streets, wooden houses and a timeless beauty to start the day.", "to": "Before the city awakens, ancient wooden eaves breathe in the morning chill." }
+        ]
+      }
+    ]
+  }
+}

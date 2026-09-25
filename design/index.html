@@ -1,0 +1,3509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Creator Studio F3 — Interactive UI/UX Design System</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23d49a79'><path d='M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z'/></svg>">
+  <style>
+    /* ==========================================================================
+       Creator Studio F3 Design Tokens
+       Docs: docs/superpowers/specs/2026-09-25-creator-studio-f3-full-ui-ux-design.md
+       ========================================================================== */
+    :root {
+      --background: #18191b;
+      --card: #242628;
+      --studio-well: #101113;
+      --studio-raised: #2a2c2e;
+      --foreground: #f5f3ee;
+      --muted-foreground: #c5c6c7;
+      --primary: #d49a79;
+      --primary-foreground: #1b1918;
+      --ring: #efb28e;
+      --accent: #3b3532;
+      --border: #47494a;
+      --studio-ai: #af87ff;
+      --studio-playhead: #82b1e8;
+      --status-succeeded: #d7af5f;
+      --status-failed: #ef4444;
+      --status-running: #22d3ee;
+      --status-queued: #8b8794;
+      --status-cancelled: #6f6b78;
+
+      --font-sans: -apple-system, BlinkMacSystemFont, "Geist", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, "Geist Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: #0d0e10;
+      color: var(--foreground);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow-x: hidden;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--studio-well);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--muted-foreground);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+      }
+    }
+
+    /* Common Typography & Utility classes */
+    .mono { font-family: var(--font-mono); }
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--muted-foreground);
+    }
+
+    button, input, select, textarea {
+      font-family: inherit;
+      color: inherit;
+      user-select: text;
+    }
+
+    button {
+      cursor: pointer;
+      border: none;
+      background: none;
+      user-select: none;
+    }
+
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--ring);
+      outline-offset: 1px;
+    }
+
+    .icon-svg {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      fill: none;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+
+    /* ==========================================================================
+       Prototype Toolbar (Top Meta Bar)
+       ========================================================================== */
+    .proto-meta-bar {
+      background: #090a0c;
+      border-bottom: 1px solid rgba(71, 73, 74, 0.6);
+      padding: 6px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--muted-foreground);
+      z-index: 100;
+      flex-shrink: 0;
+    }
+
+    .proto-meta-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .proto-tag {
+      background: rgba(212, 154, 121, 0.18);
+      color: var(--primary);
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 10px;
+      letter-spacing: 0.05em;
+    }
+
+    .proto-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .proto-select {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--foreground);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+
+    .proto-btn {
+      background: var(--studio-raised);
+      border: 1px solid var(--border);
+      color: var(--foreground);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 150ms ease-out, border-color 150ms ease-out;
+    }
+    .proto-btn:hover {
+      background: var(--accent);
+      border-color: var(--muted-foreground);
+    }
+    .proto-btn.active {
+      background: var(--primary);
+      color: var(--primary-foreground);
+      border-color: var(--primary);
+    }
+
+    /* Viewport Simulator Wrapper */
+    .viewport-container {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      background: #090a0c;
+      overflow: auto;
+      padding: 0;
+      transition: all 200ms ease;
+    }
+
+    .studio-shell {
+      width: 100%;
+      max-width: 100%;
+      background: var(--background);
+      display: flex;
+      flex-direction: column;
+      min-height: calc(100vh - 35px);
+      position: relative;
+      box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+      transition: max-width 200ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    /* Device Breakpoint Simulator Classes */
+    .viewport-container.view-desktop .studio-shell { max-width: 100%; }
+    .viewport-container.view-compact .studio-shell { max-width: 1120px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+    .viewport-container.view-tablet .studio-shell { max-width: 820px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+    .viewport-container.view-phone .studio-shell { max-width: 375px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+
+    /* ==========================================================================
+       Header & Global Status (§4.1, §4.2)
+       ========================================================================== */
+    .studio-header {
+      height: 56px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      gap: 16px;
+      flex-shrink: 0;
+      z-index: 20;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 15px;
+      color: var(--foreground);
+    }
+    .brand-sub {
+      color: var(--muted-foreground);
+      font-weight: 400;
+      font-size: 13px;
+    }
+
+    .header-divider {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+    }
+
+    .project-name-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+      font-size: 14px;
+      color: var(--foreground);
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: background 150ms ease-out;
+    }
+    .project-name-btn:hover {
+      background: var(--accent);
+    }
+
+    /* Job Navigation (§5.1) */
+    .studio-job-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      height: 100%;
+    }
+
+    .job-nav-btn {
+      height: 56px;
+      padding: 0 18px;
+      color: var(--muted-foreground);
+      font-weight: 500;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      position: relative;
+      transition: color 150ms ease-out;
+    }
+    .job-nav-btn:hover {
+      color: var(--foreground);
+    }
+    .job-nav-btn.active {
+      color: var(--foreground);
+      font-weight: 600;
+      box-shadow: inset 0 -2px 0 var(--primary);
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Mode Pill Switcher */
+    .mode-pill {
+      display: flex;
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+    }
+
+    .mode-option {
+      padding: 4px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 4px;
+      color: var(--muted-foreground);
+      transition: all 150ms ease-out;
+    }
+    .mode-option.active {
+      background: var(--accent);
+      color: var(--foreground);
+    }
+
+    /* Save Status Indicator (§4.2) */
+    .save-status-block {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--muted-foreground);
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .status-dot.saved { background: var(--status-succeeded); }
+    .status-dot.dirty { border: 1.5px solid var(--muted-foreground); background: transparent; }
+    .status-dot.saving { background: var(--primary); animation: pulseDot 1.2s infinite ease-in-out; }
+    .status-dot.failed { background: var(--status-failed); }
+    .status-dot.conflict { background: var(--primary); }
+    .status-dot.offline { background: var(--muted-foreground); }
+
+    @keyframes pulseDot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.35; transform: scale(0.8); }
+    }
+
+    /* Alert Banners in flow (§4.2) */
+    .studio-banner {
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+      animation: bannerSlideDown 150ms ease-out;
+    }
+    @keyframes bannerSlideDown {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .studio-banner.alert {
+      background: rgba(239, 68, 68, 0.12);
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.35);
+    }
+    .studio-banner.conflict {
+      background: rgba(212, 154, 121, 0.15);
+      color: #fed7aa;
+      border-color: rgba(212, 154, 121, 0.35);
+    }
+    .studio-banner.offline {
+      background: rgba(139, 135, 148, 0.12);
+      color: var(--muted-foreground);
+      border-color: rgba(139, 135, 148, 0.35);
+    }
+    .banner-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .banner-btn {
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--studio-raised);
+      border: 1px solid var(--border);
+      color: var(--foreground);
+      transition: background 150ms ease-out;
+    }
+    .banner-btn:hover { background: var(--accent); }
+
+    /* Compact Studio Nav for Tablet/Mobile (§3.4, §3.5) */
+    .compact-studio-nav {
+      display: none;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 4px 8px;
+      gap: 4px;
+    }
+    .compact-nav-btn {
+      flex: 1;
+      padding: 8px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted-foreground);
+      border-radius: 4px;
+      transition: all 150ms ease-out;
+    }
+    .compact-nav-btn.active {
+      background: var(--accent);
+      color: var(--foreground);
+    }
+
+    /* ==========================================================================
+       Main Workspace Layout (§3.1, §3.2)
+       ========================================================================== */
+    .studio-content {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .job-pane {
+      display: none;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+    .job-pane.active {
+      display: flex;
+    }
+
+    /* ==========================================================================
+       EDIT JOB: Simple Mode Layout (§3.1)
+       ========================================================================== */
+    .edit-simple-layout {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-columns: 1fr 19rem;
+      grid-template-rows: 1fr auto;
+      overflow: hidden;
+    }
+
+    /* Col 1: Preview Stage + Scenes Strip */
+    .preview-col {
+      grid-column: 1;
+      grid-row: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--studio-well);
+      position: relative;
+      padding: 20px;
+      overflow: hidden;
+    }
+
+    /* Single Preview Stage (§5.5) */
+    .preview-stage-wrap {
+      height: 100%;
+      max-height: 560px;
+      aspect-ratio: 9 / 16;
+      background: #000;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Review Chip Overlay (§3.1, §5.5) */
+    .review-chip-overlay {
+      display: none;
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(36, 38, 40, 0.9);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--border);
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--primary);
+      z-index: 15;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+
+    /* Video Frame Simulation */
+    .stage-video-frame {
+      flex: 1;
+      position: relative;
+      background-size: cover;
+      background-position: center;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 20px 16px 14px;
+      transition: background-image 300ms ease;
+    }
+
+    .video-canvas-art {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .video-overlay-header {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .video-meta-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(4px);
+      padding: 2px 7px;
+      border-radius: 4px;
+      color: var(--muted-foreground);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .video-text-overlay {
+      position: relative;
+      z-index: 2;
+      text-align: center;
+      color: #ffffff;
+      margin-top: 130px;
+      padding: 0 12px;
+      transition: all 200ms ease;
+    }
+
+    .video-text-heading {
+      font-size: 21px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+      transition: color 200ms ease;
+    }
+    .video-text-body {
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      opacity: 0.88;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+    }
+
+    /* Active Caption Cue Subtitle on Screen */
+    .video-caption-subtitle {
+      position: relative;
+      z-index: 2;
+      text-align: center;
+      margin: 10px auto;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      color: #fed7aa;
+      max-width: 90%;
+      min-height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      transition: opacity 150ms ease;
+    }
+
+    /* Video player controls bar */
+    .player-controls {
+      position: relative;
+      z-index: 2;
+      background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 70%, transparent 100%);
+      padding: 10px 12px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: #fff;
+      border-radius: 0 0 6px 6px;
+    }
+    .scrubber-track {
+      width: 100%;
+      height: 5px;
+      background: rgba(255, 255, 255, 0.25);
+      border-radius: 3px;
+      position: relative;
+      cursor: pointer;
+    }
+    .scrubber-track:hover { height: 7px; }
+    .scrubber-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--primary);
+      border-radius: 3px;
+      transition: width 50ms linear;
+    }
+    .controls-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-family: var(--font-mono);
+    }
+    .controls-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .play-hint {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--muted-foreground);
+    }
+
+    /* Scene Strip (§5.3) */
+    .scenes-col {
+      grid-column: 1;
+      grid-row: 2;
+      background: var(--card);
+      border-top: 1px solid var(--border);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .scenes-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .scenes-strip-scroll {
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    /* Scene Card (160px card, §5.3) */
+    .scene-card {
+      width: 160px;
+      min-width: 160px;
+      background: var(--background);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 94px;
+      position: relative;
+      cursor: pointer;
+      transition: border-color 150ms ease-out, background 150ms ease-out, transform 150ms ease-out;
+      user-select: none;
+    }
+    .scene-card:hover {
+      background: var(--accent);
+      border-color: var(--muted-foreground);
+    }
+    .scene-card.selected {
+      border-color: var(--primary);
+      background: var(--studio-raised);
+      box-shadow: 0 0 0 1px var(--primary);
+    }
+
+    .card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .card-role-icon {
+      color: var(--muted-foreground);
+    }
+
+    .card-meta {
+      font-size: 11px;
+      color: var(--muted-foreground);
+      text-transform: capitalize;
+    }
+
+    .card-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-duration {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--muted-foreground);
+    }
+
+    .card-reorder-btns {
+      display: none;
+      align-items: center;
+      gap: 3px;
+    }
+    .scene-card.selected .card-reorder-btns {
+      display: flex;
+    }
+
+    .reorder-btn {
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--foreground);
+      font-size: 11px;
+      transition: all 120ms ease;
+    }
+    .reorder-btn:hover:not(:disabled) {
+      background: var(--primary);
+      color: var(--primary-foreground);
+      border-color: var(--primary);
+    }
+    .reorder-btn:disabled {
+      opacity: 0.25;
+      cursor: not-allowed;
+    }
+
+    /* Unresolved import red dot (§5.3) */
+    .unresolved-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--status-failed);
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      box-shadow: 0 0 6px var(--status-failed);
+    }
+
+    /* Col 2: Inspector Dock (§5.4) */
+    .inspector-col {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      background: var(--card);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .inspector-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .inspector-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .inspector-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .inspector-body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .inspector-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: opacity 150ms ease;
+    }
+    .inspector-section.disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    .field-input, .field-textarea, .field-select {
+      width: 100%;
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: var(--foreground);
+      transition: border-color 150ms ease-out, background 150ms ease-out;
+    }
+    .field-input:focus, .field-textarea:focus, .field-select:focus {
+      border-color: var(--primary);
+    }
+    .field-textarea {
+      resize: vertical;
+      min-height: 64px;
+    }
+
+    .field-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .action-btn-sm {
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--studio-raised);
+      border: 1px solid var(--border);
+      color: var(--foreground);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 150ms ease-out, border-color 150ms ease-out;
+    }
+    .action-btn-sm:hover {
+      background: var(--accent);
+      border-color: var(--muted-foreground);
+    }
+
+    .primary-btn {
+      background: var(--primary);
+      color: var(--primary-foreground);
+      font-weight: 600;
+      padding: 10px 16px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: opacity 150ms ease-out, transform 100ms ease;
+    }
+    .primary-btn:hover {
+      opacity: 0.93;
+    }
+    .primary-btn:active {
+      transform: scale(0.99);
+    }
+    .primary-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .media-card {
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .media-status-line {
+      font-size: 12px;
+      color: var(--foreground);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cue-item {
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Style Slot Radios/Cards */
+    .style-slot-card {
+      padding: 6px 8px;
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .style-slot-card.active {
+      border-color: var(--primary);
+      background: var(--accent);
+    }
+
+    /* ==========================================================================
+       EDIT JOB: Advanced Mode Layout (§3.2, §5.6)
+       ========================================================================== */
+    .edit-advanced-layout {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-columns: 14rem 1fr 19rem;
+      overflow: hidden;
+    }
+
+    .adv-assets-col {
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .adv-center-col {
+      display: flex;
+      flex-direction: column;
+      background: var(--studio-well);
+      overflow: hidden;
+    }
+
+    .adv-preview-pane {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: #0b0c0e;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+
+    .adv-timeline-pane {
+      height: 260px;
+      background: var(--studio-well);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .timeline-toolbar {
+      height: 38px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    .timeline-ruler {
+      height: 26px;
+      background: #141517;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--muted-foreground);
+      display: flex;
+      align-items: center;
+      padding-left: 80px;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .ruler-tick {
+      width: 60px;
+      border-left: 1px solid var(--border);
+      padding-left: 4px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+    }
+
+    .timeline-tracks-area {
+      flex: 1;
+      overflow-y: auto;
+      position: relative;
+      overflow-x: hidden;
+    }
+
+    .track-row {
+      height: 42px;
+      border-bottom: 1px solid rgba(71, 73, 74, 0.4);
+      display: flex;
+      align-items: center;
+      position: relative;
+    }
+    .track-header {
+      width: 80px;
+      height: 100%;
+      background: #161719;
+      border-right: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--muted-foreground);
+      z-index: 5;
+    }
+    .track-lane {
+      flex: 1;
+      height: 100%;
+      position: relative;
+    }
+
+    .timeline-clip {
+      position: absolute;
+      top: 5px;
+      bottom: 5px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 2px 8px;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+      transition: border-color 100ms ease;
+    }
+    .clip-video { background: rgba(212, 154, 121, 0.28); color: var(--foreground); border-color: rgba(212, 154, 121, 0.5); }
+    .clip-text { background: rgba(197, 198, 199, 0.22); color: var(--foreground); border-color: rgba(197, 198, 199, 0.45); }
+    .clip-caption { background: rgba(130, 177, 232, 0.28); color: #bfdbfe; border-color: rgba(130, 177, 232, 0.5); }
+    .clip-audio { background: rgba(175, 135, 255, 0.28); color: #ddd6fe; border-color: rgba(175, 135, 255, 0.5); }
+    .timeline-clip.selected { border: 2px solid var(--primary); box-shadow: 0 0 6px var(--primary); }
+
+    /* Timeline Playhead (§2.1, §3.2) */
+    .timeline-playhead-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 80px;
+      width: 1px;
+      background: var(--studio-playhead);
+      z-index: 10;
+      pointer-events: none;
+      transition: left 50ms linear;
+    }
+    .timeline-playhead-caret {
+      position: absolute;
+      top: 0;
+      left: -5px;
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 6px solid var(--studio-playhead);
+    }
+
+    /* Issues Panel (§5.10) */
+    .issues-bar {
+      height: 28px;
+      background: #151618;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      font-size: 11px;
+      color: var(--muted-foreground);
+      flex-shrink: 0;
+    }
+
+    /* ==========================================================================
+       PROMPT LAB JOB (§5.7)
+       ========================================================================== */
+    .prompt-lab-layout {
+      width: 100%;
+      height: 100%;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .prompt-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .prompt-policy-card {
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .ai-proposal-box {
+      background: var(--studio-raised);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--studio-ai);
+      border-radius: 6px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      animation: proposalFadeIn 200ms ease;
+    }
+    @keyframes proposalFadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ==========================================================================
+       REVIEW JOB (§5.8)
+       ========================================================================== */
+    .review-layout {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-columns: 1fr 24rem;
+      overflow: hidden;
+    }
+
+    .review-comments-pane {
+      background: var(--card);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 20px;
+      gap: 20px;
+    }
+
+    .comment-card {
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      transition: border-color 150ms ease;
+    }
+    .comment-card:hover {
+      border-color: var(--muted-foreground);
+    }
+    .comment-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+
+    /* ==========================================================================
+       RENDER JOB (§5.9)
+       ========================================================================== */
+    .render-layout {
+      width: 100%;
+      height: 100%;
+      padding: 32px 24px;
+      max-width: 820px;
+      margin: 0 auto;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .readiness-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .readiness-item {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--studio-well);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+      transition: all 150ms ease;
+    }
+    .readiness-item.failed {
+      border-color: rgba(239, 68, 68, 0.45);
+      background: rgba(239, 68, 68, 0.08);
+    }
+    .readiness-left {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .recent-jobs-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .recent-jobs-table th {
+      text-align: left;
+      padding: 8px 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted-foreground);
+      border-bottom: 1px solid var(--border);
+    }
+    .recent-jobs-table td {
+      padding: 12px;
+      border-bottom: 1px solid rgba(71, 73, 74, 0.3);
+    }
+
+    /* ==========================================================================
+       MODAL: StudioImportGate Dialog (§5.2, Plan B Tasks 2/5)
+       ========================================================================== */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(5px);
+      z-index: 500;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .import-dialog {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      width: 100%;
+      max-width: 700px;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.9);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: modalFadeIn 150ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .dialog-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .dialog-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--foreground);
+    }
+
+    .dialog-body {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+
+    .inventory-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .inventory-table th {
+      text-align: left;
+      padding: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted-foreground);
+      border-bottom: 1px solid var(--border);
+    }
+    .inventory-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid rgba(71, 73, 74, 0.3);
+    }
+
+    .dialog-footer {
+      padding: 14px 20px;
+      border-top: 1px solid var(--border);
+      background: var(--studio-well);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Attach Popover Dropdown */
+    .attach-popover {
+      display: none;
+      position: absolute;
+      background: var(--studio-raised);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+      z-index: 600;
+      min-width: 190px;
+    }
+    .attach-popover.open { display: block; }
+    .popover-item {
+      padding: 8px 12px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--foreground);
+      transition: background 120ms ease;
+    }
+    .popover-item:hover {
+      background: var(--accent);
+    }
+
+    /* File Uploading Simulation Modal */
+    .upload-progress-box {
+      background: var(--studio-well);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .progress-bar-track {
+      width: 100%;
+      height: 6px;
+      background: #222;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--primary);
+      transition: width 150ms ease;
+    }
+
+    /* ==========================================================================
+       Floating Prototype Switcher (Matt Pocock Prototype Skill UI.md)
+       ========================================================================== */
+    .floating-switcher {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(36, 38, 40, 0.95);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      border-radius: 30px;
+      padding: 6px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.75);
+      z-index: 800;
+      font-size: 12px;
+    }
+    .switcher-btn {
+      color: var(--muted-foreground);
+      padding: 4px 6px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+    }
+    .switcher-btn:hover { color: var(--foreground); background: var(--accent); }
+    .switcher-label {
+      font-weight: 600;
+      color: var(--foreground);
+      padding: 0 4px;
+    }
+
+    /* Comparison Drawer */
+    .reference-drawer {
+      display: none;
+      position: fixed;
+      right: 0;
+      top: 35px;
+      bottom: 0;
+      width: 50%;
+      background: #111;
+      border-left: 2px solid var(--primary);
+      z-index: 900;
+      box-shadow: -10px 0 40px rgba(0,0,0,0.85);
+      flex-direction: column;
+    }
+    .reference-drawer.open { display: flex; }
+    .ref-header {
+      padding: 12px 18px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    .ref-img-wrap {
+      flex: 1;
+      overflow: auto;
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+      background: #090a0c;
+    }
+    .ref-img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 6px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+    }
+
+    /* Notification Toast */
+    .toast-msg {
+      position: fixed;
+      bottom: 74px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--studio-raised);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 6px 16px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--foreground);
+      box-shadow: 0 8px 20px rgba(0,0,0,0.6);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 200ms ease, transform 200ms ease;
+      z-index: 1000;
+    }
+    .toast-msg.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(-6px);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ========================================================================
+       TOP META CONTROLS (Breakpoint Simulator, Save Simulator, Gate)
+       ======================================================================== -->
+  <div class="proto-meta-bar">
+    <div class="proto-meta-left">
+      <span class="proto-tag">PROTOTYPE</span>
+      <span><strong>Creator Studio F3 UI/UX</strong> (Spec: <code>2026-09-25</code>)</span>
+      <span style="color: var(--border);">|</span>
+      <span>Breakpoint:</span>
+      <div class="proto-controls">
+        <button class="proto-btn active" onclick="setViewport('desktop', this)">Desktop (1440+)</button>
+        <button class="proto-btn" onclick="setViewport('compact', this)">Compact (1120px)</button>
+        <button class="proto-btn" onclick="setViewport('tablet', this)">Tablet (820px)</button>
+        <button class="proto-btn" onclick="setViewport('phone', this)">Phone (375px)</button>
+      </div>
+    </div>
+    <div class="proto-controls">
+      <span>Save State:</span>
+      <select class="proto-select" id="saveStateSelect" onchange="setSaveState(this.value)">
+        <option value="saved">Saved (Gold Dot)</option>
+        <option value="dirty">Unsaved Changes (Hollow Dot)</option>
+        <option value="saving">Saving (Pulsing Dot)</option>
+        <option value="failed">Failed (Red Dot + Alert)</option>
+        <option value="conflict">Conflict (Terracotta + Banner)</option>
+        <option value="offline">Offline (Muted Dot + Banner)</option>
+      </select>
+      <button class="proto-btn" onclick="openImportGate()">
+        <svg class="icon-svg" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        Import Gate
+      </button>
+      <button class="proto-btn" id="refToggleBtn" onclick="toggleReferenceDrawer()">
+        <svg class="icon-svg" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+        Compare Mockup
+      </button>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       VIEWPORT & STUDIO SHELL
+       ======================================================================== -->
+  <div class="viewport-container view-desktop" id="viewportContainer">
+    <div class="studio-shell">
+
+      <!-- HEADER (§4.1) -->
+      <header class="studio-header">
+        <div class="header-left">
+          <button class="action-btn-sm" id="headerBackBtn" style="padding: 4px 8px;" title="Back to Project">
+            <svg class="icon-svg" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+            <span style="font-size: 12px;">Back</span>
+          </button>
+          <div class="brand-logo">
+            <svg class="icon-svg" style="stroke: var(--primary); width: 20px; height: 20px;" viewBox="0 0 24 24">
+              <path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/>
+              <line x1="16" y1="8" x2="2" y2="22"/>
+              <line x1="17.5" y1="15" x2="9" y2="15"/>
+            </svg>
+            Thoth <span class="brand-sub">Creator Studio</span>
+          </div>
+          <div class="header-divider"></div>
+          <button class="project-name-btn" id="projectNameBtn" title="Rename Project">
+            <span id="headerProjectTitle">A Day in Kyoto</span>
+            <svg class="icon-svg" style="width: 14px; height: 14px; color: var(--muted-foreground);" viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+          </button>
+        </div>
+
+        <!-- JOB NAVIGATION (§5.1) -->
+        <nav class="studio-job-nav" aria-label="Studio Destinations">
+          <button class="job-nav-btn active" onclick="switchJob('edit', this)" data-job="edit">Edit</button>
+          <button class="job-nav-btn" onclick="switchJob('prompt', this)" data-job="prompt">Prompt</button>
+          <button class="job-nav-btn" onclick="switchJob('review', this)" data-job="review">Review</button>
+          <button class="job-nav-btn" onclick="switchJob('render', this)" data-job="render">Render</button>
+        </nav>
+
+        <div class="header-right">
+          <!-- Undo / Redo -->
+          <div style="display: flex; gap: 2px;">
+            <button class="action-btn-sm" style="padding: 4px 6px;" title="Undo (Ctrl+Z)" onclick="showToast('Undo performed')"><svg class="icon-svg" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg></button>
+            <button class="action-btn-sm" style="padding: 4px 6px;" title="Redo (Ctrl+Y)" onclick="showToast('Redo performed')"><svg class="icon-svg" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"/></svg></button>
+          </div>
+
+          <!-- Mode switcher (Simple / Advanced) -->
+          <div class="mode-pill" id="modeSwitcher">
+            <button class="mode-option active" onclick="setEditorMode('simple', this)">Simple</button>
+            <button class="mode-option" onclick="setEditorMode('advanced', this)">Advanced</button>
+          </div>
+
+          <!-- Save Status (§4.2) -->
+          <div class="save-status-block" id="saveStatusBlock" onclick="triggerManualSave()" title="Click to Save Draft">
+            <span class="status-dot saved" id="statusDot"></span>
+            <span id="saveStatusText">Saved revision 3</span>
+          </div>
+
+          <!-- User avatar -->
+          <div style="width: 28px; height: 28px; border-radius: 50%; background: #4a3d35; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fed7aa;" title="Operator">
+            MF
+          </div>
+        </div>
+      </header>
+
+      <!-- ALERT BANNERS (§4.2) -->
+      <div id="bannerContainer"></div>
+
+      <!-- COMPACT TABLET/MOBILE NAV (§3.4, §3.5) -->
+      <div class="compact-studio-nav" id="compactNav">
+        <button class="compact-nav-btn active" onclick="setCompactPane('preview', this)">Preview</button>
+        <button class="compact-nav-btn" onclick="setCompactPane('scenes', this)">Scenes</button>
+        <button class="compact-nav-btn" onclick="setCompactPane('controls', this)">Controls</button>
+      </div>
+
+      <!-- MAIN WORKSPACE -->
+      <main class="studio-content">
+
+        <!-- ==================================================================
+             JOB 1: EDIT (Simple Mode & Advanced Mode)
+             ================================================================== -->
+        <div class="job-pane active" id="pane-edit">
+
+          <!-- 1A: SIMPLE MODE LAYOUT (§3.1) -->
+          <div class="edit-simple-layout" id="editSimpleLayout">
+
+            <!-- Col 1: Preview Stage -->
+            <div class="preview-col" id="simplePreviewCol">
+              <div class="review-chip-overlay" id="reviewChip">Reviewing saved revision 3</div>
+
+              <div class="preview-stage-wrap" id="previewStageWrap">
+                <div class="stage-video-frame" id="stageVideoFrame">
+                  <!-- Layered canvas background -->
+                  <canvas id="videoArtCanvas" class="video-canvas-art" width="360" height="640"></canvas>
+
+                  <div class="video-overlay-header">
+                    <span class="video-meta-badge">9:16 · 1080x1920</span>
+                    <span class="video-meta-badge" id="sceneBadgeOverlay">Scene 1/5</span>
+                  </div>
+
+                  <div class="video-text-overlay" id="videoTextOverlay">
+                    <div class="video-text-heading" id="previewOverlayHeading">A DAY IN KYOTO</div>
+                    <div class="video-text-body" id="previewOverlayBody">TRADITION LIVES HERE</div>
+                  </div>
+
+                  <!-- Dynamic Subtitle for Active Caption Cue -->
+                  <div class="video-caption-subtitle" id="previewCaptionSubtitle">
+                    A DAY IN KYOTO
+                  </div>
+
+                  <!-- Player controls bar -->
+                  <div class="player-controls">
+                    <div class="scrubber-track" id="scrubberTrack" onclick="scrubVideo(event)">
+                      <div class="scrubber-fill" id="scrubberFill"></div>
+                    </div>
+                    <div class="controls-row">
+                      <div class="controls-left">
+                        <button onclick="togglePlay()" id="playBtn" title="Play/Pause (Space)">
+                          <svg class="icon-svg" id="playIcon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        </button>
+                        <span id="timecodeDisplay">00:00.00 / 00:22.00</span>
+                      </div>
+                      <div style="display: flex; align-items: center; gap: 10px;">
+                        <button onclick="toggleAudioMute()" title="Mute/Unmute" id="playerMuteIconBtn">
+                          <svg class="icon-svg" id="playerMuteSvg" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                        </button>
+                        <button title="Fullscreen" onclick="showToast('Fullscreen toggled')"><svg class="icon-svg" viewBox="0 0 24 24"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="play-hint">Space to play/pause · Click scrubber or scenes to jump</div>
+            </div>
+
+            <!-- Col 1 Row 2: Scene Strip (§5.3) -->
+            <div class="scenes-col" id="simpleScenesCol">
+              <div class="scenes-header">
+                <span class="section-label" id="scenesHeaderLabel">SCENES (5)</span>
+                <span style="font-size: 11px; color: var(--muted-foreground);">Reorder via [↑] [↓] buttons</span>
+              </div>
+              <div class="scenes-strip-scroll" id="sceneBoardStrip">
+                <!-- Rendered dynamically -->
+              </div>
+            </div>
+
+            <!-- Col 2: Inspector Dock (§5.4) -->
+            <div class="inspector-col" id="simpleInspectorCol">
+              <div class="inspector-header">
+                <div class="inspector-title-wrap">
+                  <span class="inspector-title" id="inspectorSceneTitle">Morning in Gion</span>
+                  <span id="inspectorLockBadge" style="display:none; font-size:10px; background:rgba(239,68,68,0.2); color:var(--status-failed); padding:1px 5px; border-radius:3px;">Locked</span>
+                </div>
+                <span class="mono" id="inspectorDurationBadge" style="font-size: 11px; background: var(--studio-well); padding: 2px 8px; border-radius: 4px; color: var(--muted-foreground);">5s</span>
+              </div>
+
+              <div class="inspector-body" id="inspectorBodyFields">
+                <!-- Heading -->
+                <div class="inspector-section" id="inspectorHeadingSection">
+                  <div style="display: flex; justify-content: space-between;">
+                    <label class="section-label">HEADING (edit_text)</label>
+                    <span id="headingCharCount" style="font-size: 10px; color: var(--muted-foreground);">15 / 300</span>
+                  </div>
+                  <input type="text" class="field-input" id="inspectorHeadingInput" maxlength="300" oninput="handleHeadingChange(this.value)">
+                </div>
+
+                <!-- Body -->
+                <div class="inspector-section" id="inspectorBodySection">
+                  <div style="display: flex; justify-content: space-between;">
+                    <label class="section-label">BODY (edit_text)</label>
+                    <span id="bodyCharCount" style="font-size: 10px; color: var(--muted-foreground);">67 / 2000</span>
+                  </div>
+                  <textarea class="field-textarea" id="inspectorBodyInput" maxlength="2000" oninput="handleBodyChange(this.value)"></textarea>
+                </div>
+
+                <!-- Phone Mode hides below sections per §3.5 -->
+                <div id="inspectorNonPhoneSections" style="display: flex; flex-direction: column; gap: 20px;">
+                  <!-- Media Section (§5.4, Plan B) -->
+                  <div class="inspector-section">
+                    <label class="section-label">MEDIA TRUTH (resolve endpoint)</label>
+                    <div class="media-card">
+                      <div class="media-status-line" id="inspectorMediaStatus">
+                        <svg class="icon-svg" viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect width="15" height="14" x="1" y="5" rx="2" ry="2"/></svg>
+                        <span id="inspectorMediaName">gion-pagoda-street.mp4</span>
+                        <span id="inspectorMediaBadge" style="font-size: 10px; color: var(--status-succeeded); margin-left: auto;">ready</span>
+                      </div>
+                      <div style="display: flex; gap: 8px;">
+                        <button class="action-btn-sm" onclick="openImportGate()"><svg class="icon-svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Replace...</button>
+                        <button class="action-btn-sm" onclick="openImportGate()"><svg class="icon-svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> Resolve import</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Duration (seconds) -->
+                  <div class="inspector-section">
+                    <label class="section-label">DURATION (edit_duration)</label>
+                    <div class="field-row">
+                      <input type="number" class="field-input mono" id="inspectorDurationInput" min="1" max="60" onchange="handleDurationChange(this.value)" style="width: 80px;">
+                      <span style="font-size: 13px; color: var(--muted-foreground);">seconds</span>
+                    </div>
+                  </div>
+
+                  <!-- Captions Section -->
+                  <div class="inspector-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <label class="section-label">CAPTIONS (add_caption_clip)</label>
+                      <button class="action-btn-sm" style="padding: 2px 7px; font-size: 10px;" onclick="addCaptionCue()">+ Add cue</button>
+                    </div>
+                    <div id="inspectorCaptionsList" style="display: flex; flex-direction: column; gap: 6px;">
+                      <!-- Rendered cues -->
+                    </div>
+                  </div>
+
+                  <!-- Audio Bed Section -->
+                  <div class="inspector-section">
+                    <label class="section-label">AUDIO BED (set_clip_volume)</label>
+                    <div class="media-card">
+                      <div style="display: flex; justify-content: space-between; font-size: 12px;">
+                        <span id="inspectorAudioTrack">ambient_bamboo_wind.mp3</span>
+                        <button class="action-btn-sm" style="padding: 2px 6px; font-size: 10px;" onclick="toggleAudioMute()" id="muteBtn">Mute</button>
+                      </div>
+                      <div class="field-row">
+                        <span style="font-size: 11px; color: var(--muted-foreground);">Vol</span>
+                        <input type="range" min="0" max="100" value="80" id="audioVolumeSlider" oninput="handleAudioVolChange(this.value)" style="flex: 1;">
+                        <span class="mono" id="audioVolLabel" style="font-size: 11px; width: 28px;">80%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Style Slot Selector -->
+                  <div class="inspector-section">
+                    <label class="section-label">STYLE SLOT (set_text_style_slot)</label>
+                    <select class="field-select" id="inspectorStyleSelect" onchange="handleStyleChange(this.value)">
+                      <option value="cinematic">Cinematic (Warm, 35mm look, serif)</option>
+                      <option value="modern_bold">Modern Bold (High contrast, sans)</option>
+                      <option value="minimal_clean">Minimal Clean (Serif, muted tone)</option>
+                      <option value="tokyo_neon">Tokyo Neon (Vibrant violet/cyan glow)</option>
+                    </select>
+                  </div>
+
+                  <!-- Ownership -->
+                  <div class="inspector-section">
+                    <label class="section-label">OWNERSHIP (edit_ownership)</label>
+                    <select class="field-select" id="inspectorOwnershipSelect" onchange="handleOwnershipChange(this.value)">
+                      <option value="user">User edited</option>
+                      <option value="ai">AI managed</option>
+                      <option value="locked">Locked</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 1B: ADVANCED MODE LAYOUT (§3.2, §5.6) -->
+          <div class="edit-advanced-layout" id="editAdvancedLayout" style="display: none;">
+            <!-- Left: Assets Col (14rem) -->
+            <div class="adv-assets-col">
+              <div style="padding: 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                <span class="section-label">ASSET LIBRARY</span>
+                <button class="action-btn-sm" onclick="openImportGate()"><svg class="icon-svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload</button>
+              </div>
+              <div style="padding: 10px; display: flex; flex-direction: column; gap: 8px;" id="advAssetsList">
+                <!-- Ready assets populated dynamically -->
+              </div>
+            </div>
+
+            <!-- Center: Preview + Timeline -->
+            <div class="adv-center-col">
+              <div class="adv-preview-pane">
+                <div style="height: 100%; aspect-ratio: 9/16; background: #000; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; position: relative;">
+                  <canvas id="advVideoCanvas" width="270" height="480" style="width:100%; height:100%;"></canvas>
+                  <div style="position: absolute; bottom: 8px; left: 8px; right: 8px; font-size: 11px; text-align: center; color: #fff; text-shadow: 0 1px 4px #000;" id="advOverlayText">
+                    A DAY IN KYOTO
+                  </div>
+                </div>
+              </div>
+
+              <!-- Multi-track Timeline (§5.6) -->
+              <div class="adv-timeline-pane">
+                <div class="timeline-toolbar">
+                  <div style="display: flex; align-items: center; gap: 12px;">
+                    <span class="section-label">TIMELINE</span>
+                    <span class="mono" id="advTimecodeDisplay" style="font-size: 11px; color: var(--primary);">00:00.00</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <button class="action-btn-sm" style="padding: 2px 7px;" onclick="togglePlay()" id="advPlayBtn">Play</button>
+                    <span style="font-size: 11px; color: var(--muted-foreground);">Snap: ON</span>
+                    <button class="action-btn-sm" style="padding: 2px 6px;">- Zoom +</button>
+                  </div>
+                </div>
+
+                <div class="timeline-ruler" id="advTimelineRuler" onclick="handleRulerClick(event)">
+                  <div class="ruler-tick">0s</div>
+                  <div class="ruler-tick">4s</div>
+                  <div class="ruler-tick">8s</div>
+                  <div class="ruler-tick">12s</div>
+                  <div class="ruler-tick">16s</div>
+                  <div class="ruler-tick">20s</div>
+                  <div class="ruler-tick">24s</div>
+                </div>
+
+                <div class="timeline-tracks-area" id="advTracksArea">
+                  <div class="timeline-playhead-line" id="timelinePlayhead">
+                    <div class="timeline-playhead-caret"></div>
+                  </div>
+
+                  <!-- Video Track -->
+                  <div class="track-row">
+                    <div class="track-header">VIDEO</div>
+                    <div class="track-lane" id="advTrackVideo">
+                      <!-- Rendered clips -->
+                    </div>
+                  </div>
+
+                  <!-- Text Track -->
+                  <div class="track-row">
+                    <div class="track-header">TEXT</div>
+                    <div class="track-lane" id="advTrackText">
+                      <!-- Rendered clips -->
+                    </div>
+                  </div>
+
+                  <!-- Caption Track -->
+                  <div class="track-row">
+                    <div class="track-header">CAPTION</div>
+                    <div class="track-lane" id="advTrackCaption">
+                      <!-- Rendered clips -->
+                    </div>
+                  </div>
+
+                  <!-- Audio Track -->
+                  <div class="track-row">
+                    <div class="track-header">AUDIO</div>
+                    <div class="track-lane" id="advTrackAudio">
+                      <!-- Rendered clips -->
+                    </div>
+                  </div>
+                </div>
+
+                <div class="issues-bar">
+                  <span><strong>ISSUES:</strong> 0 blocking issues</span>
+                  <span id="advTotalDurationLabel">5 scenes · 22 total seconds</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Timeline Inspector (19rem) -->
+            <div class="inspector-col">
+              <div class="inspector-header">
+                <span class="inspector-title" id="advInspectorTitle">Clip Inspector</span>
+                <span class="mono" id="advClipKindBadge" style="font-size: 11px; color: var(--muted-foreground);">video clip</span>
+              </div>
+              <div class="inspector-body">
+                <div class="inspector-section">
+                  <label class="section-label">SELECTED CLIP</label>
+                  <input type="text" class="field-input mono" id="advClipNameInput" value="gion-pagoda-street.mp4" readonly>
+                </div>
+                <div class="inspector-section">
+                  <label class="section-label">TIMING (IN / OUT)</label>
+                  <div class="field-row">
+                    <input type="text" class="field-input mono" id="advClipInInput" value="00:00.00" readonly>
+                    <input type="text" class="field-input mono" id="advClipOutInput" value="00:05.00" readonly>
+                  </div>
+                </div>
+                <div class="inspector-section">
+                  <label class="section-label">PLAYBACK SPEED</label>
+                  <select class="field-select" onchange="showToast('Playback speed updated')">
+                    <option>1.0x (Normal speed)</option>
+                    <option>0.8x (Cinematic slow-motion)</option>
+                    <option>1.2x (Fast pace)</option>
+                  </select>
+                </div>
+                <div class="inspector-section">
+                  <label class="section-label">OPACITY & BLUR</label>
+                  <div class="field-row">
+                    <span style="font-size:11px; color:var(--muted-foreground);">Alpha</span>
+                    <input type="range" min="0" max="100" value="100" style="flex:1;" oninput="showToast('Opacity adjusted')">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==================================================================
+             JOB 2: PROMPT LAB (§5.7)
+             ================================================================== -->
+        <div class="job-pane" id="pane-prompt">
+          <div class="prompt-lab-layout">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <h2 style="font-size: 18px; font-weight: 600;">Prompt Lab</h2>
+                <p style="font-size: 13px; color: var(--muted-foreground);">Direct and evolve your narrative pacing using AI proposals.</p>
+              </div>
+              <button class="primary-btn" id="generateProposalBtn" onclick="simulateGenerateProposal()">
+                <svg class="icon-svg" viewBox="0 0 24 24"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+                Generate New Proposal
+              </button>
+            </div>
+
+            <!-- Guardrails Policy Card -->
+            <div class="prompt-policy-card">
+              <svg class="icon-svg" style="color: var(--muted-foreground);" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <div>
+                <div class="section-label" style="margin-bottom: 4px;">SYSTEM POLICY & GUARDRAILS (READ-ONLY)</div>
+                <div style="font-size: 12px; color: var(--muted-foreground);" id="promptPolicyText">
+                  Strict brand guardrails: No sensationalist clickbait, no modern vehicle footage, preserve traditional aesthetic tone, max 300 chars per scene heading.
+                </div>
+              </div>
+            </div>
+
+            <!-- Active Prompt Input -->
+            <div class="prompt-card">
+              <label class="section-label">ACTIVE GENERATION PROMPT</label>
+              <textarea class="field-textarea" style="min-height: 90px;" id="activePromptInput">Create an evocative 15-second TikTok story highlighting traditional Kyoto morning culture. Focus on sensory details: wooden machiya, stone pavement, morning mist, and vermillion shrine gates.</textarea>
+              <div style="display: flex; justify-content: flex-end;">
+                <button class="action-btn-sm" onclick="showToast('Prompt saved')">Save Prompt</button>
+              </div>
+            </div>
+
+            <!-- AI Proposals Compare Card -->
+            <div class="ai-proposal-box" id="proposalBox">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span class="mono" style="font-size: 11px; background: rgba(175, 135, 255, 0.2); color: var(--studio-ai); padding: 2px 6px; border-radius: 4px;">Gemini 1.5 Pro</span>
+                  <span style="font-weight: 600; font-size: 14px;" id="proposalHeadline">More poetic cadence with tighter hooks</span>
+                </div>
+                <span style="font-size: 11px; color: var(--muted-foreground);">Proposed just now</span>
+              </div>
+
+              <div style="background: var(--studio-well); border: 1px solid var(--border); border-radius: 6px; padding: 14px; font-size: 13px;" id="proposalDiffContent">
+                <div style="color: var(--muted-foreground); margin-bottom: 6px; font-weight: 500;">Scene 1 Heading:</div>
+                <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 10px;">
+                  <span style="color: var(--status-failed); text-decoration: line-through;">Morning in Gion</span>
+                  <span>➔</span>
+                  <span style="color: var(--status-succeeded); font-weight: 500;">Gion at First Light</span>
+                </div>
+                <div style="color: var(--muted-foreground); margin-bottom: 6px; font-weight: 500;">Scene 1 Body:</div>
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <span style="color: var(--status-failed); text-decoration: line-through; font-size: 12px;">Quiet streets, wooden houses and a timeless beauty to start the day.</span>
+                  <span style="color: var(--status-succeeded); font-size: 12px; font-weight: 500;">Before the city awakens, ancient wooden eaves breathe in the morning chill.</span>
+                </div>
+              </div>
+
+              <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button class="action-btn-sm" style="color: var(--status-failed);" onclick="discardProposal()">Discard</button>
+                <button class="action-btn-sm" onclick="showToast('Diff inspected')">Compare Diff</button>
+                <button class="primary-btn" style="padding: 6px 14px; font-size: 12px;" onclick="applyPromptProposal()">Apply proposal to draft</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==================================================================
+             JOB 3: REVIEW (§5.8)
+             ================================================================== -->
+        <div class="job-pane" id="pane-review">
+          <div class="review-layout">
+            <div class="preview-col" style="background: var(--studio-well);">
+              <div style="position: absolute; top: 16px; left: 50%; transform: translateX(-50%); background: var(--studio-raised); border: 1px solid var(--border); padding: 5px 16px; border-radius: 20px; font-size: 12px; color: var(--primary); font-weight: 600; box-shadow: 0 4px 16px rgba(0,0,0,0.6);">
+                Reviewing saved revision 3
+              </div>
+
+              <div class="preview-stage-wrap">
+                <div class="stage-video-frame" id="reviewStageFrame">
+                  <canvas id="reviewArtCanvas" class="video-canvas-art" width="360" height="640"></canvas>
+                  <div class="video-text-overlay" style="margin-top: 150px;">
+                    <div class="video-text-heading" id="reviewHeadingText">A DAY IN KYOTO</div>
+                    <div class="video-text-body">TRADITION LIVES HERE</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Review Comments Panel -->
+            <div class="review-comments-pane">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="font-size: 15px; font-weight: 600;">Revision 3 Review</h3>
+                <span class="mono" id="reviewDecisionBadge" style="font-size: 11px; background: rgba(215, 175, 95, 0.2); color: var(--status-succeeded); padding: 2px 7px; border-radius: 4px;">Pending Approval</span>
+              </div>
+
+              <div style="display: flex; gap: 8px;">
+                <button class="primary-btn" style="flex: 1;" onclick="approveRevision()">✓ Approve</button>
+                <button class="action-btn-sm" style="flex: 1; justify-content: center; color: var(--status-failed);" onclick="requestChanges()">Request changes</button>
+              </div>
+
+              <div class="section-label" style="margin-top: 8px;">COMMENTS & DECISIONS</div>
+
+              <div id="reviewCommentsList" style="display: flex; flex-direction: column; gap: 10px;">
+                <!-- Dynamically rendered -->
+              </div>
+
+              <!-- Add comment -->
+              <div style="display: flex; flex-direction: column; gap: 8px; margin-top: auto;">
+                <textarea class="field-textarea" placeholder="Leave review feedback..." id="newCommentInput"></textarea>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <label style="font-size: 12px; color: var(--muted-foreground); display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="checkbox" id="pinTimecodeCheck"> Pin to current timecode (<span id="pinTimecodeLabel">00:02.15</span>)
+                  </label>
+                  <button class="action-btn-sm" onclick="postReviewComment()">Post comment</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ==================================================================
+             JOB 4: RENDER (§5.9, Plan B Task 6)
+             ================================================================== -->
+        <div class="job-pane" id="pane-render">
+          <div class="render-layout">
+            <div>
+              <div class="section-label">STUDIO RENDER</div>
+              <h2 style="font-size: 20px; font-weight: 600; margin-top: 4px;">Export Revision 3 · vertical_text_story v4</h2>
+            </div>
+
+            <!-- Readiness Checklist (§5.9) -->
+            <div class="readiness-card">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span class="section-label">READINESS CHECKLIST</span>
+                <label style="font-size: 11px; color: var(--muted-foreground); display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                  <input type="checkbox" id="simulateAllReady" onchange="toggleSimulateReady(this.checked)">
+                  Simulate: All checks passed
+                </label>
+              </div>
+
+              <div id="readinessItemsList" style="display: flex; flex-direction: column; gap: 8px;">
+                <!-- Rendered dynamically -->
+              </div>
+
+              <div style="border-top: 1px solid var(--border); padding-top: 16px; display: flex; flex-direction: column; gap: 8px;">
+                <button class="primary-btn" id="startRenderBtn" disabled onclick="startRenderSimulation()">
+                  <svg class="icon-svg" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  Start Studio Render
+                </button>
+                <div id="renderBlockedReason" style="font-size: 12px; color: var(--status-failed); text-align: center;">
+                  Resolve 2 import items before rendering revision 3.
+                </div>
+                <div id="renderPhoneMonitorOnly" style="display: none; font-size: 12px; color: var(--muted-foreground); text-align: center;">
+                  Phone viewport is in monitor-only mode. Studio renders must be started from desktop/tablet.
+                </div>
+              </div>
+            </div>
+
+            <!-- Recent Jobs (§5.9) -->
+            <div class="readiness-card">
+              <span class="section-label">RECENT JOBS</span>
+              <table class="recent-jobs-table">
+                <thead>
+                  <tr>
+                    <th>JOB</th>
+                    <th>STATUS</th>
+                    <th>TEMPLATE</th>
+                    <th>TIMESTAMP</th>
+                    <th>ACTION</th>
+                  </tr>
+                </thead>
+                <tbody id="recentJobsTableBody">
+                  <!-- Rendered dynamically -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </main>
+
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL: STUDIO IMPORT GATE (§5.2, Plan B Tasks 2/5)
+       ======================================================================== -->
+  <div class="modal-backdrop" id="importModalBackdrop" onclick="handleModalBackdropClick(event)">
+    <div class="import-dialog" role="dialog" aria-modal="true">
+      <div class="dialog-header">
+        <div>
+          <div class="section-label">STUDIO IMPORT GATE</div>
+          <div class="dialog-title" id="importDialogTitle">Open in Studio — Neon Nights & Kyoto Stories</div>
+        </div>
+        <button onclick="closeImportGate()" style="color: var(--muted-foreground); padding: 4px;" title="Close (Esc)">
+          <svg class="icon-svg" style="width: 20px; height: 20px;" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="dialog-body">
+        <!-- Stage Tabs -->
+        <div style="display: flex; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+          <button class="action-btn-sm" id="gateTab1Btn" onclick="switchGateStage(1)">Stage 1: Choose Draft</button>
+          <button class="action-btn-sm active" id="gateTab2Btn" onclick="switchGateStage(2)">Stage 2: Source Inventory</button>
+        </div>
+
+        <!-- STAGE 1: DRAFT CHOICE -->
+        <div id="gateStage1" style="display: none; flex-direction: column; gap: 12px;">
+          <div class="section-label">EXISTING DRAFTS FOR THIS SOURCE</div>
+          <div id="draftOptionsList" style="display: flex; flex-direction: column; gap: 8px;">
+            <!-- Rendered drafts -->
+          </div>
+          <div style="margin-top: 8px; display: flex; justify-content: flex-end;">
+            <button class="action-btn-sm" onclick="createNewDraft()"><svg class="icon-svg" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create new draft</button>
+          </div>
+        </div>
+
+        <!-- STAGE 2: SOURCE INVENTORY -->
+        <div id="gateStage2" style="display: flex; flex-direction: column; gap: 12px;">
+          <div class="section-label">SOURCE INVENTORY — WHAT THIS STUDIO EDIT CONTAINS</div>
+          <table class="inventory-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>ROLE</th>
+                <th>SOURCE</th>
+                <th>STATUS</th>
+                <th>ACTIONS</th>
+              </tr>
+            </thead>
+            <tbody id="inventoryTableBody">
+              <!-- Rendered items -->
+            </tbody>
+          </table>
+
+          <div style="background: var(--studio-well); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px; color: var(--muted-foreground);">
+            <strong>Unsupported fields:</strong> crop focal rect (image 5) · 2 comments
+          </div>
+        </div>
+      </div>
+
+      <div class="dialog-footer">
+        <span id="gateFooterCount" style="font-size: 13px; color: var(--status-failed);">2 items need media before Studio Render</span>
+        <button class="primary-btn" onclick="closeImportGate()">Continue in Studio</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Attach Popover Dropdown (§5.2) -->
+  <div class="attach-popover" id="attachPopover">
+    <div class="popover-item" onclick="triggerSimulatedUpload()">
+      <svg class="icon-svg" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Upload file...
+    </div>
+    <div class="popover-item" onclick="selectReadyAssetModal()">
+      <svg class="icon-svg" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+      Choose ready asset
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       FLOATING PROTOTYPE SWITCHER (Matt Pocock Prototype Skill UI.md)
+       ======================================================================== -->
+  <div class="floating-switcher">
+    <button class="switcher-btn" onclick="cycleVariant(-1)" title="Previous View (Left Arrow)">
+      <svg class="icon-svg" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <div class="switcher-label" id="variantLabel">Variant 1: Simple Mode Studio</div>
+    <button class="switcher-btn" onclick="cycleVariant(1)" title="Next View (Right Arrow)">
+      <svg class="icon-svg" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+    <span style="color: var(--border);">|</span>
+    <button class="action-btn-sm" style="border: none; padding: 2px 6px;" onclick="showTokensModal()">Tokens</button>
+  </div>
+
+  <!-- ========================================================================
+       REFERENCE MOCKUP SIDE-BY-SIDE COMPARISON DRAWER
+       ======================================================================== -->
+  <div class="reference-drawer" id="refDrawer">
+    <div class="ref-header">
+      <strong>Approved Direction Mockup (2026-09-24)</strong>
+      <button onclick="toggleReferenceDrawer()" style="color: var(--muted-foreground);">✕ Close</button>
+    </div>
+    <div class="ref-img-wrap">
+      <img src="assets/preview_reference.png" alt="Selected Direction Mockup" class="ref-img">
+    </div>
+  </div>
+
+  <!-- Toast Feedback -->
+  <div class="toast-msg" id="toastMsg">Action completed</div>
+
+  <!-- ========================================================================
+       CORE APPLICATION LOGIC (Reactive State, Timeline Engine, Canvas Art)
+       ======================================================================== -->
+  <script>
+    let appData = null;
+    let currentJob = 'edit';
+    let currentMode = 'simple';
+    let currentSceneIndex = 0;
+    let currentViewport = 'desktop';
+    let activeAttachItemId = null;
+    let isPlaying = false;
+    let playInterval = null;
+    let currentTime = 0; // seconds
+    let totalDuration = 22; // computed from scenes
+    let saveTimeout = null;
+
+    const variants = [
+      { id: 'simple', label: 'Variant 1: Simple Mode Studio (Mockup 1:1)', job: 'edit', mode: 'simple' },
+      { id: 'advanced', label: 'Variant 2: Advanced Mode Multi-Track Timeline', job: 'edit', mode: 'advanced' },
+      { id: 'gate', label: 'Variant 3: Import Gate & Source Inventory', job: 'edit', mode: 'simple', openGate: true },
+      { id: 'prompt', label: 'Variant 4: Prompt Lab AI Proposals', job: 'prompt', mode: 'simple' },
+      { id: 'review', label: 'Variant 5: Review Decisions & Comments', job: 'review', mode: 'simple' },
+      { id: 'render', label: 'Variant 6: Render Readiness Gate & Jobs', job: 'render', mode: 'simple' }
+    ];
+    let currentVariantIdx = 0;
+
+    // Load data and boot
+    async function init() {
+      try {
+        const resp = await fetch('dummy_data.json');
+        appData = await resp.json();
+      } catch (e) {
+        console.error('Failed to load dummy_data.json', e);
+      }
+      recalculateTotalDuration();
+      renderAll();
+      setupKeyboardListeners();
+      drawVideoArtCanvas();
+      drawReviewArtCanvas();
+      drawAdvVideoCanvas();
+    }
+
+    function recalculateTotalDuration() {
+      if (!appData || !appData.scenes) return;
+      totalDuration = appData.scenes.reduce((sum, s) => sum + (s.duration_seconds || 5), 0);
+      document.getElementById('advTotalDurationLabel').textContent = `${appData.scenes.length} scenes · ${totalDuration} total seconds`;
+    }
+
+    function renderAll() {
+      if (!appData) return;
+      document.getElementById('headerProjectTitle').textContent = appData.project.title;
+      renderSceneBoard();
+      renderInspector();
+      renderInventoryTable();
+      renderDraftOptions();
+      renderReviewComments();
+      renderReadinessList();
+      renderRecentJobs();
+      renderAdvAssets();
+      renderAdvTimelineTracks();
+      updatePreviewSceneOverlay();
+      updateScrubberDisplay();
+    }
+
+    // 1. SceneBoard Rendering (§5.3)
+    function renderSceneBoard() {
+      const container = document.getElementById('sceneBoardStrip');
+      container.innerHTML = '';
+
+      appData.scenes.forEach((scene, idx) => {
+        const isSelected = idx === currentSceneIndex;
+        const card = document.createElement('div');
+        card.className = `scene-card ${isSelected ? 'selected' : ''}`;
+        card.onclick = () => selectScene(idx);
+
+        let roleIcon = `<svg class="icon-svg card-role-icon" viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect width="15" height="14" x="1" y="5" rx="2" ry="2"/></svg>`;
+        if (scene.role === 'image') {
+          roleIcon = `<svg class="icon-svg card-role-icon" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>`;
+        }
+
+        const unresolvedDot = (scene.media && scene.media.unresolved)
+          ? `<div class="unresolved-dot" title="Unresolved import media item"></div>` : '';
+
+        card.innerHTML = `
+          ${unresolvedDot}
+          <div class="card-top">
+            <span class="card-title">${scene.heading}</span>
+            ${roleIcon}
+          </div>
+          <div class="card-meta">${scene.role} · ${scene.ownership} edited</div>
+          <div class="card-bottom">
+            <span class="card-duration">${scene.duration_seconds}s</span>
+            <div class="card-reorder-btns">
+              <button class="reorder-btn" title="Move earlier [↑]" onclick="reorderScene(${idx}, -1, event)" ${idx === 0 ? 'disabled' : ''}>↑</button>
+              <button class="reorder-btn" title="Move later [↓]" onclick="reorderScene(${idx}, 1, event)" ${idx === appData.scenes.length - 1 ? 'disabled' : ''}>↓</button>
+            </div>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+
+      document.getElementById('scenesHeaderLabel').textContent = `SCENES (${appData.scenes.length})`;
+    }
+
+    function selectScene(idx) {
+      currentSceneIndex = idx;
+      // Seek to scene start time
+      let startTime = 0;
+      for (let i = 0; i < idx; i++) {
+        startTime += appData.scenes[i].duration_seconds;
+      }
+      currentTime = startTime;
+      updateScrubberDisplay();
+
+      renderSceneBoard();
+      renderInspector();
+      updatePreviewSceneOverlay();
+      drawVideoArtCanvas();
+      drawAdvVideoCanvas();
+    }
+
+    function reorderScene(idx, direction, e) {
+      e.stopPropagation();
+      const targetIdx = idx + direction;
+      if (targetIdx < 0 || targetIdx >= appData.scenes.length) return;
+      const temp = appData.scenes[idx];
+      appData.scenes[idx] = appData.scenes[targetIdx];
+      appData.scenes[targetIdx] = temp;
+      currentSceneIndex = targetIdx;
+
+      markDirtyAndAutoSave();
+      recalculateTotalDuration();
+      renderSceneBoard();
+      renderInspector();
+      renderAdvTimelineTracks();
+      updatePreviewSceneOverlay();
+      showToast(`Scene moved ${direction < 0 ? 'earlier' : 'later'}`);
+    }
+
+    // 2. Inspector Rendering (§5.4)
+    function renderInspector() {
+      const scene = appData.scenes[currentSceneIndex];
+      if (!scene) return;
+
+      document.getElementById('inspectorSceneTitle').textContent = scene.heading;
+      document.getElementById('inspectorDurationBadge').textContent = `${scene.duration_seconds}s`;
+
+      const headingInput = document.getElementById('inspectorHeadingInput');
+      headingInput.value = scene.heading;
+      document.getElementById('headingCharCount').textContent = `${scene.heading.length} / 300`;
+
+      const bodyInput = document.getElementById('inspectorBodyInput');
+      bodyInput.value = scene.body;
+      document.getElementById('bodyCharCount').textContent = `${scene.body.length} / 2000`;
+
+      document.getElementById('inspectorDurationInput').value = scene.duration_seconds;
+
+      // Lock state
+      const isLocked = scene.ownership === 'locked';
+      document.getElementById('inspectorLockBadge').style.display = isLocked ? 'inline-block' : 'none';
+      headingInput.readOnly = isLocked;
+      bodyInput.readOnly = isLocked;
+      if (isLocked) {
+        headingInput.style.opacity = '0.6';
+        bodyInput.style.opacity = '0.6';
+      } else {
+        headingInput.style.opacity = '1';
+        bodyInput.style.opacity = '1';
+      }
+
+      // Media
+      const mediaNameEl = document.getElementById('inspectorMediaName');
+      const mediaBadgeEl = document.getElementById('inspectorMediaBadge');
+      if (scene.media.unresolved) {
+        mediaNameEl.textContent = `${scene.media.asset_name} (Unresolved)`;
+        mediaBadgeEl.textContent = 'unresolved';
+        mediaBadgeEl.style.color = 'var(--status-failed)';
+      } else {
+        mediaNameEl.textContent = scene.media.asset_name;
+        mediaBadgeEl.textContent = 'ready';
+        mediaBadgeEl.style.color = 'var(--status-succeeded)';
+      }
+
+      // Captions
+      const capContainer = document.getElementById('inspectorCaptionsList');
+      capContainer.innerHTML = '';
+      (scene.captions || []).forEach((cue, cIdx) => {
+        const item = document.createElement('div');
+        item.className = 'cue-item';
+        item.innerHTML = `
+          <div>
+            <span class="mono" style="font-size: 10px; color: var(--primary); margin-right: 6px;">${cue.start}s - ${cue.end}s</span>
+            <span>${cue.text}</span>
+          </div>
+          <button style="color: var(--muted-foreground); font-size: 12px; padding: 2px 4px;" onclick="deleteCue(${cIdx})">✕</button>
+        `;
+        capContainer.appendChild(item);
+      });
+
+      // Audio
+      document.getElementById('inspectorAudioTrack').textContent = scene.audio.track_name || 'No audio bed';
+      document.getElementById('audioVolumeSlider').value = scene.audio.volume || 0;
+      document.getElementById('audioVolLabel').textContent = `${scene.audio.volume || 0}%`;
+      document.getElementById('muteBtn').textContent = scene.audio.muted ? 'Unmute' : 'Mute';
+
+      // Style & Ownership
+      document.getElementById('inspectorStyleSelect').value = scene.style || 'cinematic';
+      document.getElementById('inspectorOwnershipSelect').value = scene.ownership || 'user';
+    }
+
+    function handleHeadingChange(val) {
+      appData.scenes[currentSceneIndex].heading = val;
+      document.getElementById('headingCharCount').textContent = `${val.length} / 300`;
+      renderSceneBoard();
+      updatePreviewSceneOverlay();
+      markDirtyAndAutoSave();
+    }
+
+    function handleBodyChange(val) {
+      appData.scenes[currentSceneIndex].body = val;
+      document.getElementById('bodyCharCount').textContent = `${val.length} / 2000`;
+      updatePreviewSceneOverlay();
+      markDirtyAndAutoSave();
+    }
+
+    function handleDurationChange(val) {
+      const dur = Math.max(1, parseInt(val, 10) || 1);
+      appData.scenes[currentSceneIndex].duration_seconds = dur;
+      document.getElementById('inspectorDurationBadge').textContent = `${dur}s`;
+      recalculateTotalDuration();
+      renderSceneBoard();
+      renderAdvTimelineTracks();
+      updateScrubberDisplay();
+      markDirtyAndAutoSave();
+    }
+
+    function handleStyleChange(val) {
+      appData.scenes[currentSceneIndex].style = val;
+      updatePreviewSceneOverlay();
+      markDirtyAndAutoSave();
+      showToast(`Style updated: ${val}`);
+    }
+
+    function handleOwnershipChange(val) {
+      appData.scenes[currentSceneIndex].ownership = val;
+      renderSceneBoard();
+      renderInspector();
+      markDirtyAndAutoSave();
+      showToast(`Ownership changed to: ${val}`);
+    }
+
+    function addCaptionCue() {
+      const text = prompt('Enter new caption text:', 'WHISPERS OF ANCIENT KYOTO');
+      if (text) {
+        if (!appData.scenes[currentSceneIndex].captions) appData.scenes[currentSceneIndex].captions = [];
+        appData.scenes[currentSceneIndex].captions.push({
+          id: 'cap-' + Date.now(),
+          start: 0.5,
+          end: 3.5,
+          text: text
+        });
+        renderInspector();
+        renderAdvTimelineTracks();
+        markDirtyAndAutoSave();
+        showToast('Caption cue added');
+      }
+    }
+
+    function deleteCue(cIdx) {
+      appData.scenes[currentSceneIndex].captions.splice(cIdx, 1);
+      renderInspector();
+      renderAdvTimelineTracks();
+      markDirtyAndAutoSave();
+      showToast('Caption cue removed');
+    }
+
+    function toggleAudioMute() {
+      const aud = appData.scenes[currentSceneIndex].audio;
+      aud.muted = !aud.muted;
+      renderInspector();
+      const muteSvg = document.getElementById('playerMuteSvg');
+      if (aud.muted) {
+        muteSvg.innerHTML = `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>`;
+        showToast('Audio muted');
+      } else {
+        muteSvg.innerHTML = `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>`;
+        showToast('Audio unmuted');
+      }
+      markDirtyAndAutoSave();
+    }
+
+    function handleAudioVolChange(val) {
+      appData.scenes[currentSceneIndex].audio.volume = parseInt(val, 10);
+      document.getElementById('audioVolLabel').textContent = `${val}%`;
+      markDirtyAndAutoSave();
+    }
+
+    function updatePreviewSceneOverlay() {
+      const scene = appData.scenes[currentSceneIndex];
+      if (!scene) return;
+      document.getElementById('sceneBadgeOverlay').textContent = `Scene ${currentSceneIndex + 1}/${appData.scenes.length}`;
+      document.getElementById('previewOverlayHeading').textContent = scene.heading.toUpperCase();
+      document.getElementById('previewOverlayBody').textContent = (scene.body || '').slice(0, 50).toUpperCase();
+
+      // Style effects on preview overlay
+      const overlayEl = document.getElementById('videoTextOverlay');
+      if (scene.style === 'cinematic') {
+        overlayEl.style.fontFamily = 'Georgia, serif';
+        overlayEl.style.color = '#fff8ee';
+      } else if (scene.style === 'modern_bold') {
+        overlayEl.style.fontFamily = 'var(--font-sans)';
+        overlayEl.style.color = '#ffffff';
+      } else if (scene.style === 'tokyo_neon') {
+        overlayEl.style.fontFamily = 'var(--font-mono)';
+        overlayEl.style.color = '#d8b4fe';
+      } else {
+        overlayEl.style.fontFamily = 'var(--font-sans)';
+        overlayEl.style.color = '#f5f3ee';
+      }
+
+      // Review heading sync
+      document.getElementById('reviewHeadingText').textContent = scene.heading.toUpperCase();
+      document.getElementById('advOverlayText').textContent = scene.heading.toUpperCase();
+    }
+
+    // 3. Canvas Art Renderers (Creates high-fidelity visual scenes for video player)
+    function drawVideoArtCanvas() {
+      const canvas = document.getElementById('videoArtCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const scene = appData.scenes[currentSceneIndex];
+
+      const w = canvas.width;
+      const h = canvas.height;
+
+      // Draw Atmospheric Background Gradient
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      if (scene && scene.visual && scene.visual.accent_color) {
+        grad.addColorStop(0, '#120d0b');
+        grad.addColorStop(0.4, scene.visual.accent_color + '44');
+        grad.addColorStop(0.8, '#1e1410');
+        grad.addColorStop(1, '#090807');
+      } else {
+        grad.addColorStop(0, '#15171a');
+        grad.addColorStop(0.5, '#252930');
+        grad.addColorStop(1, '#0d0f12');
+      }
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Draw Stylized Pagoda & Architecture silhouette
+      ctx.save();
+      ctx.fillStyle = '#0e0b09';
+      // Ground / street
+      ctx.beginPath();
+      ctx.moveTo(0, h);
+      ctx.lineTo(w, h);
+      ctx.lineTo(w, h * 0.72);
+      ctx.lineTo(0, h * 0.72);
+      ctx.closePath();
+      ctx.fill();
+
+      // Pagoda silhouette in center
+      ctx.fillStyle = '#17110c';
+      const cx = w * 0.5;
+      const py = h * 0.28;
+      // Roof 1
+      ctx.beginPath();
+      ctx.moveTo(cx - 50, py);
+      ctx.lineTo(cx + 50, py);
+      ctx.lineTo(cx, py - 35);
+      ctx.fill();
+      // Roof 2
+      ctx.beginPath();
+      ctx.moveTo(cx - 65, py + 30);
+      ctx.lineTo(cx + 65, py + 30);
+      ctx.lineTo(cx, py + 5);
+      ctx.fill();
+      // Pagoda spire
+      ctx.strokeStyle = '#2b1b13';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx, py - 35);
+      ctx.lineTo(cx, py - 60);
+      ctx.stroke();
+
+      // Draw floating cherry blossom / ember particles
+      ctx.fillStyle = scene.visual ? scene.visual.accent_color : '#d49a79';
+      for (let i = 0; i < 28; i++) {
+        const px = (i * 37 + (currentTime * 20)) % w;
+        const py2 = (i * 53 + (currentTime * 15)) % (h * 0.75);
+        ctx.beginPath();
+        ctx.arc(px, py2, (i % 3) + 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawReviewArtCanvas() {
+      const canvas = document.getElementById('reviewArtCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#18120d';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#d49a7933';
+      ctx.beginPath();
+      ctx.arc(canvas.width / 2, canvas.height * 0.4, 80, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawAdvVideoCanvas() {
+      const canvas = document.getElementById('advVideoCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const scene = appData.scenes[currentSceneIndex];
+      ctx.fillStyle = scene && scene.visual ? scene.visual.accent_color + '33' : '#222';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // 4. Playback Engine (Spacebar, Scrubber, Synchronized Scenes)
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      const playIcon = document.getElementById('playIcon');
+      const advPlayBtn = document.getElementById('advPlayBtn');
+      if (isPlaying) {
+        playIcon.innerHTML = `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`;
+        if (advPlayBtn) advPlayBtn.textContent = 'Pause';
+        playInterval = setInterval(() => {
+          currentTime += 0.1;
+          if (currentTime >= totalDuration) {
+            currentTime = 0;
+          }
+          syncActiveSceneWithTime();
+          updateScrubberDisplay();
+          drawVideoArtCanvas();
+        }, 100);
+      } else {
+        playIcon.innerHTML = `<polygon points="5 3 19 12 5 21 5 3"/>`;
+        if (advPlayBtn) advPlayBtn.textContent = 'Play';
+        clearInterval(playInterval);
+      }
+    }
+
+    function syncActiveSceneWithTime() {
+      let accum = 0;
+      for (let i = 0; i < appData.scenes.length; i++) {
+        accum += appData.scenes[i].duration_seconds;
+        if (currentTime <= accum) {
+          if (currentSceneIndex !== i) {
+            currentSceneIndex = i;
+            renderSceneBoard();
+            renderInspector();
+            updatePreviewSceneOverlay();
+          }
+          break;
+        }
+      }
+
+      // Update Subtitle Caption
+      const scene = appData.scenes[currentSceneIndex];
+      let sceneOffset = currentTime;
+      for (let i = 0; i < currentSceneIndex; i++) {
+        sceneOffset -= appData.scenes[i].duration_seconds;
+      }
+      const capSub = document.getElementById('previewCaptionSubtitle');
+      if (scene && scene.captions && scene.captions.length > 0) {
+        const activeCue = scene.captions.find(c => sceneOffset >= c.start && sceneOffset <= c.end);
+        if (activeCue) {
+          capSub.textContent = activeCue.text;
+          capSub.style.opacity = '1';
+        } else {
+          capSub.style.opacity = '0';
+        }
+      } else {
+        capSub.style.opacity = '0';
+      }
+    }
+
+    function updateScrubberDisplay() {
+      const percent = (currentTime / totalDuration) * 100;
+      document.getElementById('scrubberFill').style.width = `${percent}%`;
+
+      const curMins = Math.floor(currentTime / 60);
+      const curSecs = Math.floor(currentTime % 60);
+      const curMs = Math.floor((currentTime % 1) * 100);
+
+      const totMins = Math.floor(totalDuration / 60);
+      const totSecs = Math.floor(totalDuration % 60);
+
+      const timeStr = `${curMins < 10 ? '0' : ''}${curMins}:${curSecs < 10 ? '0' : ''}${curSecs}.${curMs < 10 ? '0' : ''}${curMs}`;
+      const totStr = `${totMins < 10 ? '0' : ''}${totMins}:${totSecs < 10 ? '0' : ''}${totSecs}.00`;
+
+      document.getElementById('timecodeDisplay').textContent = `${timeStr} / ${totStr}`;
+      document.getElementById('advTimecodeDisplay').textContent = timeStr;
+      document.getElementById('pinTimecodeLabel').textContent = timeStr.slice(0, 8);
+
+      // Playhead in Advanced Mode
+      const playhead = document.getElementById('timelinePlayhead');
+      if (playhead) {
+        const leftPos = 80 + (currentTime / totalDuration) * 540;
+        playhead.style.left = `${leftPos}px`;
+      }
+    }
+
+    function scrubVideo(e) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const percent = Math.max(0, Math.min(1, clickX / rect.width));
+      currentTime = percent * totalDuration;
+      syncActiveSceneWithTime();
+      updateScrubberDisplay();
+      drawVideoArtCanvas();
+    }
+
+    function handleRulerClick(e) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clickX = e.clientX - rect.left - 80;
+      if (clickX >= 0) {
+        const percent = Math.max(0, Math.min(1, clickX / 540));
+        currentTime = percent * totalDuration;
+        syncActiveSceneWithTime();
+        updateScrubberDisplay();
+        drawVideoArtCanvas();
+      }
+    }
+
+    // 5. Advanced Timeline Tracks Rendering (§5.6)
+    function renderAdvTimelineTracks() {
+      const vTrack = document.getElementById('advTrackVideo');
+      const tTrack = document.getElementById('advTrackText');
+      const cTrack = document.getElementById('advTrackCaption');
+      const aTrack = document.getElementById('advTrackAudio');
+
+      if (!vTrack || !tTrack || !cTrack || !aTrack) return;
+      vTrack.innerHTML = '';
+      tTrack.innerHTML = '';
+      cTrack.innerHTML = '';
+      aTrack.innerHTML = '';
+
+      let accumLeft = 10;
+      appData.scenes.forEach((scene, sIdx) => {
+        const width = (scene.duration_seconds / totalDuration) * 540;
+        const isSelected = sIdx === currentSceneIndex;
+
+        // Video Clip
+        const vClip = document.createElement('div');
+        vClip.className = `timeline-clip clip-video ${isSelected ? 'selected' : ''}`;
+        vClip.style.left = `${accumLeft}px`;
+        vClip.style.width = `${width - 4}px`;
+        vClip.textContent = `${scene.media.asset_name} · ${scene.duration_seconds}s`;
+        vClip.onclick = () => selectAdvClip(sIdx, 'video', scene.media.asset_name);
+        vTrack.appendChild(vClip);
+
+        // Text Clip
+        const tClip = document.createElement('div');
+        tClip.className = `timeline-clip clip-text ${isSelected ? 'selected' : ''}`;
+        tClip.style.left = `${accumLeft}px`;
+        tClip.style.width = `${width - 4}px`;
+        tClip.textContent = scene.heading;
+        tClip.onclick = () => selectAdvClip(sIdx, 'text', scene.heading);
+        tTrack.appendChild(tClip);
+
+        // Caption Clip
+        if (scene.captions && scene.captions.length > 0) {
+          const cClip = document.createElement('div');
+          cClip.className = 'timeline-clip clip-caption';
+          cClip.style.left = `${accumLeft + 4}px`;
+          cClip.style.width = `${width - 8}px`;
+          cClip.textContent = `[${scene.captions[0].text.slice(0, 16)}...]`;
+          cClip.onclick = () => selectAdvClip(sIdx, 'caption', scene.captions[0].text);
+          cTrack.appendChild(cClip);
+        }
+
+        accumLeft += width;
+      });
+
+      // Audio Bed across entire timeline
+      const aClip = document.createElement('div');
+      aClip.className = 'timeline-clip clip-audio';
+      aClip.style.left = '10px';
+      aClip.style.width = '536px';
+      aClip.textContent = 'ambient_bamboo_wind.mp3 (continuous audio bed · 80% vol)';
+      aClip.onclick = () => selectAdvClip(0, 'audio', 'ambient_bamboo_wind.mp3');
+      aTrack.appendChild(aClip);
+    }
+
+    function selectAdvClip(sceneIdx, kind, name) {
+      selectScene(sceneIdx);
+      document.getElementById('advClipKindBadge').textContent = `${kind} clip`;
+      document.getElementById('advClipNameInput').value = name;
+      document.getElementById('advClipInInput').value = '00:00.00';
+      document.getElementById('advClipOutInput').value = `00:0${appData.scenes[sceneIdx].duration_seconds}.00`;
+      renderAdvTimelineTracks();
+      showToast(`Selected ${kind} clip`);
+    }
+
+    function renderAdvAssets() {
+      const list = document.getElementById('advAssetsList');
+      if (!list) return;
+      list.innerHTML = '';
+      appData.ready_assets.forEach(asset => {
+        const item = document.createElement('div');
+        item.style.padding = '8px 10px';
+        item.style.background = 'var(--studio-well)';
+        item.style.border = '1px solid var(--border)';
+        item.style.borderRadius = '5px';
+        item.style.fontSize = '12px';
+        item.style.cursor = 'pointer';
+        item.onclick = () => attachReadyAssetToScene(asset.name);
+
+        item.innerHTML = `
+          <div style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${asset.name}</div>
+          <div style="font-size: 10px; color: var(--muted-foreground); display: flex; justify-content: space-between; margin-top: 3px;">
+            <span>${asset.kind}</span>
+            <span>${asset.size_mb} MB</span>
+          </div>
+        `;
+        list.appendChild(item);
+      });
+    }
+
+    function attachReadyAssetToScene(assetName) {
+      appData.scenes[currentSceneIndex].media.asset_name = assetName;
+      appData.scenes[currentSceneIndex].media.unresolved = false;
+      renderInspector();
+      renderSceneBoard();
+      renderAdvTimelineTracks();
+      markDirtyAndAutoSave();
+      showToast(`Attached ${assetName} to Scene ${currentSceneIndex + 1}`);
+    }
+
+    // 6. Import Gate Modal (§5.2, Plan B Tasks 2 & 5)
+    function openImportGate() {
+      document.getElementById('importModalBackdrop').classList.add('open');
+      closeAttachPopover();
+    }
+    function closeImportGate() {
+      document.getElementById('importModalBackdrop').classList.remove('open');
+      closeAttachPopover();
+    }
+    function handleModalBackdropClick(e) {
+      if (e.target.id === 'importModalBackdrop') closeImportGate();
+    }
+
+    function switchGateStage(stage) {
+      const st1 = document.getElementById('gateStage1');
+      const st2 = document.getElementById('gateStage2');
+      const btn1 = document.getElementById('gateTab1Btn');
+      const btn2 = document.getElementById('gateTab2Btn');
+
+      if (stage === 1) {
+        st1.style.display = 'flex';
+        st2.style.display = 'none';
+        btn1.classList.add('active');
+        btn2.classList.remove('active');
+      } else {
+        st1.style.display = 'none';
+        st2.style.display = 'flex';
+        btn2.classList.add('active');
+        btn1.classList.remove('active');
+      }
+    }
+
+    function renderDraftOptions() {
+      const container = document.getElementById('draftOptionsList');
+      container.innerHTML = '';
+      appData.import_manifest.existing_drafts.forEach((draft) => {
+        const item = document.createElement('div');
+        item.style.padding = '10px 14px';
+        item.style.background = 'var(--studio-well)';
+        item.style.border = '1px solid var(--border)';
+        item.style.borderRadius = '6px';
+        item.style.display = 'flex';
+        item.style.alignItems = 'center';
+        item.style.justifyContent = 'space-between';
+        item.innerHTML = `
+          <div>
+            <div style="font-weight: 500; font-size: 13px;">Draft · revision ${draft.revision}</div>
+            <div style="font-size: 11px; color: var(--muted-foreground);">${draft.summary}</div>
+          </div>
+          <button class="action-btn-sm" onclick="resumeDraft(${draft.revision})">Resume draft</button>
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    function resumeDraft(rev) {
+      appData.project.current_revision = rev;
+      document.getElementById('saveStatusText').textContent = `Saved revision ${rev}`;
+      showToast(`Resumed draft revision ${rev}`);
+      closeImportGate();
+    }
+
+    function createNewDraft() {
+      showToast('Created new draft revision 4');
+      appData.project.current_revision = 4;
+      document.getElementById('saveStatusText').textContent = 'Saved revision 4';
+      switchGateStage(2);
+    }
+
+    function renderInventoryTable() {
+      const tbody = document.getElementById('inventoryTableBody');
+      tbody.innerHTML = '';
+
+      let unresolvedCount = 0;
+      appData.import_manifest.inventory_items.forEach((item) => {
+        const tr = document.createElement('tr');
+        if (item.disposition === 'unresolved') unresolvedCount++;
+
+        let statusHtml = '';
+        if (item.disposition === 'unresolved') {
+          statusHtml = `<span style="display: inline-flex; align-items: center; gap: 4px; color: var(--status-failed);"><span class="status-dot failed"></span> Unresolved</span>`;
+        } else if (item.disposition === 'attached') {
+          statusHtml = `<span style="display: inline-flex; align-items: center; gap: 4px; color: var(--status-succeeded);"><span class="status-dot saved"></span> Attached</span>`;
+        } else {
+          statusHtml = `<span style="display: inline-flex; align-items: center; gap: 4px; color: var(--status-cancelled);"><span class="status-dot offline"></span> Excluded</span>`;
+        }
+
+        let actionHtml = '';
+        if (item.disposition === 'unresolved') {
+          actionHtml = `
+            <div style="display: flex; gap: 6px;">
+              <button class="action-btn-sm" style="padding: 2px 8px;" onclick="openAttachMenu('${item.id}', event)">Attach...</button>
+              <button class="action-btn-sm" style="padding: 2px 8px; color: var(--status-failed);" onclick="excludeItem('${item.id}')">Exclude</button>
+            </div>
+          `;
+        } else if (item.disposition === 'attached') {
+          actionHtml = `<span style="font-size: 11px; color: var(--muted-foreground);">${item.attached_asset || 'Ready'}</span>`;
+        } else {
+          actionHtml = `<button class="action-btn-sm" style="padding: 2px 8px;" onclick="undoExclude('${item.id}')">Undo exclude</button>`;
+        }
+
+        const titleStyle = item.disposition === 'excluded' ? 'text-decoration: line-through; opacity: 0.55;' : '';
+
+        tr.innerHTML = `
+          <td class="mono">${item.order}</td>
+          <td>${item.role}</td>
+          <td style="${titleStyle}">${item.source_name}</td>
+          <td>${statusHtml}</td>
+          <td>${actionHtml}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      document.getElementById('gateFooterCount').textContent = `${unresolvedCount} items need media before Studio Render`;
+      appData.render_readiness.import_resolved = (unresolvedCount === 0);
+      renderReadinessList();
+    }
+
+    function openAttachMenu(itemId, e) {
+      e.stopPropagation();
+      activeAttachItemId = itemId;
+      const popover = document.getElementById('attachPopover');
+      popover.style.top = `${e.clientY + 10}px`;
+      popover.style.left = `${e.clientX - 60}px`;
+      popover.classList.add('open');
+    }
+    function closeAttachPopover() {
+      document.getElementById('attachPopover').classList.remove('open');
+    }
+
+    function triggerSimulatedUpload() {
+      closeAttachPopover();
+      const item = appData.import_manifest.inventory_items.find(i => i.id === activeAttachItemId);
+      if (!item) return;
+
+      // Simulated progressive upload
+      const originalText = document.getElementById('gateFooterCount').textContent;
+      document.getElementById('gateFooterCount').textContent = `Uploading ${item.source_name}...`;
+
+      setTimeout(() => {
+        item.disposition = 'attached';
+        item.attached_asset = 'uploaded_' + item.source_name + '.mp4';
+        // Also update matching scene
+        if (item.source_name === 'city-loop' && appData.scenes[1]) {
+          appData.scenes[1].media.unresolved = false;
+          appData.scenes[1].media.asset_name = 'uploaded_city-loop.mp4';
+        }
+        renderInventoryTable();
+        renderSceneBoard();
+        renderInspector();
+        showToast(`Uploaded and attached ${item.attached_asset}`);
+      }, 500);
+    }
+
+    function selectReadyAssetModal() {
+      closeAttachPopover();
+      const item = appData.import_manifest.inventory_items.find(i => i.id === activeAttachItemId);
+      if (!item) return;
+
+      item.disposition = 'attached';
+      item.attached_asset = appData.ready_assets[0].name;
+      if (item.source_name === 'city-loop' && appData.scenes[1]) {
+        appData.scenes[1].media.unresolved = false;
+        appData.scenes[1].media.asset_name = appData.ready_assets[0].name;
+      }
+      renderInventoryTable();
+      renderSceneBoard();
+      renderInspector();
+      showToast(`Attached ready asset ${appData.ready_assets[0].name}`);
+    }
+
+    function excludeItem(itemId) {
+      const item = appData.import_manifest.inventory_items.find(i => i.id === itemId);
+      if (item) {
+        item.disposition = 'excluded';
+        if (item.source_name === 'city-loop' && appData.scenes[1]) {
+          appData.scenes[1].media.unresolved = false;
+        }
+        renderInventoryTable();
+        renderSceneBoard();
+        showToast(`Excluded ${item.source_name}`);
+      }
+    }
+
+    function undoExclude(itemId) {
+      const item = appData.import_manifest.inventory_items.find(i => i.id === itemId);
+      if (item) {
+        item.disposition = 'unresolved';
+        if (item.source_name === 'city-loop' && appData.scenes[1]) {
+          appData.scenes[1].media.unresolved = true;
+        }
+        renderInventoryTable();
+        renderSceneBoard();
+        showToast(`Undo exclude for ${item.source_name}`);
+      }
+    }
+
+    // 7. Prompt Lab Proposals & Diff (§5.7)
+    function simulateGenerateProposal() {
+      const btn = document.getElementById('generateProposalBtn');
+      btn.innerHTML = `<span class="status-dot saving"></span> Synthesizing with Gemini 1.5 Pro...`;
+      btn.disabled = true;
+
+      setTimeout(() => {
+        btn.innerHTML = `<svg class="icon-svg" viewBox="0 0 24 24"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg> Generate New Proposal`;
+        btn.disabled = false;
+        document.getElementById('proposalHeadline').textContent = 'Sensory pacing with vivid atmospheric sensory cues';
+        document.getElementById('proposalDiffContent').innerHTML = `
+          <div style="color: var(--muted-foreground); margin-bottom: 6px; font-weight: 500;">Scene 1 Heading:</div>
+          <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 10px;">
+            <span style="color: var(--status-failed); text-decoration: line-through;">Morning in Gion</span>
+            <span>➔</span>
+            <span style="color: var(--status-succeeded); font-weight: 500;">First Light Across Gion</span>
+          </div>
+          <div style="color: var(--muted-foreground); margin-bottom: 6px; font-weight: 500;">Scene 1 Body:</div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <span style="color: var(--status-failed); text-decoration: line-through; font-size: 12px;">Quiet streets, wooden houses...</span>
+            <span style="color: var(--status-succeeded); font-size: 12px; font-weight: 500;">Rain-washed cobblestones mirror cedar silhouettes as temple chimes awaken the alley.</span>
+          </div>
+        `;
+        showToast('New AI proposal generated');
+      }, 700);
+    }
+
+    function applyPromptProposal() {
+      appData.scenes[0].heading = 'First Light Across Gion';
+      appData.scenes[0].body = 'Rain-washed cobblestones mirror cedar silhouettes as temple chimes awaken the alley.';
+      renderInspector();
+      renderSceneBoard();
+      updatePreviewSceneOverlay();
+      markDirtyAndAutoSave();
+      switchJob('edit', document.querySelector('.job-nav-btn[data-job="edit"]'));
+      showToast('AI Proposal applied to Scene 1 draft!');
+    }
+
+    function discardProposal() {
+      document.getElementById('proposalBox').style.display = 'none';
+      showToast('Proposal discarded');
+    }
+
+    // 8. Review Comments & Approvals (§5.8)
+    function renderReviewComments() {
+      const container = document.getElementById('reviewCommentsList');
+      container.innerHTML = '';
+      appData.review_comments.forEach(c => {
+        const card = document.createElement('div');
+        card.className = 'comment-card';
+        const timeBadge = c.timecode ? `<span class="mono" style="font-size: 10px; color: var(--primary); cursor: pointer;" onclick="jumpToCommentTime('${c.timecode}')">${c.timecode} ↗</span>` : '';
+        card.innerHTML = `
+          <div class="comment-header">
+            <div><strong>${c.actor}</strong> · <span class="mono" style="color: var(--muted-foreground);">Rev ${c.revision}</span></div>
+            <div style="display: flex; gap: 6px; align-items: center;">${timeBadge} <span style="color: var(--muted-foreground);">${c.timestamp}</span></div>
+          </div>
+          <div style="font-size: 13px;">${c.text}</div>
+        `;
+        container.appendChild(card);
+      });
+    }
+
+    function jumpToCommentTime(tc) {
+      const parts = tc.split(':');
+      if (parts.length === 2) {
+        currentTime = parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+        syncActiveSceneWithTime();
+        updateScrubberDisplay();
+        showToast(`Jumped to timecode ${tc}`);
+      }
+    }
+
+    function postReviewComment() {
+      const input = document.getElementById('newCommentInput');
+      const isPinned = document.getElementById('pinTimecodeCheck').checked;
+      if (!input.value.trim()) return;
+
+      const curMins = Math.floor(currentTime / 60);
+      const curSecs = Math.floor(currentTime % 60);
+      const curMs = Math.floor((currentTime % 1) * 100);
+      const tc = `${curMins < 10 ? '0' : ''}${curMins}:${curSecs < 10 ? '0' : ''}${curSecs}.${curMs < 10 ? '0' : ''}${curMs}`;
+
+      appData.review_comments.unshift({
+        id: 'comm-' + Date.now(),
+        revision: appData.project.current_revision,
+        actor: 'Operator',
+        timecode: isPinned ? tc : null,
+        text: input.value.trim(),
+        timestamp: 'Just now'
+      });
+      input.value = '';
+      renderReviewComments();
+      showToast('Comment posted to Revision ' + appData.project.current_revision);
+    }
+
+    function approveRevision() {
+      const badge = document.getElementById('reviewDecisionBadge');
+      badge.textContent = 'Approved ✓';
+      badge.style.background = 'rgba(215, 175, 95, 0.3)';
+      badge.style.color = 'var(--status-succeeded)';
+      showToast('Revision 3 approved for Studio Render');
+    }
+
+    function requestChanges() {
+      const reason = prompt('Specify change request details:', 'Pacing on transition 2 needs a softer cut.');
+      if (reason) {
+        const badge = document.getElementById('reviewDecisionBadge');
+        badge.textContent = 'Changes Requested ✕';
+        badge.style.background = 'rgba(239, 68, 68, 0.2)';
+        badge.style.color = 'var(--status-failed)';
+        showToast('Changes requested');
+      }
+    }
+
+    // 9. Render Panel & Job Execution (§5.9, Plan B Task 6)
+    function renderReadinessList() {
+      const container = document.getElementById('readinessItemsList');
+      container.innerHTML = '';
+
+      const isReady = appData.render_readiness.import_resolved;
+      const startBtn = document.getElementById('startRenderBtn');
+      const reasonEl = document.getElementById('renderBlockedReason');
+
+      if (isReady) {
+        startBtn.disabled = false;
+        reasonEl.style.display = 'none';
+      } else {
+        startBtn.disabled = true;
+        reasonEl.style.display = 'block';
+        reasonEl.textContent = 'Resolve 2 import items before rendering revision 3.';
+      }
+
+      const checks = [
+        { label: 'Text complete', passed: true },
+        { label: 'Timeline valid', passed: true },
+        {
+          label: isReady ? 'Import — all items resolved' : 'Import — 2 unresolved items (Scene 1 "neon-nights-main", Scene 2 "city-loop")',
+          passed: isReady,
+          action: isReady ? null : { text: 'Resolve import', fn: 'openImportGate()' }
+        },
+        { label: 'Saved revision clean', passed: true }
+      ];
+
+      checks.forEach(chk => {
+        const item = document.createElement('div');
+        item.className = `readiness-item ${chk.passed ? '' : 'failed'}`;
+        const icon = chk.passed
+          ? `<span style="color: var(--status-succeeded); font-weight: bold;">✓</span>`
+          : `<span style="color: var(--status-failed); font-weight: bold;">!</span>`;
+
+        let actionHtml = '';
+        if (chk.action) {
+          actionHtml = `<button class="action-btn-sm" style="padding: 2px 8px;" onclick="${chk.action.fn}">${chk.action.text}</button>`;
+        }
+
+        item.innerHTML = `
+          <div class="readiness-left">
+            ${icon}
+            <span>${chk.label}</span>
+          </div>
+          ${actionHtml}
+        `;
+        container.appendChild(item);
+      });
+    }
+
+    function toggleSimulateReady(checked) {
+      appData.render_readiness.import_resolved = checked;
+      renderReadinessList();
+    }
+
+    function startRenderSimulation() {
+      const newJobId = '#' + (13 + appData.recent_render_jobs.length);
+      const newJob = {
+        id: newJobId,
+        status: 'running',
+        timestamp: 'Just now',
+        template: 'vertical_text_story',
+        duration: '0:22',
+        progress: 10,
+        actions: ['Cancel']
+      };
+      appData.recent_render_jobs.unshift(newJob);
+      renderRecentJobs();
+      showToast(`Studio render started for Job ${newJobId}`);
+
+      // Progress animation
+      const interval = setInterval(() => {
+        newJob.progress += 30;
+        if (newJob.progress >= 100) {
+          newJob.status = 'succeeded';
+          newJob.progress = 100;
+          newJob.actions = ['Download'];
+          clearInterval(interval);
+          renderRecentJobs();
+          showToast(`Job ${newJobId} completed! MP4 ready for download.`);
+        } else {
+          renderRecentJobs();
+        }
+      }, 600);
+    }
+
+    function renderRecentJobs() {
+      const tbody = document.getElementById('recentJobsTableBody');
+      tbody.innerHTML = '';
+      appData.recent_render_jobs.forEach(job => {
+        const tr = document.createElement('tr');
+        let statusDot = 'saved';
+        if (job.status === 'failed') statusDot = 'failed';
+        if (job.status === 'running') statusDot = 'saving';
+
+        let actionBtn = `<button class="action-btn-sm" style="padding: 2px 8px;" onclick="handleJobAction('${job.id}', '${job.actions[0]}')">${job.actions[0]}</button>`;
+
+        let errDetails = '';
+        if (job.status === 'failed' && job.error_msg) {
+          errDetails = `<div style="font-size:11px; color:var(--status-failed); margin-top:3px;">${job.error_msg}</div>`;
+        }
+
+        tr.innerHTML = `
+          <td class="mono"><strong>${job.id}</strong></td>
+          <td>
+            <span class="status-dot ${statusDot}"></span> ${job.status}
+            ${job.status === 'running' ? `<span class="mono" style="font-size:10px; color:var(--primary); margin-left:4px;">${job.progress}%</span>` : ''}
+            ${errDetails}
+          </td>
+          <td>${job.template}</td>
+          <td style="color: var(--muted-foreground);">${job.timestamp}</td>
+          <td>${actionBtn}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function handleJobAction(jobId, action) {
+      if (action === 'Download') {
+        showToast(`Downloading rendered video for Job ${jobId}`);
+      } else if (action === 'Retry') {
+        startRenderSimulation();
+      } else if (action === 'Details') {
+        alert(`Job ${jobId} Diagnostic Details:\n\nError Code: renderer_unavailable\nSafe Reason: GPU NVENC encoder session timed out during pass 2.\nResolution: Retry job.`);
+      }
+    }
+
+    // 10. Navigation, Viewports & Save State
+    function switchJob(job, btn) {
+      currentJob = job;
+      document.querySelectorAll('.job-nav-btn').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+
+      document.querySelectorAll('.job-pane').forEach(p => p.classList.remove('active'));
+      const activePane = document.getElementById(`pane-${job}`);
+      if (activePane) activePane.classList.add('active');
+
+      // Update review chip overlay visibility
+      const chip = document.getElementById('reviewChip');
+      if (chip) chip.style.display = (job === 'review') ? 'block' : 'none';
+
+      updateSwitcherLabel();
+    }
+
+    function setEditorMode(mode, btn) {
+      currentMode = mode;
+      document.querySelectorAll('.mode-option').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+
+      const simpleLayout = document.getElementById('editSimpleLayout');
+      const advLayout = document.getElementById('editAdvancedLayout');
+      if (mode === 'simple') {
+        simpleLayout.style.display = 'grid';
+        advLayout.style.display = 'none';
+      } else {
+        simpleLayout.style.display = 'none';
+        advLayout.style.display = 'grid';
+        renderAdvTimelineTracks();
+      }
+      updateSwitcherLabel();
+    }
+
+    function setViewport(view, btn) {
+      currentViewport = view;
+      const container = document.getElementById('viewportContainer');
+      container.className = `viewport-container view-${view}`;
+      document.querySelectorAll('.proto-meta-bar .proto-btn').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+
+      const compactNav = document.getElementById('compactNav');
+      const nonPhoneSections = document.getElementById('inspectorNonPhoneSections');
+      const phoneMonitorOnly = document.getElementById('renderPhoneMonitorOnly');
+      const startRenderBtn = document.getElementById('startRenderBtn');
+
+      if (view === 'tablet' || view === 'phone') {
+        compactNav.style.display = 'flex';
+      } else {
+        compactNav.style.display = 'none';
+      }
+
+      // Phone mode enforcement (§3.5 text-only & monitor-only)
+      if (view === 'phone') {
+        nonPhoneSections.style.display = 'none';
+        phoneMonitorOnly.style.display = 'block';
+        startRenderBtn.style.display = 'none';
+      } else {
+        nonPhoneSections.style.display = 'flex';
+        phoneMonitorOnly.style.display = 'none';
+        startRenderBtn.style.display = 'inline-flex';
+      }
+
+      // Default pane for compact
+      setCompactPane('preview');
+      showToast(`Viewport switched to ${view.toUpperCase()}`);
+    }
+
+    function setCompactPane(pane, btn) {
+      if (btn) {
+        document.querySelectorAll('.compact-nav-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      }
+
+      const prevCol = document.getElementById('simplePreviewCol');
+      const scnCol = document.getElementById('simpleScenesCol');
+      const inspCol = document.getElementById('simpleInspectorCol');
+
+      if (currentViewport === 'tablet' || currentViewport === 'phone') {
+        prevCol.style.display = (pane === 'preview') ? 'flex' : 'none';
+        scnCol.style.display = (pane === 'scenes') ? 'flex' : 'none';
+        inspCol.style.display = (pane === 'controls') ? 'flex' : 'none';
+      } else {
+        prevCol.style.display = 'flex';
+        scnCol.style.display = 'flex';
+        inspCol.style.display = 'flex';
+      }
+    }
+
+    function setSaveState(state) {
+      const dot = document.getElementById('statusDot');
+      const text = document.getElementById('saveStatusText');
+      const bannerContainer = document.getElementById('bannerContainer');
+      const backBtn = document.getElementById('headerBackBtn');
+      bannerContainer.innerHTML = '';
+      dot.className = `status-dot ${state}`;
+
+      switch (state) {
+        case 'saved':
+          text.textContent = `Saved revision ${appData.project.current_revision}`;
+          backBtn.disabled = false;
+          break;
+        case 'dirty':
+          text.textContent = 'Unsaved changes';
+          backBtn.disabled = true;
+          break;
+        case 'saving':
+          text.textContent = 'Saving...';
+          break;
+        case 'failed':
+          text.textContent = 'Failed to save';
+          bannerContainer.innerHTML = `
+            <div class="studio-banner alert" role="alert">
+              <span>Failed to save revision ${appData.project.current_revision}: connection timed out</span>
+              <div class="banner-actions">
+                <button class="banner-btn" onclick="triggerManualSave()">Retry Save</button>
+              </div>
+            </div>
+          `;
+          break;
+        case 'conflict':
+          text.textContent = 'Conflict';
+          bannerContainer.innerHTML = `
+            <div class="studio-banner conflict" role="alert">
+              <span>Conflict: Someone saved a newer revision on server</span>
+              <div class="banner-actions">
+                <button class="banner-btn" onclick="alert('Reloading latest server revision...')">Reload Latest</button>
+                <button class="banner-btn" onclick="setSaveState('saved')">Keep Local Changes</button>
+              </div>
+            </div>
+          `;
+          break;
+        case 'offline':
+          text.textContent = 'Offline';
+          bannerContainer.innerHTML = `
+            <div class="studio-banner offline" role="status">
+              <span>Offline — edits are safely kept locally and will sync once reconnected</span>
+            </div>
+          `;
+          break;
+      }
+    }
+
+    function markDirtyAndAutoSave() {
+      setSaveState('dirty');
+      if (saveTimeout) clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(() => {
+        triggerManualSave();
+      }, 1200);
+    }
+
+    function triggerManualSave() {
+      setSaveState('saving');
+      setTimeout(() => {
+        setSaveState('saved');
+        showToast('Draft changes saved');
+      }, 600);
+    }
+
+    // Floating prototype switcher
+    function cycleVariant(dir) {
+      currentVariantIdx = (currentVariantIdx + dir + variants.length) % variants.length;
+      applyVariant(variants[currentVariantIdx]);
+    }
+
+    function applyVariant(v) {
+      switchJob(v.job, document.querySelector(`.job-nav-btn[data-job="${v.job}"]`));
+      setEditorMode(v.mode, document.querySelector(`.mode-option:nth-child(${v.mode === 'simple' ? 1 : 2})`));
+      if (v.openGate) openImportGate(); else closeImportGate();
+      document.getElementById('variantLabel').textContent = v.label;
+    }
+
+    function updateSwitcherLabel() {
+      document.getElementById('variantLabel').textContent = `Job: ${currentJob.toUpperCase()} | Mode: ${currentMode}`;
+    }
+
+    function toggleReferenceDrawer() {
+      const drawer = document.getElementById('refDrawer');
+      drawer.classList.toggle('open');
+      document.getElementById('refToggleBtn').classList.toggle('active');
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toastMsg');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 1800);
+    }
+
+    function showTokensModal() {
+      alert(`Creator Studio F3 Palette Tokens (§2.1):\n
+--background: #18191b (Warm charcoal)
+--card: #242628 (Panels & strips)
+--studio-well: #101113 (Preview stage recess)
+--studio-raised: #2a2c2e (Menus & dialogs)
+--foreground: #f5f3ee (Primary text, 13.9:1)
+--muted-foreground: #c5c6c7 (Secondary text)
+--primary: #d49a79 (Terracotta accent)
+--ring: #efb28e (Focus ring)
+--studio-ai: #af87ff (Proposals violet)
+--studio-playhead: #82b1e8 (Playhead blue)
+--status-succeeded: #d7af5f (Gold saved)
+--status-failed: #ef4444 (Red unresolved/failure)`);
+    }
+
+    // Spacebar to play/pause video (§8)
+    function setupKeyboardListeners() {
+      window.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+        if (e.code === 'Space' || e.key === 'k') {
+          e.preventDefault();
+          togglePlay();
+        } else if (e.key === 'ArrowLeft') {
+          cycleVariant(-1);
+        } else if (e.key === 'ArrowRight') {
+          cycleVariant(1);
+        } else if (e.key === 'Escape') {
+          closeImportGate();
+          document.getElementById('refDrawer').classList.remove('open');
+        }
+      });
+    }
+
+    // Initialize on page load
+    init();
+  </script>
+</body>
+</html>
