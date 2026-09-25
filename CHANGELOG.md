@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Stage 1 accelerated acceptance window opened
+
+Both activation gates passed (`f2` controlled fallback, `p7` parity pair). On the
+operator's instruction, runbook step 9 opened a new acceptance window. The
+operator ran the host-side script.
+
+- Window start: `2026-09-25T13:35:04Z`.
+- Acquisition identity: `sha256:b831f376…`, revision `7c64e32`. Provider
+  configuration revision is `stage1.providers.20260907`.
+- Worker mode: `python_tiktok_with_legacy_fallback`.
+- Before it created anything, the script checked:
+  - `api`, `worker`, and `legacy-cdp` all ran that digest;
+  - `legacy-cdp` was healthy and unpublished;
+  - `readyz` returned 200;
+  - no other window existed on this digest.
+- Dataset: one new, empty, mode 0600 observation dataset in restricted storage.
+  - The archived `c9188900` dataset was not touched (hash unchanged) and is not
+    merged.
+  - Old parity results are not carried forward.
+- Evaluator identity is resolved at evaluation time from the last commit that
+  touched `tiktok_soak.py`.
+
+No observation, workflow, or in-window parity sample exists yet. `p7` is not one
+of the two in-window samples.
+
+Acceptance still needs all of the following:
+- 12 or more valid completed runs spanning at least 24 hours;
+- two in-window parity samples from distinct first-party posts;
+- the restart-recovery check;
+- the rollback drill;
+- the operator's own approval entry in the change record. The agent recorded no
+  human approval.
+
 ## 2026-09-25 - Activation parity pair `p7` passed
 
 The operator ruled that a successful live Scout reference stays mandatory for
