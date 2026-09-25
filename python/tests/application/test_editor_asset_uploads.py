@@ -124,6 +124,7 @@ def service(
         ),
     ],
 )
+@pytest.mark.asyncio
 async def test_a_supported_upload_is_published_and_registered_ready(
     tmp_path: Path,
     media_type: str,
@@ -150,6 +151,7 @@ async def test_a_supported_upload_is_published_and_registered_ready(
     assert leftovers(tmp_path) == [str(Path(record.artifact_location))]
 
 
+@pytest.mark.asyncio
 async def test_an_unsupported_media_type_is_refused_before_reading(tmp_path: Path) -> None:
     async def never_read():
         raise AssertionError("the body must not be read")
@@ -162,6 +164,7 @@ async def test_an_unsupported_media_type_is_refused_before_reading(tmp_path: Pat
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_spoofed_bytes_are_refused_and_nothing_remains(tmp_path: Path) -> None:
     repository = MemoryRepository()
 
@@ -196,6 +199,7 @@ async def test_spoofed_bytes_are_refused_and_nothing_remains(tmp_path: Path) -> 
         },
     ],
 )
+@pytest.mark.asyncio
 async def test_invalid_metadata_is_refused_and_nothing_remains(
     tmp_path: Path, report: dict[str, Any]
 ) -> None:
@@ -211,6 +215,7 @@ async def test_invalid_metadata_is_refused_and_nothing_remains(
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_an_upload_over_the_ceiling_leaves_nothing(tmp_path: Path) -> None:
     repository = MemoryRepository()
 
@@ -223,6 +228,7 @@ async def test_an_upload_over_the_ceiling_leaves_nothing(tmp_path: Path) -> None
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_a_database_failure_unpublishes_the_file(tmp_path: Path) -> None:
     with pytest.raises(EditorAssetsUnavailable):
         await service(tmp_path, IMAGE_REPORT, MemoryRepository(fail=True)).upload(
@@ -232,6 +238,7 @@ async def test_a_database_failure_unpublishes_the_file(tmp_path: Path) -> None:
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_a_missing_probe_runtime_is_unavailable_and_cleans_up(tmp_path: Path) -> None:
     with pytest.raises(EditorAssetsUnavailable):
         await service(tmp_path, FileNotFoundError("ffprobe")).upload(
@@ -241,6 +248,7 @@ async def test_a_missing_probe_runtime_is_unavailable_and_cleans_up(tmp_path: Pa
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_a_missing_artifact_root_is_unavailable(tmp_path: Path) -> None:
     with pytest.raises(EditorAssetsUnavailable):
         await service(tmp_path / "absent", IMAGE_REPORT).upload(
@@ -250,6 +258,7 @@ async def test_a_missing_artifact_root_is_unavailable(tmp_path: Path) -> None:
     assert not (tmp_path / "absent").exists()
 
 
+@pytest.mark.asyncio
 async def test_without_a_database_uploads_are_unavailable(tmp_path: Path) -> None:
     upload_service = EditorAssetUploadService(None, LocalArtifactRoot(tmp_path), canned({}))
 

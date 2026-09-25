@@ -487,6 +487,7 @@ def leftovers(root: Path) -> list[str]:
     return sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
 
 
+@pytest.mark.asyncio
 async def test_receive_upload_streams_hashes_and_keeps_the_head(tmp_path: Path) -> None:
     received = await LocalArtifactRoot(tmp_path).receive_upload(
         asset_id="asset_1", chunks=chunks_of(b"\x89PNG", b"\r\n\x1a\n", b"rest"), max_bytes=64
@@ -499,6 +500,7 @@ async def test_receive_upload_streams_hashes_and_keeps_the_head(tmp_path: Path) 
     assert received.path.read_bytes() == b"\x89PNG\r\n\x1a\nrest"
 
 
+@pytest.mark.asyncio
 async def test_receive_upload_over_the_ceiling_leaves_nothing(tmp_path: Path) -> None:
     with pytest.raises(EditorAssetUploadTooLarge):
         await LocalArtifactRoot(tmp_path).receive_upload(
@@ -508,6 +510,7 @@ async def test_receive_upload_over_the_ceiling_leaves_nothing(tmp_path: Path) ->
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_an_interrupted_upload_leaves_no_temporary_file(tmp_path: Path) -> None:
     with pytest.raises(ConnectionResetError):
         await LocalArtifactRoot(tmp_path).receive_upload(
@@ -518,6 +521,7 @@ async def test_an_interrupted_upload_leaves_no_temporary_file(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("make_root", ["missing", "file"])
+@pytest.mark.asyncio
 async def test_receive_upload_refuses_a_missing_or_unusable_root(
     tmp_path: Path, make_root: str
 ) -> None:
@@ -533,6 +537,7 @@ async def test_receive_upload_refuses_a_missing_or_unusable_root(
     assert not (tmp_path / "artifacts").is_dir()
 
 
+@pytest.mark.asyncio
 async def test_publish_upload_moves_atomically_to_a_project_scoped_locator(
     tmp_path: Path,
 ) -> None:
@@ -549,6 +554,7 @@ async def test_publish_upload_moves_atomically_to_a_project_scoped_locator(
 
 
 @pytest.mark.parametrize("project_id", ["../escape", "a/b", "C:\\x", ".hidden", ""])
+@pytest.mark.asyncio
 async def test_publish_upload_refuses_an_unsafe_project_segment(
     tmp_path: Path, project_id: str
 ) -> None:
@@ -561,6 +567,7 @@ async def test_publish_upload_refuses_an_unsafe_project_segment(
         root.publish_upload(received, project_id=project_id, suffix=".png")
 
 
+@pytest.mark.asyncio
 async def test_discard_removes_a_temporary_or_published_upload(tmp_path: Path) -> None:
     root = LocalArtifactRoot(tmp_path)
     first = await root.receive_upload(asset_id="asset_1", chunks=chunks_of(b"a"), max_bytes=64)

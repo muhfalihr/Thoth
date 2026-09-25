@@ -68,6 +68,7 @@ def leftovers(root: Path) -> list[str]:
     return sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
 
 
+@pytest.mark.asyncio
 async def test_upload_returns_a_locator_free_ready_asset_scoped_to_its_project(
     gateway, tmp_path: Path
 ) -> None:
@@ -101,6 +102,7 @@ async def test_upload_returns_a_locator_free_ready_asset_scoped_to_its_project(
 
 
 @pytest.mark.parametrize("content_type", ["text/html", "application/json", ""])
+@pytest.mark.asyncio
 async def test_upload_refuses_an_unsupported_media_type(
     gateway, tmp_path: Path, content_type: str
 ) -> None:
@@ -117,6 +119,7 @@ async def test_upload_refuses_an_unsupported_media_type(
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_upload_refuses_spoofed_bytes(gateway, tmp_path: Path) -> None:
     repository = MemoryRepository()
     transport = httpx.ASGITransport(app=upload_app(gateway, tmp_path, repository))
@@ -131,6 +134,7 @@ async def test_upload_refuses_spoofed_bytes(gateway, tmp_path: Path) -> None:
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_upload_refuses_a_declared_length_over_the_ceiling_without_reading(
     gateway, tmp_path: Path
 ) -> None:
@@ -151,6 +155,7 @@ async def test_upload_refuses_a_declared_length_over_the_ceiling_without_reading
     assert leftovers(tmp_path) == []
 
 
+@pytest.mark.asyncio
 async def test_upload_reports_unusable_storage_as_a_safe_503(gateway, tmp_path: Path) -> None:
     missing = tmp_path / "absent"
     transport = httpx.ASGITransport(app=upload_app(gateway, missing, MemoryRepository()))
@@ -164,6 +169,7 @@ async def test_upload_reports_unusable_storage_as_a_safe_503(gateway, tmp_path: 
     assert str(tmp_path) not in response.text
 
 
+@pytest.mark.asyncio
 async def test_upload_requires_authentication_and_a_safe_project(gateway, tmp_path: Path) -> None:
     transport = httpx.ASGITransport(app=upload_app(gateway, tmp_path, MemoryRepository()))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

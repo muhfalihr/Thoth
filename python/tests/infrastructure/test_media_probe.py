@@ -31,6 +31,7 @@ def spawned(monkeypatch: pytest.MonkeyPatch, process: Process) -> list[tuple[obj
     return calls
 
 
+@pytest.mark.asyncio
 async def test_probe_runs_ffprobe_without_a_shell_and_parses_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -46,6 +47,7 @@ async def test_probe_runs_ffprobe_without_a_shell_and_parses_json(
     assert "-show_streams" in argv and "-show_format" in argv
 
 
+@pytest.mark.asyncio
 async def test_unreadable_media_is_invalid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     spawned(monkeypatch, Process(1, b""))
 
@@ -55,6 +57,7 @@ async def test_unreadable_media_is_invalid(monkeypatch: pytest.MonkeyPatch, tmp_
     assert refused.value.code == "invalid_media"
 
 
+@pytest.mark.asyncio
 async def test_a_missing_ffprobe_is_an_os_error(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         await media_probe.probe_media(str(tmp_path / "no-ffprobe"), tmp_path / "a.mp4")
