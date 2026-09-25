@@ -293,6 +293,16 @@ class Jobs:
         self.keys[(job.project_id, idempotency_key)] = (payload_hash, job.render_job_id)
         return job
 
+    async def find_replay(
+        self, *, project_id: str, idempotency_key: str, payload_hash: str
+    ) -> RenderJob | None:
+        recorded = self.keys.get((project_id, idempotency_key))
+        if recorded is None:
+            return None
+        if recorded[0] != payload_hash:
+            raise RenderIdempotencyConflict()
+        return self.rows[recorded[1]]
+
     async def get_active(self) -> RenderJob | None:
         return self._active()
 
@@ -701,6 +711,46 @@ async def test_an_unreadable_import_inventory_refuses_the_render() -> None:
 
     assert "secret" not in str(raised.value)
     assert renderer.started == []
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_request_returns_its_job_after_the_draft_advances() -> None:
+    renderer = Renderer()
+    imports = Imports({"main": "attached"})
+    service = build_service(renderer=renderer, imports=imports)
+    first = await create_one(service)
+
+    imports.revision = REVISION + 1  # the creator kept editing after pressing Render
+    replayed = await create_one(service)
+
+    assert replayed.render_job_id == first.render_job_id
+    assert renderer.started == [(first.render_job_id, first.dispatch_id)]
+
+
+@pytest.mark.asyncio
+async def test_a_new_request_for_an_outdated_revision_is_still_refused() -> None:
+    imports = Imports({"main": "attached"})
+    service = build_service(imports=imports)
+    await fail(service, await create_one(service))
+    imports.revision = REVISION + 1
+
+    with pytest.raises(RenderRevisionStale):
+        await create_one(service, key="key-2")
+
+
+@pytest.mark.asyncio
+async def test_a_retry_renders_its_original_revision_after_the_draft_advances() -> None:
+    renderer = Renderer()
+    imports = Imports({"main": "attached"})
+    service = build_service(renderer=renderer, imports=imports)
+    source = await create_one(service)
+    await fail(service, source)
+    imports.revision = REVISION + 1
+
+    retried = await service.retry(PROJECT, ACTOR, source.render_job_id, "key-retry")
+
+    assert retried.document_revision == source.document_revision == REVISION
+    assert renderer.started[-1] == (retried.render_job_id, retried.dispatch_id)
 
 
 @pytest.mark.asyncio

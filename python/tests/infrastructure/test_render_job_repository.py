@@ -271,6 +271,33 @@ async def test_same_key_with_a_different_request_conflicts(
 
 
 @pytest.mark.asyncio
+async def test_find_replay_reads_the_recorded_job_without_locking_or_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = job()
+    cursor = Cursor(
+        {
+            IDEMPOTENCY: [(HASH, "rj_1"), (OTHER_HASH, "rj_1"), None],
+            JOB_SELECT: [row_for(original)],
+        }
+    )
+    find = repository(monkeypatch, cursor).find_replay
+
+    assert await find(project_id="project_alpha", idempotency_key="rk_1", payload_hash=HASH) == (
+        original
+    )
+    with pytest.raises(RenderIdempotencyConflict):
+        await find(project_id="project_alpha", idempotency_key="rk_1", payload_hash=HASH)
+    assert await find(project_id="project_alpha", idempotency_key="rk_2", payload_hash=HASH) is None
+
+    statements = cursor.statements()
+    assert not any(
+        ADVISORY in head or "INSERT" in head or "FOR UPDATE" in head for head in statements
+    )
+    assert cursor.calls[0][1] == ("project_alpha", "rk_1")
+
+
+@pytest.mark.asyncio
 async def test_database_active_slot_uniqueness_maps_to_render_busy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

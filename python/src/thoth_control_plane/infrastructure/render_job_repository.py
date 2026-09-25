@@ -229,6 +229,32 @@ class PostgresRenderJobRepository:
         except Exception as error:
             raise RenderPersistenceError() from error
 
+    async def find_replay(
+        self, *, project_id: str, idempotency_key: str, payload_hash: str
+    ) -> RenderJob | None:
+        try:
+            connection = await AsyncConnection.connect(self._database_url)
+            async with connection:
+                cursor = connection.cursor()
+                await cursor.execute(
+                    """
+                    SELECT payload_hash, render_job_id
+                    FROM render_job_idempotency
+                    WHERE project_id = %s AND idempotency_key = %s
+                    """,
+                    (project_id, idempotency_key),
+                )
+                recorded = await cursor.fetchone()
+                if recorded is None:
+                    return None
+                if recorded[0] != payload_hash:
+                    raise RenderIdempotencyConflict()
+                return await self._require_job(cursor, render_job_id=recorded[1])
+        except _PASSTHROUGH:
+            raise
+        except Exception as error:
+            raise RenderPersistenceError() from error
+
     async def get_active(self) -> RenderJob | None:
         try:
             connection = await AsyncConnection.connect(self._database_url)

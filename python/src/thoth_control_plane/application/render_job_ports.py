@@ -241,6 +241,11 @@ class RenderJobRepository(Protocol):
     ) -> RenderJob:
         """Claim the single active slot, replaying an identical earlier request."""
 
+    async def find_replay(
+        self, *, project_id: str, idempotency_key: str, payload_hash: str
+    ) -> RenderJob | None:
+        """Read the job an identical earlier request created, without claiming anything."""
+
     async def get_active(self) -> RenderJob | None:
         """Read the one job holding the active slot, whichever project owns it."""
 

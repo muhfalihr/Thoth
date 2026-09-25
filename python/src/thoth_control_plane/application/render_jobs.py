@@ -244,7 +244,20 @@ class RenderJobService:
         render_job_id = self._new_id("rj")
         dispatch_id = self._new_id("dsp")
         payload_hash = _payload_hash(project_id, request, retry_of_job_id)
-        await self._require_import_ready(project_id, request)
+        # A retry re-renders a revision that already passed this check when first created.
+        if retry_of_job_id is None:
+            try:
+                await self._require_import_ready(project_id, request)
+            except (RenderImportUnresolved, RenderRevisionStale):
+                # The draft may have moved on since an identical request succeeded.
+                replay = await jobs.find_replay(
+                    project_id=project_id,
+                    idempotency_key=idempotency_key,
+                    payload_hash=payload_hash,
+                )
+                if replay is None:
+                    raise
+                return replay
 
         try:
             bundle = await self._stage(render_job_id, dispatch_id, project_id, request)
