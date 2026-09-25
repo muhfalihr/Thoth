@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Studio imports keep source identity, trim, and render replays (F3 Plan B correction)
+
+Offline correction on `codex/stage1-container-ci` after `2f75310`; control plane and dashboard only, not pushed.
+
+- Distinct main footage choices no longer share a source key: every unsupported field carries a digest of its dropped value, and main footage package and coverage details are listed as unsupported rather than mapped. No host path is stored or shown.
+- Attaching a video keeps its trim start and remaining length. A trim past the asset's end or an asset of unknown length is refused with a visible reason, so the item stays unresolved and Studio Render stays blocked.
+- Replaying a successful render request with the same Idempotency-Key returns the original job after the draft advances; a retry still renders its original revision, and a new request for an outdated revision is still refused.
+- Ready assets for attaching load 50 at a time through the existing cursor, with announced loading, a retryable failure, and Load more.
+
+Verification: each finding's new tests failed first and now pass. Python non-live suite 1833 passed / 1 failed / 35 skipped; the failure, `test_route_modules_do_not_depend_on_a_process_runner`, predates this round and the skips are environmental. Ruff clean; OpenAPI and TypeScript contracts regenerated twice with identical output; dashboard 651 tests pass, tsc, lint, and build clean; Compose config valid; `build_cuda.bat` exit 0; `git diff --check` clean. ffprobe is not installed locally, so no synthetic-media smoke ran.
+
 ## 2026-09-25 - Content Set drafts open, resolve, edit, and render in Studio (F3 Plan B)
 
 Offline Plan B slice on `codex/stage1-container-ci` after `ded3697`; control plane and dashboard, no renderer or Rust change, not pushed.
