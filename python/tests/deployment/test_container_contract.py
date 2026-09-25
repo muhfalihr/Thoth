@@ -747,7 +747,9 @@ def test_controlled_fallback_harness_owns_everything_and_reuses_runner_scripts()
 def test_both_image_jobs_prove_the_controlled_fallback_gate() -> None:
     workflow = _repo_text(".github/workflows/container-image.yml")
     validate = workflow[workflow.index("  validate-image:") : workflow.index("  publish-image:")]
-    smoke = workflow[workflow.index("  stack-smoke:") : workflow.index("  template-release-parity:")]
+    smoke = workflow[
+        workflow.index("  stack-smoke:") : workflow.index("  template-release-parity:")
+    ]
 
     assert 'bash docker/test-controlled-fallback-offline.sh "${CANDIDATE_IMAGE}"' in validate
     harness_step = 'bash docker/test-controlled-fallback-offline.sh "${THOTH_IMAGE_REF}"'
@@ -904,6 +906,46 @@ def test_the_parity_runbook_states_the_completion_boundary_and_its_budgets() -> 
     assert "necessary but not sufficient" in prose
     assert "supervised acquisition deadline" in prose
     assert "cleanup and attempt finalization continue after that outcome" in prose
+
+
+def test_the_runbook_defines_the_controlled_fallback_gate() -> None:
+    """`f1` is one non-retryable attempt, so the runbook must say everything up front.
+
+    An operator who has to guess where the fixture goes, what counts as a pass, or
+    whether a failure may be rerun will burn the only attempt the gate allows.
+    """
+    runbook = _repo_text("docs/operations/stage1-local-docker.md")
+    prose = " ".join(runbook.split())
+    commands = " ".join(_fenced_commands(runbook))
+
+    for location in (
+        "/home/mfr/thoth-stage1-fallback/f1/url.txt",
+        "/home/mfr/thoth-stage1-fallback/controlled-fallback-record.jsonl",
+        "controlled-fallback-attempt.json",
+        "artifact-integrity.private.json",
+        "supervisor.stdout.log",
+        "supervisor.stderr.log",
+    ):
+        assert location in prose, f"the runbook does not name {location}"
+    assert "thoth-control operations stage1-controlled-fallback-preflight" in commands
+    assert "thoth-control operations stage1-controlled-fallback-run --gate-id f1" in commands
+    assert "operator gate" in prose
+    assert "`.env.stage1.local` at the repository root" in prose
+    assert "`output` or `reference-input`" in prose
+    # The one residual exposure the spec accepts has to be stated, not discovered.
+    assert "appears in the Scout process argv inside the one-shot container" in prose
+    for verdict in ("`passed`", "`failed`", "`inconclusive`"):
+        assert verdict in prose
+    assert "never grants activation credit" in prose
+    assert "there is no retry" in prose
+    assert "not Python-routing evidence" in prose
+
+
+def test_the_control_plane_guide_bounds_the_controlled_fallback_claim() -> None:
+    prose = " ".join(_repo_text("docs/python-control-plane.md").split())
+
+    assert "stage1-controlled-fallback-run" in prose
+    assert "not Python-routing evidence" in prose
 
 
 def test_editor_preview_signing_key_is_injected_at_runtime_only() -> None:

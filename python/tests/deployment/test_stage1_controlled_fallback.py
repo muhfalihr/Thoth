@@ -919,7 +919,8 @@ def test_every_compose_call_resolves_the_gate_from_the_runner_config(tmp_path: P
     config = runner._config
     runner.run_once()
     compose_calls = [
-        (argv, env) for argv, env in zip(executor.calls, executor.envs, strict=True)
+        (argv, env)
+        for argv, env in zip(executor.calls, executor.envs, strict=True)
         if argv[:2] == ["docker", "compose"]
     ]
     assert compose_calls

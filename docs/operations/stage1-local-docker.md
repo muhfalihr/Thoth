@@ -296,8 +296,9 @@ docker compose --env-file .env.stage1.local -f compose.stage1.local.yml -f compo
   or not that port is published, so it cannot distinguish the two.
 - The worker mode must print `python_tiktok_with_legacy_fallback`.
 
-Perform exactly one controlled fallback smoke on first activation. Establish the acceptance start
-timestamp only after that smoke passes and the operator explicitly approves opening the window.
+Perform exactly one controlled fallback smoke on first activation, as described in "Controlled
+fallback gate (`f1`)" below. Establish the acceptance start timestamp only after that smoke passes
+and the operator explicitly approves opening the window.
 
 The isolated activation parity pair and the controlled fallback smoke are pre-window gates, each
 separately approved. Neither is an observation, and the activation pair is not one of the two
@@ -309,6 +310,135 @@ The activation parity gate must pass before a window opens. Failed activation ev
 restricted evidence and is recorded in the operator change record; it is never deleted, relabelled,
 or retried without its own approval. Read the current gate state from the operator change record.
 Do not copy a gate verdict into this runbook.
+
+## Controlled fallback gate (`f1`)
+
+`f1` runs the deployed legacy fallback supervisor, `scout/runtime/legacy_fallback.ts`, exactly
+once in a one-shot container made from the deployed digest. The container joins the private Stage 1
+network and uses the deployed `legacy-cdp` sidecar; the worker, its mode, and every deployed
+service are left as they are. The design is
+`docs/superpowers/specs/2026-09-10-stage1-controlled-fallback-activation-design.md`.
+
+A passing `f1` proves supervisor activation and target isolation only: the supervisor leased a
+temporary target through the private relay, launched Scout through the production
+source-reference-only boundary, reaped it, and released the target, while the sidecar's health page
+survived and no CDP port was published. It is not Python-routing evidence. It does not show that a
+Python workflow falls back on its own, that a Python failure is eligible for fallback, or that
+Temporal routed anything through `LegacyScoutActivity`. It is also not a parity sample, a soak
+observation, a rollback drill, or an acceptance-window run.
+
+### Fixture and evidence locations
+
+All `f1` evidence stays outside this repository, outside `THOTH_STAGE1_DATA_ROOT`, and outside the
+parity sample root `$HOME/thoth-stage1-parity`:
+
+```text
+/home/mfr/thoth-stage1-fallback/                     mode 0700
+  controlled-fallback-record.jsonl                   append-only index, one f1 sample row
+  f1/                                                mode 0700, the gate directory
+    url.txt                                          operator fixture, mode 0600
+    reference-input/url                              staged copy, 10001:10001, removed by teardown
+    output/                                          supervisor output, returned to the operator
+    supervisor.stdout.log                            raw log, mode 0600
+    supervisor.stderr.log                            raw log, mode 0600
+    artifact-integrity.private.json                  restricted checksums, mode 0600
+    controlled-fallback-attempt.json                 safe attempt record, mode 0600
+```
+
+The operator writes the fixture at `/home/mfr/thoth-stage1-fallback/f1/url.txt`, and the index
+lives at `/home/mfr/thoth-stage1-fallback/controlled-fallback-record.jsonl`. The fixture holds
+exactly one canonical HTTPS TikTok post URL with no credentials, port, query, or fragment, and it
+must be byte-distinct from every retained parity fixture p1-p6: `f1` is independent of them. The
+gate directory must be named `f1`, must contain no symlink, and must not yet contain `output` or
+`reference-input`, an attempt record, or a private integrity record. A leftover staged directory is
+refused because an old output could otherwise validate as this attempt's.
+
+The deployed image runs as UID/GID `10001` and cannot read an operator-owned mode `0600` file. After
+the attempt is reserved, a no-network staging helper started from the same pinned digest copies the
+fixture to `f1/reference-input/url` (mode `0400`, in a mode `0500` directory, both owned by
+`10001:10001`) and creates `f1/output` (mode `0700`, owned by `10001:10001`). Only those two paths
+are mounted into the one-shot container. After the supervisor exits, the same helper hands `output`
+back to the gate directory's owner with owner-only modes, and teardown removes `reference-input` on
+every terminal path. The operator's `url.txt` stays where it is.
+
+The URL never enters a host shell, a Compose argument, a Docker create request, or container
+configuration. The supervisor reads it from the staged file, so it appears in the Scout process argv
+inside the one-shot container while that process runs. That is the one residual exposure this gate
+accepts; it is visible only to processes inside that container.
+
+`supervisor.stdout.log`, `supervisor.stderr.log`, `artifact-integrity.private.json`, and `output/`
+are restricted evidence. They are never printed, pasted into chat, attached to Issue #5, or copied
+into an aggregate report or the soak dataset. Only the fields of `controlled-fallback-attempt.json`
+may be summarised in the operator change record.
+
+### Preflight
+
+Run preflight from the repository root in WSL. The commands resolve the gate through
+`.env.stage1.local` at the repository root and the two Compose files named below, so the working
+directory matters. The checkout must be clean: `git status --porcelain` must print nothing,
+untracked files included, so park local edits before the gate. Ignored files such as
+`.env.stage1.local` do not count. Preflight checks the inputs and the live deployment and starts
+no container; it prints only `controlled_fallback_preflight_passed=true` or `=false`.
+
+```bash
+export THOTH_F1_DIGEST=sha256:<the digest the deployed API, worker, and legacy-cdp all run>
+export THOTH_F1_ACQUISITION_REVISION=<40-hex commit that built that digest>
+export THOTH_F1_HARNESS_REVISION=<40-hex commit of this checkout>
+uv run --project python thoth-control operations stage1-controlled-fallback-preflight --sample /home/mfr/thoth-stage1-fallback/f1 --provider "$THOTH_STAGE1_PROVIDER_ENV_FILE" --data-root "$THOTH_STAGE1_DATA_ROOT" --parity-root "$HOME/thoth-stage1-parity" --digest "$THOTH_F1_DIGEST" --acquisition-revision "$THOTH_F1_ACQUISITION_REVISION" --harness-revision "$THOTH_F1_HARNESS_REVISION"
+```
+
+A preflight failure starts nothing and consumes nothing. Correct the input, then ask the operator
+for authorization again; do not loop preflight until it passes.
+
+### The live run is an operator gate
+
+The run below contacts TikTok through the deployed sidecar. It is an operator gate: it needs its
+own explicit, single-use authorization, and preflight passing does not grant it.
+
+```bash
+uv run --project python thoth-control operations stage1-controlled-fallback-run --gate-id f1 --sample /home/mfr/thoth-stage1-fallback/f1 --provider "$THOTH_STAGE1_PROVIDER_ENV_FILE" --data-root "$THOTH_STAGE1_DATA_ROOT" --parity-root "$HOME/thoth-stage1-parity" --digest "$THOTH_F1_DIGEST" --acquisition-revision "$THOTH_F1_ACQUISITION_REVISION" --harness-revision "$THOTH_F1_HARNESS_REVISION"
+```
+
+The command runs preflight again first; if it fails, it prints only
+`controlled_fallback_preflight_passed=false` and reserves nothing. Otherwise it reserves
+`controlled-fallback-attempt.json` as `pending` with an exclusive create, stages the fixture, starts the one-shot `controlled-fallback` service with
+`--no-deps`, waits once for it, captures its logs into the two raw log files, reclaims `output`,
+validates the artifact, tears the staged input down, re-checks the deployment, then finalizes the
+attempt record by write-and-rename and appends one row to `controlled-fallback-record.jsonl`. It
+prints only `controlled_fallback_completed=true|false` and `verdict=passed|failed|inconclusive`.
+A stale `pending` record blocks any later run until it is diagnosed; it is never overwritten.
+
+Authorization is consumed when the one-shot container starts. From then on there is no retry:
+whatever the outcome, it is the single final `f1` result. A failure is evidence and stays in the
+gate directory and the index. A correction is a separate amendment row that targets the sample row;
+existing bytes are never rewritten.
+
+### Verdicts and precedence
+
+- `passed` requires supervisor exit `0`, a present and validated artifact, the health page
+  preserved, the page-target count restored, healthy API and CDP, unchanged restart counts,
+  successful cleanup, and an empty teardown.
+- `failed` covers a nonzero supervisor exit, artifact validation failure, health-page loss or
+  health failure, restart drift, a target-count mismatch, or cleanup or teardown failure.
+- `inconclusive` is limited to losing the supervisor's terminal status after the container started.
+  It never grants activation credit.
+
+Precedence is fixed: cleanup and teardown failure first, then health, target-count, and restart
+drift, then artifact validation, then the supervisor's exit status. A supervisor that exits `0`
+cannot pass a gate whose cleanup failed. `temporary_target_observed=false` alone does not fail a
+fast run, because polling can miss a short-lived target; it is supporting evidence only.
+
+Artifact validation reuses the parity integrity contract: report schema, exactly one media
+artifact contained beneath `f1/output`, MP4 signature and minimum size, and byte-count and checksum
+agreement. It does not compare Python and Scout output and cannot set `parity_passed`.
+
+### Offline proof
+
+`docker/test-controlled-fallback-offline.sh IMAGE` proves the same staging, reclaim, and teardown
+scripts and the one-shot gate shape against a synthetic `about:blank` browser on an internal
+network, with a placeholder fixture and no provider file. It runs in CI against the candidate image
+and the published digest, and prints only fixed `<field>=true|false` lines. It never touches the
+deployment project, `.env.stage1.local`, or any real fixture.
 
 ## Accelerated acceptance target
 

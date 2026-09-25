@@ -121,10 +121,33 @@ Membangun pipeline otomatis yang memahami **gaya editing media sosial viral** (T
   image above passed the CDP harness and five consecutive parity harness repetitions after one
   non-reproduced parity timing failure; that flake remains an offline harness limitation, not live
   fallback evidence.
+- **Stage 1 controlled fallback gate `f1` (2026-09-25): implemented and verified offline,
+  unpublished, never run.** `thoth-control operations stage1-controlled-fallback-preflight` and
+  `stage1-controlled-fallback-run --gate-id f1` drive the deployed legacy supervisor once through
+  the `compose.stage1.controlled-fallback.yml` one-shot overlay, with fail-closed inputs,
+  append-only attempt and index evidence, and fixed verdict precedence (commits `a02dd53`,
+  `90cc9cf`, `0f9f74c`, `2b7a43a`). The offline corrective found three defects that would have
+  burned the single attempt or blocked preflight, and fixed each with a RED/GREEN test. First, the
+  one-shot container had no output directory it could write, so staging now creates `f1/output` for
+  UID `10001` and a reclaim step hands it back before validation (`bf3ab4b`). Second, Compose calls
+  carried no `--env-file` or gate variables, and `up` could recreate `legacy-cdp` (`bf3ab4b`, now
+  `--no-deps`). Third, the run command reserved the attempt without running preflight, so a missing
+  fixture was recorded as `verdict=failed` (`edf6f7f`). `docker/test-controlled-fallback-offline.sh`
+  with `compose.stage1.controlled-fallback-smoke.yml` proves the runner's own staging, reclaim, and
+  teardown scripts and the one-shot gate shape against a synthetic `about:blank` browser, and runs
+  in both CI image jobs (`8fdb041`). Local Linux/amd64 image
+  `thoth-stage1:controlled-fallback-corrective` (image ID
+  `sha256:a4d74ed8c7d25a9dd638ecfd1cc6daf4b42c6ed2bdeebdcd7f47dfef1ce0600b`) passed that harness
+  with every field true, plus the CDP and parity harnesses. Python 1849 passed, 35 skipped, with
+  one failure that predates this work (a route-module guard matching the `bun` inside `bundle`).
+  The WSL POSIX fallback suite passed 89 of 89. Scout runtime, acquisition, and typecheck all
+  passed. `f1` has not run: no fixture was staged, no live request, deployment, evidence
+  mutation, parity run, or acceptance window occurred. A pass would prove supervisor activation
+  and target isolation only, not Python routing.
 
 | Layer | Coverage | Keterangan |
 |-------|----------|-----------|
-| Stage 1 container + CI | ⚠️ 95% | Runtime image, local Linux/amd64 Docker verification, and GHCR publication are complete (`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`); the published digest is verified non-live in place. The Scout runtime correction (downloaders, sibling-reachable CDP relay, worker provider override, `docker/test-cdp-offline.sh`) is implemented and proven offline but not published. The parity browser isolation (standalone `compose.stage1.parity.yml`, `scout/runtime/parity_reference.ts`, `stage1_parity_preflight`, `docker/test-parity-offline.sh`) is implemented and proven offline on a locally built image, also unpublished. Safe parity diagnostics (`scout/lib/safe_runtime_diagnostic.ts`, `diagnostics_valid`/`diagnostic_events` on complete attempt records, `stage1_parity_attempt_summary`) are implemented and proven offline, also unpublished. Deployment, controlled fallback smoke, and the operational soak remain pending. |
+| Stage 1 container + CI | ⚠️ 95% | Runtime image, local Linux/amd64 Docker verification, and GHCR publication are complete (`Dockerfile`, `docker/start-legacy-cdp`, `.github/workflows/container-image.yml`); the published digest is verified non-live in place. The Scout runtime correction (downloaders, sibling-reachable CDP relay, worker provider override, `docker/test-cdp-offline.sh`) is implemented and proven offline but not published. The parity browser isolation (standalone `compose.stage1.parity.yml`, `scout/runtime/parity_reference.ts`, `stage1_parity_preflight`, `docker/test-parity-offline.sh`) is implemented and proven offline on a locally built image, also unpublished. Safe parity diagnostics (`scout/lib/safe_runtime_diagnostic.ts`, `diagnostics_valid`/`diagnostic_events` on complete attempt records, `stage1_parity_attempt_summary`) are implemented and proven offline, also unpublished. The controlled fallback gate `f1` (`compose.stage1.controlled-fallback.yml`, `docker/test-controlled-fallback-offline.sh`) is implemented and proven offline, also unpublished and never run. Deployment, controlled fallback smoke, and the operational soak remain pending. |
 | Ingest + transkrip | ✅ 100% | yt-dlp + Whisper word-level timestamps |
 | Visual scoring (post-analysis) | ✅ 80% | Frame extraction + vision LLM scoring |
 | LLM synthesis dari teks saja | ✅ 95% | Multi-provider, chunked, trending-aware; **LLM keyword extraction otomatis dari transcript** (gantikan word-frequency approach); `--keywords` CLI jadi optional override |
