@@ -33,6 +33,9 @@ from thoth_control_plane.operations.stage1_controlled_fallback import (
 )
 from thoth_control_plane.operations.stage1_controlled_fallback_runner import (
     ALL_SERVICES,
+    RECLAIM_OUTPUT_SCRIPT,
+    STAGE_FIXTURE_SCRIPT,
+    TEARDOWN_FIXTURE_SCRIPT,
     CommandResult,
     ControlledFallbackRunConfig,
     ControlledFallbackRunner,
@@ -266,6 +269,15 @@ def test_rejects_existing_attempt_record(tmp_path: Path) -> None:
 def test_rejects_existing_private_integrity_record(tmp_path: Path) -> None:
     kwargs = _valid_inputs(tmp_path)
     (kwargs["sample"] / PRIVATE_INTEGRITY_NAME).write_text("{}", encoding="utf-8")
+    with pytest.raises(Stage1PreflightError):
+        check_controlled_fallback_inputs(**kwargs)
+
+
+@pytest.mark.parametrize("leftover", ["output", "reference-input"])
+def test_rejects_leftover_staging_directory(tmp_path: Path, leftover: str) -> None:
+    """A stale output could validate as this attempt's artifact; staging must start empty."""
+    kwargs = _valid_inputs(tmp_path)
+    (kwargs["sample"] / leftover).mkdir()
     with pytest.raises(Stage1PreflightError):
         check_controlled_fallback_inputs(**kwargs)
 
@@ -852,6 +864,79 @@ def test_run_once_follows_the_mandated_step_order(tmp_path: Path) -> None:
     assert kinds.index("stage") < kinds.index("up")
     assert kinds.index("up") < kinds.index("logs")
     assert kinds.index("logs") < kinds.index("rm")
+
+
+def _helper_scripts(executor: FakeExecutor) -> list[str]:
+    return [argv[-1] for argv in executor.calls if _classify(argv) == "stage"]
+
+
+def test_staging_gives_the_gate_user_a_fresh_output_directory() -> None:
+    """The overlay binds `output` with `create_host_path: false` and runs as 10001."""
+    assert "mkdir -m 0700 /staging/output" in STAGE_FIXTURE_SCRIPT
+    assert "chown 10001:10001 /staging/output" in STAGE_FIXTURE_SCRIPT
+
+
+def test_reclaim_returns_output_to_the_gate_directory_owner() -> None:
+    assert 'chown -R "$(stat -c %u:%g /staging)" /staging/output' in RECLAIM_OUTPUT_SCRIPT
+    assert "chmod -R u=rwX,go= /staging/output" in RECLAIM_OUTPUT_SCRIPT
+
+
+def test_run_once_reclaims_output_before_validation_and_tears_down_last(
+    tmp_path: Path,
+) -> None:
+    executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    assert _helper_scripts(executor) == [
+        STAGE_FIXTURE_SCRIPT,
+        RECLAIM_OUTPUT_SCRIPT,
+        TEARDOWN_FIXTURE_SCRIPT,
+    ]
+
+
+def test_run_once_reclaims_output_even_when_the_gate_never_started(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.queue("up", RuntimeError("synthetic docker failure"))
+    runner.run_once()
+    assert RECLAIM_OUTPUT_SCRIPT in _helper_scripts(executor)
+
+
+def test_run_once_reclaim_failure_fails_cleanup(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    executor.queue(
+        "stage",
+        CommandResult(0, b"", b""),
+        CommandResult(1, b"", b""),
+        CommandResult(0, b"", b""),
+    )
+    attempt = runner.run_once()
+    assert attempt.cleanup_passed is False
+    assert attempt.verdict == "failed"
+
+
+def test_every_compose_call_resolves_the_gate_from_the_runner_config(tmp_path: Path) -> None:
+    """The overlay's `:?` guards need these values; the operator's shell must not supply them."""
+    executor, runner = _run_success(tmp_path)
+    config = runner._config
+    runner.run_once()
+    compose_calls = [
+        (argv, env) for argv, env in zip(executor.calls, executor.envs, strict=True)
+        if argv[:2] == ["docker", "compose"]
+    ]
+    assert compose_calls
+    for argv, env in compose_calls:
+        assert argv[2:4] == ["--env-file", str(config.repository_root / ".env.stage1.local")]
+        assert env == {
+            "THOTH_CONTROLLED_FALLBACK_IMAGE": VALID_DIGEST_REF,
+            "THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR": str(config.sample),
+            "THOTH_STAGE1_PROVIDER_ENV_FILE": str(config.provider),
+        }
+
+
+def test_gate_start_never_touches_a_deployed_dependency(tmp_path: Path) -> None:
+    executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    (up,) = [argv for argv in executor.calls if _classify(argv) == "up"]
+    assert up[-3:] == ["-d", "--no-deps", "controlled-fallback"]
 
 
 def test_run_once_never_leaks_a_secret_or_url(tmp_path: Path) -> None:

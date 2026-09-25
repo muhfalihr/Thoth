@@ -52,12 +52,28 @@ _REVISION_LABEL = "org.opencontainers.image.revision"
 _ACTIVITY_MODE_ENV = f"THOTH_SOURCE_INVESTIGATION_ACTIVITY_MODE={DEFAULT_ACTIVITY_MODE}"
 
 # Fixed, value-free operations only: no host value is ever interpolated into these.
-_STAGE_FIXTURE_SCRIPT = (
+# `docker/test-controlled-fallback-offline.sh` runs the same strings against a real
+# image, so they are public and must stay byte-identical there.
+#
+# `output` is created here, never by the operator: the gate runs as 10001 and binds
+# it with `create_host_path: false`, and `mkdir` fails on a leftover directory.
+STAGE_FIXTURE_SCRIPT = (
     "set -e; "
     "install -d -m 0500 -o 10001 -g 10001 /staging/reference-input; "
-    "install -m 0400 -o 10001 -g 10001 /staging/url.txt /staging/reference-input/url"
+    "install -m 0400 -o 10001 -g 10001 /staging/url.txt /staging/reference-input/url; "
+    "mkdir -m 0700 /staging/output; "
+    "chown 10001:10001 /staging/output"
 )
-_TEARDOWN_FIXTURE_SCRIPT = "rm -rf /staging/reference-input"
+# Hands `output` back to whoever owns the gate directory, so host-side validation can
+# read it and every evidence file ends up owner-only.
+RECLAIM_OUTPUT_SCRIPT = (
+    "set -e; "
+    "test -d /staging/output || exit 0; "
+    'chown -R "$(stat -c %u:%g /staging)" /staging/output; '
+    "chmod -R u=rwX,go= /staging/output"
+)
+TEARDOWN_FIXTURE_SCRIPT = "rm -rf /staging/reference-input"
+ENV_FILE_NAME = ".env.stage1.local"
 
 # Reads the CDP endpoint from the worker's own configured environment rather than
 # a literal host/port, so no discovery value is ever typed into a host argv.
@@ -231,22 +247,34 @@ class ControlledFallbackRunner:
                 "the controlled fallback deployment baseline must be an exact, clean checkout"
             )
 
-    def _compose_argv(self, *args: str) -> list[str]:
+    def _compose(self, *args: str) -> CommandResult:
+        """Run one `docker compose` call against the deployed project plus the gate overlay.
+
+        The gate variables come from this runner's own config, never the operator's
+        shell, so the rendered overlay always names the same digest, sample, and
+        provider file this attempt validated.
+        """
         config = self._config
-        return [
+        argv = [
             "docker",
             "compose",
+            "--env-file",
+            str(config.repository_root / ENV_FILE_NAME),
             "-f",
             str(config.base_compose_file),
             "-f",
             str(config.gate_compose_file),
             *args,
         ]
+        env = {
+            "THOTH_CONTROLLED_FALLBACK_IMAGE": f"ghcr.io/muhfalihr/thoth@{config.digest}",
+            "THOTH_CONTROLLED_FALLBACK_SAMPLE_DIR": str(config.sample),
+            "THOTH_STAGE1_PROVIDER_ENV_FILE": str(config.provider),
+        }
+        return self._executor.run(argv, env=env, timeout=config.command_timeout)
 
     def _check_compose_config(self) -> None:
-        result = self._executor.run(
-            self._compose_argv("config", "--quiet"), env={}, timeout=self._config.command_timeout
-        )
+        result = self._compose("config", "--quiet")
         if result.returncode != 0:
             raise Stage1PreflightError(
                 "the controlled fallback compose overlay does not produce a valid configuration"
@@ -254,9 +282,7 @@ class ControlledFallbackRunner:
 
     def _check_compose_images(self) -> None:
         expected = f"ghcr.io/muhfalihr/thoth@{self._config.digest}"
-        result = self._executor.run(
-            self._compose_argv("config", "--images"), env={}, timeout=self._config.command_timeout
-        )
+        result = self._compose("config", "--images")
         images = {
             line.strip()
             for line in result.stdout.decode("utf-8", "replace").splitlines()
@@ -268,11 +294,7 @@ class ControlledFallbackRunner:
             )
 
     def _compose_ps(self) -> list[dict]:
-        result = self._executor.run(
-            self._compose_argv("ps", "--format", "json"),
-            env={},
-            timeout=self._config.command_timeout,
-        )
+        result = self._compose("ps", "--format", "json")
         rows = []
         for line in result.stdout.decode("utf-8", "replace").splitlines():
             stripped = line.strip()
@@ -349,10 +371,9 @@ class ControlledFallbackRunner:
                 raise Stage1PreflightError("the legacy CDP sidecar must not publish a host port")
 
     def _probe_target(self) -> tuple[bool, int]:
-        argv = self._compose_argv(
+        result = self._compose(
             "exec", "-T", "worker", "/opt/thoth/python/.venv/bin/python", "-c", _PROBE_SCRIPT
         )
-        result = self._executor.run(argv, env={}, timeout=self._config.command_timeout)
         try:
             payload = json.loads(result.stdout)
         except ValueError as error:
@@ -383,7 +404,7 @@ class ControlledFallbackRunner:
             # baseline this lifecycle needs for its own postcondition comparisons
             # is captured here.
             self._capture_baseline()
-            self._run_staging_helper(_STAGE_FIXTURE_SCRIPT)
+            self._run_staging_helper(STAGE_FIXTURE_SCRIPT)
             container_id = self._start_gate_service()
             try:
                 _, observed_count = self._probe_target()
@@ -404,6 +425,10 @@ class ControlledFallbackRunner:
 
         # Steps 7-10 always run, bounded, regardless of what happened above.
         if not self._capture_logs(container_id):
+            facts.cleanup_passed = False
+        try:
+            self._run_staging_helper(RECLAIM_OUTPUT_SCRIPT)
+        except Exception:
             facts.cleanup_passed = False
 
         integrity = self._validate_and_measure(facts)
@@ -439,21 +464,16 @@ class ControlledFallbackRunner:
             raise RuntimeError("controlled fallback staging helper failed")
 
     def _start_gate_service(self) -> str:
-        config = self._config
         # The gate overlay's own `env_file:` stanza resolves the restricted provider
         # path through `${THOTH_STAGE1_PROVIDER_ENV_FILE}` -- the same indirection
         # `compose.stage1.providers.yml` uses for the worker -- so only the path
-        # itself, never its contents, needs to reach this process environment.
-        up = self._executor.run(
-            self._compose_argv("up", "-d", GATE_SERVICE),
-            env={"THOTH_STAGE1_PROVIDER_ENV_FILE": str(config.provider)},
-            timeout=config.command_timeout,
-        )
+        # itself, never its contents, reaches this process environment.
+        # `--no-deps`: preflight already proved `legacy-cdp` healthy, and letting
+        # Compose reconcile it could recreate a deployed service.
+        up = self._compose("up", "-d", "--no-deps", GATE_SERVICE)
         if up.returncode != 0:
             raise RuntimeError("controlled fallback gate service failed to start")
-        located = self._executor.run(
-            self._compose_argv("ps", "-q", GATE_SERVICE), env={}, timeout=config.command_timeout
-        )
+        located = self._compose("ps", "-q", GATE_SERVICE)
         container_id = located.stdout.decode("utf-8", "replace").strip()
         if not container_id:
             raise RuntimeError("controlled fallback gate container id was not reported")
@@ -505,7 +525,7 @@ class ControlledFallbackRunner:
     def _teardown(self, container_id: str | None) -> bool:
         ok = True
         try:
-            self._run_staging_helper(_TEARDOWN_FIXTURE_SCRIPT)
+            self._run_staging_helper(TEARDOWN_FIXTURE_SCRIPT)
         except Exception:
             ok = False
         if container_id is not None:
@@ -554,11 +574,7 @@ class ControlledFallbackRunner:
             facts.restart_counts_unchanged = False
 
         try:
-            result = self._executor.run(
-                self._compose_argv("ps", "-q", GATE_SERVICE),
-                env={},
-                timeout=self._config.command_timeout,
-            )
+            result = self._compose("ps", "-q", GATE_SERVICE)
             facts.teardown_leaves_nothing = result.stdout.decode("utf-8", "replace").strip() == ""
         except Exception:
             facts.teardown_leaves_nothing = False

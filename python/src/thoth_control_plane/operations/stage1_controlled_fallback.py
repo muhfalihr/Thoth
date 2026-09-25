@@ -216,6 +216,12 @@ def _check_absent_attempt_evidence(sample: Path) -> None:
             "the controlled fallback gate directory already holds a private integrity "
             "record; f1 does not retry, so use a fresh gate directory"
         )
+    # The staging helper creates both; a leftover output could validate as this attempt's.
+    if (sample / "output").exists() or (sample / "reference-input").exists():
+        raise Stage1PreflightError(
+            "the controlled fallback gate directory already holds staged output or "
+            "input; f1 does not retry, so use a fresh gate directory"
+        )
 
 
 def _check_absent_index_row(root: Path) -> None:
