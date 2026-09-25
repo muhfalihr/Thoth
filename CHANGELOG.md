@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Controlled fallback gate `f1` finished offline
+
+Tasks 4 and 5 of the controlled fallback activation plan are done, verified
+offline, and committed locally. Nothing has been pushed. `f1` has not run.
+
+Defects found and fixed, each with a RED/GREEN test:
+- **No writable output (`bf3ab4b`).** The one-shot container, UID `10001`, had
+  no writable output directory. Staging now creates `f1/output` for it, and a
+  reclaim step returns the directory to the operator before validation.
+  Preflight refuses a gate directory that already holds `output` or
+  `reference-input`.
+- **Compose could not resolve the gate (`bf3ab4b`).** Compose calls carried no
+  `--env-file` or gate variables, so `config --quiet` could never pass.
+  Starting the gate could also recreate `legacy-cdp`. Every call now resolves
+  through `.env.stage1.local` plus the runner's own gate variables, and `up`
+  uses `--no-deps`.
+- **The run skipped preflight (`edf6f7f`).** `stage1-controlled-fallback-run`
+  reserved the attempt without running preflight, so a missing fixture was
+  recorded as `verdict=failed`. The command now runs preflight first; on
+  failure it prints only `controlled_fallback_preflight_passed=false` and
+  reserves nothing.
+
+Proof and documentation:
+- **Offline proof (`8fdb041`).** `docker/test-controlled-fallback-offline.sh`
+  and `compose.stage1.controlled-fallback-smoke.yml` exercise the runner's
+  staging, reclaim, and teardown scripts and the one-shot gate shape against a
+  synthetic browser. The harness runs in both CI image jobs.
+- **Docs (`5fd28dd`).** The runbook section "Controlled fallback gate (`f1`)"
+  covers fixture and evidence locations, the residual in-container argv
+  exposure, the clean-checkout requirement, the verdicts and their precedence,
+  and the no-retry rule. It labels the live run as an operator gate. It also
+  states the claim boundary: a pass proves supervisor activation and target
+  isolation, not Python routing.
+
+Verification:
+- Local image `thoth-stage1:controlled-fallback-corrective`
+  (`sha256:a4d74ed8…600b`) passed the controlled-fallback, CDP, and parity
+  harnesses, with every field true.
+- Python: 1849 passed, 35 skipped, 1 failure. The failure predates this work:
+  `test_route_modules_do_not_depend_on_a_process_runner` matches the `bun`
+  inside `bundle` in the Studio render routes.
+- The WSL POSIX fallback suite passed 89 of 89.
+- Scout runtime, acquisition, and typecheck passed. Ruff, format, and
+  `git diff --check` are clean.
+- The final review was a self-review; no independent reviewer ran.
+
 ## 2026-09-25 - Stage 1 reconciled and ruled to finish remaining gates
 
 The Python Scout migration program is active again. A read-only reconciliation
