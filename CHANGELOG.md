@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Window `b831f376` closed; stack redeployed on the headless fix
+
+The window closed because the headless media defect (fixed in `53306c3`) made
+every Python-native run depend on TikWM. Per the runbook's "Activating a
+corrected image on a new window", the next window starts on a new digest, and
+none of these rows carry forward. The operator ran both host-side scripts.
+
+Step 1, closure of window `b831f376` (started `2026-09-25T13:35:04Z`):
+- Closed at `2026-09-25T15:18:35Z`, with no workflow running.
+- Content: 5 workflows submitted and 4 `python_native` rows appended. One run
+  (run 4) is `needs_reconciliation`: headless failed, TikWM failed media
+  validation, and the legacy fallback completed. Nothing is recorded for it.
+- Archive: one mode 0600 archive (16 files) holds the window dataset, the soak
+  ledger, and the per-run evidence.
+  - Every archived file extracted byte-identical to its original.
+  - The dataset stays in place, and its hash is unchanged.
+  - The soak ledger was moved aside rather than deleted.
+  - Source URLs were not archived.
+
+Steps 3–7, redeploy:
+- Acquisition identity: revision `53306c3`, digest `sha256:a112d632…` (CI run
+  green, including the private CDP transport check on the published digest).
+  Provider configuration revision is `stage1.providers.20260907`.
+- `.env.stage1.local`: only `THOTH_IMAGE` was repointed. A backup was taken
+  first, and CRLF is kept on 15/15 lines. The renderer stays on `2c9c1da7…`.
+- Checks run: `stage1-local-preflight --provider-env-file` passed, `config
+  --quiet` passed, and there was no migration to apply.
+- `up --wait` exited 0:
+  - `api`, `worker`, and `legacy-cdp` run the new digest with the matching
+    revision label, as `10001:10001`, with 0 restarts, and 18800 is not
+    published;
+  - worker mode is `python_tiktok_with_legacy_fallback`;
+  - `healthz` and `readyz` returned 200;
+  - all persistent state was kept.
+
+Next, each item needing its own approval:
+- Runbook step 8:
+  - one parity pair on a new first-party post (never `p1`–`p7`);
+  - one controlled fallback exercise, which needs a gate id beyond `f1`/`f2`.
+    That is a spec decision.
+- Step 9: a new window dataset.
+
 ## 2026-09-25 - Headless TikTok media no longer depends on TikWM
 
 Every Stage 1 run recorded `scrapling_headless` as `media_validation_failed`
