@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Controlled fallback `f2` passed
+
+The operator ran the single `f2` retry once. Preflight passed first, and the run was
+not retried.
+
+Attempt record (safe fields):
+- `occurred_at`: `2026-09-25T12:38:38.553310Z`.
+- Acquisition digest `sha256:b831f376…` at revision `7c64e32`, with harness revision
+  `a20d4ffe6d5084c7e9460017df998ed05c152149`.
+- `supervisor_exit_code=0`.
+- `artifact_present=true` and `artifact_validated=true`.
+- Every isolation fact is true: `temporary_target_observed`,
+  `health_target_preserved`, `target_count_restored`, `cdp_healthy_after`,
+  `api_healthy_after`, `restart_counts_unchanged`, `cleanup_passed`, and
+  `teardown_leaves_nothing`.
+- `verdict=passed`.
+
+Post-run checks:
+- The index holds 3 rows: the `f1` sample, its amendment, and the `f2` sample. The
+  last row equals the attempt record, and the index is mode 0600.
+- The `f2` evidence files are mode 0600, and `output` is mode 0700.
+- Every Stage 1 service is running with zero restarts. `legacy-cdp` publishes no
+  host port, and no one-shot container remains.
+
+Scope of the credit:
+- This is the controlled fallback exercise the activation runbook requires. It
+  proves supervisor activation and target isolation only.
+- It is not Python-routing evidence, a parity sample, or a soak observation.
+- The activation parity gate is still unpassed, so the acceptance window stays
+  closed.
+
 ## 2026-09-25 - Controlled fallback `f1` failed on a harness defect; `f2` retry admitted
 
 `f1` ran once against `sha256:b831f376…` (revision `7c64e32`), with harness `86c5f77`.
