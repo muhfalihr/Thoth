@@ -3,7 +3,8 @@
 Each gate is a single, non-retryable, operator-authorized activation of the deployed
 legacy fallback supervisor against one real fixture. `f2` is the one explicit retry
 of `f1`, admitted only after an index amendment attributes `f1`'s failure to a gate
-harness defect; neither gate ever runs twice. `check_controlled_fallback_inputs`
+harness defect. `f3` activates a corrected image, admitted only on a digest no earlier
+gate recorded; no gate ever runs twice. `check_controlled_fallback_inputs`
 is the preflight Compose cannot be: it runs before any container is created and
 rejects a mutable image tag, a sample outside its own directory, a reused or
 malformed fixture, an unsafe permission, or a gate that has already recorded a
@@ -43,7 +44,9 @@ from thoth_control_plane.operations.stage1_provider_preflight import check_stage
 GATE_ID = "f1"
 # A retry gate names the gate it retries and runs only after that gate's recorded harness defect.
 RETRY_OF = {"f2": GATE_ID}
-GATE_IDS = (GATE_ID, *RETRY_OF)
+# An activation gate proves a corrected image, so it refuses any digest an earlier gate recorded.
+ACTIVATION_GATES = ("f3",)
+GATE_IDS = (GATE_ID, *RETRY_OF, *ACTIVATION_GATES)
 ATTEMPT_NAME = "controlled-fallback-attempt.json"
 PRIVATE_INTEGRITY_NAME = "artifact-integrity.private.json"
 INDEX_NAME = "controlled-fallback-record.jsonl"
@@ -87,7 +90,7 @@ def check_controlled_fallback_inputs(
     _check_no_symlink(resolved)
     check_stage1_provider_file(provider, repository_root=repository_root)
     _check_absent_attempt_evidence(resolved)
-    _check_index(resolved.parent, resolved.name)
+    _check_index(resolved.parent, resolved.name, image.rsplit("@", 1)[1])
 
 
 def _check_image(image: str) -> None:
@@ -229,11 +232,12 @@ def _check_absent_attempt_evidence(sample: Path) -> None:
         )
 
 
-def _check_index(root: Path, gate_id: str) -> None:
+def _check_index(root: Path, gate_id: str, digest: str) -> None:
     """Reject a prior sample or amendment row for this gate anywhere in the index.
 
     A retry gate additionally requires an amendment attributing the retried
-    gate's failure to a gate harness defect.
+    gate's failure to a gate harness defect; an activation gate additionally
+    rejects any row that already recorded the digest it would activate.
     """
     retried = RETRY_OF.get(gate_id)
     index_path = root / INDEX_NAME
@@ -262,6 +266,10 @@ def _check_index(root: Path, gate_id: str) -> None:
             raise Stage1PreflightError(
                 "the controlled fallback index already records this gate; a "
                 "correction is a separate amendment, not a new run"
+            )
+        if gate_id in ACTIVATION_GATES and row.get("acquisition_digest") == digest:
+            raise Stage1PreflightError(
+                "the controlled fallback activation gate needs a digest no earlier gate recorded"
             )
         if (
             row.get("record_type") == "classification_amendment"
@@ -304,7 +312,7 @@ class ControlledFallbackAttempt(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: Literal[1] = 1
-    gate_id: Literal["f1", "f2"]
+    gate_id: Literal["f1", "f2", "f3"]
     status: Literal["completed"] = "completed"
     occurred_at: str
     acquisition_digest: str = Field(pattern=SHA256_PATTERN)

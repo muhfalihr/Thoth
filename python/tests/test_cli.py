@@ -172,7 +172,7 @@ def test_controlled_fallback_run_rejects_an_unknown_or_mismatched_gate_id(
     assert "verdict=" not in result.stdout
 
 
-@pytest.mark.parametrize("gate_id", ["f1", "f2"])
+@pytest.mark.parametrize("gate_id", ["f1", "f2", "f3"])
 def test_controlled_fallback_run_preflights_before_consuming_the_attempt(
     monkeypatch, tmp_path, gate_id: str
 ) -> None:

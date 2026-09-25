@@ -446,7 +446,17 @@ the design spec defines it. `f1` is never run again. Before `f2` can pass prefli
 must be appended to the index; its shape is fixed by the spec. Then `f2` follows every rule above
 with `f2` in place of `f1`: the directory `/home/mfr/thoth-stage1-fallback/f2` (mode `0700`), its
 own `url.txt` (mode `0600`, byte-distinct from p1-p6, may equal `f1`'s), `--gate-id f2`, and its
-own single-use authorization. A failed `f2` is final; there is no `f3`.
+own single-use authorization. A failed `f2` is final; `f2` has no retry.
+
+### Activation gate for a corrected image (`f3`)
+
+`f3` is step 8's controlled fallback exercise for the corrected image on digest `a112d632…`. It is
+not a retry: the design spec's `f3` amendment defines it, and it needs no amendment row. Preflight
+refuses it if the index already holds any `f3` row, or any row recording the digest being
+activated. Otherwise `f3` follows every rule above with `f3` in place of `f1`: the directory
+`/home/mfr/thoth-stage1-fallback/f3` (mode `0700`), its own `url.txt` (mode `0600`, byte-distinct
+from every retained parity fixture), `--gate-id f3`, and its own single-use authorization. A failed
+`f3` is final.
 
 ### Offline proof
 

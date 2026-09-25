@@ -205,6 +205,27 @@ Preflight admits `f2` only when the index holds an amendment row with
 is `f2`. A row whose `gate_id` or `target_gate_id` is `f1` still blocks `f1`. There is no `f3`: a
 failed `f2` is final and needs a new design decision, not another id.
 
+## Amendment 2026-09-25: `f3` activates a corrected image
+
+`f2` passed on digest `b831f376…`. The acceptance window on that digest was closed because the
+headless media path failed on every run, and the fix (`53306c3`) was deployed on digest
+`a112d632…`. Runbook step 8 ("Activating a corrected image on a new window") requires one controlled
+fallback exercise on the new digest. That is a new design decision, not a retry, so it gets its own
+gate id.
+
+`f3` is an activation gate, not a retry gate:
+
+- It needs no amendment row. Preflight admits `f3` only when the index holds no row whose `gate_id`
+  or `target_gate_id` is `f3`, and no row whose `acquisition_digest` equals the digest being
+  activated. That second rule keeps `f3` from re-running a gate on a digest that is already gated.
+- Everything else above applies to it unchanged: its own mode `0700` directory named `f3`, its own
+  fixture (byte-distinct from every retained parity fixture; it may equal an earlier gate's), its
+  own single-use authorization, and one sample row with `gate_id: "f3"`.
+- A passing `f3` proves the same thing `f1` would have: supervisor activation and target isolation
+  on the new digest. It is not Python-routing evidence.
+
+A failed `f3` is final. Another corrected image needs another design decision, not another id.
+
 ## Safe result schema
 
 `controlled-fallback-attempt.json` contains only these fields:

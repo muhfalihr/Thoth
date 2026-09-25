@@ -350,6 +350,42 @@ def test_f1_stays_non_retryable_after_its_amendment(tmp_path: Path) -> None:
         check_controlled_fallback_inputs(**kwargs)
 
 
+_OLDER_DIGEST = "sha256:" + "d4" * 32
+
+
+def _f3_inputs(tmp_path: Path, index_rows: list[dict[str, object]]) -> dict[str, object]:
+    kwargs = _valid_inputs(tmp_path)
+    kwargs["sample"] = _gate(tmp_path, name="f3")
+    index = kwargs["sample"].parent / INDEX_NAME
+    index.write_text("".join(json.dumps(row) + "\n" for row in index_rows), encoding="utf-8")
+    return kwargs
+
+
+def test_f3_activates_a_digest_no_earlier_gate_recorded(tmp_path: Path) -> None:
+    kwargs = _f3_inputs(
+        tmp_path,
+        [
+            {"gate_id": "f1", "acquisition_digest": _OLDER_DIGEST},
+            _F1_HARNESS_AMENDMENT,
+            {"gate_id": "f2", "acquisition_digest": _OLDER_DIGEST},
+        ],
+    )
+    check_controlled_fallback_inputs(**kwargs)
+
+
+def test_f3_refuses_a_digest_an_earlier_gate_already_recorded(tmp_path: Path) -> None:
+    """`f3` activates a corrected image; on an already-gated digest it would be a retry."""
+    kwargs = _f3_inputs(tmp_path, [{"gate_id": "f2", "acquisition_digest": VALID_DIGEST}])
+    with pytest.raises(Stage1PreflightError):
+        check_controlled_fallback_inputs(**kwargs)
+
+
+def test_f3_does_not_retry_itself(tmp_path: Path) -> None:
+    kwargs = _f3_inputs(tmp_path, [{"gate_id": "f3", "acquisition_digest": _OLDER_DIGEST}])
+    with pytest.raises(Stage1PreflightError):
+        check_controlled_fallback_inputs(**kwargs)
+
+
 def test_no_failure_message_contains_the_fixture_value(tmp_path: Path) -> None:
     kwargs = _valid_inputs(tmp_path)
     (kwargs["sample"] / "url.txt").write_text("https://example.test/post/1\n", encoding="utf-8")
@@ -456,16 +492,17 @@ def test_reserve_attempt_rejects_a_malformed_revision(tmp_path: Path) -> None:
         )
 
 
-def test_reserve_and_finalize_carry_the_gate_directory_id(tmp_path: Path) -> None:
-    sample = tmp_path / "f2"
+@pytest.mark.parametrize("gate_id", ["f2", "f3"])
+def test_reserve_and_finalize_carry_the_gate_directory_id(tmp_path: Path, gate_id: str) -> None:
+    sample = tmp_path / gate_id
     sample.mkdir()
     _reserve(sample)
-    assert json.loads((sample / ATTEMPT_NAME).read_text(encoding="utf-8"))["gate_id"] == "f2"
-    assert finalize_attempt(sample, _facts(), _INTEGRITY).gate_id == "f2"
+    assert json.loads((sample / ATTEMPT_NAME).read_text(encoding="utf-8"))["gate_id"] == gate_id
+    assert finalize_attempt(sample, _facts(), _INTEGRITY).gate_id == gate_id
 
 
 def test_reserve_refuses_an_unknown_gate_directory(tmp_path: Path) -> None:
-    sample = tmp_path / "f3"
+    sample = tmp_path / "f4"
     sample.mkdir()
     with pytest.raises(ControlledFallbackEvidenceError):
         _reserve(sample)

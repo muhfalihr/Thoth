@@ -363,8 +363,9 @@ def stage1_controlled_fallback_run(
 ) -> None:
     """Run exactly one controlled fallback attempt against the live deployment.
 
-    `--gate-id` must be `f1` or `f2` and name the `--sample` directory; no gate
-    ever runs twice, and `f2` runs only after `f1`'s recorded harness defect. This is the
+    `--gate-id` must be `f1`, `f2`, or `f3` and name the `--sample` directory; no gate
+    ever runs twice, `f2` runs only after `f1`'s recorded harness defect, and `f3` only on
+    a digest no earlier gate recorded. This is the
     only command that starts a container from operator-supplied inputs. Output
     is fixed lines only, never a Docker error, child output, fixture value,
     evidence path, container ID, or provider value:
@@ -375,7 +376,7 @@ def stage1_controlled_fallback_run(
     verdict=passed|failed|inconclusive
     """
     if gate_id not in GATE_IDS or sample.name != gate_id:
-        raise typer.BadParameter("--gate-id must be f1 or f2 and name the --sample directory")
+        raise typer.BadParameter("--gate-id must be f1, f2, or f3 and name the --sample directory")
     config = _controlled_fallback_config(
         sample=sample,
         provider=provider,

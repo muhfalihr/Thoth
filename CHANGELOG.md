@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Controlled fallback activation gate `f3`
+
+Runbook step 8 needs a controlled fallback exercise on the corrected image, and the
+harness only knew `f1` and `f2`, both spent. The spec amendment adds `f3` as an
+activation gate. It needs no amendment row. Preflight admits it only when no index row
+already names `f3` and no earlier gate recorded the digest it would activate. A failed
+`f3` is final. Everything else about the gate stays the same: the single attempt,
+the fixture rules, and the recorded fields.
+
+- Code: `ACTIVATION_GATES` in `operations/stage1_controlled_fallback.py`;
+  `stage1-controlled-fallback-run --gate-id` now accepts `f3`.
+- Docs: spec amendment (2026-09-25) and a runbook section "Activation gate for a
+  corrected image (`f3`)".
+- Verification: the full non-live Python suite (WSL, Python 3.12) ran 1906 passed,
+  3 skipped. `ruff format` and `ruff check` are clean. The `f3` gate and the `p8`
+  parity pair have not run; each needs its own operator authorization.
+
 ## 2026-09-25 - Window `b831f376` closed; stack redeployed on the headless fix
 
 The window closed because the headless media defect (fixed in `53306c3`) made
