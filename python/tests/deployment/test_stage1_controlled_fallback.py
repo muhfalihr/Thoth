@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from thoth_control_plane.operations import stage1_controlled_fallback_runner as runner_module
 from thoth_control_plane.operations.stage1_controlled_fallback import (
     ATTEMPT_NAME,
     GATE_ID,
@@ -566,7 +567,7 @@ def _ndjson(rows: list[dict]) -> bytes:
     return "\n".join(json.dumps(row) for row in rows).encode("utf-8")
 
 
-def _role_inspect(*, image: str = VALID_DIGEST, revision: str = VALID_REVISION) -> bytes:
+def _role_inspect(*, image: str = VALID_DIGEST_REF, revision: str = VALID_REVISION) -> bytes:
     return json.dumps(
         [
             {
@@ -734,7 +735,7 @@ def test_preflight_rejects_a_role_running_the_wrong_digest(tmp_path: Path) -> No
     executor = _happy_executor()
     executor.queue(
         "inspect:svc-api",
-        CommandResult(0, _role_inspect(image="sha256:" + "9" * 64), b""),
+        CommandResult(0, _role_inspect(image="ghcr.io/muhfalihr/thoth@sha256:" + "9" * 64), b""),
     )
     runner = ControlledFallbackRunner(_run_config(tmp_path), executor)
     with pytest.raises(Stage1PreflightError):
@@ -1042,6 +1043,28 @@ def test_run_once_container_removal_failure_yields_failed(tmp_path: Path) -> Non
     attempt = runner.run_once()
     assert attempt.cleanup_passed is False
     assert attempt.verdict == "failed"
+
+
+def test_gate_container_lookups_include_stopped_containers(tmp_path: Path) -> None:
+    """A supervisor that exits before the lookup must still be found, logged, and removed."""
+    executor, runner = _run_success(tmp_path)
+    runner.run_once()
+    lookups = [argv for argv in executor.calls if _classify(argv) == "ps-q"]
+    assert len(lookups) == 2
+    assert all("--all" in argv for argv in lookups)
+
+
+def test_run_once_unreadable_output_still_tears_down(tmp_path: Path, monkeypatch) -> None:
+    executor, runner = _run_success(tmp_path)
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError("synthetic unreadable output")
+
+    monkeypatch.setattr(runner_module, "measure_scout_reference_artifact", refuse)
+    attempt = runner.run_once()
+    assert attempt.artifact_validated is False
+    assert attempt.verdict == "failed"
+    assert TEARDOWN_FIXTURE_SCRIPT in _helper_scripts(executor)
 
 
 def test_run_once_finalizes_and_appends_exactly_once(tmp_path: Path) -> None:

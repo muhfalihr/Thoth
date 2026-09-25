@@ -354,7 +354,8 @@ class ControlledFallbackRunner:
     def _check_role_identity(self, service: str, payload: dict) -> None:
         config = self._config
         docker_config = payload.get("Config") or {}
-        if docker_config.get("Image") != config.digest:
+        # Docker records the reference the service was started from, not the bare digest.
+        if docker_config.get("Image") != f"ghcr.io/muhfalihr/thoth@{config.digest}":
             raise Stage1PreflightError(f"the {service} role must run the exact authorized digest")
         if docker_config.get("User") != EXPECTED_ROLE_USER:
             raise Stage1PreflightError(f"the {service} role must run as an unprivileged fixed uid")
@@ -473,7 +474,8 @@ class ControlledFallbackRunner:
         up = self._compose("up", "-d", "--no-deps", GATE_SERVICE)
         if up.returncode != 0:
             raise RuntimeError("controlled fallback gate service failed to start")
-        located = self._compose("ps", "-q", GATE_SERVICE)
+        # `--all`: a supervisor that already exited must still be found, logged, and removed.
+        located = self._compose("ps", "-q", "--all", GATE_SERVICE)
         container_id = located.stdout.decode("utf-8", "replace").strip()
         if not container_id:
             raise RuntimeError("controlled fallback gate container id was not reported")
@@ -505,14 +507,18 @@ class ControlledFallbackRunner:
     def _validate_and_measure(self, facts: _MutableFacts) -> PrivateArtifactIntegrity:
         output_dir = self._config.sample / "output"
         report_path = output_dir / "source-report.json"
-        facts.artifact_present = report_path.is_file()
+        # An unreadable output (e.g. a failed reclaim) must fail validation, not skip teardown.
+        try:
+            facts.artifact_present = report_path.is_file()
+        except OSError:
+            facts.artifact_present = False
         if not facts.artifact_present:
             facts.artifact_validated = False
             return _EMPTY_INTEGRITY
         try:
             measurement = measure_scout_reference_artifact(report_path, output_dir)
             integrity = validate_scout_reference_artifact(report_path, output_dir, measurement)
-        except TikTokParityEvidenceError:
+        except (TikTokParityEvidenceError, OSError):
             facts.artifact_validated = False
             return _EMPTY_INTEGRITY
         facts.artifact_validated = integrity.passed
@@ -574,7 +580,7 @@ class ControlledFallbackRunner:
             facts.restart_counts_unchanged = False
 
         try:
-            result = self._compose("ps", "-q", GATE_SERVICE)
+            result = self._compose("ps", "-q", "--all", GATE_SERVICE)
             facts.teardown_leaves_nothing = result.stdout.decode("utf-8", "replace").strip() == ""
         except Exception:
             facts.teardown_leaves_nothing = False
