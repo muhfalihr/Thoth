@@ -33,7 +33,10 @@ Verification:
 - `ruff check` and `ruff format --check`: clean.
 - The offline wiring probe (`--network none`, TikWM disabled) loaded the
   worktree code.
-- The live headless-only probe has not run; it needs operator authorization.
+- Live headless-only probe (operator-run): deployed digest `b831f376` with the
+  worktree source mounted, TikWM forced to fail. 5/5 posts succeeded on
+  `scrapling_headless` alone, with 0 TikWM calls. Every file was an `ftyp` MP4
+  (0.3 to 8.3 MB), and every caption was non-empty.
 
 Not deployed: the acceptance window pins digest `b831f376`, and a new digest
 starts a new window. No `build_cuda.bat` run, because the change is
