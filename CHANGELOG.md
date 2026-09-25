@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-25 - Activation parity pair `p7` passed
+
+The operator ruled that a successful live Scout reference stays mandatory for
+parity (ruling A). No parity contract was relaxed. `p7` is a new activation
+pair on a new original-creator TikTok post, distinct from `p1`-`p6` and from the
+`f1`/`f2` fixture. `p1`-`p6` were not retried or reused.
+
+The operator ran the single pair once from a host-side script. Every offline check
+passed first, and the pair was not retried.
+- Python side: one `identify_original` workflow on the deployed worker
+  (`sha256:b831f376…`, revision `7c64e32`, mode
+  `python_tiktok_with_legacy_fallback`). It succeeded Python-natively:
+  `scrapling_headless` failed with `media_validation_failed`, then `tikwm_cdn`
+  succeeded. The legacy fallback did not fire.
+- Scout side: one isolated reference in its own container. Reference exit 0,
+  attempt `complete`, `cleanup_passed=true`, `browser_isolation=fresh_ephemeral`,
+  zero diagnostic events, and `main.source_local` set with one media entry. There
+  were zero captcha/login markers and zero `missing_api_key` markers. This is the
+  first Stage 1 parity reference to complete.
+- Comparison: all 12 artifact-integrity checks passed (6 per side), and all 9
+  normalized fields matched: `canonical_url`, `platform`, `post_id`,
+  `owner_handle`, `caption`, `media_kind`, `media_index`, `local_media_present`,
+  and `outcome`. `result: pass`, exit 0.
+
+Post-run checks:
+- The `legacy-cdp` id, health, and restart count were unchanged. The worker mode was
+  unchanged, and no `thoth-stage1-parity` container remains.
+- Every Stage 1 service is running with zero restarts, and `legacy-cdp` publishes
+  no host port.
+
+The restricted pairing record now holds 8 rows. The `p7` row has
+`comparison_result=pass` and `observation_id=null`, and was appended with a mode
+0600 backup. The `p3` and `p5` amendments still resolve to their target rows.
+
+Scope of the credit:
+- This is the first activation parity pair with an effective `pass`. The
+  controlled fallback (`f2`) passed earlier the same day.
+- Human approval of either gate is not recorded here.
+- The acceptance window is not opened, and no observation was created.
+
 ## 2026-09-25 - Controlled fallback `f2` passed
 
 The operator ran the single `f2` retry once. Preflight passed first, and the run was
