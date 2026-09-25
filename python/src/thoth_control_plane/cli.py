@@ -369,6 +369,7 @@ def stage1_controlled_fallback_run(
     evidence path, container ID, or provider value:
 
     \b
+    controlled_fallback_preflight_passed=false   (nothing started or reserved)
     controlled_fallback_completed=true|false
     verdict=passed|failed|inconclusive
     """
@@ -388,6 +389,12 @@ def stage1_controlled_fallback_run(
         wait_timeout=wait_timeout,
     )
     runner = ControlledFallbackRunner(config, SubprocessCommandExecutor())
+    # `run_once()` reserves the attempt first, so an unchecked input would consume it.
+    try:
+        runner.preflight()
+    except Stage1PreflightError:
+        typer.echo("controlled_fallback_preflight_passed=false")
+        raise typer.Exit(code=1) from None
     try:
         attempt = runner.run_once()
     except ControlledFallbackEvidenceError:

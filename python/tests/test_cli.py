@@ -169,6 +169,51 @@ def test_controlled_fallback_run_rejects_a_non_literal_gate_id(tmp_path) -> None
     assert "verdict=" not in result.stdout
 
 
+def test_controlled_fallback_run_preflights_before_consuming_the_attempt(
+    monkeypatch, tmp_path
+) -> None:
+    """An input the preflight rejects must never reserve the one `f1` attempt."""
+
+    class RefusingExecutor:
+        def run(self, *args, **kwargs):
+            raise AssertionError("no command may run after a failed preflight")
+
+        def wait_container(self, *args, **kwargs):
+            raise AssertionError("no container may start after a failed preflight")
+
+    monkeypatch.setattr(cli, "SubprocessCommandExecutor", RefusingExecutor)
+    sample = tmp_path / "f1"
+    sample.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "operations",
+            "stage1-controlled-fallback-run",
+            "--gate-id",
+            "f1",
+            "--sample",
+            str(sample),
+            "--provider",
+            str(tmp_path / "provider.env"),
+            "--data-root",
+            str(tmp_path / "data"),
+            "--parity-root",
+            str(tmp_path / "parity"),
+            "--digest",
+            "sha256:" + "a1" * 32,
+            "--acquisition-revision",
+            "b2" * 20,
+            "--harness-revision",
+            "c3" * 20,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == "controlled_fallback_preflight_passed=false\n"
+    assert list(sample.iterdir()) == []
+
+
 def test_editor_migrate_uses_the_runtime_python_migrations_directory(monkeypatch, tmp_path) -> None:
     runtime_root = tmp_path / "python"
     expected_root = runtime_root / "migrations" / "editor"
