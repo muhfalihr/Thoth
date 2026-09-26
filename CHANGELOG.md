@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-26 - Step 8 passed on `56fa84e6` / `478b06f` (`f4` and `p9`)
+
+This entry supersedes the "Not done" line of the entry below. The push, image, and redeploy on
+digest `sha256:56fa84e6…` (commit `478b06f`, provider revision `stage1.providers.20260907`) were
+completed with operator authorization. The renderer stays on `2c9c1da7`.
+
+- Redeploy (runbook steps 4-7): 0 running workflows before the change. api, worker, and legacy-cdp
+  report the new image and revision, user 10001:10001, restarts 0, and no host 18800. healthz and
+  readyz return 200.
+- `f4` (controlled fallback, activation gate) is final with `verdict=passed` and supervisor exit 0.
+  The artifact is present and validated. Every isolation, target-count, health, restart, cleanup,
+  and teardown postcondition is true. The controlled-fallback index now holds f1 (failed), f2
+  (passed), f3 (failed), and f4 (passed), plus one classification amendment.
+- `p9` (parity pair, bare fixture, distinct from p1-p8 and f1-f4) passed:
+  - the Python workflow succeeded, and the legacy reference exited 0 with a complete attempt,
+    cleanup passed, valid diagnostics, and 0 diagnostic events;
+  - the sidecar and worker mode were unchanged, and no parity leftovers remained;
+  - all 12 artifact checks passed (6 per side);
+  - all 9 compared fields match, and the comparison result is `pass`.
+- Pending: the operator writes the `p9` pairing record. Step 9 (opening a new acceptance window)
+  needs its own operator authorization.
+
 ## 2026-09-26 - Step 8 results; TikTok CDN fix; `f4` gate; bare-fixture preflight
 
 Step 8 on digest `a112d632…` spent both of its single-use samples without a passing result.
