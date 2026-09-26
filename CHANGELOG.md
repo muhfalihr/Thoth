@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2026-09-26 - Step 8 results; TikTok CDN fix; `f4` gate; bare-fixture preflight
+
+Step 8 on digest `a112d632…` spent both of its single-use samples without a passing result.
+
+- `p8` (parity pair) was consumed with no comparison. The Python side succeeded, but the legacy
+  reference exited 64 with `invalid_fixture_url`. The fixture carried a `?query`, the operator
+  fixture script let it through, and the reference refuses a query. No pairing record was written.
+- `f3` (controlled fallback) is final with `verdict=failed`: supervisor exit 1, artifact present
+  but not validated. Every isolation, cleanup, restart, and health postcondition was true.
+- `f3` cause: legacy Scout's main gate re-feeds the `yt-dlp -g` stream into `resolveOcrMedia`, and
+  that function rejected every `*.tiktok.com` host as a TikTok page, including the `v<N>…` CDN
+  subdomains (for example `v16-webapp-prime`). The input main was rejected `media_unavailable`, so
+  the main was never localized. The defect dates from `39d8942`, so it is not a regression of
+  `53306c3`. Whether a run hits it depends on the CDN host of the post, which is why `f2` passed.
+- Before `f3`, the temporal healthcheck was stuck unhealthy (probe timeouts, restarts 0) and
+  blocked preflight. An operator restart cleared it. The root cause is unknown.
+
+Fixes:
+
+- Scout (`ade4191`): `v<N>…` subdomains of `tiktok.com` are direct media. Page and short-link
+  hosts stay rejected. `media_resolution.test.ts` covers both.
+- Harness: `f4` is a new activation gate under the `f3` rules (spec amendment 2026-09-26). Every
+  gate fixture with a query or fragment is now rejected at preflight.
+- Verification: `media_resolution`, `main_candidate`, `main_candidate_runtime`, and `ocr_content`
+  bun tests pass; `bun test runtime/` 126 pass; `tsc --noEmit` clean. The Python deployment
+  suite and `test_cli.py` pass; `ruff check` and `ruff format` are clean.
+- Not done: no push, image, deploy, `f4`, or `p9`. Each needs its own operator authorization.
+
 ## 2026-09-25 - Controlled fallback activation gate `f3`
 
 Runbook step 8 needs a controlled fallback exercise on the corrected image, and the

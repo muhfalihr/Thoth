@@ -3,8 +3,8 @@
 Each gate is a single, non-retryable, operator-authorized activation of the deployed
 legacy fallback supervisor against one real fixture. `f2` is the one explicit retry
 of `f1`, admitted only after an index amendment attributes `f1`'s failure to a gate
-harness defect. `f3` activates a corrected image, admitted only on a digest no earlier
-gate recorded; no gate ever runs twice. `check_controlled_fallback_inputs`
+harness defect. `f3` and `f4` each activate a corrected image, admitted only on a
+digest no earlier gate recorded; no gate ever runs twice. `check_controlled_fallback_inputs`
 is the preflight Compose cannot be: it runs before any container is created and
 rejects a mutable image tag, a sample outside its own directory, a reused or
 malformed fixture, an unsafe permission, or a gate that has already recorded a
@@ -27,6 +27,7 @@ import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -45,7 +46,7 @@ GATE_ID = "f1"
 # A retry gate names the gate it retries and runs only after that gate's recorded harness defect.
 RETRY_OF = {"f2": GATE_ID}
 # An activation gate proves a corrected image, so it refuses any digest an earlier gate recorded.
-ACTIVATION_GATES = ("f3",)
+ACTIVATION_GATES = ("f3", "f4")
 GATE_IDS = (GATE_ID, *RETRY_OF, *ACTIVATION_GATES)
 ATTEMPT_NAME = "controlled-fallback-attempt.json"
 PRIVATE_INTEGRITY_NAME = "artifact-integrity.private.json"
@@ -164,6 +165,9 @@ def _check_fixture(sample: Path) -> Path:
             "the controlled fallback fixture file must hold exactly one bare URL"
         )
     try:
+        # The canonicalizer silently drops a query or fragment; the legacy reference refuses both.
+        if urlsplit(content.strip())[3:] != ("", ""):
+            raise TikTokUrlError("invalid_tiktok_url")
         canonicalize_tiktok_post_url(content.strip())
     except TikTokUrlError as error:
         raise Stage1PreflightError(
@@ -312,7 +316,7 @@ class ControlledFallbackAttempt(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schema_version: Literal[1] = 1
-    gate_id: Literal["f1", "f2", "f3"]
+    gate_id: Literal["f1", "f2", "f3", "f4"]
     status: Literal["completed"] = "completed"
     occurred_at: str
     acquisition_digest: str = Field(pattern=SHA256_PATTERN)

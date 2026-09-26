@@ -226,6 +226,25 @@ gate id.
 
 A failed `f3` is final. Another corrected image needs another design decision, not another id.
 
+## Amendment 2026-09-26: `f4` activates the next corrected image
+
+`f3` ran on digest `a112d632…` and failed with every isolation and cleanup postcondition true. The
+failure was in legacy Scout itself. The main gate re-feeds the `yt-dlp -g` stream into
+`resolveOcrMedia`, and that function rejected every `*.tiktok.com` host as a TikTok page, including
+the `v<N>…` CDN subdomains TikTok serves signed video from. The input main was rejected as
+`media_unavailable`, so no artifact validated. The defect dates from `39d8942` and is not a
+regression of the headless fix. The operator decided on 2026-09-26 to correct it on a new image;
+this amendment is that design decision.
+
+`f4` is an activation gate under exactly the `f3` rules, with `f4` in place of `f3`. It needs no
+amendment row. It refuses any row whose `gate_id` or `target_gate_id` is `f4`, and any row whose
+`acquisition_digest` equals the digest being activated. `f3`'s failed row stays in the index
+unchanged; it records a different digest, so it does not block `f4`. A failed `f4` is final.
+
+Every gate's fixture must also carry no query and no fragment. The canonicalizer drops both
+silently, but the legacy parity reference refuses them, and the p8 pair was spent that way.
+Preflight now rejects such a fixture before anything starts.
+
 ## Safe result schema
 
 `controlled-fallback-attempt.json` contains only these fields:

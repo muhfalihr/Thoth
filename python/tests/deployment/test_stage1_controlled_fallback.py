@@ -219,6 +219,15 @@ def test_rejects_non_canonical_fixture_url(tmp_path: Path) -> None:
         check_controlled_fallback_inputs(**kwargs)
 
 
+@pytest.mark.parametrize("suffix", ["?is_from_webapp=1", "#comments"])
+def test_rejects_fixture_url_with_query_or_fragment(tmp_path: Path, suffix: str) -> None:
+    """The canonicalizer drops a query; the legacy parity reference refuses one (p8)."""
+    kwargs = _valid_inputs(tmp_path)
+    (kwargs["sample"] / "url.txt").write_text(FIXTURE_URL.strip() + suffix + "\n", encoding="utf-8")
+    with pytest.raises(Stage1PreflightError):
+        check_controlled_fallback_inputs(**kwargs)
+
+
 def test_rejects_fixture_reused_from_parity(tmp_path: Path) -> None:
     kwargs = _valid_inputs(tmp_path)
     (kwargs["sample"] / "url.txt").write_text(OTHER_FIXTURE_URL, encoding="utf-8")
@@ -380,6 +389,18 @@ def test_f3_refuses_a_digest_an_earlier_gate_already_recorded(tmp_path: Path) ->
         check_controlled_fallback_inputs(**kwargs)
 
 
+def test_f4_activates_a_new_digest_after_a_failed_f3(tmp_path: Path) -> None:
+    kwargs = _f3_inputs(
+        tmp_path,
+        [
+            {"gate_id": "f2", "acquisition_digest": _OLDER_DIGEST},
+            {"gate_id": "f3", "acquisition_digest": "sha256:" + "e5" * 32, "verdict": "failed"},
+        ],
+    )
+    kwargs["sample"] = _gate(tmp_path, name="f4")
+    check_controlled_fallback_inputs(**kwargs)
+
+
 def test_f3_does_not_retry_itself(tmp_path: Path) -> None:
     kwargs = _f3_inputs(tmp_path, [{"gate_id": "f3", "acquisition_digest": _OLDER_DIGEST}])
     with pytest.raises(Stage1PreflightError):
@@ -492,7 +513,7 @@ def test_reserve_attempt_rejects_a_malformed_revision(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("gate_id", ["f2", "f3"])
+@pytest.mark.parametrize("gate_id", ["f2", "f3", "f4"])
 def test_reserve_and_finalize_carry_the_gate_directory_id(tmp_path: Path, gate_id: str) -> None:
     sample = tmp_path / gate_id
     sample.mkdir()
@@ -502,7 +523,7 @@ def test_reserve_and_finalize_carry_the_gate_directory_id(tmp_path: Path, gate_i
 
 
 def test_reserve_refuses_an_unknown_gate_directory(tmp_path: Path) -> None:
-    sample = tmp_path / "f4"
+    sample = tmp_path / "f5"
     sample.mkdir()
     with pytest.raises(ControlledFallbackEvidenceError):
         _reserve(sample)

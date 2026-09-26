@@ -458,6 +458,14 @@ activated. Otherwise `f3` follows every rule above with `f3` in place of `f1`: t
 from every retained parity fixture), `--gate-id f3`, and its own single-use authorization. A failed
 `f3` is final.
 
+`f3` failed on `a112d632…` because of a legacy Scout defect: TikTok `v<N>…` CDN hosts were rejected
+as pages. `f4` is the activation gate for the image that carries the fix. It follows the `f3` rules
+exactly, with `f4` in place of `f3`: the directory `/home/mfr/thoth-stage1-fallback/f4`,
+`--gate-id f4`, and a digest no index row has recorded. A failed `f4` is final.
+
+Every gate fixture must be a bare post URL, with no `?query` and no `#fragment`. Preflight rejects
+either one. The parity reference refuses them too, so a parity fixture must be bare as well.
+
 ### Offline proof
 
 `docker/test-controlled-fallback-offline.sh IMAGE` proves the same staging, reclaim, and teardown
