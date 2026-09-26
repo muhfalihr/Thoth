@@ -89,6 +89,13 @@ function hostMatches(value: string, hosts: readonly string[]): boolean {
   return hosts.some((known) => host === known || host.endsWith(`.${known}`));
 }
 
+// TikTok streams signed media from `v<N>…` subdomains of tiktok.com (v16-webapp-prime.tiktok.com);
+// those are media, not pages. Page and short-link hosts (www., m., vt., vm.) never start `v<digit>`.
+function isSpecializedPage(value: string): boolean {
+  if (!hostMatches(value, SPECIALIZED_HOSTS)) return false;
+  return !(hostMatches(value, ['tiktok.com']) && /^v\d/i.test(new URL(value).hostname));
+}
+
 function defaultRunResolver(
   executable: string,
   args: string[],
@@ -154,7 +161,7 @@ function directStreamFromOutput(stdout: string, input: string): string {
           !/^https?:\/\//i.test(line) ||
           line === input ||
           hostMatches(line, PLATFORM_HOSTS) ||
-          hostMatches(line, SPECIALIZED_HOSTS)
+          isSpecializedPage(line)
         ) {
           return false;
         }
@@ -191,7 +198,7 @@ export async function resolveOcrMedia(
   if (value && fs.existsSync(value)) {
     return { status: 'resolved', media: value, source: 'local', attempts: 0, elapsed_ms: 0 };
   }
-  if (!/^https?:\/\//i.test(value) || hostMatches(value, SPECIALIZED_HOSTS)) {
+  if (!/^https?:\/\//i.test(value) || isSpecializedPage(value)) {
     return {
       status: 'unavailable',
       code: 'stream_resolution_failed',

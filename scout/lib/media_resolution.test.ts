@@ -295,6 +295,23 @@ try {
     assert.equal(result.status === 'unavailable' && result.reason, 'unsupported');
   }
 
+  // TikTok serves signed video streams from `v<N>…` subdomains of tiktok.com itself. The main gate
+  // re-feeds the `yt-dlp -g` result here, and rejecting it as a TikTok page failed the input main
+  // with `media_unavailable` whenever yt-dlp picked a webapp CDN over tiktokcdn.com.
+  for (const tiktokCdn of [
+    'https://v16-webapp-prime.tiktok.com/video/tos/alisg/tos-alisg-pve-0037/o0ABC/?a=1988&br=1',
+    'https://v19-webapp-prime.us.tiktok.com/video/tos/useast2a/tos-useast2a-ve-0068/oABC/',
+  ]) {
+    const result = await resolveOcrMedia(tiktokCdn, {
+      log: () => {},
+      runResolver: async () => {
+        throw new Error('must not run');
+      },
+    });
+    assert.equal(result.status === 'resolved' && result.source, 'direct', `${tiktokCdn} is media`);
+    assert.equal(result.status === 'resolved' && result.media, tiktokCdn);
+  }
+
   console.log('ok media_resolution');
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
